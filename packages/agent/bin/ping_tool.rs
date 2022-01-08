@@ -6,30 +6,30 @@ use tracing::Level;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .with_writer(std::io::stderr)
-        .init();
+  tracing_subscriber::fmt()
+    .with_max_level(Level::INFO)
+    .with_writer(std::io::stderr)
+    .init();
 
-    let api_client = ApiClient::new("https://api.playit.cloud/agent".to_string(), None);
-    let (tx, _rx) = channel(1024);
+  let api_client = ApiClient::new("https://api.playit.cloud/agent".to_string(), None);
+  let (tx, _rx) = channel(1024);
 
-    let client = TunnelClient::new(api_client, tx).await.unwrap();
+  let client = TunnelClient::new(api_client, tx).await.unwrap();
 
-    loop {
-        match client.ping().await {
-            Ok(pong) => {
-                tracing::info!(
-                    latency = pong.id,
-                    tunnel_server_id = pong.tunnel_server_id,
-                    "Got ping response"
-                );
-            }
-            Err(error) => {
-                tracing::error!(?error, "ping failed");
-            }
-        }
-
-        tokio::time::sleep(Duration::from_secs(1)).await;
+  loop {
+    match client.ping().await {
+      Ok(pong) => {
+        tracing::info!(
+          latency = pong.id,
+          tunnel_server_id = pong.tunnel_server_id,
+          "Got ping response"
+        );
+      }
+      Err(error) => {
+        tracing::error!(?error, "ping failed");
+      }
     }
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+  }
 }
