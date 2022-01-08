@@ -1,6 +1,8 @@
 use std::net::{SocketAddr, SocketAddrV4};
-use serde::{Serialize, Deserialize};
+
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
 use crate::Proto;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
@@ -26,7 +28,7 @@ pub enum TunnelApiResponse {
 pub struct TunnelNetwork {
     pub agents: Vec<AgentConnection>,
     pub clients: Vec<ClientConnection>,
-    pub port_leases: Vec<PortLease>
+    pub port_leases: Vec<PortLease>,
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]

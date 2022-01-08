@@ -1,7 +1,9 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use messages::{ClaimProto, Proto};
-use serde::{Serialize, Deserialize};
+
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+use messages::{ClaimProto, Proto};
 
 pub async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
     match tokio::fs::File::open("./playit.toml").await {
@@ -27,11 +29,16 @@ pub async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let mut file = tokio::fs::File::create("./playit.toml").await?;
 
-            file.write_all(toml::to_string(&AgentConfig {
-                api_url: None,
-                secret_key: "put-secret-here".to_string(),
-                mappings: vec![],
-            }).unwrap().as_bytes()).await?;
+            file.write_all(
+                toml::to_string(&AgentConfig {
+                    api_url: None,
+                    secret_key: "put-secret-here".to_string(),
+                    mappings: vec![],
+                })
+                .unwrap()
+                .as_bytes(),
+            )
+            .await?;
 
             Ok(None)
         }
@@ -64,7 +71,11 @@ pub struct PortMapping {
 }
 
 impl AgentConfig {
-    pub fn find_local_addr(&self, addr: SocketAddrV4, proto: Proto) -> Option<(Option<IpAddr>, SocketAddr)> {
+    pub fn find_local_addr(
+        &self,
+        addr: SocketAddrV4,
+        proto: Proto,
+    ) -> Option<(Option<IpAddr>, SocketAddr)> {
         for mapping in &self.mappings {
             match (mapping.proto, proto) {
                 (ClaimProto::Udp, Proto::Tcp) => continue,
@@ -76,7 +87,10 @@ impl AgentConfig {
                 continue;
             }
 
-            let range = mapping.tunnel_from_port..mapping.tunnel_to_port.unwrap_or(mapping.tunnel_from_port + 1);
+            let range = mapping.tunnel_from_port
+                ..mapping
+                    .tunnel_to_port
+                    .unwrap_or(mapping.tunnel_from_port + 1);
             if !range.contains(&addr.port()) {
                 continue;
             }
@@ -85,7 +99,10 @@ impl AgentConfig {
             let local_port = mapping.local_port.unwrap_or(mapping.tunnel_from_port) + port_delta;
 
             let local_ip = mapping.local_ip.unwrap_or(Ipv4Addr::new(127, 0, 0, 1));
-            return Some((mapping.bind_ip, SocketAddr::V4(SocketAddrV4::new(local_ip, local_port))));
+            return Some((
+                mapping.bind_ip,
+                SocketAddr::V4(SocketAddrV4::new(local_ip, local_port)),
+            ));
         }
 
         None

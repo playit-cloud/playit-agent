@@ -1,5 +1,4 @@
 use std::net::{IpAddr, SocketAddr};
-
 use std::sync::Arc;
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -7,14 +6,19 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use slab::Slab;
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::Sender;
-use tokio::sync::oneshot::{channel as oneshot, Receiver as OneshotReceiver, Sender as OneshotSender};
+use tokio::sync::oneshot::{
+    channel as oneshot, Receiver as OneshotReceiver, Sender as OneshotSender,
+};
+use tokio::sync::{Mutex, RwLock};
 
-use messages::{AgentRegistered, ClaimError, ClaimLease, NewClient, Ping, Pong, RpcMessage, SetupUdpChannelDetails, TunnelFeed, TunnelRequest, TunnelResponse};
 use messages::api::SessionSecret;
-use messages::auth::{SignatureError};
+use messages::auth::SignatureError;
 use messages::rpc::SignedRpcRequest;
+use messages::{
+    AgentRegistered, ClaimError, ClaimLease, NewClient, Ping, Pong, RpcMessage,
+    SetupUdpChannelDetails, TunnelFeed, TunnelRequest, TunnelResponse,
+};
 
 use crate::api_client::{ApiClient, ApiError};
 use crate::dependent_task::DependentTask;
@@ -49,7 +53,10 @@ struct QueuedRequest {
 }
 
 impl TunnelClient {
-    pub async fn new(api: ApiClient, new_client_tx: Sender<NewClient>) -> Result<Self, TunnelClientError> {
+    pub async fn new(
+        api: ApiClient,
+        new_client_tx: Sender<NewClient>,
+    ) -> Result<Self, TunnelClientError> {
         let udp = UdpSocket::bind(SocketAddr::new(IpAddr::V4(0.into()), 0)).await?;
         let control_addr = api.get_control_addr().await?;
 
@@ -66,9 +73,7 @@ impl TunnelClient {
 
         Ok(TunnelClient {
             shared: shared.clone(),
-            receive_task: DependentTask::new(tokio::spawn(
-                ControlClientTask::new(shared).run()
-            ))
+            receive_task: DependentTask::new(tokio::spawn(ControlClientTask::new(shared).run())),
         })
     }
 
@@ -79,9 +84,10 @@ impl TunnelClient {
     pub async fn ping(&self) -> Result<Pong, TunnelClientError> {
         let now = now_milli();
 
-        let handle = self.shared.send_unsigned(TunnelRequest::Ping(Ping {
-            id: now,
-        })).await?;
+        let handle = self
+            .shared
+            .send_unsigned(TunnelRequest::Ping(Ping { id: now }))
+            .await?;
 
         match handle.await {
             Ok(TunnelResponse::Pong(mut pong)) => {
@@ -92,12 +98,15 @@ impl TunnelClient {
                 tracing::error!(?response, "Got invalid response for register");
                 Err(TunnelClientError::InvalidResponse)
             }
-            _ => Err(TunnelClientError::StoppedProcessing)
+            _ => Err(TunnelClientError::StoppedProcessing),
         }
     }
 
     pub async fn claim_lease(&self, claim: ClaimLease) -> Result<ClaimLease, TunnelClientError> {
-        let handle = self.shared.send_system_signed(TunnelRequest::ClaimLease(claim)).await?;
+        let handle = self
+            .shared
+            .send_system_signed(TunnelRequest::ClaimLease(claim))
+            .await?;
 
         match handle.await {
             Ok(TunnelResponse::ClaimResponse(r)) => r.map_err(|e| TunnelClientError::ClaimError(e)),
@@ -106,12 +115,15 @@ impl TunnelClient {
                 tracing::error!(?response, "Got invalid response for register");
                 Err(TunnelClientError::InvalidResponse)
             }
-            _ => Err(TunnelClientError::StoppedProcessing)
+            _ => Err(TunnelClientError::StoppedProcessing),
         }
     }
 
     pub async fn keep_alive(&self) -> Result<bool, TunnelClientError> {
-        let handle = self.shared.send_session_signed(TunnelRequest::KeepAlive).await?;
+        let handle = self
+            .shared
+            .send_session_signed(TunnelRequest::KeepAlive)
+            .await?;
 
         match handle.await {
             Ok(TunnelResponse::KeptAlive(kept_alive)) => {
@@ -123,12 +135,15 @@ impl TunnelClient {
                 tracing::error!(?response, "Got invalid response for register");
                 Err(TunnelClientError::InvalidResponse)
             }
-            _ => Err(TunnelClientError::StoppedProcessing)
+            _ => Err(TunnelClientError::StoppedProcessing),
         }
     }
 
     pub async fn setup_udp_channel(&self) -> Result<SetupUdpChannelDetails, TunnelClientError> {
-        let handle = self.shared.send_session_signed(TunnelRequest::SetupUdpChannel).await?;
+        let handle = self
+            .shared
+            .send_session_signed(TunnelRequest::SetupUdpChannel)
+            .await?;
 
         match handle.await {
             Ok(TunnelResponse::SetupUdpChannelDetails(details)) => {
@@ -140,13 +155,17 @@ impl TunnelClient {
                 tracing::error!(?response, "Got invalid response for register");
                 Err(TunnelClientError::InvalidResponse)
             }
-            _ => Err(TunnelClientError::StoppedProcessing)
+            _ => Err(TunnelClientError::StoppedProcessing),
         }
     }
 }
 
 impl Inner {
-    async fn send_signed_request(&self, now: u64, request: SignedRpcRequest<TunnelRequest>) -> OneshotReceiver<TunnelResponse> {
+    async fn send_signed_request(
+        &self,
+        now: u64,
+        request: SignedRpcRequest<TunnelRequest>,
+    ) -> OneshotReceiver<TunnelResponse> {
         let (tx, rx) = oneshot();
 
         let payload = {
@@ -176,19 +195,24 @@ impl Inner {
     }
 
     async fn register(&self) -> Result<AgentRegistered, TunnelClientError> {
-        let handle = self.send_system_signed(TunnelRequest::RegisterAgent).await?;
+        let handle = self
+            .send_system_signed(TunnelRequest::RegisterAgent)
+            .await?;
 
         match handle.await {
             Ok(TunnelResponse::AgentRegistered(registered)) => {
                 let SessionSecret {
                     agent_registered,
-                    secret
+                    secret,
                 } = self.api.generate_shared_tunnel_secret(registered).await?;
 
                 let shared_secret = match hex::decode(secret) {
                     Ok(bytes) => {
                         if bytes.len() != 32 {
-                            tracing::error!(length = bytes.len(), "expected shared secret to be of length 32");
+                            tracing::error!(
+                                length = bytes.len(),
+                                "expected shared secret to be of length 32"
+                            );
                             return Err(TunnelClientError::InvalidResponse);
                         }
                         let mut data = [0u8; 32];
@@ -210,32 +234,46 @@ impl Inner {
 
                 Ok(agent_registered)
             }
-            Ok(TunnelResponse::SignatureError(e)) => {
-                Err(TunnelClientError::SignatureError(e))
-            },
+            Ok(TunnelResponse::SignatureError(e)) => Err(TunnelClientError::SignatureError(e)),
             Ok(response) => {
                 tracing::error!(?response, "Got invalid response for register");
                 Err(TunnelClientError::InvalidResponse)
             }
-            _ => Err(TunnelClientError::StoppedProcessing)
+            _ => Err(TunnelClientError::StoppedProcessing),
         }
     }
 
-    async fn send_session_signed<T: DeserializeOwned + Serialize + Into<TunnelRequest>>(&self, data: T) -> Result<OneshotReceiver<TunnelResponse>, TunnelClientError> {
+    async fn send_session_signed<T: DeserializeOwned + Serialize + Into<TunnelRequest>>(
+        &self,
+        data: T,
+    ) -> Result<OneshotReceiver<TunnelResponse>, TunnelClientError> {
         let session_opt = self.session.read().await;
         let session = session_opt.as_ref().ok_or(TunnelClientError::NoSession)?;
         let now = now_milli();
-        let req = SignedRpcRequest::new_session_signed(&session.registered, &session.shared_secret, now, data.into());
+        let req = SignedRpcRequest::new_session_signed(
+            &session.registered,
+            &session.shared_secret,
+            now,
+            data.into(),
+        );
         Ok(self.send_signed_request(now, req).await)
     }
 
-    async fn send_system_signed<T: Into<TunnelRequest>>(&self, request: T) -> Result<OneshotReceiver<TunnelResponse>, TunnelClientError> {
+    async fn send_system_signed<T: Into<TunnelRequest>>(
+        &self,
+        request: T,
+    ) -> Result<OneshotReceiver<TunnelResponse>, TunnelClientError> {
         let signed = self.api.sign_tunnel_request(request.into()).await?;
         Ok(self.send_signed_request(now_milli(), signed).await)
     }
 
-    async fn send_unsigned<T: Into<TunnelRequest>>(&self, request: T) -> Result<OneshotReceiver<TunnelResponse>, TunnelClientError> {
-        Ok(self.send_signed_request(now_milli(), SignedRpcRequest::new_unsigned(request.into())).await)
+    async fn send_unsigned<T: Into<TunnelRequest>>(
+        &self,
+        request: T,
+    ) -> Result<OneshotReceiver<TunnelResponse>, TunnelClientError> {
+        Ok(self
+            .send_signed_request(now_milli(), SignedRpcRequest::new_unsigned(request.into()))
+            .await)
     }
 }
 
@@ -280,7 +318,11 @@ impl ControlClientTask {
         let mut next_resend = now_milli() + RESEND_CHECK_INTERVAL;
 
         loop {
-            let res = tokio::time::timeout(Duration::from_millis(RESEND_CHECK_INTERVAL + 1), self.receive_message()).await;
+            let res = tokio::time::timeout(
+                Duration::from_millis(RESEND_CHECK_INTERVAL + 1),
+                self.receive_message(),
+            )
+            .await;
 
             match res {
                 Ok(Some(msg)) => {
@@ -306,7 +348,12 @@ impl ControlClientTask {
             if request.resend_at < now {
                 tracing::info!(request_id, "resend request");
 
-                if let Err(error) = self.shared.udp.send_to(&request.request.as_payload(), self.shared.control_addr).await {
+                if let Err(error) = self
+                    .shared
+                    .udp
+                    .send_to(&request.request.as_payload(), self.shared.control_addr)
+                    .await
+                {
                     tracing::error!(?error, "failed to send udp packet");
                     continue;
                 }
@@ -352,5 +399,8 @@ impl ControlClientTask {
 }
 
 fn now_milli() -> u64 {
-    std::time::SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }

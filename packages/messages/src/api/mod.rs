@@ -1,9 +1,9 @@
 pub use agent::*;
 pub use login::*;
-pub use tunnel::*;
 pub use payments::*;
+pub use tunnel::*;
 
 mod agent;
 mod login;
-mod tunnel;
 mod payments;
+mod tunnel;

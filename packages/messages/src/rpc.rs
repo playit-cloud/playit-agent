@@ -1,14 +1,18 @@
 use std::borrow::Cow;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
-use schemars::JsonSchema;
-use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
-use serde::{Deserialize, Serialize};
-use serde::de::DeserializeOwned;
-use ring::hmac;
 
+use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
+use ring::hmac;
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+
+use crate::auth::{
+    Authentication, Authorization, RequestDetails, SessionSignature, Signature, SignatureError,
+    SystemSignature,
+};
 use crate::AgentRegistered;
-use crate::auth::{Authentication, Authorization, RequestDetails, SessionSignature, Signature, SignatureError, SystemSignature};
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct SignedRpcRequest<T: DeserializeOwned + Serialize> {
@@ -20,15 +24,25 @@ pub struct SignedRpcRequest<T: DeserializeOwned + Serialize> {
 
 impl<T: DeserializeOwned + Serialize + Debug> Debug for SignedRpcRequest<T> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SignedRpcRequest {{ content: {:?}, auth: {} }} ", self.content, match &self.auth {
-            None => Cow::Borrowed("None"),
-            Some(auth) => {
-                match &auth.signature {
-                    Signature::System(_) => Cow::Owned(format!("System {{ details: {:?} }}", auth.details)),
-                    Signature::Session(s) => Cow::Owned(format!("Session {{ details: {:?}, ts: {} }}", auth.details, s.session_timestamp)),
+        write!(
+            f,
+            "SignedRpcRequest {{ content: {:?}, auth: {} }} ",
+            self.content,
+            match &self.auth {
+                None => Cow::Borrowed("None"),
+                Some(auth) => {
+                    match &auth.signature {
+                        Signature::System(_) => {
+                            Cow::Owned(format!("System {{ details: {:?} }}", auth.details))
+                        }
+                        Signature::Session(s) => Cow::Owned(format!(
+                            "Session {{ details: {:?}, ts: {} }}",
+                            auth.details, s.session_timestamp
+                        )),
+                    }
                 }
             }
-        })
+        )
     }
 }
 
@@ -43,7 +57,12 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
         }
     }
 
-    pub fn new_session_signed<K: Into<T>>(session: &AgentRegistered, shared_secret: &[u8], timestamp: u64, data: K) -> Self {
+    pub fn new_session_signed<K: Into<T>>(
+        session: &AgentRegistered,
+        shared_secret: &[u8],
+        timestamp: u64,
+        data: K,
+    ) -> Self {
         let mut data = bincode::serialize(&data.into()).unwrap();
 
         let signature = {
@@ -79,7 +98,12 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
         }
     }
 
-    pub fn new_system_signed<K: Into<T>>(key: &hmac::Key, account_id: u64, timestamp: u64, data: K) -> Self {
+    pub fn new_system_signed<K: Into<T>>(
+        key: &hmac::Key,
+        account_id: u64,
+        timestamp: u64,
+        data: K,
+    ) -> Self {
         let mut data = bincode::serialize(&data.into()).unwrap();
 
         let signature = {
@@ -112,19 +136,25 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
         }
     }
 
-    pub fn authenticate(&mut self, now: u64, secret: &hmac::Key) -> Result<Option<Authorization>, SignatureError> {
+    pub fn authenticate(
+        &mut self,
+        now: u64,
+        secret: &hmac::Key,
+    ) -> Result<Option<Authorization>, SignatureError> {
         let auth = match &self.auth {
             Some(v) => v,
             None => return Ok(None),
         };
 
-        auth.signature.validate(&auth.details, now, &mut self.content, secret).map(|v| Some(v))
+        auth.signature
+            .validate(&auth.details, now, &mut self.content, secret)
+            .map(|v| Some(v))
     }
 
     pub fn into_content(self) -> Result<T, Self> {
         match bincode::deserialize(&self.content) {
             Ok(v) => Ok(v),
-            Err(_) => Err(self)
+            Err(_) => Err(self),
         }
     }
 

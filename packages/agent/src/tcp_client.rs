@@ -1,10 +1,10 @@
 use std::net::{SocketAddr, SocketAddrV4};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::{TcpStream};
+use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 
 pub struct TcpConnection {
@@ -23,12 +23,13 @@ impl TcpConnection {
         let mut resp = [0u8; RESP_LEN];
         let size = stream.read_exact(&mut resp).await?;
         if size != RESP_LEN {
-            return Err(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "did not get valid resposne"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "did not get valid resposne",
+            ));
         }
 
-        Ok(ReadyTcpConnection {
-            connection: stream,
-        })
+        Ok(ReadyTcpConnection { connection: stream })
     }
 }
 
@@ -37,7 +38,11 @@ pub struct ReadyTcpConnection {
 }
 
 impl ReadyTcpConnection {
-    pub async fn connect_to_host(self, host_addr: SocketAddr, stats: Arc<Stats>) -> std::io::Result<ActiveTcpConnection> {
+    pub async fn connect_to_host(
+        self,
+        host_addr: SocketAddr,
+        stats: Arc<Stats>,
+    ) -> std::io::Result<ActiveTcpConnection> {
         let conn = TcpStream::connect(host_addr).await?;
         conn.set_nodelay(true)?;
 
@@ -65,7 +70,12 @@ pub struct Stats {
     pub to_tunnel: AtomicUsize,
 }
 
-async fn pipe(mut from: OwnedReadHalf, mut to: OwnedWriteHalf, stats: Arc<Stats>, from_tunnel: bool) -> std::io::Result<()> {
+async fn pipe(
+    mut from: OwnedReadHalf,
+    mut to: OwnedWriteHalf,
+    stats: Arc<Stats>,
+    from_tunnel: bool,
+) -> std::io::Result<()> {
     let mut buffer = Vec::new();
     buffer.resize(2048, 0u8);
 
@@ -89,7 +99,8 @@ async fn pipe(mut from: OwnedReadHalf, mut to: OwnedWriteHalf, stats: Arc<Stats>
                 &stats.from_tunnel
             } else {
                 &stats.to_tunnel
-            }.fetch_add(received, Ordering::SeqCst);
+            }
+            .fetch_add(received, Ordering::SeqCst);
 
             to.write_all(&buffer[..received]).await.map_err(|error| {
                 tracing::error!(?error, "failed to write data");
@@ -98,7 +109,8 @@ async fn pipe(mut from: OwnedReadHalf, mut to: OwnedWriteHalf, stats: Arc<Stats>
         }
 
         Ok(())
-    }.await;
+    }
+    .await;
 
     stats.running.fetch_sub(1, Ordering::SeqCst);
 

@@ -1,38 +1,46 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
-use byteorder::{BigEndian, ByteOrder};
 
+use byteorder::{BigEndian, ByteOrder};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::channel;
 use tokio::sync::RwLock;
 use tracing::Level;
+
 use agent::api_client::ApiClient;
 use agent::config::load_or_create;
 use agent::now_milli;
-
-use messages::{ClaimInstructions, ClaimLease, ClaimProto, Proto, SetupUdpChannelDetails};
-
-use agent::tunnel_client::TunnelClient;
 use agent::tcp_client::{Stats, TcpConnection};
+use agent::tunnel_client::TunnelClient;
 use agent::udp_client::UdpClients;
-use messages::udp::{UDP_CHANNEL_ESTABLISH_ID, REDIRECT_FLOW_FOOTER_ID, RedirectFlowFooter};
+use messages::udp::{RedirectFlowFooter, REDIRECT_FLOW_FOOTER_ID, UDP_CHANNEL_ESTABLISH_ID};
+use messages::{ClaimInstructions, ClaimLease, ClaimProto, Proto, SetupUdpChannelDetails};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_max_level(Level::INFO).with_writer(std::io::stderr).init();
+    tracing_subscriber::fmt()
+        .with_max_level(Level::INFO)
+        .with_writer(std::io::stderr)
+        .init();
     let config = Arc::new(load_or_create().await.unwrap().unwrap());
-    let tunnel_udp = Arc::new(UdpSocket::bind(SocketAddrV4::new(0.into(), 0)).await.unwrap());
+    let tunnel_udp = Arc::new(
+        UdpSocket::bind(SocketAddrV4::new(0.into(), 0))
+            .await
+            .unwrap(),
+    );
 
     let mut lease_claims = Vec::new();
     for mapping in &config.mappings {
         lease_claims.push(ClaimLease {
             ip: mapping.tunnel_ip,
             from_port: mapping.tunnel_from_port,
-            to_port: mapping.tunnel_to_port.unwrap_or(mapping.tunnel_from_port + 1),
+            to_port: mapping
+                .tunnel_to_port
+                .unwrap_or(mapping.tunnel_from_port + 1),
             proto: mapping.proto,
         });
     }
@@ -91,9 +99,7 @@ async fn main() {
 
                 /* setup udp channel */
                 {
-                    let needs_setup = {
-                        udp_channel_details.read().await.is_none()
-                    };
+                    let needs_setup = { udp_channel_details.read().await.is_none() };
 
                     if needs_setup {
                         let res = match client.setup_udp_channel().await {
@@ -113,7 +119,10 @@ async fn main() {
                 {
                     let lock = udp_channel_details.read().await;
                     if let Some(channel) = lock.as_ref() {
-                        if let Err(error) = tunnel_udp.send_to(&channel.token, channel.tunnel_addr).await {
+                        if let Err(error) = tunnel_udp
+                            .send_to(&channel.token, channel.tunnel_addr)
+                            .await
+                        {
                             tracing::error!(?error, "failed to send message to UDP channel");
                         }
 
@@ -164,9 +173,11 @@ async fn main() {
 
                 let payload = &buffer[..bytes - RedirectFlowFooter::len()];
 
-                udp_clients.forward_packet(flow, payload, |addr| {
-                    config.find_local_addr(addr, Proto::Udp)
-                }).await;
+                udp_clients
+                    .forward_packet(flow, payload, |addr| {
+                        config.find_local_addr(addr, Proto::Udp)
+                    })
+                    .await;
             }
         })
     };
@@ -185,8 +196,8 @@ async fn main() {
                     }
                     None => {
                         tracing::error!(?client.connect_addr, "did not find local address for new tcp client");
-                        continue
-                    },
+                        continue;
+                    }
                 };
 
                 let tcp_conn = TcpConnection {
@@ -202,7 +213,10 @@ async fn main() {
                     }
                 };
 
-                let active = match ready.connect_to_host(host_addr, Arc::new(Stats::default())).await {
+                let active = match ready
+                    .connect_to_host(host_addr, Arc::new(Stats::default()))
+                    .await
+                {
                     Ok(v) => v,
                     Err(error) => {
                         tracing::error!(?error, "failed to connect to local service");
