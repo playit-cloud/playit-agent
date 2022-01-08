@@ -1,0 +1,28 @@
+[package]
+name = "agent"
+version = "0.5.0-beta"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1.12", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = "0.2"
+serde = "1"
+serde_json = "1"
+messages = { path = "../messages" }
+hex = "0.4.3"
+slab = "0.4.5"
+reqwest = { version = "0.11.7", features = ["json", "native-tls-vendored"] }
+openssl-sys = { version = "0.9.72", features = ["vendored"] }
+toml = "0.5.8"
+byteorder = "1.4.3"
+
+[[bin]]
+name = "agent"
+path = "bin/agent.rs"
+
+[[bin]]
+name = "ping-tool"
+path = "bin/ping_tool.rs"
