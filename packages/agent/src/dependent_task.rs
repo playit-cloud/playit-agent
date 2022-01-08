@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use tokio::task::JoinHandle;
 
@@ -13,7 +13,7 @@ impl<T> DependentTask<T> {
             inner: Arc::new(Inner {
                 task,
                 count: AtomicUsize::new(1),
-            })
+            }),
         }
     }
 }
@@ -21,7 +21,9 @@ impl<T> DependentTask<T> {
 impl<T> Clone for DependentTask<T> {
     fn clone(&self) -> Self {
         self.inner.count.fetch_add(1, Ordering::SeqCst);
-        DependentTask { inner: self.inner.clone() }
+        DependentTask {
+            inner: self.inner.clone(),
+        }
     }
 }
 

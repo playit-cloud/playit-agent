@@ -27,7 +27,11 @@ pub struct LoginCredentials {
 
 impl Debug for LoginCredentials {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "LoginCredentials {{ email: {}, password: <redacted> }}", self.email)
+        write!(
+            f,
+            "LoginCredentials {{ email: {}, password: <redacted> }}",
+            self.email
+        )
     }
 }
 

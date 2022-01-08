@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentRegistered, TunnelRequest};
 use crate::rpc::SignedRpcRequest;
+use crate::{AgentRegistered, TunnelRequest};
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 #[serde(tag = "type")]
@@ -37,7 +37,6 @@ pub enum AgentApiResponse {
 
     #[serde(rename = "tunnel-server-details")]
     TunnelServerDetails(TunnelServerDetails),
-
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -48,7 +47,11 @@ pub struct SessionSecret {
 
 impl Debug for SessionSecret {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SessionSecret {{ agent_registered: {:?}, secret: <redacted> }}", self.agent_registered)
+        write!(
+            f,
+            "SessionSecret {{ agent_registered: {:?}, secret: <redacted> }}",
+            self.agent_registered
+        )
     }
 }
 

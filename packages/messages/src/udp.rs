@@ -1,6 +1,5 @@
-use std::net::SocketAddrV4;
 use byteorder::{BigEndian, ByteOrder};
-use crate::Proto::Udp;
+use std::net::SocketAddrV4;
 
 pub const REDIRECT_FLOW_FOOTER_ID: u64 = 0x5cb867cf788173b2;
 pub const UDP_CHANNEL_ESTABLISH_ID: u64 = 0xd01fe6830ddce781;
@@ -15,7 +14,7 @@ impl RedirectFlowFooter {
     pub fn flip(self) -> RedirectFlowFooter {
         RedirectFlowFooter {
             src: self.dst,
-            dst: self.src
+            dst: self.src,
         }
     }
 
@@ -39,7 +38,7 @@ impl RedirectFlowFooter {
             return None;
         }
 
-        let id = BigEndian::read_u64(&slice[len-8..]);
+        let id = BigEndian::read_u64(&slice[len - 8..]);
         if id != REDIRECT_FLOW_FOOTER_ID {
             return None;
         }

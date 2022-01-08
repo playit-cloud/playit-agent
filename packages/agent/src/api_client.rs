@@ -1,9 +1,9 @@
-use std::net::SocketAddr;
-use reqwest::{Client};
+use messages::api::{AgentApiRequest, AgentApiResponse, SessionSecret};
 use messages::rpc::SignedRpcRequest;
 use messages::{AgentRegistered, TunnelRequest};
-use messages::api::{AgentApiRequest, AgentApiResponse, SessionSecret};
-use serde::{Serialize, Deserialize};
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 pub struct ApiClient {
     api_base: String,
@@ -27,15 +27,27 @@ impl ApiClient {
         }
     }
 
-    pub async fn sign_tunnel_request(&self, request: TunnelRequest) -> Result<SignedRpcRequest<TunnelRequest>, ApiError> {
-        match self.req(&AgentApiRequest::SignControlRequest(request)).await? {
+    pub async fn sign_tunnel_request(
+        &self,
+        request: TunnelRequest,
+    ) -> Result<SignedRpcRequest<TunnelRequest>, ApiError> {
+        match self
+            .req(&AgentApiRequest::SignControlRequest(request))
+            .await?
+        {
             AgentApiResponse::SignedTunnelRequest(resp) => Ok(resp),
             resp => Err(ApiError::UnexpectedResponse(resp)),
         }
     }
 
-    pub async fn generate_shared_tunnel_secret(&self, registered: AgentRegistered) -> Result<SessionSecret, ApiError> {
-        match self.req(&AgentApiRequest::GenerateSharedTunnelSecret(registered)).await? {
+    pub async fn generate_shared_tunnel_secret(
+        &self,
+        registered: AgentRegistered,
+    ) -> Result<SessionSecret, ApiError> {
+        match self
+            .req(&AgentApiRequest::GenerateSharedTunnelSecret(registered))
+            .await?
+        {
             AgentApiResponse::SessionSecret(resp) => Ok(resp),
             resp => Err(ApiError::UnexpectedResponse(resp)),
         }
@@ -44,13 +56,13 @@ impl ApiClient {
     async fn req(&self, req: &AgentApiRequest) -> Result<AgentApiResponse, ApiError> {
         let mut builder = self.request.post(&self.api_base);
         if let Some(secret) = &self.agent_secret {
-            builder = builder.header(reqwest::header::AUTHORIZATION, format!("agent-key {}", secret));
+            builder = builder.header(
+                reqwest::header::AUTHORIZATION,
+                format!("agent-key {}", secret),
+            );
         }
 
-        let bytes = builder
-            .json(req)
-            .send().await?
-            .bytes().await?;
+        let bytes = builder.json(req).send().await?.bytes().await?;
 
         let result = match serde_json::from_slice::<Response>(bytes.as_ref()) {
             Ok(v) => v,
@@ -62,7 +74,9 @@ impl ApiClient {
         };
 
         match result {
-            Response::Error(MiscError::Error { code, message }) => Err(ApiError::HttpError(code, message)),
+            Response::Error(MiscError::Error { code, message }) => {
+                Err(ApiError::HttpError(code, message))
+            }
             Response::Ok(v) => Ok(v),
         }
     }
@@ -93,8 +107,5 @@ enum Response {
 #[serde(tag = "type")]
 enum MiscError {
     #[serde(rename = "error")]
-    Error {
-        code: u16,
-        message: String,
-    },
+    Error { code: u16, message: String },
 }

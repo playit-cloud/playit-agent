@@ -1,4 +1,4 @@
-use std::ops::Sub;
+// use std::ops::Sub;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -65,27 +65,17 @@ pub struct ListSubscriptions {
 #[serde(tag = "type")]
 pub enum PaymentsApiResponse {
     #[serde(rename = "payment-methods")]
-    PaymentMethods {
-        payment_methods: Vec<PaymentMethod>,
-    },
+    PaymentMethods { payment_methods: Vec<PaymentMethod> },
     #[serde(rename = "add-payment-link")]
-    AddPaymentMethodLink {
-        url: String,
-    },
+    AddPaymentMethodLink { url: String },
     #[serde(rename = "payment-method-removed")]
     PaymentMethodRemoved,
     #[serde(rename = "cart-subscription-created")]
-    CartSubscriptionCreated {
-        sub_id: Uuid,
-    },
+    CartSubscriptionCreated { sub_id: Uuid },
     #[serde(rename = "invoice-pending")]
-    InvoicePending {
-        invoice_id: Uuid,
-    },
+    InvoicePending { invoice_id: Uuid },
     #[serde(rename = "subscriptions")]
-    Subscriptions {
-        subscriptions: Vec<Subscription>,
-    },
+    Subscriptions { subscriptions: Vec<Subscription> },
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
@@ -95,9 +85,7 @@ pub struct PaymentMethod {
     pub brand: String,
 }
 
-
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 pub struct Subscription {
     pub id: String,
 }
-
