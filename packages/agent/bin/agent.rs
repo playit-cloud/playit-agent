@@ -1,9 +1,10 @@
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::net::SocketAddrV4;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use byteorder::{BigEndian, ByteOrder};
+use ring::rand::{SecureRandom, SystemRandom};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::UdpSocket;
@@ -11,22 +12,23 @@ use tokio::sync::mpsc::channel;
 use tokio::sync::RwLock;
 use tracing::Level;
 
-use agent::api_client::ApiClient;
-use agent::config::load_or_create;
+use agent::api_client::{ApiClient, ApiError};
+use agent::config::{AgentConfig, DEFAULT_API, load_or_create};
 use agent::now_milli;
 use agent::tcp_client::{Stats, TcpConnection};
 use agent::tunnel_client::TunnelClient;
 use agent::udp_client::UdpClients;
-use messages::udp::{RedirectFlowFooter, REDIRECT_FLOW_FOOTER_ID, UDP_CHANNEL_ESTABLISH_ID};
-use messages::{ClaimInstructions, ClaimLease, ClaimProto, Proto, SetupUdpChannelDetails};
+use messages::{ClaimInstructions, ClaimLease, Ping, Proto, TunnelRequest};
+use messages::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
-        .with_writer(std::io::stderr)
         .init();
-    let config = Arc::new(load_or_create().await.unwrap().unwrap());
+
+    let config = Arc::new(RwLock::new(prepare_config().await));
+
     let tunnel_udp = Arc::new(
         UdpSocket::bind(SocketAddrV4::new(0.into(), 0))
             .await
@@ -34,7 +36,7 @@ async fn main() {
     );
 
     let mut lease_claims = Vec::new();
-    for mapping in &config.mappings {
+    for mapping in &config.read().await.mappings {
         lease_claims.push(ClaimLease {
             ip: mapping.tunnel_ip,
             from_port: mapping.tunnel_from_port,
@@ -45,13 +47,10 @@ async fn main() {
         });
     }
 
-    let api_url = match &config.api_url {
-        Some(v) => v.clone(),
-        None => "https://api.playit.cloud/agent".to_string(),
-    };
+    let api_url = config.read().await.get_api_url();
 
     let (tx, mut rx) = channel(1024);
-    let api_client = ApiClient::new(api_url, Some(config.secret_key.clone()));
+    let api_client = ApiClient::new(api_url, Some(config.read().await.secret_key.clone()));
     let tunnel_client = TunnelClient::new(api_client, tx).await.unwrap();
 
     let udp_channel_details = Arc::new(RwLock::new(None)); // RwLock<Option<SetupUdpChannelDetails>>
@@ -173,9 +172,11 @@ async fn main() {
 
                 let payload = &buffer[..bytes - RedirectFlowFooter::len()];
 
+                let config_read = config.read().await;
+
                 udp_clients
                     .forward_packet(flow, payload, |addr| {
-                        config.find_local_addr(addr, Proto::Udp)
+                        config_read.find_local_addr(addr, Proto::Udp)
                     })
                     .await;
             }
@@ -189,7 +190,7 @@ async fn main() {
             ClaimInstructions::Tcp { address, token } => {
                 println!("Token length: {}", token.len());
 
-                let (_, host_addr) = match config.find_local_addr(client.connect_addr, Proto::Tcp) {
+                let (_, host_addr) = match config.read().await.find_local_addr(client.connect_addr, Proto::Tcp) {
                     Some(host_addr) => {
                         tracing::info!(?host_addr, "found local address for new tcp client");
                         host_addr
@@ -231,6 +232,96 @@ async fn main() {
 
     keep_alive_task.await.unwrap();
     udp_channel_task.await.unwrap();
+}
+
+async fn prepare_config() -> AgentConfig {
+    let config = match load_or_create().await {
+        Ok(Some(config)) => {
+            if config.valid_secret_key() {
+                let api = ApiClient::new(config.get_api_url(), Some(config.secret_key.clone()));
+
+                /* see if we're allowed to sign a request */
+                let error = api.sign_tunnel_request(TunnelRequest::Ping(Ping {
+                    id: 0
+                })).await.err();
+
+                match error {
+                    Some(ApiError::HttpError(401, _)) => {
+                        tracing::warn!("failed to validate secret key");
+                    }
+                    Some(error) => {
+                        tracing::error!(?error, "got error trying to validate secret key");
+                        std::process::exit(1);
+                    }
+                    None => {
+                        return config;
+                    }
+                }
+            }
+
+            Some(config)
+        }
+        Ok(None) => None,
+        Err(error) => {
+            tracing::error!(?error, "failed to load / create config file");
+            std::process::exit(1);
+        }
+    };
+
+    tracing::info!("generating claim key to setup playit program");
+
+    let mut buffer = [0u8; 32];
+    SystemRandom::new().fill(&mut buffer).unwrap();
+    let claim_key = hex::encode(&buffer);
+
+    let claim_url = format!("https://new.playit.gg/claim/{}", claim_key);
+    if let Err(error) = webbrowser::open(&claim_url) {
+        tracing::error!(?error, "failed to open claim URL in web browser");
+        println!("\n******************\n\nOpen below link a web browser to continue\n{}\n\n******************", claim_url);
+    }
+
+    let api_url = config.as_ref().map(|v| v.get_api_url()).unwrap_or(DEFAULT_API.to_string());
+    let api = ApiClient::new(api_url, None);
+
+    /*
+     * Keep polling api till secret key has been generated. For the secret
+     * to be generated the user must interact with the website using the
+     * claim URL.
+     */
+    let secret_key = loop {
+        match api.try_exchange_claim_for_secret(&claim_key).await {
+            Ok(Some(secret_key)) => break secret_key,
+            Ok(None) => {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            Err(error) => {
+                tracing::error!(?error, "failed to exchange claim key for secret key");
+                tokio::time::sleep(Duration::from_secs(8)).await;
+            }
+        }
+    };
+
+    tracing::info!("agent setup, got secret key");
+
+    let config = match config {
+        Some(mut config) => {
+            config.secret_key = secret_key;
+            config
+        }
+        None => {
+            AgentConfig {
+                api_url: None,
+                refresh_from_api: true,
+                secret_key,
+                mappings: vec![],
+            }
+        }
+    };
+
+    tokio::fs::write("playit.toml", toml::to_string_pretty(&config).unwrap()).await.unwrap();
+    tracing::info!("playit.toml updated");
+
+    config
 }
 
 pub async fn pipe(mut from: OwnedReadHalf, mut to: OwnedWriteHalf) -> std::io::Result<()> {

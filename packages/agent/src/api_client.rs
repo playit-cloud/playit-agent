@@ -3,9 +3,9 @@ use std::net::SocketAddr;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use messages::api::{AgentApiRequest, AgentApiResponse, SessionSecret};
-use messages::rpc::SignedRpcRequest;
 use messages::{AgentRegistered, TunnelRequest};
+use messages::api::{AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret};
+use messages::rpc::SignedRpcRequest;
 
 pub struct ApiClient {
     api_base: String,
@@ -52,6 +52,19 @@ impl ApiClient {
         {
             AgentApiResponse::SessionSecret(resp) => Ok(resp),
             resp => Err(ApiError::UnexpectedResponse(resp)),
+        }
+    }
+
+    pub async fn try_exchange_claim_for_secret(&self, claim_url: &str) -> Result<Option<String>, ApiError> {
+        let res = self.req(&AgentApiRequest::ExchangeClaimForSecret(ExchangeClaimForSecret {
+            claim_key: claim_url.to_string()
+        })).await;
+
+        match res {
+            Ok(AgentApiResponse::AgentSecret(secret)) => Ok(Some(secret.secret_key)),
+            Ok(other) => Err(ApiError::UnexpectedResponse(other)),
+            Err(ApiError::HttpError(404, _)) => Ok(None),
+            Err(error) => Err(error),
         }
     }
 

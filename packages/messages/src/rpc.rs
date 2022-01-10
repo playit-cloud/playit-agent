@@ -5,14 +5,14 @@ use std::marker::PhantomData;
 use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
 use ring::hmac;
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 
+use crate::AgentRegistered;
 use crate::auth::{
     Authentication, Authorization, RequestDetails, SessionSignature, Signature, SignatureError,
     SystemSignature,
 };
-use crate::AgentRegistered;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct SignedRpcRequest<T: DeserializeOwned + Serialize> {

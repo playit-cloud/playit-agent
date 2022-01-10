@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::rpc::SignedRpcRequest;
 use crate::{AgentRegistered, TunnelRequest};
+use crate::rpc::SignedRpcRequest;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 #[serde(tag = "type")]
@@ -21,6 +21,9 @@ pub enum AgentApiRequest {
 
     #[serde(rename = "get-tunnel-server-details")]
     GetTunnelServerDetails(GetTunnelServerDetails),
+
+    #[serde(rename = "exchange-claim-for-secret")]
+    ExchangeClaimForSecret(ExchangeClaimForSecret),
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
@@ -37,6 +40,9 @@ pub enum AgentApiResponse {
 
     #[serde(rename = "tunnel-server-details")]
     TunnelServerDetails(TunnelServerDetails),
+
+    #[serde(rename = "agent-secret")]
+    AgentSecret(AgentSecret),
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -69,4 +75,14 @@ pub struct GetTunnelServerDetails {
 pub struct TunnelServerDetails {
     pub name: String,
     pub datacenter_name: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
+pub struct ExchangeClaimForSecret {
+    pub claim_key: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
+pub struct AgentSecret {
+    pub secret_key: String,
 }

@@ -1,5 +1,3 @@
-use std::char::MAX;
-
 use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
 use ring::hmac;
 use schemars::JsonSchema;

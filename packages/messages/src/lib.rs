@@ -2,8 +2,8 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::ops::Sub;
 
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde::de::DeserializeOwned;
 
 use crate::auth::SignatureError;
 
@@ -144,7 +144,7 @@ impl TunnelFeed {
     }
 }
 
-pub fn abs_diff<T: Ord + Sub<Output = T>>(a: T, b: T) -> T {
+pub fn abs_diff<T: Ord + Sub<Output=T>>(a: T, b: T) -> T {
     if a > b {
         a - b
     } else {

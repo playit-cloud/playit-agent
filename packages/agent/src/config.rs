@@ -5,6 +5,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use messages::{ClaimProto, Proto};
 
+pub const DEFAULT_API: &'static str = "https://api.playit.cloud/agent";
+
 pub async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
     match tokio::fs::File::open("./playit.toml").await {
         Ok(mut file) => {
@@ -19,11 +21,6 @@ pub async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
                 }
             };
 
-            if hex::decode(&config.secret_key).is_err() {
-                tracing::error!("invalid secret_key");
-                return Ok(None);
-            }
-
             Ok(Some(config))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -32,13 +29,11 @@ pub async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
             file.write_all(
                 toml::to_string(&AgentConfig {
                     api_url: None,
+                    refresh_from_api: true,
                     secret_key: "put-secret-here".to_string(),
                     mappings: vec![],
-                })
-                .unwrap()
-                .as_bytes(),
-            )
-            .await?;
+                }).unwrap().as_bytes(),
+            ).await?;
 
             Ok(None)
         }
@@ -50,9 +45,24 @@ pub async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
 pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_url: Option<String>,
+    #[serde(default)]
+    pub refresh_from_api: bool,
     pub secret_key: String,
     #[serde(alias = "mapping")]
     pub mappings: Vec<PortMapping>,
+}
+
+impl AgentConfig {
+    pub fn valid_secret_key(&self) -> bool {
+        hex::decode(&self.secret_key).is_ok()
+    }
+
+    pub fn get_api_url(&self) -> String {
+        match &self.api_url {
+            Some(v) => v.clone(),
+            None => DEFAULT_API.to_string()
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -89,8 +99,8 @@ impl AgentConfig {
 
             let range = mapping.tunnel_from_port
                 ..mapping
-                    .tunnel_to_port
-                    .unwrap_or(mapping.tunnel_from_port + 1);
+                .tunnel_to_port
+                .unwrap_or(mapping.tunnel_from_port + 1);
             if !range.contains(&addr.port()) {
                 continue;
             }

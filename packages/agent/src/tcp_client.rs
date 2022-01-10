@@ -1,6 +1,6 @@
 use std::net::{SocketAddr, SocketAddrV4};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -100,7 +100,7 @@ async fn pipe(
             } else {
                 &stats.to_tunnel
             }
-            .fetch_add(received, Ordering::SeqCst);
+                .fetch_add(received, Ordering::SeqCst);
 
             to.write_all(&buffer[..received]).await.map_err(|error| {
                 tracing::error!(?error, "failed to write data");
@@ -110,7 +110,7 @@ async fn pipe(
 
         Ok(())
     }
-    .await;
+        .await;
 
     stats.running.fetch_sub(1, Ordering::SeqCst);
 

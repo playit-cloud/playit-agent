@@ -2,8 +2,6 @@ use std::net::SocketAddrV4;
 
 use byteorder::{BigEndian, ByteOrder};
 
-use crate::Proto::Udp;
-
 pub const REDIRECT_FLOW_FOOTER_ID: u64 = 0x5cb867cf788173b2;
 pub const UDP_CHANNEL_ESTABLISH_ID: u64 = 0xd01fe6830ddce781;
 

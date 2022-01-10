@@ -1,5 +1,5 @@
 use std::collections::{hash_map::Entry, HashMap};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,8 +8,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
-use messages::udp::RedirectFlowFooter;
 use messages::SetupUdpChannelDetails;
+use messages::udp::RedirectFlowFooter;
 
 pub struct UdpClients {
     tunnel_udp: Arc<UdpSocket>,
@@ -56,7 +56,7 @@ impl UdpClients {
                     local_addr.unwrap_or(IpAddr::V4(0.into())),
                     0,
                 ))
-                .await
+                    .await
                 {
                     Ok(v) => v,
                     Err(error) => {
