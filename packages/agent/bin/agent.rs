@@ -280,7 +280,7 @@ async fn prepare_config() -> AgentConfig {
         println!("\n******************\n\nOpen below link a web browser to continue\n{}\n\n******************", claim_url);
     }
 
-    let api_url = config.as_ref().map(|v| v.get_api_url()).unwrap_or(DEFAULT_API.to_string());
+    let api_url = config.as_ref().map(|v| v.get_api_url()).unwrap_or_else(|| DEFAULT_API.to_string());
     let api = ApiClient::new(api_url, None);
 
     /*

@@ -24,6 +24,7 @@ use crate::api_client::{ApiClient, ApiError};
 use crate::dependent_task::DependentTask;
 
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct TunnelClient {
     shared: Arc<Inner>,
     receive_task: DependentTask<()>,
@@ -109,7 +110,7 @@ impl TunnelClient {
             .await?;
 
         match handle.await {
-            Ok(TunnelResponse::ClaimResponse(r)) => r.map_err(|e| TunnelClientError::ClaimError(e)),
+            Ok(TunnelResponse::ClaimResponse(r)) => r.map_err(TunnelClientError::ClaimError),
             Ok(TunnelResponse::SignatureError(e)) => Err(TunnelClientError::SignatureError(e)),
             Ok(response) => {
                 tracing::error!(?response, "Got invalid response for register");
@@ -386,7 +387,8 @@ impl ControlClientTask {
             TunnelFeed::Response(response) => {
                 let mut requests = self.shared.requests.lock().await;
                 if let Some(req) = requests.try_remove(response.request_id as usize) {
-                    req.handler.send(response.content);
+                    // TODO error handling  
+                    req.handler.send(response.content).ok();
                 }
             }
             TunnelFeed::NewClient(new_client) => {

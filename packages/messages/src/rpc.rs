@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 
-use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
+use byteorder::{BigEndian, WriteBytesExt};
 use ring::hmac;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -89,8 +89,8 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
                 },
                 signature: Signature::Session(SessionSignature {
                     session_timestamp: session.session_timestamp,
-                    session_signature: session.signature.clone(),
-                    signature: signature.into(),
+                    session_signature: session.signature,
+                    signature,
                 }),
             }),
             content: data,
@@ -111,7 +111,7 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
             data.write_u64::<BigEndian>(account_id).unwrap();
             data.write_u64::<BigEndian>(timestamp).unwrap();
 
-            let sig = hmac::sign(&key, &data);
+            let sig = hmac::sign(key, &data);
 
             data.truncate(og_data_len);
 
@@ -128,7 +128,7 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
                     session_id: None,
                 },
                 signature: Signature::System(SystemSignature {
-                    signature: signature.into(),
+                    signature,
                 }),
             }),
             content: data,
@@ -148,7 +148,7 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
 
         auth.signature
             .validate(&auth.details, now, &mut self.content, secret)
-            .map(|v| Some(v))
+            .map(Some)
     }
 
     pub fn into_content(self) -> Result<T, Self> {

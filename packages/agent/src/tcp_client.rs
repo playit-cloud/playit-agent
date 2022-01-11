@@ -57,6 +57,7 @@ impl ReadyTcpConnection {
     }
 }
 
+#[allow(dead_code)]
 pub struct ActiveTcpConnection {
     pub stats: Arc<Stats>,
     host_to_tunnel: JoinHandle<std::io::Result<()>>,

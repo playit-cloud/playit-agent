@@ -53,7 +53,7 @@ impl UdpClients {
                 };
 
                 let host_udp = match UdpSocket::bind(SocketAddr::new(
-                    local_addr.unwrap_or(IpAddr::V4(0.into())),
+                    local_addr.unwrap_or_else(|| IpAddr::V4(0.into())),
                     0,
                 ))
                     .await
@@ -98,6 +98,7 @@ impl Drop for UdpClients {
     }
 }
 
+#[allow(dead_code)]
 struct UdpClient {
     from_client_flow: RedirectFlowFooter,
     to_tunnel_flow: RedirectFlowFooter,
