@@ -387,8 +387,9 @@ impl ControlClientTask {
             TunnelFeed::Response(response) => {
                 let mut requests = self.shared.requests.lock().await;
                 if let Some(req) = requests.try_remove(response.request_id as usize) {
-                    // TODO error handling  
-                    req.handler.send(response.content).ok();
+                    if req.handler.send(response.content).is_err() {
+                        tracing::error!("failed to send control response");
+                    }
                 }
             }
             TunnelFeed::NewClient(new_client) => {

@@ -85,9 +85,8 @@ impl SystemSignature {
         key: &hmac::Key,
     ) -> Result<u64, SignatureError> {
         let og_data_len = data.len();
-        // TODO error handling
-        data.write_u64::<BigEndian>(details.account_id).ok();
-        data.write_u64::<BigEndian>(details.request_timestamp).ok();
+        data.write_u64::<BigEndian>(details.account_id).unwrap();
+        data.write_u64::<BigEndian>(details.request_timestamp).unwrap();
         let verify = hmac::verify(key, data, &self.signature);
         data.truncate(og_data_len);
 
@@ -123,10 +122,9 @@ impl SessionSignature {
         /* validate session token */
         {
             let mut buffer = Vec::with_capacity(std::mem::size_of::<u64>() * 3);
-            // TODO error handling
-            buffer.write_u64::<BigEndian>(details.account_id).ok();
-            buffer.write_u64::<BigEndian>(session_id).ok();
-            buffer.write_u64::<BigEndian>(self.session_timestamp).ok();
+            buffer.write_u64::<BigEndian>(details.account_id).unwrap();
+            buffer.write_u64::<BigEndian>(session_id).unwrap();
+            buffer.write_u64::<BigEndian>(self.session_timestamp).unwrap();
 
             hmac::verify(key, &buffer, &self.session_signature)
                 .map_err(|_| SignatureError::InvalidSessionToken)?;
@@ -140,9 +138,8 @@ impl SessionSignature {
             let key = hmac::Key::new(hmac::HMAC_SHA256, shared_secret.as_ref());
 
             let og_data_len = data.len();
-            // TODO error handling
-            data.write_u64::<BigEndian>(details.account_id).ok();
-            data.write_u64::<BigEndian>(details.request_timestamp).ok();
+            data.write_u64::<BigEndian>(details.account_id).unwrap();
+            data.write_u64::<BigEndian>(details.request_timestamp).unwrap();
 
             let sig = hmac::verify(&key, data, &self.signature);
             data.truncate(og_data_len);
@@ -160,10 +157,9 @@ impl SessionSignature {
         key: &hmac::Key,
     ) -> [u8; 32] {
         let mut buffer = Vec::with_capacity(std::mem::size_of::<u64>() * 3);
-        // TODO error handling
-        buffer.write_u64::<BigEndian>(account_id).ok();
-        buffer.write_u64::<BigEndian>(session_id).ok();
-        buffer.write_u64::<BigEndian>(session_timestamp).ok();
+        buffer.write_u64::<BigEndian>(account_id).unwrap();
+        buffer.write_u64::<BigEndian>(session_id).unwrap();
+        buffer.write_u64::<BigEndian>(session_timestamp).unwrap();
 
         let mut data = [0u8; 32];
         data.copy_from_slice(hmac::sign(key, &buffer).as_ref());
@@ -186,9 +182,8 @@ pub fn generate_signature(
     let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
 
     let og_data_len = data.len();
-    // TODO error handling
-    data.write_u64::<BigEndian>(account_id).ok();
-    data.write_u64::<BigEndian>(timestamp).ok();
+    data.write_u64::<BigEndian>(account_id).unwrap();
+    data.write_u64::<BigEndian>(timestamp).unwrap();
 
     let sig = hmac::sign(&key, data);
     data.truncate(og_data_len);

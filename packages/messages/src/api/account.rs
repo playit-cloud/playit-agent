@@ -30,6 +30,14 @@ pub enum AccountApiRequest {
 
     #[serde(rename = "set-port-mapping")]
     SetPortMapping(PortMapping),
+
+    #[serde(rename = "remove-port-mapping")]
+    RemovePortMapping(RemovePortMapping)
+}
+
+#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+pub struct RemovePortMapping {
+    pub id: Uuid,
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
@@ -69,7 +77,10 @@ pub enum AccountApiResponse {
     #[serde(rename = "port-leases")]
     PortLeases {
         leases: Vec<PortLease>,
-    }
+    },
+
+    #[serde(rename = "port-mapping-removed")]
+    PortMappingRemoved,
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
