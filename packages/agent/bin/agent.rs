@@ -1,4 +1,4 @@
-use std::net::SocketAddrV4;
+use std::net::{IpAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -43,7 +43,10 @@ async fn main() {
     let mut lease_claims = Vec::new();
     for mapping in &config.read().await.mappings {
         lease_claims.push(ClaimLease {
-            ip: mapping.tunnel_ip,
+            ip: match mapping.tunnel_ip {
+                IpAddr::V4(ip) => ip,
+                _ => panic!("IPv6 not supported"),
+            },
             from_port: mapping.tunnel_from_port,
             to_port: mapping
                 .tunnel_to_port

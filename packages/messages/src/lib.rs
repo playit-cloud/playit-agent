@@ -76,7 +76,7 @@ pub enum ClaimError {
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 pub struct ClaimLease {
-    pub ip: IpAddr,
+    pub ip: Ipv4Addr,
     pub from_port: u16,
     pub to_port: u16,
     pub proto: ClaimProto,
