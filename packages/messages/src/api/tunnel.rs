@@ -28,11 +28,11 @@ pub enum TunnelApiResponse {
 pub struct TunnelNetwork {
     pub agents: Vec<AgentConnection>,
     pub clients: Vec<ClientConnection>,
-    pub port_leases: Vec<PortLease>,
+    pub port_leases: Vec<ClaimedPortRange>,
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
-pub struct PortLease {
+pub struct ClaimedPortRange {
     pub proto: Proto,
     pub from_port: u16,
     pub to_port: u16,

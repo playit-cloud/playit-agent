@@ -1,4 +1,4 @@
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 use std::ops::Sub;
 
 use schemars::JsonSchema;
@@ -11,6 +11,7 @@ pub mod api;
 pub mod auth;
 pub mod rpc;
 pub mod udp;
+pub mod agent_config;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 pub struct RpcMessage<T> {
@@ -75,7 +76,7 @@ pub enum ClaimError {
 
 #[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
 pub struct ClaimLease {
-    pub ip: Ipv4Addr,
+    pub ip: IpAddr,
     pub from_port: u16,
     pub to_port: u16,
     pub proto: ClaimProto,

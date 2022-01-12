@@ -4,6 +4,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use messages::{AgentRegistered, TunnelRequest};
+use messages::agent_config::AgentConfig;
 use messages::api::{AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret};
 use messages::rpc::SignedRpcRequest;
 
@@ -64,6 +65,16 @@ impl ApiClient {
             Ok(AgentApiResponse::AgentSecret(secret)) => Ok(Some(secret.secret_key)),
             Ok(other) => Err(ApiError::UnexpectedResponse(other)),
             Err(ApiError::HttpError(404, _)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub async fn get_agent_config(&self) -> Result<AgentConfig, ApiError> {
+        let res = self.req(&AgentApiRequest::GetAgentConfig).await;
+
+        match res {
+            Ok(AgentApiResponse::AgentConfig(config)) => Ok(config),
+            Ok(other) => Err(ApiError::UnexpectedResponse(other)),
             Err(error) => Err(error),
         }
     }
