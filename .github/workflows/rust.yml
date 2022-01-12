@@ -10,6 +10,7 @@ env:
 
 jobs:
   release:
+    if: ${{ endsWith(github.event.commits[0].message, '[release]') || github.event_name == 'workflow_dispatch' }}
 
     runs-on: ubuntu-latest
 
@@ -18,17 +19,17 @@ jobs:
     - name: Build
       run: |
         rustup target add x86_64-unknown-linux-gnu
-        cargo rustc --verbose --release --target x86_64-unknown-linux-gnu -- -o x64-linux
+        cargo rustc --verbose --release --target x86_64-unknown-linux-gnu --manifest-path=packages/agent/Cargo.toml --bin agent -- -o x64-linux
         
         rustup target add i686-unknown-linux-gnu
-        cargo rustc --verbose --release --target i686-unknown-linux-gnu -- -o x86-linux
+        cargo rustc --verbose --release --target i686-unknown-linux-gnu --manifest-path=packages/agent/Cargo.toml --bin agent -- -o x86-linux
         
         rustup target add aarch64-unknown-linux-gnu
-        cargo rustc --verbose --release --target aarch64-unknown-linux-gnu -- -o arm64-linux
+        cargo rustc --verbose --release --target aarch64-unknown-linux-gnu --manifest-path=packages/agent/Cargo.toml --bin agent -- -o arm64-linux
         
         sudo apt install -y mingw-w64
         rustup target add x86_64-pc-windows-gnu
-        cargo rustc --verbose --release --target x86_64-pc-windows-gnu -- -o x64-windows.exe
+        cargo rustc --verbose --release --target x86_64-pc-windows-gnu --manifest-path=packages/agent/Cargo.toml --bin agent -- -o x64-windows.exe
       
     
     - name: Get Release Tag
@@ -41,7 +42,7 @@ jobs:
       uses: svenstaro/upload-release-action@v2
       with:
         repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: "{x64,x86,arm64}-{windows,linux}?(.exe)"
+        file: "{x64,x86,arm64}-{windows,linux}-*?(.exe)"
         tag: ${{ steps.TAG.outputs.TAG }}
         overwrite: true
         file_glob: true
