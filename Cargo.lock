@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "agent"
-version = "0.5.1-beta"
+version = "0.6.0-beta"
 dependencies = [
  "byteorder",
  "hex",
@@ -97,6 +97,8 @@ dependencies = [
  "libc",
  "num-integer",
  "num-traits",
+ "serde",
+ "time",
  "winapi",
 ]
 
@@ -437,6 +439,7 @@ version = "0.1.1"
 dependencies = [
  "bincode",
  "byteorder",
+ "chrono",
  "hex",
  "ring",
  "schemars",
@@ -805,6 +808,7 @@ version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6b5a3c80cea1ab61f4260238409510e814e38b4b563c06044edf91e7dc070e3"
 dependencies = [
+ "chrono",
  "dyn-clone",
  "schemars_derive",
  "serde",
@@ -985,6 +989,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8018d24e04c95ac8790716a5987d0fec4f8b27249ffa0f7d33f1369bdfb88cbd"
 dependencies = [
  "once_cell",
+]
+
+[[package]]
+name = "time"
+version = "0.1.43"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca8a50ef2360fbd1eeb0ecd46795a87a19024eb4b53c5dc916ca1fd95fe62438"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
