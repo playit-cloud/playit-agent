@@ -1,4 +1,4 @@
-use std::net::SocketAddrV4;
+use std::net::{IpAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -13,12 +13,13 @@ use tokio::sync::RwLock;
 use tracing::Level;
 
 use agent::api_client::{ApiClient, ApiError};
-use agent::config::{AgentConfig, DEFAULT_API, load_or_create};
+use agent::agent_config::load_or_create;
 use agent::now_milli;
 use agent::tcp_client::{Stats, TcpConnection};
 use agent::tunnel_client::TunnelClient;
 use agent::udp_client::UdpClients;
 use messages::{ClaimInstructions, ClaimLease, Ping, Proto, TunnelRequest};
+use messages::agent_config::{AgentConfig, DEFAULT_API};
 use messages::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
 
 #[tokio::main]
@@ -29,6 +30,10 @@ async fn main() {
 
     let config = Arc::new(RwLock::new(prepare_config().await));
 
+    if config.read().await.refresh_from_api {
+        tokio::spawn(update_agent_config(config.clone()));
+    }
+
     let tunnel_udp = Arc::new(
         UdpSocket::bind(SocketAddrV4::new(0.into(), 0))
             .await
@@ -38,7 +43,10 @@ async fn main() {
     let mut lease_claims = Vec::new();
     for mapping in &config.read().await.mappings {
         lease_claims.push(ClaimLease {
-            ip: mapping.tunnel_ip,
+            ip: match mapping.tunnel_ip {
+                IpAddr::V4(ip) => ip,
+                _ => panic!("IPv6 not supported"),
+            },
             from_port: mapping.tunnel_from_port,
             to_port: mapping
                 .tunnel_to_port
@@ -232,6 +240,45 @@ async fn main() {
 
     keep_alive_task.await.unwrap();
     udp_channel_task.await.unwrap();
+}
+
+async fn update_agent_config(config: Arc<RwLock<AgentConfig>>) {
+    loop {
+        let api = {
+            let c = config.read().await;
+            ApiClient::new(c.get_api_url(), Some(c.secret_key.clone()))
+        };
+
+        let mut api_config = match api.get_agent_config().await {
+            Ok(config) => config,
+            Err(error) => {
+                tracing::error!(?error, "failed to load config from API");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+
+        let config_updated = {
+            let current = config.read().await;
+
+            if let Some(ref api_url) = current.api_url {
+                api_config.api_url = Some(api_url.clone());
+            }
+
+            !api_config.eq(&current)
+        };
+
+        if config_updated {
+            tracing::info!("updating config");
+            std::mem::replace(&mut *config.write().await, api_config.clone());
+
+            if let Err(error) = tokio::fs::write("playit.toml", toml::to_string_pretty(&api_config).unwrap()).await {
+                tracing::error!(?error, "failed to write updated configuration to playit.toml");
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(4)).await;
+    }
 }
 
 async fn prepare_config() -> AgentConfig {

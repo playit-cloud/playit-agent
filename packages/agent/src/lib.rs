@@ -1,5 +1,5 @@
 pub mod api_client;
-pub mod config;
+pub mod agent_config;
 pub mod dependent_task;
 pub mod tcp_client;
 pub mod tunnel_client;

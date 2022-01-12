@@ -5,9 +5,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{AgentRegistered, TunnelRequest};
+use crate::agent_config::AgentConfig;
 use crate::rpc::SignedRpcRequest;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[non_exhaustive]
 #[serde(tag = "type")]
 pub enum AgentApiRequest {
     #[serde(rename = "get-control-address")]
@@ -24,6 +26,9 @@ pub enum AgentApiRequest {
 
     #[serde(rename = "exchange-claim-for-secret")]
     ExchangeClaimForSecret(ExchangeClaimForSecret),
+
+    #[serde(rename = "get-agent-config")]
+    GetAgentConfig,
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
@@ -43,6 +48,9 @@ pub enum AgentApiResponse {
 
     #[serde(rename = "agent-secret")]
     AgentSecret(AgentSecret),
+
+    #[serde(rename = "agent-config")]
+    AgentConfig(AgentConfig),
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
