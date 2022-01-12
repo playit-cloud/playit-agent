@@ -27,8 +27,8 @@ jobs:
         rustup target add i686-unknown-linux-gnu
         cargo rustc --verbose --release --target i686-unknown-linux-gnu --manifest-path=packages/agent/Cargo.toml --bin agent -- -o x86-linux
         
-        rustup target add aarch64-unknown-linux-gnu
-        cargo rustc --verbose --release --target aarch64-unknown-linux-gnu --manifest-path=packages/agent/Cargo.toml --bin agent -- -o arm64-linux
+        #rustup target add aarch64-unknown-linux-gnu
+        #cargo rustc --verbose --release --target aarch64-unknown-linux-gnu --manifest-path=packages/agent/Cargo.toml --bin agent -- -o arm64-linux
         
         sudo apt install -y mingw-w64
         rustup target add x86_64-pc-windows-gnu
