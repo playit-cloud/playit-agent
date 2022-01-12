@@ -18,7 +18,7 @@ jobs:
     - uses: actions/checkout@v2
     - name: Build
       run: |
-        sudo apt-get install -y gcc-9-multilib libc6-dev-i386 lib32gcc-9-dev gcc-9-aarch64-linux-gnu
+        sudo apt-get install -y gcc-multilib gcc-9-multilib gcc-9-aarch64-linux-gnu
         sudo ln -s /usr/include/asm-generic/ /usr/include/asm
 
         rustup target add x86_64-unknown-linux-gnu
