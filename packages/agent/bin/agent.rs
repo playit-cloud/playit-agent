@@ -98,9 +98,10 @@ async fn main() {
 
                 if now_milli() - last_udp_time.load(Ordering::SeqCst) > 60_000 {
                     let mut lock = udp_channel_details.write().await;
-                    if lock.is_some() {
+
+                    if lock.take().is_some() {
                         tracing::warn!("UDP silence detected trying to setup again");
-                        let _ = lock.take();
+                        last_udp_time.store(now_milli(), Ordering::SeqCst);
                     }
                 }
 

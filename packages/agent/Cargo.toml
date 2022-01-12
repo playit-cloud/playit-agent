@@ -1,6 +1,6 @@
 [package]
 name = "agent"
-version = "0.6.0-beta"
+version = "0.6.1-beta"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
