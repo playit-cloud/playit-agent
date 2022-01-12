@@ -1,4 +1,4 @@
-use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
+use byteorder::{BigEndian, WriteBytesExt};
 use ring::hmac;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -85,9 +85,10 @@ impl SystemSignature {
         key: &hmac::Key,
     ) -> Result<u64, SignatureError> {
         let og_data_len = data.len();
-        data.write_u64::<BigEndian>(details.account_id);
-        data.write_u64::<BigEndian>(details.request_timestamp);
-        let verify = hmac::verify(&key, &data, &self.signature);
+        // TODO error handling
+        data.write_u64::<BigEndian>(details.account_id).ok();
+        data.write_u64::<BigEndian>(details.request_timestamp).ok();
+        let verify = hmac::verify(key, data, &self.signature);
         data.truncate(og_data_len);
 
         verify.map_err(|_| SignatureError::InvalidSignature)?;
@@ -122,26 +123,28 @@ impl SessionSignature {
         /* validate session token */
         {
             let mut buffer = Vec::with_capacity(std::mem::size_of::<u64>() * 3);
-            buffer.write_u64::<BigEndian>(details.account_id);
-            buffer.write_u64::<BigEndian>(session_id);
-            buffer.write_u64::<BigEndian>(self.session_timestamp);
+            // TODO error handling
+            buffer.write_u64::<BigEndian>(details.account_id).ok();
+            buffer.write_u64::<BigEndian>(session_id).ok();
+            buffer.write_u64::<BigEndian>(self.session_timestamp).ok();
 
-            hmac::verify(&key, &buffer, &self.session_signature)
+            hmac::verify(key, &buffer, &self.session_signature)
                 .map_err(|_| SignatureError::InvalidSessionToken)?;
         }
 
         /* generate shared secret */
-        let shared_secret = hmac::sign(&key, &self.session_signature);
+        let shared_secret = hmac::sign(key, &self.session_signature);
 
         /* validate signature */
         {
             let key = hmac::Key::new(hmac::HMAC_SHA256, shared_secret.as_ref());
 
             let og_data_len = data.len();
-            data.write_u64::<BigEndian>(details.account_id);
-            data.write_u64::<BigEndian>(details.request_timestamp);
+            // TODO error handling
+            data.write_u64::<BigEndian>(details.account_id).ok();
+            data.write_u64::<BigEndian>(details.request_timestamp).ok();
 
-            let sig = hmac::verify(&key, &data, &self.signature);
+            let sig = hmac::verify(&key, data, &self.signature);
             data.truncate(og_data_len);
 
             sig.map_err(|_| SignatureError::InvalidSignature)?;
@@ -157,18 +160,19 @@ impl SessionSignature {
         key: &hmac::Key,
     ) -> [u8; 32] {
         let mut buffer = Vec::with_capacity(std::mem::size_of::<u64>() * 3);
-        buffer.write_u64::<BigEndian>(account_id);
-        buffer.write_u64::<BigEndian>(session_id);
-        buffer.write_u64::<BigEndian>(session_timestamp);
+        // TODO error handling
+        buffer.write_u64::<BigEndian>(account_id).ok();
+        buffer.write_u64::<BigEndian>(session_id).ok();
+        buffer.write_u64::<BigEndian>(session_timestamp).ok();
 
         let mut data = [0u8; 32];
-        data.copy_from_slice(hmac::sign(&key, &buffer).as_ref());
+        data.copy_from_slice(hmac::sign(key, &buffer).as_ref());
         data
     }
 
     pub fn generate_session_secret(token: &[u8], key: &hmac::Key) -> [u8; 32] {
         let mut data = [0u8; 32];
-        data.copy_from_slice(hmac::sign(&key, token).as_ref());
+        data.copy_from_slice(hmac::sign(key, token).as_ref());
         data
     }
 }
@@ -182,10 +186,11 @@ pub fn generate_signature(
     let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
 
     let og_data_len = data.len();
-    data.write_u64::<BigEndian>(account_id);
-    data.write_u64::<BigEndian>(timestamp);
+    // TODO error handling
+    data.write_u64::<BigEndian>(account_id).ok();
+    data.write_u64::<BigEndian>(timestamp).ok();
 
-    let sig = hmac::sign(&key, &data);
+    let sig = hmac::sign(&key, data);
     data.truncate(og_data_len);
 
     let mut data = [0u8; 32];

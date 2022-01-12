@@ -5,7 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use messages::{ClaimProto, Proto};
 
-pub const DEFAULT_API: &'static str = "https://api.playit.cloud/agent";
+pub const DEFAULT_API: &str = "https://api.playit.cloud/agent";
 
 pub async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
     match tokio::fs::File::open("./playit.toml").await {
@@ -108,7 +108,7 @@ impl AgentConfig {
             let port_delta = addr.port() - mapping.tunnel_from_port;
             let local_port = mapping.local_port.unwrap_or(mapping.tunnel_from_port) + port_delta;
 
-            let local_ip = mapping.local_ip.unwrap_or(Ipv4Addr::new(127, 0, 0, 1));
+            let local_ip = mapping.local_ip.unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1));
             return Some((
                 mapping.bind_ip,
                 SocketAddr::V4(SocketAddrV4::new(local_ip, local_port)),

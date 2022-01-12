@@ -4,13 +4,14 @@ version = 3
 
 [[package]]
 name = "agent"
-version = "0.5.0-beta"
+version = "0.5.1-beta"
 dependencies = [
  "byteorder",
  "hex",
  "messages",
  "openssl-sys",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
  "slab",
@@ -18,6 +19,7 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-subscriber",
+ "webbrowser",
 ]
 
 [[package]]
@@ -431,7 +433,7 @@ checksum = "308cc39be01b73d0d18f82a0e7b2a3df85245f84af96fdddc5d202d27e47b86a"
 
 [[package]]
 name = "messages"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bincode",
  "byteorder",
@@ -1295,6 +1297,23 @@ dependencies = [
  "js-sys",
  "wasm-bindgen",
 ]
+
+[[package]]
+name = "webbrowser"
+version = "0.5.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ecad156490d6b620308ed411cfee90d280b3cbd13e189ea0d3fada8acc89158a"
+dependencies = [
+ "web-sys",
+ "widestring",
+ "winapi",
+]
+
+[[package]]
+name = "widestring"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c168940144dd21fd8046987c16a46a33d5fc84eec29ef9dcddc2ac9e31526b7c"
 
 [[package]]
 name = "winapi"
