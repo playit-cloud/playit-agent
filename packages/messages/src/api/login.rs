@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 #[serde(tag = "type")]
+#[non_exhaustive]
 pub enum LoginApiRequest {
     #[serde(rename = "sign-in")]
     SignIn(LoginCredentials),
@@ -12,15 +13,31 @@ pub enum LoginApiRequest {
     #[serde(rename = "create-account")]
     CreateAccount(LoginCredentials),
 
+    #[serde(rename = "create-account-from-guest")]
+    CreateAccountFromGuest(LoginCredentials),
+
+    #[serde(rename = "create-guest-account")]
+    CreateGuestAccount,
+
     #[serde(rename = "refresh-session")]
     RefreshSession(RefreshSession),
 
     #[serde(rename = "create-discourse-session")]
     CreateDiscourseSession(CreateDiscourseSession),
+
+    #[serde(rename = "reset-password")]
+    ResetPassword(ResetPassword),
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct LoginCredentials {
+    pub email: String,
+    pub password: String,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+pub struct ResetPassword {
+    pub reset_code: String,
     pub email: String,
     pub password: String,
 }
@@ -30,6 +47,16 @@ impl Debug for LoginCredentials {
         write!(
             f,
             "LoginCredentials {{ email: {}, password: <redacted> }}",
+            self.email
+        )
+    }
+}
+
+impl Debug for ResetPassword {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ResetPassword {{ reset_code: <redacted>, email: {}, password: <redacted> }}",
             self.email
         )
     }
@@ -60,6 +87,7 @@ pub enum LoginApiResponse {
 pub struct WebSession {
     pub account_id: u64,
     pub session_key: String,
+    pub is_guest: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]

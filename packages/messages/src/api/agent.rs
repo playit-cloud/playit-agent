@@ -15,6 +15,9 @@ pub enum AgentApiRequest {
     #[serde(rename = "get-control-address")]
     GetControlAddr,
 
+    #[serde(rename = "get-agent-account-status")]
+    GetAgentAccountStatus,
+
     #[serde(rename = "sign-tunnel-request")]
     SignControlRequest(TunnelRequest),
 
@@ -51,6 +54,30 @@ pub enum AgentApiResponse {
 
     #[serde(rename = "agent-config")]
     AgentConfig(AgentConfig),
+
+    #[serde(rename = "agent-account-status")]
+    AgentAccountStatus(AgentAccountStatus),
+}
+
+#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[serde(tag = "status")]
+pub enum AgentAccountStatus {
+    #[serde(rename = "no-account")]
+    NoAccount {
+    },
+    #[serde(rename = "guest-account")]
+    GuestAccount {
+        account_id: u64,
+        web_session_key: String,
+    },
+    #[serde(rename = "unverified-account")]
+    UnverifiedAccount {
+        account_id: u64
+    },
+    #[serde(rename = "verified-account")]
+    VerifiedAccount {
+        account_id: u64
+    },
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
