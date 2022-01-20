@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use messages::{AgentRegistered, TunnelRequest};
 use messages::agent_config::AgentConfig;
-use messages::api::{AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret};
+use messages::api::{AgentAccountStatus, AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret};
 use messages::rpc::SignedRpcRequest;
 
 pub struct ApiClient {
@@ -26,6 +26,13 @@ impl ApiClient {
     pub async fn get_control_addr(&self) -> Result<SocketAddr, ApiError> {
         match self.req(&AgentApiRequest::GetControlAddr).await? {
             AgentApiResponse::ControlAddress(addr) => Ok(addr.control_address),
+            resp => Err(ApiError::UnexpectedResponse(resp)),
+        }
+    }
+
+    pub async fn get_agent_account_status(&self) -> Result<AgentAccountStatus, ApiError> {
+        match self.req(&AgentApiRequest::GetAgentAccountStatus).await? {
+            AgentApiResponse::AgentAccountStatus(status) => Ok(status),
             resp => Err(ApiError::UnexpectedResponse(resp)),
         }
     }

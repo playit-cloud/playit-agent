@@ -20,6 +20,7 @@ use agent::tunnel_client::TunnelClient;
 use agent::udp_client::UdpClients;
 use messages::{ClaimInstructions, ClaimLease, Ping, Proto, TunnelRequest};
 use messages::agent_config::{AgentConfig, DEFAULT_API};
+use messages::api::AgentAccountStatus;
 use messages::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
 
 #[tokio::main]
@@ -288,20 +289,38 @@ async fn prepare_config() -> AgentConfig {
             if config.valid_secret_key() {
                 let api = ApiClient::new(config.get_api_url(), Some(config.secret_key.clone()));
 
-                /* see if we're allowed to sign a request */
-                let error = api.sign_tunnel_request(TunnelRequest::Ping(Ping {
-                    id: 0
-                })).await.err();
+                let status = loop {
+                    match api.get_agent_account_status().await {
+                        Ok(v) => break v,
+                        Err(error) => {
+                            tracing::error!(?error, "failed to load account status, retrying in 5s");
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                        }
+                    }
+                };
 
-                match error {
-                    Some(ApiError::HttpError(401, _)) => {
-                        tracing::warn!("failed to validate secret key");
+                match status {
+                    /* continue to account setup logic */
+                    AgentAccountStatus::NoAccount { .. } => {}
+
+                    /* use config */
+                    AgentAccountStatus::VerifiedAccount { .. } => {
+                        return config;
                     }
-                    Some(error) => {
-                        tracing::error!(?error, "got error trying to validate secret key");
-                        std::process::exit(1);
+                    AgentAccountStatus::UnverifiedAccount { account_id } => {
+                        let verify_url = format!("https://new.playit.gg/login/verify-account/{}", account_id);
+                        if let Err(error) = webbrowser::open(&verify_url) {
+                            tracing::error!(?error, "failed to open verify URL in web browser");
+                            println!("\n******************\n\nOpen below link a web browser to continue\n{}\n\n******************", verify_url);
+                        }
+                        return config;
                     }
-                    None => {
+                    AgentAccountStatus::GuestAccount { web_session_key, .. } => {
+                        let guest_login_url = format!("https://new.playit.gg/login/guest-account/{}", web_session_key);
+                        if let Err(error) = webbrowser::open(&guest_login_url) {
+                            tracing::error!(?error, "failed to open guest login URL in web browser");
+                            println!("\n******************\n\nOpen below link a web browser to continue\n{}\n\n******************", guest_login_url);
+                        }
                         return config;
                     }
                 }

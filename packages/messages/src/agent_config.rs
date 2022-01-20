@@ -3,6 +3,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use postgres_types::{ToSql, FromSql};
 
 use crate::{ClaimProto, Proto};
 
@@ -61,6 +62,29 @@ pub struct PortMapping {
     pub local_ip: Option<IpAddr>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tunnel_type: Option<TunnelType>,
+}
+
+#[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone, ToSql, FromSql)]
+#[postgres(name = "tunnel_type")]
+pub enum TunnelType {
+    #[postgres(name = "minecraft-java")]
+    #[serde(rename = "minecraft-java")]
+    MinecraftJava,
+    #[postgres(name = "minecraft-bedrock")]
+    #[serde(rename = "minecraft-bedrock")]
+    MinecraftBedrock,
+}
+
+impl TunnelType {
+    pub fn is_compatible(&self, port_type: ClaimProto) -> bool {
+        match (self, port_type) {
+            (TunnelType::MinecraftJava, ClaimProto::Both | ClaimProto::Tcp) => true,
+            (TunnelType::MinecraftBedrock, ClaimProto::Both | ClaimProto::Udp) => true,
+            _ => false,
+        }
+    }
 }
 
 impl AgentConfig {
