@@ -12,6 +12,8 @@ pub const DEFAULT_API: &'static str = "https://api.playit.cloud/agent";
 #[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone)]
 pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_update: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_url: Option<String>,
     #[serde(default)]
     pub refresh_from_api: bool,
@@ -64,6 +66,8 @@ pub struct PortMapping {
     pub local_port: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tunnel_type: Option<TunnelType>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub generated_domain_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone, ToSql, FromSql)]
@@ -75,6 +79,24 @@ pub enum TunnelType {
     #[postgres(name = "minecraft-bedrock")]
     #[serde(rename = "minecraft-bedrock")]
     MinecraftBedrock,
+    #[postgres(name = "valheim")]
+    #[serde(rename = "valheim")]
+    Valheim,
+    #[postgres(name = "terraria")]
+    #[serde(rename = "terraria")]
+    Terraria,
+    #[postgres(name = "starbound")]
+    #[serde(rename = "starbound")]
+    Starbound,
+    #[postgres(name = "rust")]
+    #[serde(rename = "rust")]
+    Rust,
+    #[postgres(name = "7days")]
+    #[serde(rename = "7days")]
+    SevenDays,
+    #[postgres(name = "unturned")]
+    #[serde(rename = "unturned")]
+    Unturned,
 }
 
 impl TunnelType {
@@ -82,7 +104,9 @@ impl TunnelType {
         match (self, port_type) {
             (TunnelType::MinecraftJava, ClaimProto::Both | ClaimProto::Tcp) => true,
             (TunnelType::MinecraftBedrock, ClaimProto::Both | ClaimProto::Udp) => true,
-            _ => false,
+            (TunnelType::MinecraftJava, _) => false,
+            (TunnelType::MinecraftBedrock, _) => false,
+            _ => true,
         }
     }
 }

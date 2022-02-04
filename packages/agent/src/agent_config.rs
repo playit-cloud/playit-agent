@@ -23,6 +23,7 @@ pub async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
 
             file.write_all(
                 toml::to_string(&AgentConfig {
+                    last_update: None,
                     api_url: None,
                     refresh_from_api: true,
                     secret_key: "put-secret-here".to_string(),

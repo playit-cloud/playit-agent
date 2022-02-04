@@ -41,21 +41,6 @@ async fn main() {
             .unwrap(),
     );
 
-    let mut lease_claims = Vec::new();
-    for mapping in &config.read().await.mappings {
-        lease_claims.push(ClaimLease {
-            ip: match mapping.tunnel_ip {
-                IpAddr::V4(ip) => ip,
-                _ => panic!("IPv6 not supported"),
-            },
-            from_port: mapping.tunnel_from_port,
-            to_port: mapping
-                .tunnel_to_port
-                .unwrap_or(mapping.tunnel_from_port + 1),
-            proto: mapping.proto,
-        });
-    }
-
     let api_url = config.read().await.get_api_url();
 
     let (tx, mut rx) = channel(1024);
@@ -67,18 +52,42 @@ async fn main() {
     let mut udp_clients = UdpClients::new(tunnel_udp.clone(), udp_channel_details.clone());
 
     let keep_alive_task = {
+        let config = config.clone();
         let client = tunnel_client.clone();
         let udp_channel_details = udp_channel_details.clone();
         let tunnel_udp = tunnel_udp.clone();
         let last_udp_time = last_udp_time.clone();
 
         tokio::spawn(async move {
+            let mut config_last_updated: Option<u64> = None;
+
             'keep_alive: loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
 
                 let authenticated = client.keep_alive().await;
 
-                if !authenticated.unwrap_or(false) {
+                if !authenticated.unwrap_or(false) || config.read().await.last_update != config_last_updated {
+                    let mut lease_claims = Vec::new();
+
+                    {
+                        let config = config.read().await;
+                        config_last_updated = config.last_update;
+
+                        for mapping in &config.mappings {
+                            lease_claims.push(ClaimLease {
+                                ip: match mapping.tunnel_ip {
+                                    IpAddr::V4(ip) => ip,
+                                    _ => panic!("IPv6 not supported"),
+                                },
+                                from_port: mapping.tunnel_from_port,
+                                to_port: mapping
+                                    .tunnel_to_port
+                                    .unwrap_or(mapping.tunnel_from_port + 1),
+                                proto: mapping.proto,
+                            });
+                        }
+                    }
+
                     let register_res = client.register().await;
                     if let Err(error) = register_res {
                         tracing::error!(?error, "failed to register agent");
@@ -194,12 +203,10 @@ async fn main() {
     };
 
     while let Some(client) = rx.recv().await {
-        println!("Got client: {:?}", client);
+        tracing::info!("got new client");
 
         match client.claim_instructions {
             ClaimInstructions::Tcp { address, token } => {
-                println!("Token length: {}", token.len());
-
                 let (_, host_addr) = match config.read().await.find_local_addr(client.connect_addr, Proto::Tcp) {
                     Some(host_addr) => {
                         tracing::info!(?host_addr, "found local address for new tcp client");
@@ -211,9 +218,20 @@ async fn main() {
                     }
                 };
 
+                let span = tracing::info_span!("tcp client",
+                    tunnel_address = %address,
+                    local_address = %host_addr,
+                );
+
+                {
+                    let _entered = span.enter();
+                    tracing::info!("new client");
+                }
+
                 let tcp_conn = TcpConnection {
                     client_token: token,
                     tunnel_address: address,
+                    span,
                 };
 
                 let ready = match tcp_conn.establish().await {
@@ -266,12 +284,15 @@ async fn update_agent_config(config: Arc<RwLock<AgentConfig>>) {
             if let Some(ref api_url) = current.api_url {
                 api_config.api_url = Some(api_url.clone());
             }
+            api_config.last_update = current.last_update;
 
             !api_config.eq(&current)
         };
 
         if config_updated {
             tracing::info!("updating config");
+            api_config.last_update = Some(now_milli());
+
             std::mem::replace(&mut *config.write().await, api_config.clone());
 
             if let Err(error) = tokio::fs::write("playit.toml", toml::to_string_pretty(&api_config).unwrap()).await {
@@ -377,6 +398,7 @@ async fn prepare_config() -> AgentConfig {
         }
         None => {
             AgentConfig {
+                last_update: None,
                 api_url: None,
                 refresh_from_api: true,
                 secret_key,

@@ -14,21 +14,11 @@ pub enum PaymentsApiRequest {
     #[serde(rename = "delete-payment-method")]
     DeletePaymentMethod(DeletePaymentMethod),
 
-    #[serde(rename = "create-cart-subscription")]
-    CreateCartSubscription(CreateCartSubscription),
-
-    #[serde(rename = "checkout-subscriptions")]
-    CheckoutSubscriptions,
+    #[serde(rename = "create-subscription-management-link")]
+    CreateSubscriptionManagementLink,
 
     #[serde(rename = "list-subscriptions")]
     ListSubscriptions(ListSubscriptions),
-}
-
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
-pub struct CreateCartSubscription {
-    pub subscription_type: SubscriptionType,
-    pub subscription_interval: SubscriptionInterval,
-    pub auto_renew: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
@@ -64,12 +54,10 @@ pub struct ListSubscriptions {
 pub enum PaymentsApiResponse {
     #[serde(rename = "payment-methods")]
     PaymentMethods { payment_methods: Vec<PaymentMethod> },
-    #[serde(rename = "add-payment-link")]
-    AddPaymentMethodLink { url: String },
+    #[serde(rename = "generated-link")]
+    GeneratedLink { url: String },
     #[serde(rename = "payment-method-removed")]
     PaymentMethodRemoved,
-    #[serde(rename = "cart-subscription-created")]
-    CartSubscriptionCreated { sub_id: Uuid },
     #[serde(rename = "invoice-pending")]
     InvoicePending { invoice_id: Uuid },
     #[serde(rename = "subscriptions")]
