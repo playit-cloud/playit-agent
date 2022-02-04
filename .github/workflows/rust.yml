@@ -10,7 +10,7 @@ env:
 
 jobs:
   release:
-    if: ${{ endsWith(github.event.commits[0].message, '[release]') || github.event_name == 'workflow_dispatch' }}
+    if: ${{ endsWith(github.event.commits[0].message, '[release]') || startsWith(github.event.commits[0].message, '[release]')  || github.event_name == 'workflow_dispatch' }}
 
     runs-on: ubuntu-latest
 
