@@ -12,16 +12,16 @@ use tokio::sync::mpsc::channel;
 use tokio::sync::RwLock;
 use tracing::Level;
 
-use agent::api_client::{ApiClient, ApiError};
 use agent::agent_config::load_or_create;
+use agent::api_client::{ApiClient, ApiError};
 use agent::now_milli;
 use agent::tcp_client::{Stats, TcpConnection};
 use agent::tunnel_client::TunnelClient;
 use agent::udp_client::UdpClients;
-use messages::{ClaimInstructions, ClaimLease, Ping, Proto, TunnelRequest};
-use messages::agent_config::{AgentConfig, DEFAULT_API};
-use messages::api::AgentAccountStatus;
-use messages::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
+use agent_common::{ClaimInstructions, ClaimLease, Ping, Proto, TunnelRequest};
+use agent_common::agent_config::{AgentConfig, DEFAULT_API};
+use agent_common::api::AgentAccountStatus;
+use agent_common::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
 
 #[tokio::main]
 async fn main() {

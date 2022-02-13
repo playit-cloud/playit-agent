@@ -1,6 +1,6 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-use messages::agent_config::AgentConfig;
+use agent_common::agent_config::AgentConfig;
 
 pub async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
     match tokio::fs::File::open("./playit.toml").await {
