@@ -12,13 +12,13 @@ use tokio::sync::oneshot::{
     channel as oneshot, Receiver as OneshotReceiver, Sender as OneshotSender,
 };
 
-use messages::{
+use agent_common::{
     AgentRegistered, ClaimError, ClaimLease, NewClient, Ping, Pong, RpcMessage,
     SetupUdpChannelDetails, TunnelFeed, TunnelRequest, TunnelResponse,
 };
-use messages::api::SessionSecret;
-use messages::auth::SignatureError;
-use messages::rpc::SignedRpcRequest;
+use agent_common::api::SessionSecret;
+use agent_common::auth::SignatureError;
+use agent_common::rpc::SignedRpcRequest;
 
 use crate::api_client::{ApiClient, ApiError};
 use crate::dependent_task::DependentTask;

@@ -8,8 +8,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
-use messages::SetupUdpChannelDetails;
-use messages::udp::RedirectFlowFooter;
+use agent_common::SetupUdpChannelDetails;
+use agent_common::udp::RedirectFlowFooter;
 
 pub struct UdpClients {
     tunnel_udp: Arc<UdpSocket>,

@@ -3,10 +3,10 @@ use std::net::SocketAddr;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use messages::{AgentRegistered, TunnelRequest};
-use messages::agent_config::AgentConfig;
-use messages::api::{AgentAccountStatus, AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret};
-use messages::rpc::SignedRpcRequest;
+use agent_common::{AgentRegistered, TunnelRequest};
+use agent_common::agent_config::AgentConfig;
+use agent_common::api::{AgentAccountStatus, AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret};
+use agent_common::rpc::SignedRpcRequest;
 
 pub struct ApiClient {
     api_base: String,

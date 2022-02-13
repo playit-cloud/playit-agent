@@ -19,7 +19,7 @@ pub struct AgentConfig {
     pub refresh_from_api: bool,
     pub secret_key: String,
     #[serde(alias = "mapping")]
-    pub mappings: Vec<PortMapping>,
+    pub mappings: Vec<PortMappingConfig>,
 }
 
 impl AgentConfig {
@@ -46,9 +46,7 @@ impl AgentConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone)]
-pub struct PortMapping {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<Uuid>,
+pub struct PortMappingConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
@@ -64,10 +62,6 @@ pub struct PortMapping {
     pub local_ip: Option<IpAddr>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_port: Option<u16>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tunnel_type: Option<TunnelType>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub generated_domain_name: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone, ToSql, FromSql)]

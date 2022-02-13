@@ -4,12 +4,11 @@ version = 3
 
 [[package]]
 name = "agent"
-version = "0.6.1-beta"
+version = "0.6.5-beta"
 dependencies = [
+ "agent-common",
  "byteorder",
  "hex",
- "messages",
- "openssl-sys",
  "reqwest",
  "ring",
  "serde",
@@ -20,6 +19,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "webbrowser",
+]
+
+[[package]]
+name = "agent-common"
+version = "0.1.1"
+dependencies = [
+ "bincode",
+ "byteorder",
+ "chrono",
+ "hex",
+ "postgres-types",
+ "ring",
+ "schemars",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -507,22 +522,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "308cc39be01b73d0d18f82a0e7b2a3df85245f84af96fdddc5d202d27e47b86a"
 
 [[package]]
-name = "messages"
-version = "0.1.1"
-dependencies = [
- "bincode",
- "byteorder",
- "chrono",
- "hex",
- "postgres-types",
- "ring",
- "schemars",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -874,6 +873,7 @@ dependencies = [
  "native-tls",
  "percent-encoding",
  "pin-project-lite",
+ "rustls",
  "serde",
  "serde_json",
  "serde_urlencoded",
@@ -899,6 +899,18 @@ dependencies = [
  "untrusted",
  "web-sys",
  "winapi",
+]
+
+[[package]]
+name = "rustls"
+version = "0.20.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d37e5e2290f3e040b594b1a9e04377c2c671f1a1cfd9bfdef82106ac1c113f84"
+dependencies = [
+ "log",
+ "ring",
+ "sct",
+ "webpki",
 ]
 
 [[package]]
@@ -948,6 +960,16 @@ name = "scopeguard"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d29ab0c6d3fc0ee92fe66e2d99f700eab17a8d57d1c1d3b748380fb20baa78cd"
+
+[[package]]
+name = "sct"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d53dcdb7c9f8158937a7981b48accfd39a43af418591a5d008c7b22b5e1b7ca4"
+dependencies = [
+ "ring",
+ "untrusted",
+]
 
 [[package]]
 name = "security-framework"
@@ -1475,6 +1497,16 @@ dependencies = [
  "web-sys",
  "widestring",
  "winapi",
+]
+
+[[package]]
+name = "webpki"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f095d78192e208183081cc07bc5515ef55216397af48b873e5edcd72637fa1bd"
+dependencies = [
+ "ring",
+ "untrusted",
 ]
 
 [[package]]
