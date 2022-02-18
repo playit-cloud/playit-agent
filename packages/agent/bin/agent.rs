@@ -1,440 +1,304 @@
-use std::net::{IpAddr, SocketAddrV4};
+use std::error::Error;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU32;
 use std::time::Duration;
 
-use byteorder::{BigEndian, ByteOrder};
-use ring::rand::{SecureRandom, SystemRandom};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::UdpSocket;
+use crossterm::{event, execute};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers};
+use crossterm::event::Event::Key;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use ring::test::run;
+use tokio::sync::{MappedMutexGuard, RwLock};
 use tokio::sync::mpsc::channel;
-use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use tracing::Level;
+use tui::{Frame, Terminal};
+use tui::backend::{Backend, CrosstermBackend};
+use tui::layout::{Alignment, Constraint, Corner, Direction, Layout, Rect};
+use tui::style::{Color, Modifier, Style};
+use tui::text::{Span, Spans};
+use tui::widgets::{Block, Borders, BorderType, Gauge, List, ListItem, Paragraph, Wrap};
 
-use agent::agent_config::load_or_create;
-use agent::api_client::{ApiClient, ApiError};
+use agent::agent_config::{AgentConfigStatus, ManagedAgentConfig, prepare_config};
+use agent::api_client::ApiClient;
+use agent::application::{AgentState, Application, RunningState};
+use agent::events::{PlayitEventDetails, PlayitEvents};
 use agent::now_milli;
-use agent::tcp_client::{Stats, TcpConnection};
+use agent::tcp_client::Stats;
+use agent::tracked_task::TrackedTask;
 use agent::tunnel_client::TunnelClient;
-use agent::udp_client::UdpClients;
-use agent_common::{ClaimInstructions, ClaimLease, Ping, Proto, TunnelRequest};
-use agent_common::agent_config::{AgentConfig, DEFAULT_API};
-use agent_common::api::AgentAccountStatus;
-use agent_common::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
+use agent_common::agent_config::AgentConfig;
+use agent_common::Proto;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
-        .init();
+    let use_ui = enable_raw_mode().is_ok();
 
-    let config = Arc::new(RwLock::new(prepare_config().await));
+    let _guard = if use_ui {
+        let file_appender = tracing_appender::rolling::daily("logs", "playit.log");
+        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+        tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).with_writer(non_blocking).init();
 
-    if config.read().await.refresh_from_api {
-        tokio::spawn(update_agent_config(config.clone()));
-    }
+        tracing::info!("staring with UI");
+        Some(guard)
+    } else {
+        tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).init();
 
-    let tunnel_udp = Arc::new(
-        UdpSocket::bind(SocketAddrV4::new(0.into(), 0))
-            .await
-            .unwrap(),
-    );
-
-    let api_url = config.read().await.get_api_url();
-
-    let (tx, mut rx) = channel(1024);
-    let api_client = ApiClient::new(api_url, Some(config.read().await.secret_key.clone()));
-    let tunnel_client = TunnelClient::new(api_client, tx).await.unwrap();
-
-    let udp_channel_details = Arc::new(RwLock::new(None)); // RwLock<Option<SetupUdpChannelDetails>>
-    let last_udp_time = Arc::new(AtomicU64::new(now_milli()));
-    let mut udp_clients = UdpClients::new(tunnel_udp.clone(), udp_channel_details.clone());
-
-    let keep_alive_task = {
-        let config = config.clone();
-        let client = tunnel_client.clone();
-        let udp_channel_details = udp_channel_details.clone();
-        let tunnel_udp = tunnel_udp.clone();
-        let last_udp_time = last_udp_time.clone();
-
-        tokio::spawn(async move {
-            let mut config_last_updated: Option<u64> = None;
-
-            'keep_alive: loop {
-                tokio::time::sleep(Duration::from_secs(2)).await;
-
-                let authenticated = client.keep_alive().await;
-
-                if !authenticated.unwrap_or(false) || config.read().await.last_update != config_last_updated {
-                    let mut lease_claims = Vec::new();
-
-                    {
-                        let config = config.read().await;
-                        config_last_updated = config.last_update;
-
-                        for mapping in &config.mappings {
-                            lease_claims.push(ClaimLease {
-                                ip: match mapping.tunnel_ip {
-                                    IpAddr::V4(ip) => ip,
-                                    _ => panic!("IPv6 not supported"),
-                                },
-                                from_port: mapping.tunnel_from_port,
-                                to_port: mapping
-                                    .tunnel_to_port
-                                    .unwrap_or(mapping.tunnel_from_port + 1),
-                                proto: mapping.proto,
-                            });
-                        }
-                    }
-
-                    let register_res = client.register().await;
-                    if let Err(error) = register_res {
-                        tracing::error!(?error, "failed to register agent");
-                        continue;
-                    }
-
-                    for claim in &lease_claims {
-                        let claim_res = client.claim_lease(claim.clone()).await;
-
-                        if let Err(error) = claim_res {
-                            tracing::error!(?error, ?claim, "failed to claim lease");
-                            continue 'keep_alive;
-                        }
-                    }
-
-                    tracing::info!("Connection to tunnel (re)established");
-                }
-
-                if now_milli() - last_udp_time.load(Ordering::SeqCst) > 60_000 {
-                    let mut lock = udp_channel_details.write().await;
-
-                    if lock.take().is_some() {
-                        tracing::warn!("UDP silence detected trying to setup again");
-                        last_udp_time.store(now_milli(), Ordering::SeqCst);
-                    }
-                }
-
-                /* setup udp channel */
-                {
-                    let needs_setup = { udp_channel_details.read().await.is_none() };
-
-                    if needs_setup {
-                        let res = match client.setup_udp_channel().await {
-                            Ok(v) => v,
-                            Err(error) => {
-                                tracing::error!(?error, "failed to setup udp channel");
-                                continue;
-                            }
-                        };
-
-                        let mut lock = udp_channel_details.write().await;
-                        lock.replace(res);
-                    }
-                }
-
-                /* keep udp channel alive */
-                {
-                    let lock = udp_channel_details.read().await;
-                    if let Some(channel) = lock.as_ref() {
-                        if let Err(error) = tunnel_udp
-                            .send_to(&channel.token, channel.tunnel_addr)
-                            .await
-                        {
-                            tracing::error!(?error, "failed to send message to UDP channel");
-                        }
-
-                        continue;
-                    }
-                }
-            }
-        })
+        tracing::info!("staring without UI");
+        None
     };
 
-    let udp_channel_task = {
-        let config = config.clone();
+    let events = PlayitEvents::new();
+    let agent_config = ManagedAgentConfig::new(events.clone());
+    let render_state = Arc::new(RwLock::new(
+        AgentState::PreparingConfig(agent_config.status.clone())
+    ));
 
-        tokio::spawn(async move {
-            let mut buffer = vec![0u8; 2048];
-            // let mut last_message_time = 0; // TODO
-
-            loop {
-                let (bytes, from) = match tunnel_udp.recv_from(&mut buffer).await {
-                    Ok(v) => v,
-                    Err(error) => {
-                        tracing::error!(?error, "failed reading from UDP channel");
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        continue;
-                    }
-                };
-
-                if bytes < 8 {
-                    tracing::warn!(bytes, "got invalid tiny UDP channel message");
-                    continue;
-                }
-
-                let id = BigEndian::read_u64(&buffer[bytes - 8..bytes]);
-                if id == UDP_CHANNEL_ESTABLISH_ID {
-                    last_udp_time.store(now_milli(), Ordering::SeqCst);
-
-                    tracing::info!("got UDP establish response");
-                    continue;
-                }
-
-                let flow = match RedirectFlowFooter::from_tail(&buffer[..bytes]) {
-                    Some(v) => v,
-                    None => {
-                        tracing::error!(id, bytes, ?from, "got channel message with unknown id");
-                        continue;
-                    }
-                };
-
-                let payload = &buffer[..bytes - RedirectFlowFooter::len()];
-
-                let config_read = config.read().await;
-
-                udp_clients
-                    .forward_packet(flow, payload, |addr| {
-                        config_read.find_local_addr(addr, Proto::Udp)
-                    })
-                    .await;
-            }
-        })
+    let app = Application {
+        events,
+        agent_config,
+        render_state,
     };
 
-    while let Some(client) = rx.recv().await {
-        tracing::info!("got new client");
+    let renderer = Renderer {
+        render_count: 0,
+        state: app.render_state.clone(),
+    };
 
-        match client.claim_instructions {
-            ClaimInstructions::Tcp { address, token } => {
-                let (_, host_addr) = match config.read().await.find_local_addr(client.connect_addr, Proto::Tcp) {
-                    Some(host_addr) => {
-                        tracing::info!(?host_addr, "found local address for new tcp client");
-                        host_addr
-                    }
-                    None => {
-                        tracing::error!(?client.connect_addr, "did not find local address for new tcp client");
-                        continue;
-                    }
-                };
+    let app_task = TrackedTask::new(app.start());
 
-                let span = tracing::info_span!("tcp client",
-                    tunnel_address = %address,
-                    local_address = %host_addr,
-                );
+    if use_ui {
+        let ui_task = start_terminal_ui(renderer, app_task);
 
-                {
-                    let _entered = span.enter();
-                    tracing::info!("new client");
-                }
-
-                let tcp_conn = TcpConnection {
-                    client_token: token,
-                    tunnel_address: address,
-                    span,
-                };
-
-                let ready = match tcp_conn.establish().await {
-                    Ok(v) => v,
-                    Err(error) => {
-                        tracing::error!(?error, "failed to establish connection to tunnel server");
-                        continue;
-                    }
-                };
-
-                let active = match ready
-                    .connect_to_host(host_addr, Arc::new(Stats::default()))
-                    .await
-                {
-                    Ok(v) => v,
-                    Err(error) => {
-                        tracing::error!(?error, "failed to connect to local service");
-                        continue;
-                    }
-                };
-
-                tracing::info!(stats = ?active.stats, "connection setup");
-            }
-        }
-    }
-
-    keep_alive_task.await.unwrap();
-    udp_channel_task.await.unwrap();
-}
-
-async fn update_agent_config(config: Arc<RwLock<AgentConfig>>) {
-    loop {
-        let api = {
-            let c = config.read().await;
-            ApiClient::new(c.get_api_url(), Some(c.secret_key.clone()))
+        let app_task = match ui_task.await {
+            Ok(Ok(_)) => {
+                tracing::info!("program closed");
+                return
+            },
+            Ok(Err(v)) => {
+                tracing::warn!("got UI rendering error");
+                v
+            },
+            Err(_) => return,
         };
-
-        let mut api_config = match api.get_agent_config().await {
-            Ok(config) => config,
-            Err(error) => {
-                tracing::error!(?error, "failed to load config from API");
-                tokio::time::sleep(Duration::from_secs(10)).await;
-                continue;
-            }
-        };
-
-        let config_updated = {
-            let current = config.read().await;
-
-            if let Some(ref api_url) = current.api_url {
-                api_config.api_url = Some(api_url.clone());
-            }
-            api_config.last_update = current.last_update;
-
-            !api_config.eq(&current)
-        };
-
-        if config_updated {
-            tracing::info!("updating config");
-            api_config.last_update = Some(now_milli());
-
-            std::mem::replace(&mut *config.write().await, api_config.clone());
-
-            if let Err(error) = tokio::fs::write("playit.toml", toml::to_string_pretty(&api_config).unwrap()).await {
-                tracing::error!(?error, "failed to write updated configuration to playit.toml");
-            }
-        }
-
-        tokio::time::sleep(Duration::from_secs(4)).await;
+        app_task.wait().await;
+    } else {
+        app_task.wait().await;
     }
 }
 
-async fn prepare_config() -> AgentConfig {
-    let config = match load_or_create().await {
-        Ok(Some(config)) => {
-            if config.valid_secret_key() {
-                let api = ApiClient::new(config.get_api_url(), Some(config.secret_key.clone()));
+async fn get_initial_config(state: Arc<RwLock<AgentState>>) -> AgentConfig {
+    let guard = state.read().await;
+    let prepare_status = match &*guard {
+        AgentState::PreparingConfig(status) => status,
+        _ => panic!(),
+    };
+    let config = prepare_config(prepare_status).await.unwrap();
 
-                let status = loop {
-                    match api.get_agent_account_status().await {
-                        Ok(v) => break v,
-                        Err(error) => {
-                            tracing::error!(?error, "failed to load account status, retrying in 5s");
-                            tokio::time::sleep(Duration::from_secs(5)).await;
-                        }
-                    }
-                };
+    /* wait 1s so user can read message */
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
-                match status {
-                    /* continue to account setup logic */
-                    AgentAccountStatus::NoAccount { .. } => {}
-
-                    /* use config */
-                    AgentAccountStatus::VerifiedAccount { .. } => {
-                        return config;
-                    }
-                    AgentAccountStatus::UnverifiedAccount { account_id } => {
-                        let verify_url = format!("https://new.playit.gg/login/verify-account/{}", account_id);
-                        if let Err(error) = webbrowser::open(&verify_url) {
-                            tracing::error!(?error, "failed to open verify URL in web browser");
-                            println!("\n******************\n\nOpen below link a web browser to continue\n{}\n\n******************", verify_url);
-                        }
-                        return config;
-                    }
-                    AgentAccountStatus::GuestAccount { web_session_key, .. } => {
-                        let guest_login_url = format!("https://new.playit.gg/login/guest-account/{}", web_session_key);
-                        if let Err(error) = webbrowser::open(&guest_login_url) {
-                            tracing::error!(?error, "failed to open guest login URL in web browser");
-                            println!("\n******************\n\nOpen below link a web browser to continue\n{}\n\n******************", guest_login_url);
-                        }
-                        return config;
-                    }
+    /* if we're showing a message wait an extra 5 seconds */
+    match &*guard {
+        AgentState::PreparingConfig(status) => {
+            let status_guard = status.read().await;
+            match &*status_guard {
+                AgentConfigStatus::PleaseCreateAccount { .. } | AgentConfigStatus::PleaseVerifyAccount { .. } => {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
                 }
+                _ => {}
             }
-
-            Some(config)
         }
-        Ok(None) => None,
-        Err(error) => {
-            tracing::error!(?error, "failed to load / create config file");
-            std::process::exit(1);
-        }
-    };
-
-    tracing::info!("generating claim key to setup playit program");
-
-    let mut buffer = [0u8; 32];
-    SystemRandom::new().fill(&mut buffer).unwrap();
-    let claim_key = hex::encode(&buffer);
-
-    let claim_url = format!("https://new.playit.gg/claim/{}", claim_key);
-    if let Err(error) = webbrowser::open(&claim_url) {
-        tracing::error!(?error, "failed to open claim URL in web browser");
-        println!("\n******************\n\nOpen below link a web browser to continue\n{}\n\n******************", claim_url);
+        _ => panic!()
     }
-
-    let api_url = config.as_ref().map(|v| v.get_api_url()).unwrap_or_else(|| DEFAULT_API.to_string());
-    let api = ApiClient::new(api_url, None);
-
-    /*
-     * Keep polling api till secret key has been generated. For the secret
-     * to be generated the user must interact with the website using the
-     * claim URL.
-     */
-    let secret_key = loop {
-        match api.try_exchange_claim_for_secret(&claim_key).await {
-            Ok(Some(secret_key)) => break secret_key,
-            Ok(None) => {
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-            Err(error) => {
-                tracing::error!(?error, "failed to exchange claim key for secret key");
-                tokio::time::sleep(Duration::from_secs(8)).await;
-            }
-        }
-    };
-
-    tracing::info!("agent setup, got secret key");
-
-    let config = match config {
-        Some(mut config) => {
-            config.secret_key = secret_key;
-            config
-        }
-        None => {
-            AgentConfig {
-                last_update: None,
-                api_url: None,
-                refresh_from_api: true,
-                secret_key,
-                mappings: vec![],
-            }
-        }
-    };
-
-    tokio::fs::write("playit.toml", toml::to_string_pretty(&config).unwrap()).await.unwrap();
-    tracing::info!("playit.toml updated");
 
     config
 }
 
-pub async fn pipe(mut from: OwnedReadHalf, mut to: OwnedWriteHalf) -> std::io::Result<()> {
-    let mut buffer = Vec::new();
-    buffer.resize(2048, 0u8);
-
-    loop {
-        tokio::task::yield_now().await;
-
-        let received = from.read(&mut buffer[..]).await.map_err(|error| {
-            tracing::error!(?error, "failed to read data");
-            error
-        })?;
-
-        if received == 0 {
-            tracing::info!("pipe ended due to EOF");
-            break;
+fn start_terminal_ui(mut renderer: Renderer, app_task: TrackedTask) -> JoinHandle<Result<TrackedTask, TrackedTask>> {
+    tokio::task::spawn_blocking(move || {
+        if enable_raw_mode().is_err() {
+            return Err(app_task);
         }
 
-        to.write_all(&buffer[..received]).await.map_err(|error| {
-            tracing::error!(?error, "failed to write data");
-            error
-        })?;
+        let mut stdout = std::io::stdout();
+        if execute!(stdout, EnterAlternateScreen).is_err() {
+            return Err(app_task);
+        }
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = match Terminal::new(backend) {
+            Ok(v) => v,
+            Err(_) => return Err(app_task),
+        };
+
+        let mut app_done_at = 0;
+
+        loop {
+            if app_task.is_done() {
+                let now = now_milli();
+
+                /* wait 20 seconds before closing application */
+                if app_done_at == 0 {
+                    app_done_at = now;
+                } else if app_done_at + 20_000 < now {
+                    break;
+                }
+            }
+
+            if terminal.draw(|f| renderer.run(f)).is_err() {
+                return Err(app_task);
+            }
+
+            let has_event = match event::poll(Duration::from_millis(300)) {
+                Ok(v) => v,
+                Err(_) => return Err(app_task),
+            };
+
+            if has_event {
+                let event = match event::read() {
+                    Ok(v) => v,
+                    Err(_) => return Err(app_task),
+                };
+
+                if let Event::Key(key) = event {
+                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                        break;
+                    }
+                }
+            }
+        }
+
+        // restore terminal
+        if disable_raw_mode().is_err() {
+            return Err(app_task);
+        }
+        if execute!(terminal.backend_mut(), LeaveAlternateScreen).is_err() {
+            return Err(app_task);
+        }
+        if terminal.show_cursor().is_err() {
+            return Err(app_task);
+        }
+
+        Ok(app_task)
+    })
+}
+
+pub struct Renderer {
+    state: Arc<RwLock<AgentState>>,
+    render_count: usize,
+}
+
+impl Renderer {
+    pub fn run<B: Backend>(&mut self, f: &mut Frame<B>) {
+        let size = f.size();
+        self.render_count += 1;
+
+        let title_bar = Gauge::default()
+            .gauge_style(Style::default().fg(Color::Cyan))
+            .label(Span::styled(format!("playit.gg v0.7.0 ({})", self.render_count), Style::default()
+                .add_modifier(Modifier::BOLD)
+                .add_modifier(Modifier::UNDERLINED),
+            ))
+            .percent(100);
+        f.render_widget(title_bar, Rect::new(0, 0, size.width, 1));
+
+        {
+            let guard = futures::executor::block_on(self.state.read());
+            match &*guard {
+                AgentState::PreparingConfig(status) => {
+                    let status_guard = futures::executor::block_on(status.read());
+                    self.render_preparing_config(f, &*status_guard);
+                }
+                AgentState::WaitingForTunnels { error } => {
+                    self.render_no_tunnels(f, *error);
+                }
+                AgentState::Running(running) => {
+                    self.render_running(f, running);
+                }
+                AgentState::ConnectingToTunnelServer => {
+                    self.render_status_message(f, "connecting to tunnel server");
+                }
+                AgentState::FailedToConnect => {
+                    self.render_status_message(f, "connecting to tunnel server");
+                }
+            }
+        }
     }
 
-    Ok(())
+    fn render_running<B: Backend>(&self, f: &mut Frame<B>, running: &RunningState) {
+        let list_block = Block::default()
+            .borders(Borders::ALL)
+            .title("events")
+            .border_type(BorderType::Thick);
+
+        let events = running.events.with_events(|events| {
+            let mut list_items = Vec::new();
+
+            for i in (0..events.len()).rev() {
+                let event = &events[i];
+                let span = Span::from(format!("{} - {:?}", event.id, event.details));
+                list_items.push(ListItem::new(span));
+            }
+
+            list_items
+        });
+
+        let list = List::new(events)
+            .block(list_block)
+            .start_corner(Corner::TopLeft);
+
+        let size = f.size();
+        f.render_widget(list, Rect::new(0, 1, size.width, size.height.max(1) - 1));
+    }
+
+    fn render_status_message<B: Backend>(&self, f: &mut Frame<B>, message: &str) {
+        let description = Paragraph::new(message)
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false });
+
+        let size = f.size();
+        let top_offset = ((size.height - 1) / 2).max(3) - 2;
+        f.render_widget(description, Rect::new(0, top_offset, size.width, size.height - top_offset));
+    }
+
+    fn render_no_tunnels<B: Backend>(&self, f: &mut Frame<B>, error: bool) {
+        let description = match error {
+            true => Paragraph::new("No tunnels found, create them at\nhttps://new.playit.gg/account/tunnels\nGetting an error trying to load tunnels..."),
+            false => Paragraph::new("No tunnels found, create them at\nhttps://new.playit.gg/account/tunnels"),
+        }
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false });
+
+        let size = f.size();
+        let top_offset = ((size.height - 1) / 2).max(3) - 2;
+        f.render_widget(description, Rect::new(0, top_offset, size.width, size.height - top_offset));
+    }
+
+    fn render_preparing_config<B: Backend>(&self, f: &mut Frame<B>, status: &AgentConfigStatus) {
+        let description = match status {
+            AgentConfigStatus::Staring => Paragraph::new("Starting program"),
+            AgentConfigStatus::ReadingConfigFile => Paragraph::new("Reading config file"),
+            AgentConfigStatus::PleaseActiveProgram { url } => Paragraph::new(
+                format!("Setup required, please visit\n{}", url)
+            ),
+            AgentConfigStatus::PleaseVerifyAccount { url } => Paragraph::new(
+                format!("Please verify your email\n{}", url)
+            ),
+            AgentConfigStatus::PleaseCreateAccount { url } => Paragraph::new(
+                format!("Improve security, create an account\n{}", url)
+            ),
+            AgentConfigStatus::FileReadFailed => Paragraph::new("ERROR: Failed to read file"),
+            AgentConfigStatus::LoadingAccountStatus => Paragraph::new("Loading account status"),
+            AgentConfigStatus::ErrorLoadingAccountStatus => Paragraph::new("Failed to load account status"),
+            AgentConfigStatus::AccountVerified => Paragraph::new("Found verified account"),
+            AgentConfigStatus::ProgramActivated => Paragraph::new("Program activated"),
+        }
+            .alignment(Alignment::Center)
+            .wrap(Wrap { trim: false });
+
+        let size = f.size();
+
+        let top_offset = ((size.height - 1) / 2).max(3) - 2;
+        f.render_widget(description, Rect::new(0, top_offset, size.width, size.height - top_offset));
+    }
 }

@@ -7,9 +7,13 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
+use agent_common::{ClaimInstructions, NewClient};
+
+use crate::lan_address::LanAddress;
 
 pub struct TcpConnection {
     pub client_token: Vec<u8>,
+    pub peer_address: SocketAddr,
     pub tunnel_address: SocketAddrV4,
     pub span: tracing::Span,
 }
@@ -17,6 +21,52 @@ pub struct TcpConnection {
 const RESP_LEN: usize = 8;
 
 impl TcpConnection {
+    pub async fn spawn(client: NewClient, host_addr: SocketAddr) -> Result<ActiveTcpConnection, ()> {
+        match client.claim_instructions {
+            ClaimInstructions::Tcp { address, token } => {
+                let span = tracing::info_span!("tcp client",
+                    tunnel_address = %address,
+                    local_address = %host_addr,
+                );
+
+                let conn_span = span.clone();
+                async {
+                    tracing::info!("new client");
+
+                    let tcp_conn = TcpConnection {
+                        client_token: token,
+                        peer_address: SocketAddr::V4(client.peer_addr),
+                        tunnel_address: address,
+                        span: conn_span,
+                    };
+
+                    let ready = match tcp_conn.establish().await {
+                        Ok(v) => v,
+                        Err(error) => {
+                            tracing::error!(?error, "failed to establish connection to tunnel server");
+                            return Err(());
+                        }
+                    };
+
+                    let active = match ready
+                        .connect_to_host(host_addr, Arc::new(Stats::default()))
+                        .await
+                    {
+                        Ok(v) => v,
+                        Err(error) => {
+                            tracing::error!(?error, "failed to connect to local service");
+                            return Err(());
+                        }
+                    };
+
+                    tracing::info!(stats = ?active.stats, "connection setup");
+
+                    Ok(active)
+                }.instrument(span).await
+            }
+        }
+    }
+
     pub async fn establish(self) -> std::io::Result<ReadyTcpConnection> {
         let span = self.span.clone();
 
@@ -56,6 +106,7 @@ impl TcpConnection {
 
             Ok(ReadyTcpConnection {
                 connection: stream,
+                peer_address: self.peer_address,
                 span,
             })
         }.instrument(self.span).await
@@ -64,6 +115,7 @@ impl TcpConnection {
 
 pub struct ReadyTcpConnection {
     connection: TcpStream,
+    peer_address: SocketAddr,
     span: tracing::Span,
 }
 
@@ -74,7 +126,7 @@ impl ReadyTcpConnection {
         stats: Arc<Stats>,
     ) -> std::io::Result<ActiveTcpConnection> {
         async {
-            let conn = match TcpStream::connect(host_addr).await {
+            let conn = match LanAddress::tcp_socket(true, self.peer_address, host_addr).await {
                 Ok(v) => v,
                 Err(error) => {
                     tracing::error!(?error, "failed to connect to local server (is your server running?)");
@@ -109,6 +161,13 @@ pub struct ActiveTcpConnection {
     pub stats: Arc<Stats>,
     host_to_tunnel: JoinHandle<std::io::Result<()>>,
     tunnel_to_host: JoinHandle<std::io::Result<()>>,
+}
+
+impl ActiveTcpConnection {
+    pub async fn wait(self) {
+        self.host_to_tunnel.await;
+        self.tunnel_to_host.await;
+    }
 }
 
 #[derive(Default, Debug)]
@@ -147,8 +206,7 @@ async fn pipe(
                 &stats.from_tunnel
             } else {
                 &stats.to_tunnel
-            }
-                .fetch_add(received, Ordering::SeqCst);
+            }.fetch_add(received, Ordering::SeqCst);
 
             to.write_all(&buffer[..received]).await.map_err(|error| {
                 tracing::error!(?error, "failed to write data");
@@ -157,10 +215,8 @@ async fn pipe(
         }
 
         Ok(())
-    }
-        .await;
+    }.await;
 
     stats.running.fetch_sub(1, Ordering::SeqCst);
-
     r
 }

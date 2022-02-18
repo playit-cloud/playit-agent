@@ -1,6 +1,6 @@
 [package]
 name = "agent"
-version = "0.6.5-beta"
+version = "0.7.0-beta"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -8,7 +8,6 @@ edition = "2021"
 [dependencies]
 tokio = { version = "1.12", features = ["full"] }
 tracing = "0.1"
-tracing-subscriber = "0.2"
 serde = "1"
 serde_json = "1"
 agent-common = { path = "../agent_common" }
@@ -18,7 +17,12 @@ reqwest = { version = "0.11", features = ["json", "rustls", "native-tls-vendored
 toml = "0.5.8"
 byteorder = "1.4.3"
 ring = "0.16.20"
-webbrowser = "0.5.5"
+webbrowser = { git = "https://github.com/playit-cloud/webbrowser-rs", rev = "820f661c2d0afe87ca838546beef4ff9b8b1a10b", features = ["suppress-logs"] }
+crossterm = "0.23.0"
+tracing-appender = "0.2.0"
+tracing-subscriber = "0.3.8"
+tui = "0.17.0"
+futures = "0.3.21"
 
 [[bin]]
 name = "agent"

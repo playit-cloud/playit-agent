@@ -64,7 +64,7 @@ pub struct PortMappingConfig {
     pub local_port: Option<u16>,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone, ToSql, FromSql)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone, Copy, ToSql, FromSql)]
 #[postgres(name = "tunnel_type")]
 pub enum TunnelType {
     #[postgres(name = "minecraft-java")]
