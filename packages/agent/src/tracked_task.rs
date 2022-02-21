@@ -24,7 +24,8 @@ impl TrackedTask {
     }
 
     pub async fn wait(self) {
-        self.task.await;
+        // TODO: error handling
+        self.task.await.ok();
     }
 
     pub fn is_done(&self) -> bool {

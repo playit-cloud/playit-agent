@@ -1,20 +1,18 @@
 use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use byteorder::{BigEndian, ByteOrder};
-use ring::test::run;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::channel;
 use tokio::sync::RwLock;
-use agent_common::agent_config::AgentConfig;
-use agent_common::{ClaimLease, ClaimProto, NewClient, Proto};
+use agent_common::{ClaimLease, NewClient, Proto};
 use agent_common::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
 use crate::agent_config::{AgentConfigStatus, ManagedAgentConfig};
 use crate::api_client::ApiClient;
 use crate::events::{PlayitEventDetails, PlayitEvents};
 use crate::now_milli;
-use crate::tcp_client::{Stats, TcpConnection};
+use crate::tcp_client::TcpConnection;
 use crate::tunnel_client::TunnelClient;
 use crate::udp_client::UdpClients;
 
@@ -163,7 +161,7 @@ impl Application {
             }
         };
 
-        let mut last_udp_keep_alive_response = Arc::new(AtomicU64::new(now_milli()));
+        let last_udp_keep_alive_response = Arc::new(AtomicU64::new(now_milli()));
 
         let keep_udp_alive = {
             let udp_tunnel = udp_tunnel.clone();
@@ -211,7 +209,7 @@ impl Application {
 
             let mut udp_clients = UdpClients::new(
                 udp_tunnel.clone(),
-                udp_channel.clone(),
+                udp_channel,
                 client_ids.clone(),
                 self.events.clone(),
             );
@@ -285,11 +283,12 @@ impl Application {
             })
         };
 
-        config_update_task.await;
-        keep_alive_task.await;
-        handle_tcp_clients.await;
-        keep_udp_alive.await;
-        handle_udp_packets.await;
+        // TODO: error handling
+        config_update_task.await.ok();
+        keep_alive_task.await.ok();
+        handle_tcp_clients.await.ok();
+        keep_udp_alive.await.ok();
+        handle_udp_packets.await.ok();
     }
 
     async fn handle_udp_packet(&self, udp_clients: &mut UdpClients, buffer: &[u8]) -> bool {

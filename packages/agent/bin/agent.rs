@@ -1,34 +1,25 @@
-use std::error::Error;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU32;
 use std::time::Duration;
 
 use crossterm::{event, execute};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers};
-use crossterm::event::Event::Key;
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
-use ring::test::run;
-use tokio::sync::{MappedMutexGuard, RwLock};
-use tokio::sync::mpsc::channel;
+use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::Level;
 use tui::{Frame, Terminal};
 use tui::backend::{Backend, CrosstermBackend};
-use tui::layout::{Alignment, Constraint, Corner, Direction, Layout, Rect};
+use tui::layout::{Alignment, Corner, Rect};
 use tui::style::{Color, Modifier, Style};
-use tui::text::{Span, Spans};
+use tui::text::{Span};
 use tui::widgets::{Block, Borders, BorderType, Gauge, List, ListItem, Paragraph, Wrap};
 
 use agent::agent_config::{AgentConfigStatus, ManagedAgentConfig, prepare_config};
-use agent::api_client::ApiClient;
 use agent::application::{AgentState, Application, RunningState};
-use agent::events::{PlayitEventDetails, PlayitEvents};
+use agent::events::PlayitEvents;
 use agent::now_milli;
-use agent::tcp_client::Stats;
 use agent::tracked_task::TrackedTask;
-use agent::tunnel_client::TunnelClient;
 use agent_common::agent_config::AgentConfig;
-use agent_common::Proto;
 
 #[tokio::main]
 async fn main() {
@@ -87,7 +78,7 @@ async fn main() {
     }
 }
 
-async fn get_initial_config(state: Arc<RwLock<AgentState>>) -> AgentConfig {
+async fn _get_initial_config(state: Arc<RwLock<AgentState>>) -> AgentConfig {
     let guard = state.read().await;
     let prepare_status = match &*guard {
         AgentState::PreparingConfig(status) => status,

@@ -2,12 +2,11 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 use postgres_types::{ToSql, FromSql};
 
 use crate::{ClaimProto, Proto};
 
-pub const DEFAULT_API: &'static str = "https://api.playit.cloud/agent";
+pub const DEFAULT_API: &str = "https://api.playit.cloud/agent";
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone)]
 pub struct AgentConfig {
@@ -133,7 +132,7 @@ impl AgentConfig {
             let port_delta = addr.port() - mapping.tunnel_from_port;
             let local_port = mapping.local_port.unwrap_or(mapping.tunnel_from_port) + port_delta;
 
-            let local_ip = mapping.local_ip.unwrap_or(Ipv4Addr::new(127, 0, 0, 1).into());
+            let local_ip = mapping.local_ip.unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1).into());
             return Some((
                 mapping.bind_ip,
                 SocketAddr::new(local_ip, local_port),

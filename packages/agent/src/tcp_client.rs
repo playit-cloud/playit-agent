@@ -165,8 +165,9 @@ pub struct ActiveTcpConnection {
 
 impl ActiveTcpConnection {
     pub async fn wait(self) {
-        self.host_to_tunnel.await;
-        self.tunnel_to_host.await;
+        // TODO: error handling
+        self.host_to_tunnel.await.ok();
+        self.tunnel_to_host.await.ok();
     }
 }
 

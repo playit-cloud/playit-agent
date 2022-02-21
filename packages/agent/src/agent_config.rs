@@ -80,7 +80,8 @@ impl ManagedAgentConfig {
             tracing::info!("updating config");
             api_config.last_update = Some(now_milli());
 
-            std::mem::replace(&mut *self.config.write().await, api_config.clone());
+            *self.config.write().await = api_config.clone();
+
             self.version.fetch_add(1, Ordering::SeqCst);
             self.events.add_event(PlayitEventDetails::AgentConfigUpdated).await;
 
