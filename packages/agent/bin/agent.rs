@@ -1,20 +1,22 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossterm::{event, execute};
 use crossterm::event::{Event, KeyCode, KeyModifiers};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+};
+use crossterm::{event, execute};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::Level;
-use tui::{Frame, Terminal};
 use tui::backend::{Backend, CrosstermBackend};
 use tui::layout::{Alignment, Corner, Rect};
 use tui::style::{Color, Modifier, Style};
-use tui::text::{Span};
-use tui::widgets::{Block, Borders, BorderType, Gauge, List, ListItem, Paragraph, Wrap};
+use tui::text::Span;
+use tui::widgets::{Block, BorderType, Borders, Gauge, List, ListItem, Paragraph, Wrap};
+use tui::{Frame, Terminal};
 
-use agent::agent_config::{AgentConfigStatus, ManagedAgentConfig, prepare_config};
+use agent::agent_config::{prepare_config, AgentConfigStatus, ManagedAgentConfig};
 use agent::application::{AgentState, Application, RunningState};
 use agent::events::PlayitEvents;
 use agent::now_milli;
@@ -28,12 +30,19 @@ async fn main() {
     let _guard = if use_ui {
         let file_appender = tracing_appender::rolling::daily("logs", "playit.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-        tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).with_writer(non_blocking).init();
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(Level::INFO)
+            .with_writer(non_blocking)
+            .init();
 
         tracing::info!("staring with UI");
         Some(guard)
     } else {
-        tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).init();
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(Level::INFO)
+            .init();
 
         tracing::info!("staring without UI");
         None
@@ -41,9 +50,9 @@ async fn main() {
 
     let events = PlayitEvents::new();
     let agent_config = ManagedAgentConfig::new(events.clone());
-    let render_state = Arc::new(RwLock::new(
-        AgentState::PreparingConfig(agent_config.status.clone())
-    ));
+    let render_state = Arc::new(RwLock::new(AgentState::PreparingConfig(
+        agent_config.status.clone(),
+    )));
 
     let app = Application {
         events,
@@ -64,12 +73,12 @@ async fn main() {
         let app_task = match ui_task.await {
             Ok(Ok(_)) => {
                 tracing::info!("program closed");
-                return
-            },
+                return;
+            }
             Ok(Err(v)) => {
                 tracing::warn!("got UI rendering error");
                 v
-            },
+            }
             Err(_) => return,
         };
         app_task.wait().await;
@@ -94,19 +103,23 @@ async fn _get_initial_config(state: Arc<RwLock<AgentState>>) -> AgentConfig {
         AgentState::PreparingConfig(status) => {
             let status_guard = status.read().await;
             match &*status_guard {
-                AgentConfigStatus::PleaseCreateAccount { .. } | AgentConfigStatus::PleaseVerifyAccount { .. } => {
+                AgentConfigStatus::PleaseCreateAccount { .. }
+                | AgentConfigStatus::PleaseVerifyAccount { .. } => {
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
                 _ => {}
             }
         }
-        _ => panic!()
+        _ => panic!(),
     }
 
     config
 }
 
-fn start_terminal_ui(mut renderer: Renderer, app_task: TrackedTask) -> JoinHandle<Result<TrackedTask, TrackedTask>> {
+fn start_terminal_ui(
+    mut renderer: Renderer,
+    app_task: TrackedTask,
+) -> JoinHandle<Result<TrackedTask, TrackedTask>> {
     tokio::task::spawn_blocking(move || {
         if enable_raw_mode().is_err() {
             return Err(app_task);
@@ -152,7 +165,9 @@ fn start_terminal_ui(mut renderer: Renderer, app_task: TrackedTask) -> JoinHandl
                 };
 
                 if let Event::Key(key) = event {
-                    if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    if key.code == KeyCode::Char('c')
+                        && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
                         break;
                     }
                 }
@@ -186,9 +201,11 @@ impl Renderer {
 
         let title_bar = Gauge::default()
             .gauge_style(Style::default().fg(Color::Cyan))
-            .label(Span::styled(format!("playit.gg v0.7.0 ({})", self.render_count), Style::default()
-                .add_modifier(Modifier::BOLD)
-                .add_modifier(Modifier::UNDERLINED),
+            .label(Span::styled(
+                format!("playit.gg v0.7.0 ({})", self.render_count),
+                Style::default()
+                    .add_modifier(Modifier::BOLD)
+                    .add_modifier(Modifier::UNDERLINED),
             ))
             .percent(100);
         f.render_widget(title_bar, Rect::new(0, 0, size.width, 1));
@@ -249,7 +266,10 @@ impl Renderer {
 
         let size = f.size();
         let top_offset = ((size.height - 1) / 2).max(3) - 2;
-        f.render_widget(description, Rect::new(0, top_offset, size.width, size.height - top_offset));
+        f.render_widget(
+            description,
+            Rect::new(0, top_offset, size.width, size.height - top_offset),
+        );
     }
 
     fn render_no_tunnels<B: Backend>(&self, f: &mut Frame<B>, error: bool) {
@@ -262,34 +282,42 @@ impl Renderer {
 
         let size = f.size();
         let top_offset = ((size.height - 1) / 2).max(3) - 2;
-        f.render_widget(description, Rect::new(0, top_offset, size.width, size.height - top_offset));
+        f.render_widget(
+            description,
+            Rect::new(0, top_offset, size.width, size.height - top_offset),
+        );
     }
 
     fn render_preparing_config<B: Backend>(&self, f: &mut Frame<B>, status: &AgentConfigStatus) {
         let description = match status {
             AgentConfigStatus::Staring => Paragraph::new("Starting program"),
             AgentConfigStatus::ReadingConfigFile => Paragraph::new("Reading config file"),
-            AgentConfigStatus::PleaseActiveProgram { url } => Paragraph::new(
-                format!("Setup required, please visit\n{}", url)
-            ),
-            AgentConfigStatus::PleaseVerifyAccount { url } => Paragraph::new(
-                format!("Please verify your email\n{}", url)
-            ),
-            AgentConfigStatus::PleaseCreateAccount { url } => Paragraph::new(
-                format!("Improve security, create an account\n{}", url)
-            ),
+            AgentConfigStatus::PleaseActiveProgram { url } => {
+                Paragraph::new(format!("Setup required, please visit\n{}", url))
+            }
+            AgentConfigStatus::PleaseVerifyAccount { url } => {
+                Paragraph::new(format!("Please verify your email\n{}", url))
+            }
+            AgentConfigStatus::PleaseCreateAccount { url } => {
+                Paragraph::new(format!("Improve security, create an account\n{}", url))
+            }
             AgentConfigStatus::FileReadFailed => Paragraph::new("ERROR: Failed to read file"),
             AgentConfigStatus::LoadingAccountStatus => Paragraph::new("Loading account status"),
-            AgentConfigStatus::ErrorLoadingAccountStatus => Paragraph::new("Failed to load account status"),
+            AgentConfigStatus::ErrorLoadingAccountStatus => {
+                Paragraph::new("Failed to load account status")
+            }
             AgentConfigStatus::AccountVerified => Paragraph::new("Found verified account"),
             AgentConfigStatus::ProgramActivated => Paragraph::new("Program activated"),
         }
-            .alignment(Alignment::Center)
-            .wrap(Wrap { trim: false });
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: false });
 
         let size = f.size();
 
         let top_offset = ((size.height - 1) / 2).max(3) - 2;
-        f.render_widget(description, Rect::new(0, top_offset, size.width, size.height - top_offset));
+        f.render_widget(
+            description,
+            Rect::new(0, top_offset, size.width, size.height - top_offset),
+        );
     }
 }

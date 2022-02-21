@@ -2,16 +2,16 @@ use std::net::{Ipv4Addr, SocketAddrV4};
 use std::ops::Sub;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::SignatureError;
 
+pub mod agent_config;
 pub mod api;
 pub mod auth;
 pub mod rpc;
 pub mod udp;
-pub mod agent_config;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 pub struct RpcMessage<T> {
@@ -145,7 +145,7 @@ impl TunnelFeed {
     }
 }
 
-pub fn abs_diff<T: Ord + Sub<Output=T>>(a: T, b: T) -> T {
+pub fn abs_diff<T: Ord + Sub<Output = T>>(a: T, b: T) -> T {
     if a > b {
         a - b
     } else {

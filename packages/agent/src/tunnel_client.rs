@@ -6,19 +6,19 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use slab::Slab;
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot::{
     channel as oneshot, Receiver as OneshotReceiver, Sender as OneshotSender,
 };
+use tokio::sync::{Mutex, RwLock};
 
+use agent_common::api::SessionSecret;
+use agent_common::auth::SignatureError;
+use agent_common::rpc::SignedRpcRequest;
 use agent_common::{
     AgentRegistered, ClaimError, ClaimLease, NewClient, Ping, Pong, RpcMessage,
     SetupUdpChannelDetails, TunnelFeed, TunnelRequest, TunnelResponse,
 };
-use agent_common::api::SessionSecret;
-use agent_common::auth::SignatureError;
-use agent_common::rpc::SignedRpcRequest;
 
 use crate::api_client::{ApiClient, ApiError};
 use crate::dependent_task::DependentTask;
@@ -323,7 +323,7 @@ impl ControlClientTask {
                 Duration::from_millis(RESEND_CHECK_INTERVAL + 1),
                 self.receive_message(),
             )
-                .await;
+            .await;
 
             match res {
                 Ok(Some(msg)) => {

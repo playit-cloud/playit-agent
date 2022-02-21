@@ -1,13 +1,3 @@
-use std::net::{IpAddr, SocketAddr, SocketAddrV4};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
-use byteorder::{BigEndian, ByteOrder};
-use tokio::net::UdpSocket;
-use tokio::sync::mpsc::channel;
-use tokio::sync::RwLock;
-use agent_common::{ClaimLease, NewClient, Proto};
-use agent_common::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
 use crate::agent_config::{AgentConfigStatus, ManagedAgentConfig};
 use crate::api_client::ApiClient;
 use crate::events::{PlayitEventDetails, PlayitEvents};
@@ -15,6 +5,16 @@ use crate::now_milli;
 use crate::tcp_client::TcpConnection;
 use crate::tunnel_client::TunnelClient;
 use crate::udp_client::UdpClients;
+use agent_common::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
+use agent_common::{ClaimLease, NewClient, Proto};
+use byteorder::{BigEndian, ByteOrder};
+use std::net::{IpAddr, SocketAddr, SocketAddrV4};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::net::UdpSocket;
+use tokio::sync::mpsc::channel;
+use tokio::sync::RwLock;
 
 #[derive(Clone)]
 pub struct Application {
@@ -54,10 +54,7 @@ impl Application {
 
         self.set_state(AgentState::ConnectingToTunnelServer).await;
 
-        let (
-            new_client_tx,
-            mut new_client_rx
-        ) = channel::<NewClient>(1024);
+        let (new_client_tx, mut new_client_rx) = channel::<NewClient>(1024);
 
         let client_ids = Arc::new(AtomicU64::new(1));
 
@@ -67,9 +64,12 @@ impl Application {
 
             tokio::spawn(async move {
                 while let Some(client) = new_client_rx.recv().await {
-                    let found = this.agent_config.with_config(|config| {
-                        config.find_local_addr(client.connect_addr, Proto::Tcp)
-                    }).await;
+                    let found = this
+                        .agent_config
+                        .with_config(|config| {
+                            config.find_local_addr(client.connect_addr, Proto::Tcp)
+                        })
+                        .await;
 
                     let host_addr = match found {
                         Some((_local_bind, host_addr)) => host_addr,
@@ -81,38 +81,51 @@ impl Application {
 
                     let client_id = client_ids.fetch_add(1, Ordering::SeqCst);
 
-                    this.events.add_event(PlayitEventDetails::ClientAccepted {
-                        client_id,
-                        proto: Proto::Tcp,
-                        tunnel_addr: SocketAddr::V4(client.connect_addr),
-                        peer_addr: SocketAddr::V4(client.peer_addr),
-                        host_addr,
-                    }).await;
+                    this.events
+                        .add_event(PlayitEventDetails::ClientAccepted {
+                            client_id,
+                            proto: Proto::Tcp,
+                            tunnel_addr: SocketAddr::V4(client.connect_addr),
+                            peer_addr: SocketAddr::V4(client.peer_addr),
+                            host_addr,
+                        })
+                        .await;
 
                     let this = this.clone();
                     tokio::spawn(async move {
                         let pipe = match TcpConnection::spawn(client, host_addr).await {
                             Ok(pipe) => pipe,
                             Err(_) => {
-                                this.events.add_event(PlayitEventDetails::NewClientSetupFailed { client_id }).await;
+                                this.events
+                                    .add_event(PlayitEventDetails::NewClientSetupFailed {
+                                        client_id,
+                                    })
+                                    .await;
                                 return;
                             }
                         };
 
-                        this.events.add_event(PlayitEventDetails::ClientConnected { client_id }).await;
+                        this.events
+                            .add_event(PlayitEventDetails::ClientConnected { client_id })
+                            .await;
 
                         pipe.wait().await;
-                        this.events.add_event(PlayitEventDetails::ClientDisconnected { client_id }).await;
+                        this.events
+                            .add_event(PlayitEventDetails::ClientDisconnected { client_id })
+                            .await;
                     });
                 }
             })
         };
 
         let tunnel_client = {
-            let api_client = self.agent_config.with_config(|config| {
-                let api_url = config.get_api_url();
-                ApiClient::new(api_url, Some(config.secret_key.clone()))
-            }).await;
+            let api_client = self
+                .agent_config
+                .with_config(|config| {
+                    let api_url = config.get_api_url();
+                    ApiClient::new(api_url, Some(config.secret_key.clone()))
+                })
+                .await;
 
             match TunnelClient::new(api_client, new_client_tx).await {
                 Ok(v) => v,
@@ -141,7 +154,8 @@ impl Application {
                 events: self.events.clone(),
                 agent_config: self.agent_config.clone(),
                 claim_failed: false,
-            })).await;
+            }))
+            .await;
 
             break;
         }
@@ -188,7 +202,9 @@ impl Application {
 
                     let send_res = {
                         let channel = udp_channel.read().await;
-                        udp_tunnel.send_to(&channel.token, channel.tunnel_addr).await
+                        udp_tunnel
+                            .send_to(&channel.token, channel.tunnel_addr)
+                            .await
                     };
 
                     if let Err(error) = send_res {
@@ -320,35 +336,40 @@ impl Application {
         udp_clients
             .forward_packet(flow, payload, move |addr| {
                 agent_config.into_local_lookup(addr, Proto::Udp)
-            }).await;
+            })
+            .await;
 
         false
     }
 
     async fn claim_port_leases(&self, client: &TunnelClient) {
-        let claims = self.agent_config.with_config(|config| {
-            let mut claims = Vec::new();
+        let claims = self
+            .agent_config
+            .with_config(|config| {
+                let mut claims = Vec::new();
 
-            for mapping in &config.mappings {
-                let ip = match mapping.tunnel_ip {
-                    IpAddr::V4(ip) => ip,
-                    _ => {
-                        tracing::error!("IPv6 not supported");
-                        continue;
-                    }
-                };
+                for mapping in &config.mappings {
+                    let ip = match mapping.tunnel_ip {
+                        IpAddr::V4(ip) => ip,
+                        _ => {
+                            tracing::error!("IPv6 not supported");
+                            continue;
+                        }
+                    };
 
-                claims.push(ClaimLease {
-                    ip,
-                    from_port: mapping.tunnel_from_port,
-                    to_port: mapping.tunnel_to_port
-                        .unwrap_or(mapping.tunnel_from_port + 1),
-                    proto: mapping.proto,
-                });
-            }
+                    claims.push(ClaimLease {
+                        ip,
+                        from_port: mapping.tunnel_from_port,
+                        to_port: mapping
+                            .tunnel_to_port
+                            .unwrap_or(mapping.tunnel_from_port + 1),
+                        proto: mapping.proto,
+                    });
+                }
 
-            claims
-        }).await;
+                claims
+            })
+            .await;
 
         let mut has_error = false;
 
@@ -361,7 +382,8 @@ impl Application {
 
         self.update_running(|running| {
             running.claim_failed = has_error;
-        }).await;
+        })
+        .await;
     }
 
     async fn run_setup(&self) -> bool {
@@ -374,7 +396,8 @@ impl Application {
 
         if self.agent_config.with_config(|c| c.mappings.len()).await == 0 {
             tracing::info!("no tunnels, refresh till we get something");
-            self.set_state(AgentState::WaitingForTunnels { error: false }).await;
+            self.set_state(AgentState::WaitingForTunnels { error: false })
+                .await;
 
             loop {
                 tokio::time::sleep(Duration::from_secs(2)).await;
@@ -382,11 +405,14 @@ impl Application {
 
                 let tunnel_count = self.agent_config.with_config(|c| c.mappings.len()).await;
                 if tunnel_count > 0 {
-                    self.events.add_event(PlayitEventDetails::AgentConfigUpdated).await;
+                    self.events
+                        .add_event(PlayitEventDetails::AgentConfigUpdated)
+                        .await;
                     break;
                 }
 
-                self.set_state(AgentState::WaitingForTunnels { error }).await;
+                self.set_state(AgentState::WaitingForTunnels { error })
+                    .await;
             }
         }
 
@@ -404,7 +430,7 @@ impl Application {
                 handle(running);
                 true
             }
-            _ => false
+            _ => false,
         }
     }
 }

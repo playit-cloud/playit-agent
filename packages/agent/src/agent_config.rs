@@ -1,17 +1,17 @@
-use std::net::{IpAddr, SocketAddr, SocketAddrV4};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 use ring::rand::{SecureRandom, SystemRandom};
+use std::net::{IpAddr, SocketAddr, SocketAddrV4};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
-use agent_common::agent_config::{AgentConfig, DEFAULT_API};
-use agent_common::api::AgentAccountStatus;
-use agent_common::Proto;
 use crate::api_client::{ApiClient, ApiError};
 use crate::events::{PlayitEventDetails, PlayitEvents};
 use crate::now_milli;
+use agent_common::agent_config::{AgentConfig, DEFAULT_API};
+use agent_common::api::AgentAccountStatus;
+use agent_common::Proto;
 
 #[derive(Clone)]
 pub struct ManagedAgentConfig {
@@ -30,7 +30,7 @@ impl ManagedAgentConfig {
                 api_url: None,
                 refresh_from_api: false,
                 secret_key: "".to_string(),
-                mappings: vec![]
+                mappings: vec![],
             })),
             status: Arc::new(Default::default()),
             events,
@@ -83,10 +83,17 @@ impl ManagedAgentConfig {
             *self.config.write().await = api_config.clone();
 
             self.version.fetch_add(1, Ordering::SeqCst);
-            self.events.add_event(PlayitEventDetails::AgentConfigUpdated).await;
+            self.events
+                .add_event(PlayitEventDetails::AgentConfigUpdated)
+                .await;
 
-            if let Err(error) = tokio::fs::write("playit.toml", toml::to_string_pretty(&api_config).unwrap()).await {
-                tracing::error!(?error, "failed to write updated configuration to playit.toml");
+            if let Err(error) =
+                tokio::fs::write("playit.toml", toml::to_string_pretty(&api_config).unwrap()).await
+            {
+                tracing::error!(
+                    ?error,
+                    "failed to write updated configuration to playit.toml"
+                );
             }
         }
 
@@ -116,15 +123,9 @@ pub enum AgentConfigStatus {
     LoadingAccountStatus,
     ErrorLoadingAccountStatus,
     AccountVerified,
-    PleaseVerifyAccount {
-        url: Arc<String>,
-    },
-    PleaseCreateAccount {
-        url: Arc<String>,
-    },
-    PleaseActiveProgram {
-        url: Arc<String>,
-    },
+    PleaseVerifyAccount { url: Arc<String> },
+    PleaseCreateAccount { url: Arc<String> },
+    PleaseActiveProgram { url: Arc<String> },
     ProgramActivated,
 }
 
@@ -134,7 +135,9 @@ impl Default for AgentConfigStatus {
     }
 }
 
-pub async fn prepare_config(prepare_status: &RwLock<AgentConfigStatus>) -> Result<AgentConfig, std::io::Error> {
+pub async fn prepare_config(
+    prepare_status: &RwLock<AgentConfigStatus>,
+) -> Result<AgentConfig, std::io::Error> {
     *prepare_status.write().await = AgentConfigStatus::ReadingConfigFile;
 
     let config = match load_or_create().await {
@@ -148,8 +151,12 @@ pub async fn prepare_config(prepare_status: &RwLock<AgentConfigStatus>) -> Resul
                     match api.get_agent_account_status().await {
                         Ok(v) => break v,
                         Err(error) => {
-                            tracing::error!(?error, "failed to load account status, retrying in 5s");
-                            *prepare_status.write().await = AgentConfigStatus::ErrorLoadingAccountStatus;
+                            tracing::error!(
+                                ?error,
+                                "failed to load account status, retrying in 5s"
+                            );
+                            *prepare_status.write().await =
+                                AgentConfigStatus::ErrorLoadingAccountStatus;
                             tokio::time::sleep(Duration::from_secs(5)).await;
                         }
                     }
@@ -165,23 +172,33 @@ pub async fn prepare_config(prepare_status: &RwLock<AgentConfigStatus>) -> Resul
                         return Ok(config);
                     }
                     AgentAccountStatus::UnverifiedAccount { account_id } => {
-                        let verify_url = format!("https://new.playit.gg/login/verify-account/{}", account_id);
+                        let verify_url =
+                            format!("https://new.playit.gg/login/verify-account/{}", account_id);
                         tracing::info!(%verify_url, "generated verify account url");
 
                         if let Err(error) = webbrowser::open(&verify_url) {
                             tracing::error!(?error, url = %verify_url, "failed to open verify URL in web browser");
                         }
-                        *prepare_status.write().await = AgentConfigStatus::PleaseVerifyAccount { url: Arc::new(verify_url) };
+                        *prepare_status.write().await = AgentConfigStatus::PleaseVerifyAccount {
+                            url: Arc::new(verify_url),
+                        };
                         return Ok(config);
                     }
-                    AgentAccountStatus::GuestAccount { web_session_key, .. } => {
-                        let guest_login_url = format!("https://new.playit.gg/login/guest-account/{}", web_session_key);
+                    AgentAccountStatus::GuestAccount {
+                        web_session_key, ..
+                    } => {
+                        let guest_login_url = format!(
+                            "https://new.playit.gg/login/guest-account/{}",
+                            web_session_key
+                        );
                         tracing::info!(%guest_login_url, "generated guest login url");
 
                         if let Err(error) = webbrowser::open(&guest_login_url) {
                             tracing::error!(?error, url = %guest_login_url, "failed to open guest login URL in web browser");
                         }
-                        *prepare_status.write().await = AgentConfigStatus::PleaseCreateAccount { url: Arc::new(guest_login_url) };
+                        *prepare_status.write().await = AgentConfigStatus::PleaseCreateAccount {
+                            url: Arc::new(guest_login_url),
+                        };
                         return Ok(config);
                     }
                 }
@@ -211,9 +228,14 @@ pub async fn prepare_config(prepare_status: &RwLock<AgentConfigStatus>) -> Resul
         tracing::error!(?error, "failed to open claim URL in web browser");
     }
 
-    *prepare_status.write().await = AgentConfigStatus::PleaseActiveProgram { url: Arc::new(claim_url) };
+    *prepare_status.write().await = AgentConfigStatus::PleaseActiveProgram {
+        url: Arc::new(claim_url),
+    };
 
-    let api_url = config.as_ref().map(|v| v.get_api_url()).unwrap_or_else(|| DEFAULT_API.to_string());
+    let api_url = config
+        .as_ref()
+        .map(|v| v.get_api_url())
+        .unwrap_or_else(|| DEFAULT_API.to_string());
     let api = ApiClient::new(api_url, None);
 
     /*
@@ -242,18 +264,18 @@ pub async fn prepare_config(prepare_status: &RwLock<AgentConfigStatus>) -> Resul
             config.secret_key = secret_key;
             config
         }
-        None => {
-            AgentConfig {
-                last_update: None,
-                api_url: None,
-                refresh_from_api: true,
-                secret_key,
-                mappings: vec![],
-            }
-        }
+        None => AgentConfig {
+            last_update: None,
+            api_url: None,
+            refresh_from_api: true,
+            secret_key,
+            mappings: vec![],
+        },
     };
 
-    if let Err(error) = tokio::fs::write("playit.toml", toml::to_string_pretty(&config).unwrap()).await {
+    if let Err(error) =
+        tokio::fs::write("playit.toml", toml::to_string_pretty(&config).unwrap()).await
+    {
         tracing::error!(?error, "failed to write playit.toml config");
     } else {
         tracing::info!("playit.toml updated");
@@ -288,8 +310,11 @@ async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
                     refresh_from_api: true,
                     secret_key: "put-secret-here".to_string(),
                     mappings: vec![],
-                }).unwrap().as_bytes(),
-            ).await?;
+                })
+                .unwrap()
+                .as_bytes(),
+            )
+            .await?;
 
             Ok(None)
         }

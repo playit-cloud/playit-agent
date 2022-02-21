@@ -1,13 +1,13 @@
 use std::net::{SocketAddr, SocketAddrV4};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
+use agent_common::{ClaimInstructions, NewClient};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
-use agent_common::{ClaimInstructions, NewClient};
 
 use crate::lan_address::LanAddress;
 
@@ -21,7 +21,10 @@ pub struct TcpConnection {
 const RESP_LEN: usize = 8;
 
 impl TcpConnection {
-    pub async fn spawn(client: NewClient, host_addr: SocketAddr) -> Result<ActiveTcpConnection, ()> {
+    pub async fn spawn(
+        client: NewClient,
+        host_addr: SocketAddr,
+    ) -> Result<ActiveTcpConnection, ()> {
         match client.claim_instructions {
             ClaimInstructions::Tcp { address, token } => {
                 let span = tracing::info_span!("tcp client",
@@ -43,7 +46,10 @@ impl TcpConnection {
                     let ready = match tcp_conn.establish().await {
                         Ok(v) => v,
                         Err(error) => {
-                            tracing::error!(?error, "failed to establish connection to tunnel server");
+                            tracing::error!(
+                                ?error,
+                                "failed to establish connection to tunnel server"
+                            );
                             return Err(());
                         }
                     };
@@ -62,7 +68,9 @@ impl TcpConnection {
                     tracing::info!(stats = ?active.stats, "connection setup");
 
                     Ok(active)
-                }.instrument(span).await
+                }
+                .instrument(span)
+                .await
             }
         }
     }
@@ -109,7 +117,9 @@ impl TcpConnection {
                 peer_address: self.peer_address,
                 span,
             })
-        }.instrument(self.span).await
+        }
+        .instrument(self.span)
+        .await
     }
 }
 
@@ -129,7 +139,10 @@ impl ReadyTcpConnection {
             let conn = match LanAddress::tcp_socket(true, self.peer_address, host_addr).await {
                 Ok(v) => v,
                 Err(error) => {
-                    tracing::error!(?error, "failed to connect to local server (is your server running?)");
+                    tracing::error!(
+                        ?error,
+                        "failed to connect to local server (is your server running?)"
+                    );
                     return Err(error);
                 }
             };
@@ -145,14 +158,16 @@ impl ReadyTcpConnection {
                 stats: stats.clone(),
                 host_to_tunnel: tokio::spawn(
                     pipe(host_rx, tunnel_tx, stats.clone(), false)
-                        .instrument(tracing::info_span!("local to tunnel"))
+                        .instrument(tracing::info_span!("local to tunnel")),
                 ),
                 tunnel_to_host: tokio::spawn(
                     pipe(tunnel_rx, host_tx, stats.clone(), true)
-                        .instrument(tracing::info_span!("tunnel to local"))
+                        .instrument(tracing::info_span!("tunnel to local")),
                 ),
             })
-        }.instrument(self.span).await
+        }
+        .instrument(self.span)
+        .await
     }
 }
 
@@ -207,7 +222,8 @@ async fn pipe(
                 &stats.from_tunnel
             } else {
                 &stats.to_tunnel
-            }.fetch_add(received, Ordering::SeqCst);
+            }
+            .fetch_add(received, Ordering::SeqCst);
 
             to.write_all(&buffer[..received]).await.map_err(|error| {
                 tracing::error!(?error, "failed to write data");
@@ -216,7 +232,8 @@ async fn pipe(
         }
 
         Ok(())
-    }.await;
+    }
+    .await;
 
     stats.running.fetch_sub(1, Ordering::SeqCst);
     r

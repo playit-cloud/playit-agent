@@ -3,10 +3,12 @@ use std::net::SocketAddr;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use agent_common::{AgentRegistered, TunnelRequest};
 use agent_common::agent_config::AgentConfig;
-use agent_common::api::{AgentAccountStatus, AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret};
+use agent_common::api::{
+    AgentAccountStatus, AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret,
+};
 use agent_common::rpc::SignedRpcRequest;
+use agent_common::{AgentRegistered, TunnelRequest};
 
 pub struct ApiClient {
     api_base: String,
@@ -63,10 +65,17 @@ impl ApiClient {
         }
     }
 
-    pub async fn try_exchange_claim_for_secret(&self, claim_url: &str) -> Result<Option<String>, ApiError> {
-        let res = self.req(&AgentApiRequest::ExchangeClaimForSecret(ExchangeClaimForSecret {
-            claim_key: claim_url.to_string()
-        })).await;
+    pub async fn try_exchange_claim_for_secret(
+        &self,
+        claim_url: &str,
+    ) -> Result<Option<String>, ApiError> {
+        let res = self
+            .req(&AgentApiRequest::ExchangeClaimForSecret(
+                ExchangeClaimForSecret {
+                    claim_key: claim_url.to_string(),
+                },
+            ))
+            .await;
 
         match res {
             Ok(AgentApiResponse::AgentSecret(secret)) => Ok(Some(secret.secret_key)),
