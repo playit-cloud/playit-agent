@@ -1,8 +1,16 @@
-# (in private beta) playit agent
+# The playit program
 
-Latest Release: 0.6.5-beta
+* Latest Release: 0.7.0-beta
+* Offical Website: https://playit.gg
+* Offical Downloads: https://playit.gg/download
 
-This is beta software for connecting to the services provided by [https://new.playit.gg](https://new.playit.gg).
-The APIs and protocols used are likely to change multiple times before leaving the beta.
+**Note**
+Please only use the playit program if you downloaded if from the offical website or are compiling it from source.
 
-You will need Perl and Visual Studio to compile OpenSSL on Windows
+## Building
+
+Requires Rust: https://rustup.rs
+
+Run using `cargo run --release --bin=agent`
+
+On Windows you will need Perl and Visual Studio to compile OpenSSL.
