@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
 use tokio::task::JoinHandle;
 
 pub struct TrackedTask {
@@ -19,7 +20,7 @@ impl TrackedTask {
 
         TrackedTask {
             done,
-            task
+            task,
         }
     }
 

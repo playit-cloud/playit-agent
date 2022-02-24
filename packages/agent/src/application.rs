@@ -2,14 +2,17 @@ use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
+
 use byteorder::{BigEndian, ByteOrder};
 use ring::test::run;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::channel;
 use tokio::sync::RwLock;
-use agent_common::agent_config::AgentConfig;
+
 use agent_common::{ClaimLease, ClaimProto, NewClient, Proto};
+use agent_common::agent_config::AgentConfig;
 use agent_common::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
+
 use crate::agent_config::{AgentConfigStatus, ManagedAgentConfig};
 use crate::api_client::ApiClient;
 use crate::events::{PlayitEventDetails, PlayitEvents};
@@ -95,8 +98,11 @@ impl Application {
                     tokio::spawn(async move {
                         let pipe = match TcpConnection::spawn(client, host_addr).await {
                             Ok(pipe) => pipe,
-                            Err(_) => {
-                                this.events.add_event(PlayitEventDetails::NewClientSetupFailed { client_id }).await;
+                            Err(reason) => {
+                                this.events.add_event(PlayitEventDetails::NewClientSetupFailed {
+                                    client_id,
+                                    reason,
+                                }).await;
                                 return;
                             }
                         };

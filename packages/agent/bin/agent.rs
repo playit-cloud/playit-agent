@@ -3,21 +3,11 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::time::Duration;
 
-use crossterm::{event, execute};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers};
-use crossterm::event::Event::Key;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use ring::test::run;
 use tokio::sync::{MappedMutexGuard, RwLock};
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tracing::Level;
-use tui::{Frame, Terminal};
-use tui::backend::{Backend, CrosstermBackend};
-use tui::layout::{Alignment, Constraint, Corner, Direction, Layout, Rect};
-use tui::style::{Color, Modifier, Style};
-use tui::text::{Span, Spans};
-use tui::widgets::{Block, Borders, BorderType, Gauge, List, ListItem, Paragraph, Wrap};
 
 use agent::agent_config::{AgentConfigStatus, ManagedAgentConfig, prepare_config};
 use agent::api_client::ApiClient;
@@ -29,6 +19,16 @@ use agent::tracked_task::TrackedTask;
 use agent::tunnel_client::TunnelClient;
 use agent_common::agent_config::AgentConfig;
 use agent_common::Proto;
+use crossterm::{event, execute};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers};
+use crossterm::event::Event::Key;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use tui::{Frame, Terminal};
+use tui::backend::{Backend, CrosstermBackend};
+use tui::layout::{Alignment, Constraint, Corner, Direction, Layout, Rect};
+use tui::style::{Color, Modifier, Style};
+use tui::text::{Span, Spans};
+use tui::widgets::{Block, Borders, BorderType, Gauge, List, ListItem, Paragraph, Wrap};
 
 #[tokio::main]
 async fn main() {
@@ -73,12 +73,12 @@ async fn main() {
         let app_task = match ui_task.await {
             Ok(Ok(_)) => {
                 tracing::info!("program closed");
-                return
-            },
+                return;
+            }
             Ok(Err(v)) => {
                 tracing::warn!("got UI rendering error");
                 v
-            },
+            }
             Err(_) => return,
         };
         app_task.wait().await;
@@ -263,8 +263,8 @@ impl Renderer {
 
     fn render_no_tunnels<B: Backend>(&self, f: &mut Frame<B>, error: bool) {
         let description = match error {
-            true => Paragraph::new("No tunnels found, create them at\nhttps://new.playit.gg/account/tunnels\nGetting an error trying to load tunnels..."),
-            false => Paragraph::new("No tunnels found, create them at\nhttps://new.playit.gg/account/tunnels"),
+            true => Paragraph::new("No tunnels found, create them at\nhttps://playit.gg/account/tunnels\nGetting an error trying to load tunnels..."),
+            false => Paragraph::new("No tunnels found, create them at\nhttps://playit.gg/account/tunnels"),
         }
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false });

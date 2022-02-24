@@ -2,6 +2,7 @@ use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
 use ring::rand::{SecureRandom, SystemRandom};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
@@ -9,6 +10,7 @@ use tokio::sync::RwLock;
 use agent_common::agent_config::{AgentConfig, DEFAULT_API};
 use agent_common::api::AgentAccountStatus;
 use agent_common::Proto;
+
 use crate::api_client::{ApiClient, ApiError};
 use crate::events::{PlayitEventDetails, PlayitEvents};
 use crate::now_milli;
@@ -30,7 +32,7 @@ impl ManagedAgentConfig {
                 api_url: None,
                 refresh_from_api: false,
                 secret_key: "".to_string(),
-                mappings: vec![]
+                mappings: vec![],
             })),
             status: Arc::new(Default::default()),
             events,
@@ -164,7 +166,7 @@ pub async fn prepare_config(prepare_status: &RwLock<AgentConfigStatus>) -> Resul
                         return Ok(config);
                     }
                     AgentAccountStatus::UnverifiedAccount { account_id } => {
-                        let verify_url = format!("https://new.playit.gg/login/verify-account/{}", account_id);
+                        let verify_url = format!("https://playit.gg/login/verify-account/{}", account_id);
                         tracing::info!(%verify_url, "generated verify account url");
 
                         if let Err(error) = webbrowser::open(&verify_url) {
@@ -174,7 +176,7 @@ pub async fn prepare_config(prepare_status: &RwLock<AgentConfigStatus>) -> Resul
                         return Ok(config);
                     }
                     AgentAccountStatus::GuestAccount { web_session_key, .. } => {
-                        let guest_login_url = format!("https://new.playit.gg/login/guest-account/{}", web_session_key);
+                        let guest_login_url = format!("https://playit.gg/login/guest-account/{}", web_session_key);
                         tracing::info!(%guest_login_url, "generated guest login url");
 
                         if let Err(error) = webbrowser::open(&guest_login_url) {
@@ -203,7 +205,7 @@ pub async fn prepare_config(prepare_status: &RwLock<AgentConfigStatus>) -> Resul
     SystemRandom::new().fill(&mut buffer).unwrap();
     let claim_key = hex::encode(&buffer);
 
-    let claim_url = format!("https://new.playit.gg/claim/{}", claim_key);
+    let claim_url = format!("https://playit.gg/claim/{}", claim_key);
     tracing::info!(%claim_url, "generated claim url");
 
     if let Err(error) = webbrowser::open(&claim_url) {

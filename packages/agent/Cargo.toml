@@ -2,6 +2,9 @@
 name = "agent"
 version = "0.7.0-beta"
 edition = "2021"
+description = "using playit.gg makes it possible to host game servers at home without port forwarding"
+homepage = "https://playit.gg"
+repository = "https://github.com/playit-cloud/playit-agent"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -18,16 +21,13 @@ toml = "0.5.8"
 byteorder = "1.4.3"
 ring = "0.16.20"
 webbrowser = { git = "https://github.com/playit-cloud/webbrowser-rs", rev = "820f661c2d0afe87ca838546beef4ff9b8b1a10b", features = ["suppress-logs"] }
-crossterm = "0.23.0"
 tracing-appender = "0.2.0"
 tracing-subscriber = "0.3.8"
-tui = "0.17.0"
 futures = "0.3.21"
+tui = "0.17.0"
+crossterm = "0.23.0"
+
 
 [[bin]]
 name = "agent"
 path = "bin/agent.rs"
-
-[[bin]]
-name = "ping-tool"
-path = "bin/ping_tool.rs"

@@ -67,6 +67,7 @@ pub enum PlayitEventDetails {
     },
     NewClientSetupFailed {
         client_id: u64,
+        reason: SetupFailReason,
     },
     ClientConnected {
         client_id: u64,
@@ -75,4 +76,10 @@ pub enum PlayitEventDetails {
         client_id: u64,
     },
     AgentConfigUpdated,
+}
+
+#[derive(Debug)]
+pub enum SetupFailReason {
+    TunnelServerNoConnect(std::io::Error),
+    LocalServerNoConnect(std::io::Error),
 }

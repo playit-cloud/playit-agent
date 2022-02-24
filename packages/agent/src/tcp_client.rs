@@ -7,8 +7,10 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
+
 use agent_common::{ClaimInstructions, NewClient};
 
+use crate::events::SetupFailReason;
 use crate::lan_address::LanAddress;
 
 pub struct TcpConnection {
@@ -21,7 +23,7 @@ pub struct TcpConnection {
 const RESP_LEN: usize = 8;
 
 impl TcpConnection {
-    pub async fn spawn(client: NewClient, host_addr: SocketAddr) -> Result<ActiveTcpConnection, ()> {
+    pub async fn spawn(client: NewClient, host_addr: SocketAddr) -> Result<ActiveTcpConnection, SetupFailReason> {
         match client.claim_instructions {
             ClaimInstructions::Tcp { address, token } => {
                 let span = tracing::info_span!("tcp client",
@@ -44,7 +46,7 @@ impl TcpConnection {
                         Ok(v) => v,
                         Err(error) => {
                             tracing::error!(?error, "failed to establish connection to tunnel server");
-                            return Err(());
+                            return Err(SetupFailReason::TunnelServerNoConnect(error));
                         }
                     };
 
@@ -55,7 +57,7 @@ impl TcpConnection {
                         Ok(v) => v,
                         Err(error) => {
                             tracing::error!(?error, "failed to connect to local service");
-                            return Err(());
+                            return Err(SetupFailReason::LocalServerNoConnect(error));
                         }
                     };
 

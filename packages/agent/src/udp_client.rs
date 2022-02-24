@@ -12,6 +12,7 @@ use tokio::task::JoinHandle;
 
 use agent_common::{Proto, SetupUdpChannelDetails};
 use agent_common::udp::RedirectFlowFooter;
+
 use crate::events::{PlayitEventDetails, PlayitEvents};
 use crate::lan_address::LanAddress;
 
@@ -69,7 +70,7 @@ impl UdpClients {
                     proto: Proto::Udp,
                     tunnel_addr: SocketAddr::V4(flow.dst),
                     peer_addr: SocketAddr::V4(flow.src),
-                    host_addr
+                    host_addr,
                 }).await;
 
                 self.events.add_event(PlayitEventDetails::ClientConnected {
