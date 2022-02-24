@@ -6,8 +6,6 @@ description = "using playit.gg makes it possible to host game servers at home wi
 homepage = "https://playit.gg"
 repository = "https://github.com/playit-cloud/playit-agent"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 tokio = { version = "1.12", features = ["full"] }
 tracing = "0.1"
@@ -16,18 +14,25 @@ serde_json = "1"
 agent-common = { path = "../agent_common" }
 hex = "0.4.3"
 slab = "0.4.5"
-reqwest = { version = "0.11", features = ["json", "rustls", "native-tls-vendored"] }
 toml = "0.5.8"
 byteorder = "1.4.3"
-ring = "0.16.20"
+rand = "0.8.5"
 webbrowser = { git = "https://github.com/playit-cloud/webbrowser-rs", rev = "820f661c2d0afe87ca838546beef4ff9b8b1a10b", features = ["suppress-logs"] }
 tracing-appender = "0.2.0"
 tracing-subscriber = "0.3.8"
 futures = "0.3.21"
 tui = "0.17.0"
 crossterm = "0.23.0"
-
+hyper-tls = { git = "https://github.com/playit-cloud/hyper-tls", rev = "0ed584d6242075094ea0a2b8960622a65dd18fb4", features = ["use-rustls-with-webpki-roots"] }
+hyper = { version = "0.14.17", features = ["full"] }
 
 [[bin]]
 name = "agent"
 path = "bin/agent.rs"
+
+[bin.agent.profile.release]
+strip = "debuginfo"
+
+[package.metadata.deb]
+copyright = "Developed Methods LLC 2022"
+maintainer = "Patrick Lorio <patrick@playit.gg>"

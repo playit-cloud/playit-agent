@@ -1,9 +1,9 @@
 use byteorder::{BigEndian, WriteBytesExt};
-use ring::hmac;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::abs_diff;
+use crate::{abs_diff};
+use crate::hmac::HmacSha256;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 pub struct Authentication {
@@ -47,7 +47,7 @@ impl Signature {
         details: &RequestDetails,
         now: u64,
         data: &mut Vec<u8>,
-        secret: &hmac::Key,
+        secret: &HmacSha256,
     ) -> Result<Authorization, SignatureError> {
         let (max_diff, from_system) = match self {
             Signature::System(_) => (MAX_API_TIME_DIFF, true),
@@ -82,12 +82,12 @@ impl SystemSignature {
         &self,
         details: &RequestDetails,
         data: &mut Vec<u8>,
-        key: &hmac::Key,
+        key: &HmacSha256,
     ) -> Result<u64, SignatureError> {
         let og_data_len = data.len();
         data.write_u64::<BigEndian>(details.account_id).unwrap();
         data.write_u64::<BigEndian>(details.request_timestamp).unwrap();
-        let verify = hmac::verify(key, data, &self.signature);
+        let verify = key.verify(data, &self.signature);
         data.truncate(og_data_len);
 
         verify.map_err(|_| SignatureError::InvalidSignature)?;
@@ -102,7 +102,7 @@ impl SessionSignature {
         details: &RequestDetails,
         now: u64,
         data: &mut Vec<u8>,
-        key: &hmac::Key,
+        key: &HmacSha256,
     ) -> Result<(u64, u64), SignatureError> {
         let session_id = match details.session_id {
             Some(v) => v,
@@ -126,22 +126,22 @@ impl SessionSignature {
             buffer.write_u64::<BigEndian>(session_id).unwrap();
             buffer.write_u64::<BigEndian>(self.session_timestamp).unwrap();
 
-            hmac::verify(key, &buffer, &self.session_signature)
+            key.verify(&buffer, &self.session_signature)
                 .map_err(|_| SignatureError::InvalidSessionToken)?;
         }
 
         /* generate shared secret */
-        let shared_secret = hmac::sign(key, &self.session_signature);
+        let shared_secret = key.sign(&self.session_signature);
 
         /* validate signature */
         {
-            let key = hmac::Key::new(hmac::HMAC_SHA256, shared_secret.as_ref());
+            let mut key = HmacSha256::create(shared_secret.as_ref());
 
             let og_data_len = data.len();
             data.write_u64::<BigEndian>(details.account_id).unwrap();
             data.write_u64::<BigEndian>(details.request_timestamp).unwrap();
 
-            let sig = hmac::verify(&key, data, &self.signature);
+            let sig = key.verify(data, &self.signature);
             data.truncate(og_data_len);
 
             sig.map_err(|_| SignatureError::InvalidSignature)?;
@@ -154,22 +154,18 @@ impl SessionSignature {
         account_id: u64,
         session_id: u64,
         session_timestamp: u64,
-        key: &hmac::Key,
+        key: &HmacSha256,
     ) -> [u8; 32] {
         let mut buffer = Vec::with_capacity(std::mem::size_of::<u64>() * 3);
         buffer.write_u64::<BigEndian>(account_id).unwrap();
         buffer.write_u64::<BigEndian>(session_id).unwrap();
         buffer.write_u64::<BigEndian>(session_timestamp).unwrap();
 
-        let mut data = [0u8; 32];
-        data.copy_from_slice(hmac::sign(key, &buffer).as_ref());
-        data
+        key.sign_fixed(&buffer)
     }
 
-    pub fn generate_session_secret(token: &[u8], key: &hmac::Key) -> [u8; 32] {
-        let mut data = [0u8; 32];
-        data.copy_from_slice(hmac::sign(key, token).as_ref());
-        data
+    pub fn generate_session_secret(token: &[u8], key: &HmacSha256) -> [u8; 32] {
+        key.sign_fixed(token)
     }
 }
 
@@ -179,18 +175,16 @@ pub fn generate_signature(
     data: &mut Vec<u8>,
     secret: &[u8],
 ) -> [u8; 32] {
-    let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
+    let key = HmacSha256::create(secret);
 
     let og_data_len = data.len();
     data.write_u64::<BigEndian>(account_id).unwrap();
     data.write_u64::<BigEndian>(timestamp).unwrap();
 
-    let sig = hmac::sign(&key, data);
+    let sig = key.sign_fixed(data);
     data.truncate(og_data_len);
 
-    let mut data = [0u8; 32];
-    data.copy_from_slice(sig.as_ref());
-    data
+    sig
 }
 
 #[derive(Debug)]

@@ -3,11 +3,20 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 use std::time::Duration;
 
-use ring::test::run;
+use crossterm::{event, execute};
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers};
+use crossterm::event::Event::Key;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use tokio::sync::{MappedMutexGuard, RwLock};
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
 use tracing::Level;
+use tui::{Frame, Terminal};
+use tui::backend::{Backend, CrosstermBackend};
+use tui::layout::{Alignment, Constraint, Corner, Direction, Layout, Rect};
+use tui::style::{Color, Modifier, Style};
+use tui::text::{Span, Spans};
+use tui::widgets::{Block, Borders, BorderType, Gauge, List, ListItem, Paragraph, Wrap};
 
 use agent::agent_config::{AgentConfigStatus, ManagedAgentConfig, prepare_config};
 use agent::api_client::ApiClient;
@@ -19,16 +28,6 @@ use agent::tracked_task::TrackedTask;
 use agent::tunnel_client::TunnelClient;
 use agent_common::agent_config::AgentConfig;
 use agent_common::Proto;
-use crossterm::{event, execute};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers};
-use crossterm::event::Event::Key;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
-use tui::{Frame, Terminal};
-use tui::backend::{Backend, CrosstermBackend};
-use tui::layout::{Alignment, Constraint, Corner, Direction, Layout, Rect};
-use tui::style::{Color, Modifier, Style};
-use tui::text::{Span, Spans};
-use tui::widgets::{Block, Borders, BorderType, Gauge, List, ListItem, Paragraph, Wrap};
 
 #[tokio::main]
 async fn main() {

@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use byteorder::{BigEndian, ByteOrder};
-use ring::test::run;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::channel;
 use tokio::sync::RwLock;

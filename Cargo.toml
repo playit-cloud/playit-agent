@@ -3,3 +3,6 @@ members = [
     "packages/agent",
     "packages/agent_common",
 ]
+
+[profile.release]
+strip = "debuginfo"

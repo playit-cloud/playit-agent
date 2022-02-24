@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use ring::rand::{SecureRandom, SystemRandom};
+use rand::Rng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 
@@ -202,7 +202,7 @@ pub async fn prepare_config(prepare_status: &RwLock<AgentConfigStatus>) -> Resul
     tracing::info!("generating claim key to setup playit program");
 
     let mut buffer = [0u8; 32];
-    SystemRandom::new().fill(&mut buffer).unwrap();
+    rand::thread_rng().fill(&mut buffer);
     let claim_key = hex::encode(&buffer);
 
     let claim_url = format!("https://playit.gg/claim/{}", claim_key);

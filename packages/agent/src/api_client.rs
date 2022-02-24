@@ -1,6 +1,9 @@
 use std::net::SocketAddr;
 
-use reqwest::Client;
+use hyper::{Body, header, Method, Request};
+use hyper::body::Buf;
+use hyper::client::HttpConnector;
+use hyper_tls::HttpsConnector;
 use serde::{Deserialize, Serialize};
 
 use agent_common::{AgentRegistered, TunnelRequest};
@@ -11,7 +14,7 @@ use agent_common::rpc::SignedRpcRequest;
 pub struct ApiClient {
     api_base: String,
     agent_secret: Option<String>,
-    request: Client,
+    client: hyper::Client<HttpsConnector<HttpConnector>, hyper::Body>,
 }
 
 impl ApiClient {
@@ -19,7 +22,7 @@ impl ApiClient {
         ApiClient {
             api_base,
             agent_secret,
-            request: Client::new(),
+            client: hyper::Client::builder().build(HttpsConnector::new()),
         }
     }
 
@@ -87,20 +90,29 @@ impl ApiClient {
     }
 
     async fn req(&self, req: &AgentApiRequest) -> Result<AgentApiResponse, ApiError> {
-        let mut builder = self.request.post(&self.api_base);
+        let mut builder = Request::builder()
+            .uri(&self.api_base)
+            .method(Method::POST);
+
         if let Some(secret) = &self.agent_secret {
             builder = builder.header(
-                reqwest::header::AUTHORIZATION,
+                hyper::header::AUTHORIZATION,
                 format!("agent-key {}", secret),
             );
         }
 
-        let bytes = builder.json(req).send().await?.bytes().await?;
+        let request = builder
+            .body(Body::from(serde_json::to_vec(req).unwrap()))
+            .unwrap();
 
-        let result = match serde_json::from_slice::<Response>(bytes.as_ref()) {
+        let response = self.client.request(request).await?;
+        let bytes = hyper::body::aggregate(response.into_body()).await?;
+
+        let result = match serde_json::from_slice::<Response>(bytes.chunk())
+        {
             Ok(v) => v,
             Err(error) => {
-                let content = String::from_utf8_lossy(bytes.as_ref());
+                let content = String::from_utf8_lossy(bytes.chunk());
                 tracing::error!(?error, %content, "failed to parse response");
                 return Err(ApiError::ParseError(error));
             }
@@ -119,12 +131,12 @@ impl ApiClient {
 pub enum ApiError {
     HttpError(u16, String),
     ParseError(serde_json::Error),
-    RequestError(reqwest::Error),
+    RequestError(hyper::Error),
     UnexpectedResponse(AgentApiResponse),
 }
 
-impl From<reqwest::Error> for ApiError {
-    fn from(error: reqwest::Error) -> Self {
+impl From<hyper::Error> for ApiError {
+    fn from(error: hyper::Error) -> Self {
         ApiError::RequestError(error)
     }
 }

@@ -3,7 +3,6 @@ use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 
 use byteorder::{BigEndian, WriteBytesExt};
-use ring::hmac;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
@@ -13,6 +12,7 @@ use crate::auth::{
     Authentication, Authorization, RequestDetails, SessionSignature, Signature, SignatureError,
     SystemSignature,
 };
+use crate::hmac::HmacSha256;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct SignedRpcRequest<T: DeserializeOwned + Serialize> {
@@ -70,8 +70,8 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
             data.write_u64::<BigEndian>(session.account_id).unwrap();
             data.write_u64::<BigEndian>(timestamp).unwrap();
 
-            let key = hmac::Key::new(hmac::HMAC_SHA256, shared_secret);
-            let sig = hmac::sign(&key, &data);
+            let key = HmacSha256::create(shared_secret);
+            let sig = key.sign(&data);
 
             data.truncate(og_data_len);
 
@@ -99,7 +99,7 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
     }
 
     pub fn new_system_signed<K: Into<T>>(
-        key: &hmac::Key,
+        key: &HmacSha256,
         account_id: u64,
         timestamp: u64,
         data: K,
@@ -111,7 +111,7 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
             data.write_u64::<BigEndian>(account_id).unwrap();
             data.write_u64::<BigEndian>(timestamp).unwrap();
 
-            let sig = hmac::sign(key, &data);
+            let sig = key.sign(&data);
 
             data.truncate(og_data_len);
 
@@ -139,7 +139,7 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
     pub fn authenticate(
         &mut self,
         now: u64,
-        secret: &hmac::Key,
+        secret: &HmacSha256,
     ) -> Result<Option<Authorization>, SignatureError> {
         let auth = match &self.auth {
             Some(v) => v,

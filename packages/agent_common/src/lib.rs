@@ -12,6 +12,7 @@ pub mod auth;
 pub mod rpc;
 pub mod udp;
 pub mod agent_config;
+pub mod hmac;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 pub struct RpcMessage<T> {
