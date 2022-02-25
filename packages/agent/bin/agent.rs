@@ -44,14 +44,24 @@ struct CliArgs {
 
     #[clap(short, long)]
     config_file: Option<String>,
+
+    #[clap(short, long)]
+    use_linux_path_defaults: bool,
 }
 
 #[tokio::main]
 async fn main() {
     let args: CliArgs = CliArgs::parse();
 
+    let config_file = args.config_file.unwrap_or_else(||
+        if args.use_linux_path_defaults {
+            "/etc/playit/playit.toml".to_string()
+        } else {
+            "./playit.toml".to_string()
+        }
+    );
+
     /* determine if UI is supported and enabled */
-    let config_file = args.config_file.unwrap_or_else(|| "./playit.toml".to_string());
     let use_ui = {
         if args.stdout_logs {
             false
@@ -67,7 +77,14 @@ async fn main() {
 
     /* setup logger */
     let _logs_guard = if use_ui || !args.stdout_logs {
-        let log_folder = args.log_folder.unwrap_or_else(|| "./logs".to_string());
+        let log_folder = args.log_folder.unwrap_or_else(||
+            if args.use_linux_path_defaults {
+                "/var/log/playit".to_string()
+            } else {
+                "./logs".to_string()
+            }
+        );
+
         let file_appender = tracing_appender::rolling::daily(log_folder, "playit.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
         tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).with_writer(non_blocking).init();

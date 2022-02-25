@@ -30,7 +30,7 @@ cp "${SCRIPT_DIR}/../target/${CROSS_ARCH}/release/agent" "${WK_DIR}${INSTALL_FOL
 
 # Create run script
 echo "#!/bin/bash
-/opt/playit/agent --log-folder=/var/log/playit --config-file=/etc/playit/playit.toml
+/opt/playit/agent --use-linux-path-defaults \$@
 " > "${WK_DIR}${INSTALL_FOLDER}/playit"
 chmod 0755 "${WK_DIR}${INSTALL_FOLDER}/playit"
 
