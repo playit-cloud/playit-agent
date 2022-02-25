@@ -1,8 +1,8 @@
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-echo "building aarch64 .deb"
+echo "building arm64 .deb"
 echo "---------------------"
-  bash "${SCRIPT_DIR}/build-linux-deb.sh" "aarch64-unknown-linux-gnu" "aarch64"
+  bash "${SCRIPT_DIR}/build-linux-deb.sh" "aarch64-unknown-linux-gnu" "arm64"
 
 echo "building armv7 .deb"
 echo "---------------------"

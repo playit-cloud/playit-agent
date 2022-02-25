@@ -65,3 +65,4 @@ chmod 0555 "${WK_DIR}/DEBIAN/prerm"
 cd "${SCRIPT_DIR}/${TEMP_DIR_NAME}"
 dpkg-deb --build --root-owner-group "${DEB_PACKAGE}"
 cp "${DEB_PACKAGE}.deb" "${SCRIPT_DIR}/out/"
+
