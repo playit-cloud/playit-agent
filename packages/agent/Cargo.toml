@@ -23,7 +23,7 @@ tracing-subscriber = "0.3.8"
 futures = "0.3.21"
 tui = "0.17.0"
 crossterm = "0.23.0"
-hyper-tls = { git = "https://github.com/playit-cloud/hyper-tls", rev = "0ed584d6242075094ea0a2b8960622a65dd18fb4", features = ["use-rustls-with-webpki-roots"] }
+hyper-rustls = { version = "0.23.0", features = ["webpki-tokio", "http2"] }
 hyper = { version = "0.14.17", features = ["full"] }
 clap = { version = "3.1.2", features = ["derive"] }
 

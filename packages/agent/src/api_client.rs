@@ -3,8 +3,9 @@ use std::net::SocketAddr;
 use hyper::{Body, header, Method, Request};
 use hyper::body::Buf;
 use hyper::client::HttpConnector;
-use hyper_tls::HttpsConnector;
+use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use serde::{Deserialize, Serialize};
+use tracing::instrument::WithSubscriber;
 
 use agent_common::{AgentRegistered, TunnelRequest};
 use agent_common::agent_config::AgentConfig;
@@ -19,10 +20,17 @@ pub struct ApiClient {
 
 impl ApiClient {
     pub fn new(api_base: String, agent_secret: Option<String>) -> Self {
+        let connector = HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_only()
+            .enable_http1()
+            .enable_http2()
+            .build();
+
         ApiClient {
             api_base,
             agent_secret,
-            client: hyper::Client::builder().build(HttpsConnector::new()),
+            client: hyper::Client::builder().build(connector),
         }
     }
 
