@@ -1,6 +1,6 @@
 [package]
 name = "agent"
-version = "0.7.0-beta"
+version = "0.7.1-beta"
 edition = "2021"
 description = "using playit.gg makes it possible to host game servers at home without port forwarding"
 homepage = "https://playit.gg"
@@ -25,13 +25,11 @@ tui = "0.17.0"
 crossterm = "0.23.0"
 hyper-tls = { git = "https://github.com/playit-cloud/hyper-tls", rev = "0ed584d6242075094ea0a2b8960622a65dd18fb4", features = ["use-rustls-with-webpki-roots"] }
 hyper = { version = "0.14.17", features = ["full"] }
+clap = { version = "3.1.2", features = ["derive"] }
 
 [[bin]]
 name = "agent"
 path = "bin/agent.rs"
-
-[bin.agent.profile.release]
-strip = "debuginfo"
 
 [package.metadata.deb]
 copyright = "Developed Methods LLC 2022"

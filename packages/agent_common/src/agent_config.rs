@@ -3,7 +3,6 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use postgres_types::{ToSql, FromSql};
 
 use crate::{ClaimProto, Proto};
 

@@ -17,6 +17,7 @@ use crate::now_milli;
 
 #[derive(Clone)]
 pub struct ManagedAgentConfig {
+    pub file_path: String,
     pub version: Arc<AtomicUsize>,
     pub config: Arc<RwLock<AgentConfig>>,
     pub status: Arc<RwLock<AgentConfigStatus>>,
@@ -24,8 +25,9 @@ pub struct ManagedAgentConfig {
 }
 
 impl ManagedAgentConfig {
-    pub fn new(events: PlayitEvents) -> Self {
+    pub fn new(file_path: String, events: PlayitEvents) -> Self {
         ManagedAgentConfig {
+            file_path,
             version: Arc::new(AtomicUsize::new(0)),
             config: Arc::new(RwLock::new(AgentConfig {
                 last_update: None,
@@ -49,7 +51,7 @@ impl ManagedAgentConfig {
 
     pub async fn prepare_config(&self) -> Result<(), std::io::Error> {
         let mut guard = self.config.write().await;
-        *guard = prepare_config(&self.status).await?;
+        *guard = prepare_config(&self.file_path, &self.status).await?;
         Ok(())
     }
 
@@ -86,7 +88,7 @@ impl ManagedAgentConfig {
             self.version.fetch_add(1, Ordering::SeqCst);
             self.events.add_event(PlayitEventDetails::AgentConfigUpdated).await;
 
-            if let Err(error) = tokio::fs::write("playit.toml", toml::to_string_pretty(&api_config).unwrap()).await {
+            if let Err(error) = tokio::fs::write(&self.file_path, toml::to_string_pretty(&api_config).unwrap()).await {
                 tracing::error!(?error, "failed to write updated configuration to playit.toml");
             }
         }
@@ -135,10 +137,10 @@ impl Default for AgentConfigStatus {
     }
 }
 
-pub async fn prepare_config(prepare_status: &RwLock<AgentConfigStatus>) -> Result<AgentConfig, std::io::Error> {
+pub async fn prepare_config(config_path: &str, prepare_status: &RwLock<AgentConfigStatus>) -> Result<AgentConfig, std::io::Error> {
     *prepare_status.write().await = AgentConfigStatus::ReadingConfigFile;
 
-    let config = match load_or_create().await {
+    let config = match load_or_create(config_path).await {
         Ok(Some(config)) => {
             if config.valid_secret_key() {
                 let api = ApiClient::new(config.get_api_url(), Some(config.secret_key.clone()));
@@ -254,17 +256,17 @@ pub async fn prepare_config(prepare_status: &RwLock<AgentConfigStatus>) -> Resul
         }
     };
 
-    if let Err(error) = tokio::fs::write("playit.toml", toml::to_string_pretty(&config).unwrap()).await {
-        tracing::error!(?error, "failed to write playit.toml config");
+    if let Err(error) = tokio::fs::write(config_path, toml::to_string_pretty(&config).unwrap()).await {
+        tracing::error!(?error, config_path, "failed to write config file");
     } else {
-        tracing::info!("playit.toml updated");
+        tracing::info!(config_path, "config file updated");
     }
 
     Ok(config)
 }
 
-async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
-    match tokio::fs::File::open("./playit.toml").await {
+async fn load_or_create(config_path: &str) -> std::io::Result<Option<AgentConfig>> {
+    match tokio::fs::File::open(config_path).await {
         Ok(mut file) => {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
@@ -272,7 +274,7 @@ async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
             let config = match toml::from_slice::<AgentConfig>(&data) {
                 Ok(v) => v,
                 Err(error) => {
-                    tracing::error!(?error, "failed to parse ./playit.toml");
+                    tracing::error!(?error, config_path, "failed to parse");
                     return Ok(None);
                 }
             };
@@ -280,7 +282,7 @@ async fn load_or_create() -> std::io::Result<Option<AgentConfig>> {
             Ok(Some(config))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let mut file = tokio::fs::File::create("./playit.toml").await?;
+            let mut file = tokio::fs::File::create(config_path).await?;
 
             file.write_all(
                 toml::to_string(&AgentConfig {

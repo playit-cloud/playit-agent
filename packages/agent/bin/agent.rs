@@ -29,26 +29,55 @@ use agent::tunnel_client::TunnelClient;
 use agent_common::agent_config::AgentConfig;
 use agent_common::Proto;
 
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[clap(author, version, about, long_about = None)]
+struct CliArgs {
+    #[clap(short, long)]
+    log_folder: Option<String>,
+
+    #[clap(short, long)]
+    stdout_logs: bool,
+
+    #[clap(short, long)]
+    config_file: Option<String>,
+}
+
 #[tokio::main]
 async fn main() {
-    let use_ui = enable_raw_mode().is_ok();
+    let args: CliArgs = CliArgs::parse();
 
-    let _guard = if use_ui {
-        let file_appender = tracing_appender::rolling::daily("logs", "playit.log");
+    /* determine if UI is supported and enabled */
+    let config_file = args.config_file.unwrap_or_else(|| "./playit.toml".to_string());
+    let use_ui = {
+        if args.stdout_logs {
+            false
+        } else {
+            if enable_raw_mode().is_err() {
+                println!("Failed to start UI mode");
+                false
+            } else {
+                true
+            }
+        }
+    };
+
+    /* setup logger */
+    let _logs_guard = if use_ui || !args.stdout_logs {
+        let log_folder = args.log_folder.unwrap_or_else(|| "./logs".to_string());
+        let file_appender = tracing_appender::rolling::daily(log_folder, "playit.log");
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
         tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).with_writer(non_blocking).init();
 
-        tracing::info!("staring with UI");
         Some(guard)
     } else {
         tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).init();
-
-        tracing::info!("staring without UI");
         None
     };
 
     let events = PlayitEvents::new();
-    let agent_config = ManagedAgentConfig::new(events.clone());
+    let agent_config = ManagedAgentConfig::new(config_file, events.clone());
     let render_state = Arc::new(RwLock::new(
         AgentState::PreparingConfig(agent_config.status.clone())
     ));
@@ -67,6 +96,7 @@ async fn main() {
     let app_task = TrackedTask::new(app.start());
 
     if use_ui {
+        tracing::info!("Starting UI");
         let ui_task = start_terminal_ui(renderer, app_task);
 
         let app_task = match ui_task.await {
@@ -86,13 +116,13 @@ async fn main() {
     }
 }
 
-async fn get_initial_config(state: Arc<RwLock<AgentState>>) -> AgentConfig {
+async fn get_initial_config(config_path: &str, state: Arc<RwLock<AgentState>>) -> AgentConfig {
     let guard = state.read().await;
     let prepare_status = match &*guard {
         AgentState::PreparingConfig(status) => status,
         _ => panic!(),
     };
-    let config = prepare_config(prepare_status).await.unwrap();
+    let config = prepare_config(config_path, prepare_status).await.unwrap();
 
     /* wait 1s so user can read message */
     tokio::time::sleep(Duration::from_secs(1)).await;

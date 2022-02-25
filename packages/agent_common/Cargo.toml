@@ -13,7 +13,6 @@ byteorder = "1.4.3"
 schemars = { version = "0.8.8", features = ["uuid", "chrono"] }
 uuid = { version = "0.8.2", features = ["serde"] }
 chrono = { version = "0.4.19", features = ["serde"] }
-postgres-types = { version = "0.2.2", features = ["derive"] }
 ring = "0.16.20"
 
 [dev-dependencies]
