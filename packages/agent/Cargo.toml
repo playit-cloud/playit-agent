@@ -27,6 +27,9 @@ hyper-rustls = { version = "0.23.0", features = ["webpki-tokio", "http2"] }
 hyper = { version = "0.14.17", features = ["full"] }
 clap = { version = "3.1.2", features = ["derive"] }
 
+[build-dependencies]
+embed-resource = "1.6"
+
 [[bin]]
 name = "agent"
 path = "bin/agent.rs"
