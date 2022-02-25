@@ -31,6 +31,8 @@ use agent_common::Proto;
 
 use clap::Parser;
 
+pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct CliArgs {
@@ -224,7 +226,7 @@ impl Renderer {
 
         let title_bar = Gauge::default()
             .gauge_style(Style::default().fg(Color::Cyan))
-            .label(Span::styled(format!("playit.gg v0.7.0 ({})", self.render_count), Style::default()
+            .label(Span::styled(format!("playit.gg v{}", VERSION), Style::default()
                 .add_modifier(Modifier::BOLD)
                 .add_modifier(Modifier::UNDERLINED),
             ))
