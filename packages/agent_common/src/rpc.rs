@@ -4,15 +4,15 @@ use std::marker::PhantomData;
 
 use byteorder::{BigEndian, WriteBytesExt};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
-use crate::AgentRegistered;
 use crate::auth::{
     Authentication, Authorization, RequestDetails, SessionSignature, Signature, SignatureError,
     SystemSignature,
 };
 use crate::hmac::HmacSha256;
+use crate::AgentRegistered;
 
 #[derive(Serialize, Deserialize, JsonSchema)]
 pub struct SignedRpcRequest<T: DeserializeOwned + Serialize> {
@@ -127,9 +127,7 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
                     request_timestamp: timestamp,
                     session_id: None,
                 },
-                signature: Signature::System(SystemSignature {
-                    signature,
-                }),
+                signature: Signature::System(SystemSignature { signature }),
             }),
             content: data,
             _phantom: Default::default(),

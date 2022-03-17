@@ -39,7 +39,7 @@ impl AgentConfig {
     pub fn get_api_url(&self) -> String {
         match &self.api_url {
             Some(v) => v.clone(),
-            None => DEFAULT_API.to_string()
+            None => DEFAULT_API.to_string(),
         }
     }
 }
@@ -82,8 +82,8 @@ impl AgentConfig {
 
             let range = mapping.tunnel_from_port
                 ..mapping
-                .tunnel_to_port
-                .unwrap_or(mapping.tunnel_from_port + 1);
+                    .tunnel_to_port
+                    .unwrap_or(mapping.tunnel_from_port + 1);
             if !range.contains(&addr.port()) {
                 continue;
             }
@@ -91,11 +91,10 @@ impl AgentConfig {
             let port_delta = addr.port() - mapping.tunnel_from_port;
             let local_port = mapping.local_port.unwrap_or(mapping.tunnel_from_port) + port_delta;
 
-            let local_ip = mapping.local_ip.unwrap_or(Ipv4Addr::new(127, 0, 0, 1).into());
-            return Some((
-                mapping.bind_ip,
-                SocketAddr::new(local_ip, local_port),
-            ));
+            let local_ip = mapping
+                .local_ip
+                .unwrap_or(Ipv4Addr::new(127, 0, 0, 1).into());
+            return Some((mapping.bind_ip, SocketAddr::new(local_ip, local_port)));
         }
 
         None

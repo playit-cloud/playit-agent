@@ -1,16 +1,18 @@
 use std::net::SocketAddr;
 
-use hyper::{Body, header, Method, Request};
 use hyper::body::Buf;
 use hyper::client::HttpConnector;
+use hyper::{header, Body, Method, Request};
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use serde::{Deserialize, Serialize};
 use tracing::instrument::WithSubscriber;
 
-use agent_common::{AgentRegistered, TunnelRequest};
 use agent_common::agent_config::AgentConfig;
-use agent_common::api::{AgentAccountStatus, AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret};
+use agent_common::api::{
+    AgentAccountStatus, AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret,
+};
 use agent_common::rpc::SignedRpcRequest;
+use agent_common::{AgentRegistered, TunnelRequest};
 
 pub struct ApiClient {
     api_base: String,
@@ -74,10 +76,17 @@ impl ApiClient {
         }
     }
 
-    pub async fn try_exchange_claim_for_secret(&self, claim_url: &str) -> Result<Option<String>, ApiError> {
-        let res = self.req(&AgentApiRequest::ExchangeClaimForSecret(ExchangeClaimForSecret {
-            claim_key: claim_url.to_string()
-        })).await;
+    pub async fn try_exchange_claim_for_secret(
+        &self,
+        claim_url: &str,
+    ) -> Result<Option<String>, ApiError> {
+        let res = self
+            .req(&AgentApiRequest::ExchangeClaimForSecret(
+                ExchangeClaimForSecret {
+                    claim_key: claim_url.to_string(),
+                },
+            ))
+            .await;
 
         match res {
             Ok(AgentApiResponse::AgentSecret(secret)) => Ok(Some(secret.secret_key)),
@@ -98,9 +107,7 @@ impl ApiClient {
     }
 
     async fn req(&self, req: &AgentApiRequest) -> Result<AgentApiResponse, ApiError> {
-        let mut builder = Request::builder()
-            .uri(&self.api_base)
-            .method(Method::POST);
+        let mut builder = Request::builder().uri(&self.api_base).method(Method::POST);
 
         if let Some(secret) = &self.agent_secret {
             builder = builder.header(
@@ -116,8 +123,7 @@ impl ApiClient {
         let response = self.client.request(request).await?;
         let bytes = hyper::body::aggregate(response.into_body()).await?;
 
-        let result = match serde_json::from_slice::<Response>(bytes.chunk())
-        {
+        let result = match serde_json::from_slice::<Response>(bytes.chunk()) {
             Ok(v) => v,
             Err(error) => {
                 let content = String::from_utf8_lossy(bytes.chunk());

@@ -2,7 +2,7 @@ use byteorder::{BigEndian, WriteBytesExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{abs_diff};
+use crate::abs_diff;
 use crate::hmac::HmacSha256;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
@@ -86,7 +86,8 @@ impl SystemSignature {
     ) -> Result<u64, SignatureError> {
         let og_data_len = data.len();
         data.write_u64::<BigEndian>(details.account_id).unwrap();
-        data.write_u64::<BigEndian>(details.request_timestamp).unwrap();
+        data.write_u64::<BigEndian>(details.request_timestamp)
+            .unwrap();
         let verify = key.verify(data, &self.signature);
         data.truncate(og_data_len);
 
@@ -124,7 +125,9 @@ impl SessionSignature {
             let mut buffer = Vec::with_capacity(std::mem::size_of::<u64>() * 3);
             buffer.write_u64::<BigEndian>(details.account_id).unwrap();
             buffer.write_u64::<BigEndian>(session_id).unwrap();
-            buffer.write_u64::<BigEndian>(self.session_timestamp).unwrap();
+            buffer
+                .write_u64::<BigEndian>(self.session_timestamp)
+                .unwrap();
 
             key.verify(&buffer, &self.session_signature)
                 .map_err(|_| SignatureError::InvalidSessionToken)?;
@@ -139,7 +142,8 @@ impl SessionSignature {
 
             let og_data_len = data.len();
             data.write_u64::<BigEndian>(details.account_id).unwrap();
-            data.write_u64::<BigEndian>(details.request_timestamp).unwrap();
+            data.write_u64::<BigEndian>(details.request_timestamp)
+                .unwrap();
 
             let sig = key.verify(data, &self.signature);
             data.truncate(og_data_len);
