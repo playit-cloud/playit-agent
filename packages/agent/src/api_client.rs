@@ -12,6 +12,7 @@ use agent_common::agent_config::AgentConfig;
 use agent_common::api::{AgentAccountStatus, AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret};
 use agent_common::rpc::SignedRpcRequest;
 
+#[derivve(Clone)]
 pub struct ApiClient {
     api_base: String,
     agent_secret: Option<String>,
@@ -135,7 +136,7 @@ impl ApiClient {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ApiError {
     HttpError(u16, String),
     ParseError(serde_json::Error),

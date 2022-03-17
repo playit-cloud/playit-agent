@@ -13,6 +13,7 @@ use agent_common::{ClaimInstructions, NewClient};
 use crate::events::SetupFailReason;
 use crate::lan_address::LanAddress;
 
+#[derive(Clone)]
 pub struct TcpConnection {
     pub client_token: Vec<u8>,
     pub peer_address: SocketAddr,
@@ -115,6 +116,7 @@ impl TcpConnection {
     }
 }
 
+#[derive(Clone)]
 pub struct ReadyTcpConnection {
     connection: TcpStream,
     peer_address: SocketAddr,
@@ -159,6 +161,7 @@ impl ReadyTcpConnection {
 }
 
 #[allow(dead_code)]
+#[derive(Clone)]
 pub struct ActiveTcpConnection {
     pub stats: Arc<Stats>,
     host_to_tunnel: JoinHandle<std::io::Result<()>>,
@@ -172,7 +175,7 @@ impl ActiveTcpConnection {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Stats {
     pub running: AtomicUsize,
     pub from_tunnel: AtomicUsize,

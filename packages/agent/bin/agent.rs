@@ -231,6 +231,7 @@ fn start_terminal_ui(mut renderer: Renderer, app_task: TrackedTask) -> JoinHandl
     })
 }
 
+#[derive(Debug, Clone)]
 pub struct Renderer {
     state: Arc<RwLock<AgentState>>,
     render_count: usize,

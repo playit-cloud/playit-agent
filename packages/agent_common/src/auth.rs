@@ -5,20 +5,20 @@ use serde::{Deserialize, Serialize};
 use crate::{abs_diff};
 use crate::hmac::HmacSha256;
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub struct Authentication {
     pub(crate) details: RequestDetails,
     pub(crate) signature: Signature,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub struct RequestDetails {
     pub(crate) account_id: u64,
     pub(crate) request_timestamp: u64,
     pub(crate) session_id: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub enum Signature {
     /* provided by API */
     System(SystemSignature),
@@ -26,12 +26,12 @@ pub enum Signature {
     Session(SessionSignature),
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub struct SystemSignature {
     pub(crate) signature: [u8; 32],
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub struct SessionSignature {
     pub(crate) session_timestamp: u64,
     pub(crate) session_signature: [u8; 32],
@@ -187,13 +187,13 @@ pub fn generate_signature(
     sig
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Authorization {
     SystemLevel { account_id: u64 },
     SessionLevel { account_id: u64, session_id: u64 },
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub enum SignatureError {
     MissingSessionId,
     SignatureExpired {

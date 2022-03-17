@@ -2,6 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 
+#[derive(Clone)]
 pub struct LanAddress;
 
 impl LanAddress {

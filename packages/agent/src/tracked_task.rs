@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::task::JoinHandle;
 
+#[derive(Clone)]
 pub struct TrackedTask {
     done: Arc<AtomicBool>,
     task: JoinHandle<()>,

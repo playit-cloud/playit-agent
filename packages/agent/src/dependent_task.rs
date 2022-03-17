@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::task::JoinHandle;
 
+#[derive(Clone)]
 pub struct DependentTask<T> {
     inner: Arc<Inner<T>>,
 }

@@ -51,12 +51,13 @@ impl PlayitEvents {
     }
 }
 
+#[derive(Clone)]
 pub struct PlayitEvent {
     pub id: usize,
     pub details: PlayitEventDetails,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum PlayitEventDetails {
     ClientAccepted {
         client_id: u64,
@@ -78,7 +79,7 @@ pub enum PlayitEventDetails {
     AgentConfigUpdated,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum SetupFailReason {
     TunnelServerNoConnect(std::io::Error),
     LocalServerNoConnect(std::io::Error),

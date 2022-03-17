@@ -8,7 +8,7 @@ use crate::{AgentRegistered, TunnelRequest};
 use crate::agent_config::AgentConfig;
 use crate::rpc::SignedRpcRequest;
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 #[non_exhaustive]
 #[serde(tag = "type")]
 pub enum AgentApiRequest {
@@ -59,7 +59,7 @@ pub enum AgentApiResponse {
     AgentAccountStatus(AgentAccountStatus),
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 #[serde(tag = "status")]
 pub enum AgentAccountStatus {
     #[serde(rename = "no-account")]
@@ -80,7 +80,7 @@ pub enum AgentAccountStatus {
     },
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Clone)]
 pub struct SessionSecret {
     pub agent_registered: AgentRegistered,
     pub secret: String,
@@ -96,7 +96,7 @@ impl Debug for SessionSecret {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub struct ControlAddress {
     pub control_address: SocketAddr,
 }

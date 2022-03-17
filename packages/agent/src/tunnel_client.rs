@@ -30,6 +30,7 @@ pub struct TunnelClient {
     receive_task: DependentTask<()>,
 }
 
+#[derive(Clone)]
 pub struct Session {
     registered: AgentRegistered,
     shared_secret: [u8; 32],
@@ -278,7 +279,7 @@ impl Inner {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum TunnelClientError {
     ApiError(ApiError),
     IoError(std::io::Error),

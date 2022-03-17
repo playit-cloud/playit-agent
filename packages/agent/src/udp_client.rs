@@ -16,6 +16,7 @@ use agent_common::udp::RedirectFlowFooter;
 use crate::events::{PlayitEventDetails, PlayitEvents};
 use crate::lan_address::LanAddress;
 
+#[derive(Clone)]
 pub struct UdpClients {
     tunnel_udp: Arc<UdpSocket>,
     channel_details: Arc<RwLock<SetupUdpChannelDetails>>,

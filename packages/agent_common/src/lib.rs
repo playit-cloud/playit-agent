@@ -14,19 +14,19 @@ pub mod udp;
 pub mod agent_config;
 pub mod hmac;
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub struct RpcMessage<T> {
     pub request_id: u64,
     pub content: T,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub enum TunnelFeed {
     Response(RpcMessage<TunnelResponse>),
     NewClient(NewClient),
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub struct NewClient {
     pub connect_addr: SocketAddrV4,
     pub peer_addr: SocketAddrV4,
@@ -34,7 +34,7 @@ pub struct NewClient {
     pub from_tunnel_server: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub enum ClaimInstructions {
     Tcp {
         address: SocketAddrV4,
@@ -42,7 +42,7 @@ pub enum ClaimInstructions {
     },
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub enum TunnelRequest {
     Ping(Ping),
     RegisterAgent,
@@ -51,7 +51,7 @@ pub enum TunnelRequest {
     SetupUdpChannel,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub enum TunnelResponse {
     AgentRegistered(AgentRegistered),
     ClaimResponse(Result<ClaimLease, ClaimError>),
@@ -63,13 +63,13 @@ pub enum TunnelResponse {
     Failed,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub struct SetupUdpChannelDetails {
     pub tunnel_addr: SocketAddrV4,
     pub token: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub enum ClaimError {
     NotRegistered,
     LeaseConflict,
@@ -109,18 +109,18 @@ pub struct AgentRegistered {
     pub signature: [u8; 32],
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub struct Ping {
     pub id: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub struct Pong {
     pub id: u64,
     pub tunnel_server_id: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Clone)]
 pub struct KeptAlive {
     pub alive: bool,
     pub tunnel_server_id: u64,

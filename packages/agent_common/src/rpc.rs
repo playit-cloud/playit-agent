@@ -14,7 +14,7 @@ use crate::auth::{
 };
 use crate::hmac::HmacSha256;
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Serialize, Deserialize, JsonSchema, Clone)]
 pub struct SignedRpcRequest<T: DeserializeOwned + Serialize> {
     auth: Option<Authentication>,
     content: Vec<u8>,

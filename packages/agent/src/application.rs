@@ -27,6 +27,7 @@ pub struct Application {
     pub render_state: Arc<RwLock<AgentState>>,
 }
 
+#[derive(Clone)]
 pub enum AgentState {
     PreparingConfig(Arc<RwLock<AgentConfigStatus>>),
     WaitingForTunnels { error: bool },
@@ -35,6 +36,7 @@ pub enum AgentState {
     Running(RunningState),
 }
 
+#[derive(Clone)]
 pub struct RunningState {
     pub account_id: u64,
     pub events: PlayitEvents,
