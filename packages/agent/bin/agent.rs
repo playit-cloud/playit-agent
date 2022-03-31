@@ -76,6 +76,7 @@ async fn main() {
     /* setup logger */
     let _logs_guard = if use_ui || !args.stdout_logs {
         let log_folder = args.log_folder.unwrap_or_else(||
+            if args.stdout_logs {
                 "/var/log/playit".to_string()
             } else {
                 "./logs".to_string()
