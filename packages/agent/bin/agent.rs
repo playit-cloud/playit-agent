@@ -52,33 +52,31 @@ struct CliArgs {
 #[tokio::main]
 async fn main() {
     let args: CliArgs = CliArgs::parse();
-
-    let config_file = args.config_file.unwrap_or_else(||
-        if args.use_linux_path_defaults {
-            "/etc/playit/playit.toml".to_string()
-        } else {
-            "./playit.toml".to_string()
+    
+    if args.use_linux_path_defaults {
+        #[cfg(not(target-family = "unix"))]
+        {
+            println!("--use-linux-path-defaults is not supported on Windows");
+            std::process::exit(1);
         }
-    );
+    }
 
     /* determine if UI is supported and enabled */
     let use_ui = {
         if args.stdout_logs {
             false
+        } else if enable_raw_mode().is_err() {
+            println!("Failed to start UI mode");
+            false
         } else {
-            if enable_raw_mode().is_err() {
-                println!("Failed to start UI mode");
-                false
-            } else {
-                true
-            }
+            true
         }
     };
 
     /* setup logger */
     let _logs_guard = if use_ui || !args.stdout_logs {
         let log_folder = args.log_folder.unwrap_or_else(||
-            if args.use_linux_path_defaults {
+            if args.stdout_logs {
                 "/var/log/playit".to_string()
             } else {
                 "./logs".to_string()
@@ -94,6 +92,14 @@ async fn main() {
         tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).init();
         None
     };
+
+    let config_file = args.config_file.unwrap_or_else(||
+        if args.use_linux_path_defaults {
+            "/etc/playit/playit.toml".to_string()
+        } else {
+            "./playit.toml".to_string()
+        }
+    );
 
     let events = PlayitEvents::new();
     let agent_config = ManagedAgentConfig::new(config_file, events.clone());
