@@ -1,4 +1,5 @@
 use std::fmt::{Debug, Formatter};
+use ring::hmac::Key;
 
 #[derive(Clone)]
 pub struct HmacSha256(ring::hmac::Key);
@@ -6,6 +7,12 @@ pub struct HmacSha256(ring::hmac::Key);
 impl Debug for HmacSha256 {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "HmacSha256")
+    }
+}
+
+impl From<ring::hmac::Key> for HmacSha256 {
+    fn from(key: ring::hmac::Key) -> Self {
+        HmacSha256(key)
     }
 }
 

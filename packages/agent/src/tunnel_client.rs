@@ -45,10 +45,11 @@ struct Inner {
 }
 
 pub const RESEND_CHECK_INTERVAL: u64 = 1000;
-pub const RESEND_TIMEOUT: u64 = 1500;
+pub const RESEND_TIMEOUT: u64 = 2000;
 
 struct QueuedRequest {
     resend_at: u64,
+    attempt: u64,
     request: RpcMessage<SignedRpcRequest<TunnelRequest>>,
     handler: OneshotSender<TunnelResponse>,
 }
@@ -177,6 +178,7 @@ impl Inner {
 
             let req = QueuedRequest {
                 resend_at: now + RESEND_TIMEOUT,
+                attempt: 0,
                 request: RpcMessage {
                     request_id: request_id as u64,
                     content: request,
@@ -345,6 +347,8 @@ impl ControlClientTask {
 
     async fn resend_requests(&mut self, now: u64) {
         let mut locked = self.shared.requests.lock().await;
+        let mut to_remove = Vec::new();
+
         for (request_id, request) in locked.iter_mut() {
             if request.resend_at < now {
                 tracing::info!(request_id, "resend request");
@@ -359,8 +363,18 @@ impl ControlClientTask {
                     continue;
                 }
 
-                request.resend_at = now + RESEND_TIMEOUT;
+                if request.attempt >= 3 {
+                    to_remove.push(request_id);
+                }
+
+                request.attempt += 1;
+                request.resend_at = now + (RESEND_TIMEOUT * (request.attempt + 1));
             }
+        }
+
+        for request_id in to_remove {
+            let request = locked.remove(request_id);
+            request.handler.send(TunnelResponse::Failed);
         }
     }
 
