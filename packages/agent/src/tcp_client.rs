@@ -8,7 +8,7 @@ use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
-use agent_common::{ClaimInstructions, NewClient};
+use agent_common::{ClaimInstruction, ClaimInstructionVersioned, NewClient, NewClientV4};
 
 use crate::events::SetupFailReason;
 use crate::lan_address::LanAddress;
@@ -16,7 +16,7 @@ use crate::lan_address::LanAddress;
 pub struct TcpConnection {
     pub client_token: Vec<u8>,
     pub peer_address: SocketAddr,
-    pub tunnel_address: SocketAddrV4,
+    pub tunnel_address: SocketAddr,
     pub span: tracing::Span,
 }
 
@@ -24,49 +24,47 @@ const RESP_LEN: usize = 8;
 
 impl TcpConnection {
     pub async fn spawn(client: NewClient, host_addr: SocketAddr) -> Result<ActiveTcpConnection, SetupFailReason> {
-        match client.claim_instructions {
-            ClaimInstructions::Tcp { address, token } => {
-                let span = tracing::info_span!("tcp client",
-                    tunnel_address = %address,
-                    local_address = %host_addr,
-                );
+        let ClaimInstruction { address, token } = client.claim_instructions.into_instruction();
 
-                let conn_span = span.clone();
-                async {
-                    tracing::info!("new client");
+        let span = tracing::info_span!("tcp client",
+            tunnel_address = %address,
+            local_address = %host_addr,
+        );
 
-                    let tcp_conn = TcpConnection {
-                        client_token: token,
-                        peer_address: SocketAddr::V4(client.peer_addr),
-                        tunnel_address: address,
-                        span: conn_span,
-                    };
+        let conn_span = span.clone();
+        async {
+            tracing::info!("new client");
 
-                    let ready = match tcp_conn.establish().await {
-                        Ok(v) => v,
-                        Err(error) => {
-                            tracing::error!(?error, "failed to establish connection to tunnel server");
-                            return Err(SetupFailReason::TunnelServerNoConnect(error));
-                        }
-                    };
+            let tcp_conn = TcpConnection {
+                client_token: token,
+                peer_address: client.peer_addr,
+                tunnel_address: address,
+                span: conn_span,
+            };
 
-                    let active = match ready
-                        .connect_to_host(host_addr, Arc::new(Stats::default()))
-                        .await
-                    {
-                        Ok(v) => v,
-                        Err(error) => {
-                            tracing::error!(?error, "failed to connect to local service");
-                            return Err(SetupFailReason::LocalServerNoConnect(error));
-                        }
-                    };
+            let ready = match tcp_conn.establish().await {
+                Ok(v) => v,
+                Err(error) => {
+                    tracing::error!(?error, "failed to establish connection to tunnel server");
+                    return Err(SetupFailReason::TunnelServerNoConnect(error));
+                }
+            };
 
-                    tracing::info!(stats = ?active.stats, "connection setup");
+            let active = match ready
+                .connect_to_host(host_addr, Arc::new(Stats::default()))
+                .await
+            {
+                Ok(v) => v,
+                Err(error) => {
+                    tracing::error!(?error, "failed to connect to local service");
+                    return Err(SetupFailReason::LocalServerNoConnect(error));
+                }
+            };
 
-                    Ok(active)
-                }.instrument(span).await
-            }
-        }
+            tracing::info!(stats = ?active.stats, "connection setup");
+
+            Ok(active)
+        }.instrument(span).await
     }
 
     pub async fn establish(self) -> std::io::Result<ReadyTcpConnection> {

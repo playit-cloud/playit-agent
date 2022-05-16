@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -8,7 +8,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc::channel;
 use tokio::sync::RwLock;
 
-use agent_common::{ClaimLease, ClaimProto, NewClient, Proto};
+use agent_common::{ClaimLease, ClaimLeaseV4, ClaimProto, NewClient, NewClientV4, Proto};
 use agent_common::agent_config::AgentConfig;
 use agent_common::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
 
@@ -44,14 +44,6 @@ pub struct RunningState {
 
 impl Application {
     pub async fn start(self) {
-        let udp_tunnel = match UdpSocket::bind(SocketAddrV4::new(0.into(), 0)).await {
-            Ok(v) => Arc::new(v),
-            Err(error) => {
-                tracing::error!(?error, "failed to setup UDP socket");
-                return;
-            }
-        };
-
         if self.run_setup().await {
             return;
         }
@@ -88,8 +80,8 @@ impl Application {
                     this.events.add_event(PlayitEventDetails::ClientAccepted {
                         client_id,
                         proto: Proto::Tcp,
-                        tunnel_addr: SocketAddr::V4(client.connect_addr),
-                        peer_addr: SocketAddr::V4(client.peer_addr),
+                        tunnel_addr: client.connect_addr,
+                        peer_addr: client.peer_addr,
                         host_addr,
                     }).await;
 
@@ -121,7 +113,9 @@ impl Application {
                 ApiClient::new(api_url, Some(config.secret_key.clone()))
             }).await;
 
-            match TunnelClient::new(api_client, new_client_tx).await {
+            let control_address = self.agent_config.control_address().await;
+
+            match TunnelClient::new(api_client, new_client_tx, control_address).await {
                 Ok(v) => v,
                 Err(error) => {
                     tracing::error!(?error, "failed to setup tunnel client");
@@ -168,6 +162,17 @@ impl Application {
             }
         };
 
+        let udp_tunnel = match UdpSocket::bind(match udp_channel.read().await.tunnel_addr {
+            SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(0.into(), 0)),
+            SocketAddr::V6(_) => SocketAddr::V6(SocketAddrV6::new(0.into(), 0, 0, 0)),
+        }).await {
+            Ok(v) => Arc::new(v),
+            Err(error) => {
+                tracing::error!(?error, "failed to setup UDP socket");
+                return;
+            }
+        };
+
         let mut last_udp_keep_alive_response = Arc::new(AtomicU64::new(now_milli()));
 
         let keep_udp_alive = {
@@ -211,7 +216,7 @@ impl Application {
             let udp_tunnel = udp_tunnel.clone();
             let udp_channel = udp_channel.clone();
             let last_udp_keep_alive_response = last_udp_keep_alive_response.clone();
-            let tunnel_udp_addr: IpAddr = "147.185.221.2".parse().unwrap();
+            let tunnel_udp_addr: IpAddr = udp_channel.read().await.tunnel_addr.ip();
             let this = self.clone();
 
             let mut udp_clients = UdpClients::new(
@@ -311,7 +316,7 @@ impl Application {
             return true;
         }
 
-        let flow = match RedirectFlowFooter::from_tail(&buffer[..bytes]) {
+        let footer = match RedirectFlowFooter::from_tail(&buffer[..bytes]) {
             Some(v) => v,
             None => {
                 tracing::error!(id, bytes, "got channel message with unknown id");
@@ -319,12 +324,12 @@ impl Application {
             }
         };
 
-        let payload = &buffer[..bytes - RedirectFlowFooter::len()];
+        let payload = &buffer[..bytes - footer.len()];
 
         let agent_config = self.agent_config.clone();
 
         udp_clients
-            .forward_packet(flow, payload, move |addr| {
+            .forward_packet(footer, payload, move |addr| {
                 agent_config.into_local_lookup(addr, Proto::Udp)
             }).await;
 
@@ -336,16 +341,8 @@ impl Application {
             let mut claims = Vec::new();
 
             for mapping in &config.mappings {
-                let ip = match mapping.tunnel_ip {
-                    IpAddr::V4(ip) => ip,
-                    _ => {
-                        tracing::error!("IPv6 not supported");
-                        continue;
-                    }
-                };
-
                 claims.push(ClaimLease {
-                    ip,
+                    ip: mapping.tunnel_ip,
                     from_port: mapping.tunnel_from_port,
                     to_port: mapping.tunnel_to_port
                         .unwrap_or(mapping.tunnel_from_port + 1),

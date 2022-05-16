@@ -10,7 +10,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
-use agent_common::{Proto, SetupUdpChannelDetails};
+use agent_common::{Proto, SetupUdpChannelDetails, SetupUdpChannelDetailsV4};
 use agent_common::udp::RedirectFlowFooter;
 
 use crate::events::{PlayitEventDetails, PlayitEvents};
@@ -22,7 +22,7 @@ pub struct UdpClients {
     client_ids: Arc<AtomicU64>,
     events: PlayitEvents,
 
-    lookup: HashMap<(SocketAddrV4, SocketAddrV4), usize>,
+    lookup: HashMap<(SocketAddr, SocketAddr), usize>,
     udp_client: Slab<(JoinHandle<()>, Arc<UdpClient>)>,
 }
 
@@ -43,16 +43,16 @@ impl UdpClients {
         }
     }
 
-    pub async fn forward_packet<T: Future<Output=Option<(Option<IpAddr>, SocketAddr)>>, F: FnOnce(SocketAddrV4) -> T>(
+    pub async fn forward_packet<T: Future<Output=Option<(Option<IpAddr>, SocketAddr)>>, F: FnOnce(SocketAddr) -> T>(
         &mut self,
         flow: RedirectFlowFooter,
         data: &[u8],
         lookup: F,
     ) {
-        let client_id = match self.lookup.entry((flow.src, flow.dst)) {
+        let client_id = match self.lookup.entry((flow.src(), flow.dst())) {
             Entry::Occupied(o) => *o.into_mut(),
             Entry::Vacant(v) => {
-                let (local_addr, host_addr) = match lookup(flow.dst).await {
+                let (local_addr, host_addr) = match lookup(flow.dst()).await {
                     Some(host_addr) => {
                         tracing::info!(?flow, ?host_addr, "found mapping for new udp client");
                         host_addr
@@ -68,8 +68,8 @@ impl UdpClients {
                 self.events.add_event(PlayitEventDetails::ClientAccepted {
                     client_id,
                     proto: Proto::Udp,
-                    tunnel_addr: SocketAddr::V4(flow.dst),
-                    peer_addr: SocketAddr::V4(flow.src),
+                    tunnel_addr: flow.dst(),
+                    peer_addr: flow.src(),
                     host_addr,
                 }).await;
 
@@ -79,7 +79,7 @@ impl UdpClients {
 
                 let host_udp_res = match local_addr {
                     Some(ip) => UdpSocket::bind(SocketAddr::new(ip, 0)).await,
-                    None => LanAddress::udp_socket(true, SocketAddr::V4(flow.src), host_addr).await
+                    None => LanAddress::udp_socket(true, flow.src(), host_addr).await
                 };
 
                 let host_udp = match host_udp_res {
@@ -155,22 +155,19 @@ impl UdpClientForwarder {
                 continue;
             }
 
-            if buffer.len() < bytes + RedirectFlowFooter::len() {
+            let footer_len = self.client.to_tunnel_flow.len();
+            if buffer.len() < bytes + footer_len {
                 continue;
             }
 
-            let updated_len = bytes + RedirectFlowFooter::len();
-            let success = self
-                .client
-                .to_tunnel_flow
-                .write_to(&mut buffer[bytes..updated_len]);
+            let updated_len = bytes + footer_len;
+            let success = self.client.to_tunnel_flow.write_to(&mut buffer[bytes..updated_len]);
             assert!(success);
 
             let res = {
                 let tunnel_addr = self.channel_details.read().await.tunnel_addr;
-                self.tunnel_udp
-                    .send_to(&buffer[..bytes + RedirectFlowFooter::len()], tunnel_addr)
-                    .await
+                tracing::info!(?tunnel_addr, flow = ?self.client.to_tunnel_flow, "forward packet");
+                self.tunnel_udp.send_to(&buffer[..updated_len], tunnel_addr).await
             };
 
             if let Err(error) = res {

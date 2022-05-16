@@ -12,10 +12,7 @@ use tokio::sync::oneshot::{
     channel as oneshot, Receiver as OneshotReceiver, Sender as OneshotSender,
 };
 
-use agent_common::{
-    AgentRegistered, ClaimError, ClaimLease, NewClient, Ping, Pong, RpcMessage,
-    SetupUdpChannelDetails, TunnelFeed, TunnelRequest, TunnelResponse,
-};
+use agent_common::{AgentRegistered, ClaimError, ClaimLease, ClaimLeaseV4, NewClient, NewClientV4, Ping, Pong, RpcMessage, SetupUdpChannelDetails, SetupUdpChannelDetailsV4, TunnelFeed, TunnelRequest, TunnelResponse};
 use agent_common::api::SessionSecret;
 use agent_common::auth::SignatureError;
 use agent_common::rpc::SignedRpcRequest;
@@ -58,9 +55,17 @@ impl TunnelClient {
     pub async fn new(
         api: ApiClient,
         new_client_tx: Sender<NewClient>,
+        control_addr: Option<SocketAddr>,
     ) -> Result<Self, TunnelClientError> {
-        let udp = UdpSocket::bind(SocketAddr::new(IpAddr::V4(0.into()), 0)).await?;
-        let control_addr = api.get_control_addr().await?;
+        let control_addr = match control_addr {
+            Some(v) => v,
+            None => api.get_control_addr().await?,
+        };
+
+        let udp = UdpSocket::bind(match control_addr {
+            SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(0.into()), 0),
+            SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(0.into()), 0),
+        }).await?;
 
         let inner = Inner {
             udp,
@@ -107,11 +112,12 @@ impl TunnelClient {
     pub async fn claim_lease(&self, claim: ClaimLease) -> Result<ClaimLease, TunnelClientError> {
         let handle = self
             .shared
-            .send_system_signed(TunnelRequest::ClaimLease(claim))
+            .send_system_signed(TunnelRequest::ClaimLeaseV2(claim))
             .await?;
 
         match handle.await {
-            Ok(TunnelResponse::ClaimResponse(r)) => r.map_err(TunnelClientError::ClaimError),
+            Ok(TunnelResponse::ClaimResponse(r)) => r.map(|v| v.into()).map_err(TunnelClientError::ClaimError),
+            Ok(TunnelResponse::ClaimResponseV2(r)) => r.map_err(TunnelClientError::ClaimError),
             Ok(TunnelResponse::SignatureError(e)) => Err(TunnelClientError::SignatureError(e)),
             Ok(response) => {
                 tracing::error!(?response, "Got invalid response for register");
@@ -149,8 +155,12 @@ impl TunnelClient {
 
         match handle.await {
             Ok(TunnelResponse::SetupUdpChannelDetails(details)) => {
-                tracing::info!(?details, "setup udp channel");
-                Ok(details)
+                tracing::info!(?details, "setup udp channel v4");
+                Ok(details.into())
+            }
+            Ok(TunnelResponse::SetupUdpChannelDetailsV6(details)) => {
+                tracing::info!(?details, "setup udp channel v6");
+                Ok(details.into())
             }
             Ok(TunnelResponse::SignatureError(e)) => Err(TunnelClientError::SignatureError(e)),
             Ok(response) => {
@@ -406,8 +416,13 @@ impl ControlClientTask {
                     }
                 }
             }
-            TunnelFeed::NewClient(new_client) => {
-                if let Err(error) = self.shared.new_client_tx.send(new_client).await {
+            TunnelFeed::NewClientV4(new_client) => {
+                if let Err(error) = self.shared.new_client_tx.send(new_client.into()).await {
+                    tracing::error!(?error, "failed to inform agent of new client");
+                }
+            }
+            TunnelFeed::NewClientV6(new_client) => {
+                if let Err(error) = self.shared.new_client_tx.send(new_client.into()).await {
                     tracing::error!(?error, "failed to inform agent of new client");
                 }
             }
