@@ -14,6 +14,8 @@ pub struct AgentConfig {
     pub last_update: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub control_address: Option<SocketAddr>,
     #[serde(default)]
     pub refresh_from_api: bool,
     pub secret_key: String,
@@ -66,7 +68,7 @@ pub struct PortMappingConfig {
 impl AgentConfig {
     pub fn find_local_addr(
         &self,
-        addr: SocketAddrV4,
+        addr: SocketAddr,
         proto: Proto,
     ) -> Option<(Option<IpAddr>, SocketAddr)> {
         for mapping in &self.mappings {
@@ -76,7 +78,7 @@ impl AgentConfig {
                 _ => {}
             }
 
-            if !mapping.tunnel_ip.eq(addr.ip()) {
+            if !mapping.tunnel_ip.eq(&addr.ip()) {
                 continue;
             }
 

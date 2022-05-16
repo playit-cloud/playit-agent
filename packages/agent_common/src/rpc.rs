@@ -27,7 +27,7 @@ impl<T: DeserializeOwned + Serialize + Debug> Debug for SignedRpcRequest<T> {
         write!(
             f,
             "SignedRpcRequest {{ content: {:?}, auth: {} }} ",
-            self.content,
+            bincode::deserialize::<T>(&self.content),
             match &self.auth {
                 None => Cow::Borrowed("None"),
                 Some(auth) => {
@@ -151,11 +151,8 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
             .map(Some)
     }
 
-    pub fn into_content(self) -> Result<T, Self> {
-        match bincode::deserialize(&self.content) {
-            Ok(v) => Ok(v),
-            Err(_) => Err(self),
-        }
+    pub fn get_content(&self) -> Result<T, bincode::Error> {
+        bincode::deserialize(&self.content)
     }
 
     pub fn content_slice(&self) -> &[u8] {

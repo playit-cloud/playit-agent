@@ -1,79 +1,166 @@
-use std::net::SocketAddrV4;
+use std::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
-use byteorder::{BigEndian, ByteOrder};
+use byteorder::{BigEndian, ByteOrder, ReadBytesExt, WriteBytesExt};
 
-pub const REDIRECT_FLOW_FOOTER_ID: u64 = 0x5cb867cf788173b2;
+pub const REDIRECT_FLOW_4_FOOTER_ID_OLD: u64 = 0x5cb867cf788173b2;
+pub const REDIRECT_FLOW_4_FOOTER_ID: u64 = 0x4448474f48414344;
+pub const REDIRECT_FLOW_6_FOOTER_ID: u64 = 0x6668676f68616366;
 pub const UDP_CHANNEL_ESTABLISH_ID: u64 = 0xd01fe6830ddce781;
 
+const V4_LEN: usize = 20;
+const V6_LEN: usize = 48;
+
 #[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Debug)]
-pub struct RedirectFlowFooter {
-    pub src: SocketAddrV4,
-    pub dst: SocketAddrV4,
+pub enum RedirectFlowFooter {
+    V4 {
+        src: SocketAddrV4,
+        dst: SocketAddrV4,
+    },
+    V6 {
+        src: (Ipv6Addr, u16),
+        dst: (Ipv6Addr, u16),
+        flow: u32,
+    },
 }
 
 impl RedirectFlowFooter {
-    pub fn flip(self) -> RedirectFlowFooter {
-        RedirectFlowFooter {
-            src: self.dst,
-            dst: self.src,
+    pub fn flip(self) -> Self {
+        match self {
+            RedirectFlowFooter::V4 { src, dst } => RedirectFlowFooter::V4 { src: dst, dst: src },
+            RedirectFlowFooter::V6 { src, dst, flow } => RedirectFlowFooter::V6 { src: dst, dst: src, flow },
         }
     }
 
-    pub fn write_to(&self, slice: &mut [u8]) -> bool {
-        if slice.len() < Self::len() {
+    pub fn src(&self) -> SocketAddr {
+        match self {
+            RedirectFlowFooter::V4 { src, .. } => SocketAddr::V4(*src),
+            RedirectFlowFooter::V6 { src: (ip, port), flow, .. } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
+        }
+    }
+
+    pub fn dst(&self) -> SocketAddr {
+        match self {
+            RedirectFlowFooter::V4 { dst, .. } => SocketAddr::V4(*dst),
+            RedirectFlowFooter::V6 { dst: (ip, port), flow, .. } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
+        }
+    }
+
+    pub fn write_to(&self, mut slice: &mut [u8]) -> bool {
+        if slice.len() < self.len() {
             return false;
         }
 
-        BigEndian::write_u32(&mut slice[0..4], (*self.src.ip()).into());
-        BigEndian::write_u32(&mut slice[4..8], (*self.dst.ip()).into());
-        BigEndian::write_u16(&mut slice[8..10], self.src.port());
-        BigEndian::write_u16(&mut slice[10..12], self.dst.port());
-        BigEndian::write_u64(&mut slice[12..20], REDIRECT_FLOW_FOOTER_ID);
+        match self {
+            RedirectFlowFooter::V4 { src, dst } => {
+                slice.write_u32::<BigEndian>((*src.ip()).into());
+                slice.write_u32::<BigEndian>((*dst.ip()).into());
+                slice.write_u16::<BigEndian>(src.port());
+                slice.write_u16::<BigEndian>(dst.port());
+                slice.write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_OLD);
+            }
+            RedirectFlowFooter::V6 { src, dst, flow } => {
+                slice.write_u128::<BigEndian>(src.0.into());
+                slice.write_u128::<BigEndian>(dst.0.into());
+                slice.write_u16::<BigEndian>(src.1);
+                slice.write_u16::<BigEndian>(dst.1);
+                slice.write_u32::<BigEndian>(*flow);
+                slice.write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID);
+            }
+        }
 
         true
     }
 
-    pub fn from_tail(slice: &[u8]) -> Option<RedirectFlowFooter> {
-        let mut len = slice.len();
-        if len < Self::len() {
+    pub fn from_tail(mut slice: &[u8]) -> Option<RedirectFlowFooter> {
+        /* not enough space for footer */
+        if slice.len() < 8 {
             return None;
         }
+        let footer = BigEndian::read_u64(&slice[slice.len() - 8..]);
 
-        let id = BigEndian::read_u64(&slice[len - 8..]);
-        if id != REDIRECT_FLOW_FOOTER_ID {
-            return None;
+        match footer {
+            REDIRECT_FLOW_4_FOOTER_ID | REDIRECT_FLOW_4_FOOTER_ID_OLD => {
+                if slice.len() < V4_LEN {
+                    return None;
+                }
+
+                slice = &slice[slice.len() - V4_LEN..];
+
+                let src_ip = slice.read_u32::<BigEndian>().unwrap();
+                let dst_ip = slice.read_u32::<BigEndian>().unwrap();
+                let src_port = slice.read_u16::<BigEndian>().unwrap();
+                let dst_port = slice.read_u16::<BigEndian>().unwrap();
+
+                Some(RedirectFlowFooter::V4 {
+                    src: SocketAddrV4::new(src_ip.into(), src_port),
+                    dst: SocketAddrV4::new(dst_ip.into(), dst_port),
+                })
+            }
+            REDIRECT_FLOW_6_FOOTER_ID => {
+                if slice.len() < V6_LEN {
+                    return None;
+                }
+
+                slice = &slice[slice.len() - V6_LEN..];
+
+                let src_ip = slice.read_u128::<BigEndian>().unwrap();
+                let dst_ip = slice.read_u128::<BigEndian>().unwrap();
+                let src_port = slice.read_u16::<BigEndian>().unwrap();
+                let dst_port = slice.read_u16::<BigEndian>().unwrap();
+                let flow = slice.read_u32::<BigEndian>().unwrap();
+
+                Some(RedirectFlowFooter::V6 {
+                    src: (src_ip.into(), src_port),
+                    dst: (dst_ip.into(), dst_port),
+                    flow,
+                })
+            }
+            _ => None
         }
-
-        len -= 8;
-
-        let src_ip = BigEndian::read_u32(&slice[len - 12..len - 8]);
-        let dst_ip = BigEndian::read_u32(&slice[len - 8..len - 4]);
-        let src_port = BigEndian::read_u16(&slice[len - 4..len - 2]);
-        let dst_port = BigEndian::read_u16(&slice[len - 2..len]);
-
-        Some(RedirectFlowFooter {
-            src: SocketAddrV4::new(src_ip.into(), src_port),
-            dst: SocketAddrV4::new(dst_ip.into(), dst_port),
-        })
     }
 
-    pub fn len() -> usize {
-        20
+    pub fn len(&self) -> usize {
+        match self {
+            RedirectFlowFooter::V4 { .. } => V4_LEN,
+            RedirectFlowFooter::V6 { .. } => V6_LEN,
+        }
+    }
+
+    pub fn len_v4() -> usize {
+        V4_LEN
+    }
+
+    pub fn len_v6() -> usize {
+        V6_LEN
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::udp::RedirectFlowFooter;
+    use crate::udp::{RedirectFlowFooter, V4_LEN, V6_LEN};
 
     #[test]
-    fn test_serialize() {
+    fn test_serialize_v4() {
         let mut buf = [0u8; 100];
-        let flow = RedirectFlowFooter {
+        let flow = RedirectFlowFooter::V4 {
             src: "123.234.13.43:8891".parse().unwrap(),
             dst: "123.99.13.43:773".parse().unwrap(),
         };
-        flow.write_to(&mut buf[100 - 20..]);
+        flow.write_to(&mut buf[100 - V4_LEN..]);
+
+        let parsed = RedirectFlowFooter::from_tail(&buf).unwrap();
+        assert_eq!(flow, parsed);
+    }
+
+    #[test]
+    fn test_serialize_v6() {
+        let mut buf = [0u8; 100];
+        let flow = RedirectFlowFooter::V6 {
+            src: ("2602:fbaf::100".parse().unwrap(), 142),
+            dst: ("2602:fbaf::200".parse().unwrap(), 142),
+            flow: 1234
+        };
+        flow.write_to(&mut buf[100 - V6_LEN..]);
 
         let parsed = RedirectFlowFooter::from_tail(&buf).unwrap();
         assert_eq!(flow, parsed);

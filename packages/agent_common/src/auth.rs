@@ -65,12 +65,13 @@ impl Signature {
         match self {
             Signature::System(s) => s
                 .validate(details, data, secret)
-                .map(|account_id| Authorization::SystemLevel { account_id }),
+                .map(|account_id| Authorization::SystemLevel { account_id, sig_epoch: details.request_timestamp }),
             Signature::Session(s) => {
                 s.validate(details, now, data, secret)
                     .map(|(account_id, session_id)| Authorization::SessionLevel {
                         account_id,
                         session_id,
+                        sig_epoch: s.session_timestamp,
                     })
             }
         }
@@ -189,8 +190,8 @@ pub fn generate_signature(
 
 #[derive(Debug)]
 pub enum Authorization {
-    SystemLevel { account_id: u64 },
-    SessionLevel { account_id: u64, session_id: u64 },
+    SystemLevel { account_id: u64, sig_epoch: u64, },
+    SessionLevel { account_id: u64, session_id: u64, sig_epoch: u64, },
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]

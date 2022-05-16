@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV6};
 
 use hyper::{Body, header, Method, Request};
 use hyper::body::Buf;
@@ -15,17 +15,26 @@ use agent_common::rpc::SignedRpcRequest;
 pub struct ApiClient {
     api_base: String,
     agent_secret: Option<String>,
-    client: hyper::Client<HttpsConnector<HttpConnector>, hyper::Body>,
+    client: hyper::Client<HttpsConnector<HttpConnector>, Body>,
 }
 
 impl ApiClient {
     pub fn new(api_base: String, agent_secret: Option<String>) -> Self {
-        let connector = HttpsConnectorBuilder::new()
-            .with_webpki_roots()
-            .https_only()
-            .enable_http1()
-            .enable_http2()
-            .build();
+        let connector = if api_base.starts_with("http://") {
+            HttpsConnectorBuilder::new()
+                .with_webpki_roots()
+                .https_or_http()
+                .enable_http1()
+                .enable_http2()
+                .build()
+        } else {
+            HttpsConnectorBuilder::new()
+                .with_webpki_roots()
+                .https_only()
+                .enable_http1()
+                .enable_http2()
+                .build()
+        };
 
         ApiClient {
             api_base,

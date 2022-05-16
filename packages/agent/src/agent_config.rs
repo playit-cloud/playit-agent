@@ -32,6 +32,7 @@ impl ManagedAgentConfig {
             config: Arc::new(RwLock::new(AgentConfig {
                 last_update: None,
                 api_url: None,
+                control_address: None,
                 refresh_from_api: false,
                 secret_key: "".to_string(),
                 mappings: vec![],
@@ -43,7 +44,7 @@ impl ManagedAgentConfig {
 
     pub async fn into_local_lookup(
         self,
-        addr: SocketAddrV4,
+        addr: SocketAddr,
         proto: Proto,
     ) -> Option<(Option<IpAddr>, SocketAddr)> {
         self.with_config(|v| v.find_local_addr(addr, proto)).await
@@ -75,6 +76,11 @@ impl ManagedAgentConfig {
             if let Some(ref api_url) = current.api_url {
                 api_config.api_url = Some(api_url.clone());
             }
+
+            if api_config.control_address.is_none() {
+                api_config.control_address = current.control_address;
+            }
+
             api_config.last_update = current.last_update;
 
             !api_config.eq(&current)
@@ -108,6 +114,10 @@ impl ManagedAgentConfig {
     pub async fn with_config<T, F: Fn(&AgentConfig) -> T>(&self, handle: F) -> T {
         let config = self.config.read().await;
         handle(&config)
+    }
+
+    pub async fn control_address(&self) -> Option<SocketAddr> {
+        self.config.read().await.control_address
     }
 }
 
@@ -249,6 +259,7 @@ pub async fn prepare_config(config_path: &str, prepare_status: &RwLock<AgentConf
             AgentConfig {
                 last_update: None,
                 api_url: None,
+                control_address: None,
                 refresh_from_api: true,
                 secret_key,
                 mappings: vec![],
@@ -288,6 +299,7 @@ async fn load_or_create(config_path: &str) -> std::io::Result<Option<AgentConfig
                 toml::to_string(&AgentConfig {
                     last_update: None,
                     api_url: None,
+                    control_address: None,
                     refresh_from_api: true,
                     secret_key: "put-secret-here".to_string(),
                     mappings: vec![],
