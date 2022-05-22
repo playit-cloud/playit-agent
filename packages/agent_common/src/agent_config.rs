@@ -45,7 +45,7 @@ impl AgentConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Eq, PartialEq, Clone)]
 pub struct PortMappingConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
