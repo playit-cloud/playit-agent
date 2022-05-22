@@ -16,12 +16,11 @@ use tui::text::Span;
 use tui::widgets::{Block, BorderType, Borders, Gauge, List, ListItem, Paragraph, Wrap};
 use tui::{Frame, Terminal};
 
-use agent::agent_config::{prepare_config, AgentConfigStatus, ManagedAgentConfig};
+use agent::agent_config::{AgentConfigStatus, ManagedAgentConfig};
 use agent::application::{AgentState, Application, RunningState};
 use agent::events::PlayitEvents;
 use agent::now_milli;
 use agent::tracked_task::TrackedTask;
-use agent_common::agent_config::AgentConfig;
 
 use clap::Parser;
 
@@ -136,13 +135,13 @@ async fn main() {
             }
             Err(_) => return,
         };
-        app_task.wait().await;
+        app_task.wait().await.unwrap();
     } else {
-        app_task.wait().await;
+        app_task.wait().await.unwrap();
     }
 }
 
-async fn get_initial_config(config_path: &str, state: Arc<RwLock<AgentState>>) -> AgentConfig {
+/*async fn get_initial_config(config_path: &str, state: Arc<RwLock<AgentState>>) -> AgentConfig {
     let guard = state.read().await;
     let prepare_status = match &*guard {
         AgentState::PreparingConfig(status) => status,
@@ -169,7 +168,7 @@ async fn get_initial_config(config_path: &str, state: Arc<RwLock<AgentState>>) -
     }
 
     config
-}
+}*/
 
 fn start_terminal_ui(
     mut renderer: Renderer,

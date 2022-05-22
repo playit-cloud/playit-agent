@@ -2,9 +2,6 @@ name: Rust
 
 on:
   push:
-    branches:
-      - master
-
     paths-ignore:
       - '*.md'
 
@@ -45,9 +42,9 @@ jobs:
           command: clippy
           args: -- -D warnings
 
-      - name: cargo fmt
+      - name: cargo test
         if: always()
         uses: actions-rs/cargo@v1
         with:
-          command: fmt
-          args: --all --check
+          command: test
+          args: --all-features

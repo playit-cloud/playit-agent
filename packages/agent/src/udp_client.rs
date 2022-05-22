@@ -169,7 +169,8 @@ impl UdpClientForwarder {
             let success = self
                 .client
                 .to_tunnel_flow
-                .write_to(&mut buffer[bytes..updated_len]);
+                .write_to(&mut buffer[bytes..updated_len])
+                .unwrap_or_default();
             assert!(success);
 
             let res = {

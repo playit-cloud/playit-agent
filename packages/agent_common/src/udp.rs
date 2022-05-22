@@ -57,30 +57,30 @@ impl RedirectFlowFooter {
         }
     }
 
-    pub fn write_to(&self, mut slice: &mut [u8]) -> bool {
+    pub fn write_to(&self, mut slice: &mut [u8]) -> anyhow::Result<bool> {
         if slice.len() < self.len() {
-            return false;
+            return Ok(false);
         }
 
         match self {
             RedirectFlowFooter::V4 { src, dst } => {
-                slice.write_u32::<BigEndian>((*src.ip()).into());
-                slice.write_u32::<BigEndian>((*dst.ip()).into());
-                slice.write_u16::<BigEndian>(src.port());
-                slice.write_u16::<BigEndian>(dst.port());
-                slice.write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_OLD);
+                slice.write_u32::<BigEndian>((*src.ip()).into())?;
+                slice.write_u32::<BigEndian>((*dst.ip()).into())?;
+                slice.write_u16::<BigEndian>(src.port())?;
+                slice.write_u16::<BigEndian>(dst.port())?;
+                slice.write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_OLD)?;
             }
             RedirectFlowFooter::V6 { src, dst, flow } => {
-                slice.write_u128::<BigEndian>(src.0.into());
-                slice.write_u128::<BigEndian>(dst.0.into());
-                slice.write_u16::<BigEndian>(src.1);
-                slice.write_u16::<BigEndian>(dst.1);
-                slice.write_u32::<BigEndian>(*flow);
-                slice.write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID);
+                slice.write_u128::<BigEndian>(src.0.into())?;
+                slice.write_u128::<BigEndian>(dst.0.into())?;
+                slice.write_u16::<BigEndian>(src.1)?;
+                slice.write_u16::<BigEndian>(dst.1)?;
+                slice.write_u32::<BigEndian>(*flow)?;
+                slice.write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID)?;
             }
         }
 
-        true
+        Ok(true)
     }
 
     pub fn from_tail(mut slice: &[u8]) -> Option<RedirectFlowFooter> {
@@ -130,10 +130,8 @@ impl RedirectFlowFooter {
             _ => None,
         }
     }
-    
-    pub fn is_empty(&self) -> bool  {
-        unimplemented!();
-    }
+
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match self {
             RedirectFlowFooter::V4 { .. } => V4_LEN,
@@ -161,7 +159,7 @@ mod test {
             src: "123.234.13.43:8891".parse().unwrap(),
             dst: "123.99.13.43:773".parse().unwrap(),
         };
-        flow.write_to(&mut buf[100 - V4_LEN..]);
+        flow.write_to(&mut buf[100 - V4_LEN..]).unwrap();
 
         let parsed = RedirectFlowFooter::from_tail(&buf).unwrap();
         assert_eq!(flow, parsed);
@@ -175,7 +173,7 @@ mod test {
             dst: ("2602:fbaf::200".parse().unwrap(), 142),
             flow: 1234,
         };
-        flow.write_to(&mut buf[100 - V6_LEN..]);
+        flow.write_to(&mut buf[100 - V6_LEN..]).unwrap();
 
         let parsed = RedirectFlowFooter::from_tail(&buf).unwrap();
         assert_eq!(flow, parsed);

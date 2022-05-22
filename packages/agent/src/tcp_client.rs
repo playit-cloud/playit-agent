@@ -1,4 +1,4 @@
-use std::net::{SocketAddr};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -176,9 +176,11 @@ pub struct ActiveTcpConnection {
 }
 
 impl ActiveTcpConnection {
-    pub async fn wait(self) {
-        self.host_to_tunnel.await;
-        self.tunnel_to_host.await;
+    pub async fn wait(self) -> anyhow::Result<()> {
+        self.host_to_tunnel.await??;
+        self.tunnel_to_host.await??;
+
+        Ok(())
     }
 }
 

@@ -77,7 +77,7 @@ fn as_local_masked(mut ip: u32) -> u32 {
     ip = ((ip >> 16) ^ ip).overflowing_mul(0x45d9f3u32).0;
     ip = ((ip >> 16) ^ ip).overflowing_mul(0x45d9f3u32).0;
     ip = (ip >> 16) ^ ip;
-    ip = ip & 0x00FFFFFFu32;
+    ip &= 0x00FFFFFFu32;
     if ip == 0 {
         ip = 1;
     }
