@@ -1,8 +1,8 @@
 use std::collections::{hash_map::Entry, HashMap};
 use std::future::Future;
-use std::net::{IpAddr, SocketAddr, SocketAddrV4};
-use std::sync::Arc;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use slab::Slab;
@@ -10,8 +10,8 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 
-use agent_common::{Proto, SetupUdpChannelDetails, SetupUdpChannelDetailsV4};
 use agent_common::udp::RedirectFlowFooter;
+use agent_common::{Proto, SetupUdpChannelDetails};
 
 use crate::events::{PlayitEventDetails, PlayitEvents};
 use crate::lan_address::LanAddress;
@@ -43,7 +43,10 @@ impl UdpClients {
         }
     }
 
-    pub async fn forward_packet<T: Future<Output=Option<(Option<IpAddr>, SocketAddr)>>, F: FnOnce(SocketAddr) -> T>(
+    pub async fn forward_packet<
+        T: Future<Output = Option<(Option<IpAddr>, SocketAddr)>>,
+        F: FnOnce(SocketAddr) -> T,
+    >(
         &mut self,
         flow: RedirectFlowFooter,
         data: &[u8],
@@ -65,21 +68,23 @@ impl UdpClients {
 
                 let client_id = self.client_ids.fetch_add(1, Ordering::SeqCst);
 
-                self.events.add_event(PlayitEventDetails::ClientAccepted {
-                    client_id,
-                    proto: Proto::Udp,
-                    tunnel_addr: flow.dst(),
-                    peer_addr: flow.src(),
-                    host_addr,
-                }).await;
+                self.events
+                    .add_event(PlayitEventDetails::ClientAccepted {
+                        client_id,
+                        proto: Proto::Udp,
+                        tunnel_addr: flow.dst(),
+                        peer_addr: flow.src(),
+                        host_addr,
+                    })
+                    .await;
 
-                self.events.add_event(PlayitEventDetails::ClientConnected {
-                    client_id,
-                }).await;
+                self.events
+                    .add_event(PlayitEventDetails::ClientConnected { client_id })
+                    .await;
 
                 let host_udp_res = match local_addr {
                     Some(ip) => UdpSocket::bind(SocketAddr::new(ip, 0)).await,
-                    None => LanAddress::udp_socket(true, flow.src(), host_addr).await
+                    None => LanAddress::udp_socket(true, flow.src(), host_addr).await,
                 };
 
                 let host_udp = match host_udp_res {
@@ -161,13 +166,18 @@ impl UdpClientForwarder {
             }
 
             let updated_len = bytes + footer_len;
-            let success = self.client.to_tunnel_flow.write_to(&mut buffer[bytes..updated_len]);
+            let success = self
+                .client
+                .to_tunnel_flow
+                .write_to(&mut buffer[bytes..updated_len]);
             assert!(success);
 
             let res = {
                 let tunnel_addr = self.channel_details.read().await.tunnel_addr;
                 tracing::info!(?tunnel_addr, flow = ?self.client.to_tunnel_flow, "forward packet");
-                self.tunnel_udp.send_to(&buffer[..updated_len], tunnel_addr).await
+                self.tunnel_udp
+                    .send_to(&buffer[..updated_len], tunnel_addr)
+                    .await
             };
 
             if let Err(error) = res {

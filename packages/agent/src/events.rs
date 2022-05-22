@@ -1,8 +1,7 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 
-use tokio::sync::{RwLock, RwLockMappedWriteGuard};
+use tokio::sync::{RwLock};
 
 use agent_common::Proto;
 
@@ -25,7 +24,7 @@ impl PlayitEvents {
             inner: Arc::new(RwLock::new(Inner {
                 items: vec![],
                 next_id: 1,
-            }))
+            })),
         }
     }
 
@@ -35,10 +34,7 @@ impl PlayitEvents {
         let id = guard.next_id;
         guard.next_id = id + 1;
 
-        guard.items.push(PlayitEvent {
-            id,
-            details,
-        });
+        guard.items.push(PlayitEvent { id, details });
 
         if guard.items.len() > MAX_EVENT_COUNT {
             guard.items.drain(..TARGET_EVENT_COUNT);

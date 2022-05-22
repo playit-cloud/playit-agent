@@ -1,6 +1,6 @@
-use std::net::{SocketAddr, SocketAddrV4};
-use std::sync::Arc;
+use std::net::{SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -8,7 +8,7 @@ use tokio::net::TcpStream;
 use tokio::task::JoinHandle;
 use tracing::Instrument;
 
-use agent_common::{ClaimInstruction, ClaimInstructionVersioned, NewClient, NewClientV4};
+use agent_common::{ClaimInstruction, NewClient};
 
 use crate::events::SetupFailReason;
 use crate::lan_address::LanAddress;
@@ -23,7 +23,10 @@ pub struct TcpConnection {
 const RESP_LEN: usize = 8;
 
 impl TcpConnection {
-    pub async fn spawn(client: NewClient, host_addr: SocketAddr) -> Result<ActiveTcpConnection, SetupFailReason> {
+    pub async fn spawn(
+        client: NewClient,
+        host_addr: SocketAddr,
+    ) -> Result<ActiveTcpConnection, SetupFailReason> {
         let ClaimInstruction { address, token } = client.claim_instructions.into_instruction();
 
         let span = tracing::info_span!("tcp client",
@@ -64,7 +67,9 @@ impl TcpConnection {
             tracing::info!(stats = ?active.stats, "connection setup");
 
             Ok(active)
-        }.instrument(span).await
+        }
+        .instrument(span)
+        .await
     }
 
     pub async fn establish(self) -> std::io::Result<ReadyTcpConnection> {
@@ -109,7 +114,9 @@ impl TcpConnection {
                 peer_address: self.peer_address,
                 span,
             })
-        }.instrument(self.span).await
+        }
+        .instrument(self.span)
+        .await
     }
 }
 
@@ -129,7 +136,10 @@ impl ReadyTcpConnection {
             let conn = match LanAddress::tcp_socket(true, self.peer_address, host_addr).await {
                 Ok(v) => v,
                 Err(error) => {
-                    tracing::error!(?error, "failed to connect to local server (is your server running?)");
+                    tracing::error!(
+                        ?error,
+                        "failed to connect to local server (is your server running?)"
+                    );
                     return Err(error);
                 }
             };
@@ -145,14 +155,16 @@ impl ReadyTcpConnection {
                 stats: stats.clone(),
                 host_to_tunnel: tokio::spawn(
                     pipe(host_rx, tunnel_tx, stats.clone(), false)
-                        .instrument(tracing::info_span!("local to tunnel"))
+                        .instrument(tracing::info_span!("local to tunnel")),
                 ),
                 tunnel_to_host: tokio::spawn(
                     pipe(tunnel_rx, host_tx, stats.clone(), true)
-                        .instrument(tracing::info_span!("tunnel to local"))
+                        .instrument(tracing::info_span!("tunnel to local")),
                 ),
             })
-        }.instrument(self.span).await
+        }
+        .instrument(self.span)
+        .await
     }
 }
 
@@ -206,7 +218,8 @@ async fn pipe(
                 &stats.from_tunnel
             } else {
                 &stats.to_tunnel
-            }.fetch_add(received, Ordering::SeqCst);
+            }
+            .fetch_add(received, Ordering::SeqCst);
 
             to.write_all(&buffer[..received]).await.map_err(|error| {
                 tracing::error!(?error, "failed to write data");
@@ -215,7 +228,8 @@ async fn pipe(
         }
 
         Ok(())
-    }.await;
+    }
+    .await;
 
     stats.running.fetch_sub(1, Ordering::SeqCst);
     r
