@@ -94,7 +94,7 @@ impl AgentConfig {
 
             let local_ip = mapping
                 .local_ip
-                .unwrap_or(Ipv4Addr::new(127, 0, 0, 1).into());
+                .unwrap_or_else(|| Ipv4Addr::new(127, 0, 0, 1).into());
             return Some((mapping.bind_ip, SocketAddr::new(local_ip, local_port)));
         }
 
