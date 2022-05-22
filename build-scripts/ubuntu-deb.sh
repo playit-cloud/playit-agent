@@ -2,7 +2,7 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 echo "building arm64 .deb"
 echo "---------------------"
-  bash "${SCRIPT_DIR}/build-linux-deb.sh" "aarch64-unknown-linux-gnu" "arm64"
+bash "${SCRIPT_DIR}/build-linux-deb.sh" "aarch64-unknown-linux-gnu" "arm64"
 
 echo "building armhf .deb"
 echo "---------------------"
