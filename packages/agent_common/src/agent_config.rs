@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{ClaimProto, Proto};
 
-pub const DEFAULT_API: &'static str = "https://api.playit.cloud/agent";
+pub const DEFAULT_API: &str = "https://api.playit.cloud/agent";
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone)]
 pub struct AgentConfig {
