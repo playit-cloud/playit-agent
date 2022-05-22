@@ -15,6 +15,8 @@ pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub ping_targets: Option<Vec<SocketAddr>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub control_address: Option<SocketAddr>,
     #[serde(default)]
     pub refresh_from_api: bool,
@@ -71,6 +73,11 @@ impl AgentConfig {
         addr: SocketAddr,
         proto: Proto,
     ) -> Option<(Option<IpAddr>, SocketAddr)> {
+        let mut candidate: Option<(Option<IpAddr>, SocketAddr)> = None;
+
+        /* tunnel ip can be announced at multiple subnets for routing optimizations */
+        let addr_ip_number = get_ip_number(addr.ip());
+
         for mapping in &self.mappings {
             match (mapping.proto, proto) {
                 (ClaimProto::Udp, Proto::Tcp) => continue,
@@ -78,14 +85,11 @@ impl AgentConfig {
                 _ => {}
             }
 
-            if !mapping.tunnel_ip.eq(&addr.ip()) {
-                continue;
-            }
-
             let range = mapping.tunnel_from_port
                 ..mapping
                 .tunnel_to_port
                 .unwrap_or(mapping.tunnel_from_port + 1);
+
             if !range.contains(&addr.port()) {
                 continue;
             }
@@ -94,12 +98,40 @@ impl AgentConfig {
             let local_port = mapping.local_port.unwrap_or(mapping.tunnel_from_port) + port_delta;
 
             let local_ip = mapping.local_ip.unwrap_or(Ipv4Addr::new(127, 0, 0, 1).into());
-            return Some((
+            let found = (
                 mapping.bind_ip,
                 SocketAddr::new(local_ip, local_port),
-            ));
+            );
+
+            let tunnel_ip_number = get_ip_number(mapping.tunnel_ip);
+            if tunnel_ip_number == addr_ip_number {
+                candidate = Some(found);
+            }
+
+            if !mapping.tunnel_ip.eq(&addr.ip()) {
+                return Some(found);
+            }
         }
 
-        None
+        candidate
+    }
+}
+
+fn get_ip_number(ip: IpAddr) -> Option<u8> {
+    match ip {
+        IpAddr::V4(ip) => Some(ip.octets()[3]),
+        IpAddr::V6(ip) => {
+            let ip = ip.octets();
+            let mut ip_value = Some(ip[15]);
+
+            for pos in 6..16 {
+                if ip[pos] != 0 {
+                    ip_value = None;
+                    break;
+                }
+            }
+
+            ip_value
+        }
     }
 }

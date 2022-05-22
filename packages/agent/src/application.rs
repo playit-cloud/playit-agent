@@ -260,6 +260,12 @@ impl Application {
             let this = self.clone();
 
             tokio::spawn(async move {
+                let should_refresh = config.with_config(|config| config.refresh_from_api).await;
+                if !should_refresh {
+                    tracing::warn!("not refreshing config");
+                    return;
+                }
+
                 loop {
                     let sleep_sec = match config.load_latest().await {
                         Ok(true) => {

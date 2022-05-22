@@ -32,6 +32,7 @@ impl ManagedAgentConfig {
             config: Arc::new(RwLock::new(AgentConfig {
                 last_update: None,
                 api_url: None,
+                ping_targets: None,
                 control_address: None,
                 refresh_from_api: false,
                 secret_key: "".to_string(),
@@ -259,6 +260,7 @@ pub async fn prepare_config(config_path: &str, prepare_status: &RwLock<AgentConf
             AgentConfig {
                 last_update: None,
                 api_url: None,
+                ping_targets: None,
                 control_address: None,
                 refresh_from_api: true,
                 secret_key,
@@ -299,6 +301,7 @@ async fn load_or_create(config_path: &str) -> std::io::Result<Option<AgentConfig
                 toml::to_string(&AgentConfig {
                     last_update: None,
                     api_url: None,
+                    ping_targets: None,
                     control_address: None,
                     refresh_from_api: true,
                     secret_key: "put-secret-here".to_string(),

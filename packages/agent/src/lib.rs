@@ -8,6 +8,7 @@ pub mod lan_address;
 pub mod events;
 pub mod tracked_task;
 pub mod application;
+pub mod ping_task;
 
 pub fn now_milli() -> u64 {
     std::time::SystemTime::now()
