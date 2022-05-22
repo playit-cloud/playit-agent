@@ -2,17 +2,17 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::ops::Sub;
 
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::auth::SignatureError;
 
+pub mod agent_config;
 pub mod api;
 pub mod auth;
+pub mod hmac;
 pub mod rpc;
 pub mod udp;
-pub mod agent_config;
-pub mod hmac;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 pub struct RpcMessage<T> {
@@ -88,8 +88,14 @@ pub enum ClaimInstructionVersioned {
 impl ClaimInstructionVersioned {
     pub fn into_instruction(self) -> ClaimInstruction {
         match self {
-            Self::Tcp4 { address, token } => ClaimInstruction { address: address.into(), token },
-            Self::Tcp6 { address, token } => ClaimInstruction { address: address.into(), token },
+            Self::Tcp4 { address, token } => ClaimInstruction {
+                address: address.into(),
+                token,
+            },
+            Self::Tcp6 { address, token } => ClaimInstruction {
+                address: address.into(),
+                token,
+            },
         }
     }
 }
@@ -154,7 +160,7 @@ impl From<SetupUdpChannelDetailsV4> for SetupUdpChannelDetails {
     fn from(details: SetupUdpChannelDetailsV4) -> Self {
         SetupUdpChannelDetails {
             tunnel_addr: details.tunnel_addr.into(),
-            token: details.token
+            token: details.token,
         }
     }
 }
@@ -163,7 +169,7 @@ impl From<SetupUdpChannelDetailsV6> for SetupUdpChannelDetails {
     fn from(details: SetupUdpChannelDetailsV6) -> Self {
         SetupUdpChannelDetails {
             tunnel_addr: details.tunnel_addr.into(),
-            token: details.token
+            token: details.token,
         }
     }
 }
@@ -196,7 +202,7 @@ impl From<ClaimLeaseV4> for ClaimLease {
             ip: claim.ip.into(),
             from_port: claim.from_port,
             to_port: claim.to_port,
-            proto: claim.proto
+            proto: claim.proto,
         }
     }
 }
@@ -264,7 +270,7 @@ impl TunnelFeed {
     }
 }
 
-pub fn abs_diff<T: Ord + Sub<Output=T>>(a: T, b: T) -> T {
+pub fn abs_diff<T: Ord + Sub<Output = T>>(a: T, b: T) -> T {
     if a > b {
         a - b
     } else {

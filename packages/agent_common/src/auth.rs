@@ -2,7 +2,7 @@ use byteorder::{BigEndian, WriteBytesExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{abs_diff};
+use crate::abs_diff;
 use crate::hmac::HmacSha256;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
@@ -63,9 +63,13 @@ impl Signature {
         }
 
         match self {
-            Signature::System(s) => s
-                .validate(details, data, secret)
-                .map(|account_id| Authorization::SystemLevel { account_id, sig_epoch: details.request_timestamp }),
+            Signature::System(s) => {
+                s.validate(details, data, secret)
+                    .map(|account_id| Authorization::SystemLevel {
+                        account_id,
+                        sig_epoch: details.request_timestamp,
+                    })
+            }
             Signature::Session(s) => {
                 s.validate(details, now, data, secret)
                     .map(|(account_id, session_id)| Authorization::SessionLevel {
@@ -87,7 +91,8 @@ impl SystemSignature {
     ) -> Result<u64, SignatureError> {
         let og_data_len = data.len();
         data.write_u64::<BigEndian>(details.account_id).unwrap();
-        data.write_u64::<BigEndian>(details.request_timestamp).unwrap();
+        data.write_u64::<BigEndian>(details.request_timestamp)
+            .unwrap();
         let verify = key.verify(data, &self.signature);
         data.truncate(og_data_len);
 
@@ -125,7 +130,9 @@ impl SessionSignature {
             let mut buffer = Vec::with_capacity(std::mem::size_of::<u64>() * 3);
             buffer.write_u64::<BigEndian>(details.account_id).unwrap();
             buffer.write_u64::<BigEndian>(session_id).unwrap();
-            buffer.write_u64::<BigEndian>(self.session_timestamp).unwrap();
+            buffer
+                .write_u64::<BigEndian>(self.session_timestamp)
+                .unwrap();
 
             key.verify(&buffer, &self.session_signature)
                 .map_err(|_| SignatureError::InvalidSessionToken)?;
@@ -140,7 +147,8 @@ impl SessionSignature {
 
             let og_data_len = data.len();
             data.write_u64::<BigEndian>(details.account_id).unwrap();
-            data.write_u64::<BigEndian>(details.request_timestamp).unwrap();
+            data.write_u64::<BigEndian>(details.request_timestamp)
+                .unwrap();
 
             let sig = key.verify(data, &self.signature);
             data.truncate(og_data_len);
@@ -190,8 +198,15 @@ pub fn generate_signature(
 
 #[derive(Debug)]
 pub enum Authorization {
-    SystemLevel { account_id: u64, sig_epoch: u64, },
-    SessionLevel { account_id: u64, session_id: u64, sig_epoch: u64, },
+    SystemLevel {
+        account_id: u64,
+        sig_epoch: u64,
+    },
+    SessionLevel {
+        account_id: u64,
+        session_id: u64,
+        sig_epoch: u64,
+    },
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]

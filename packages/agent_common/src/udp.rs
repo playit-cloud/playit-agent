@@ -27,21 +27,33 @@ impl RedirectFlowFooter {
     pub fn flip(self) -> Self {
         match self {
             RedirectFlowFooter::V4 { src, dst } => RedirectFlowFooter::V4 { src: dst, dst: src },
-            RedirectFlowFooter::V6 { src, dst, flow } => RedirectFlowFooter::V6 { src: dst, dst: src, flow },
+            RedirectFlowFooter::V6 { src, dst, flow } => RedirectFlowFooter::V6 {
+                src: dst,
+                dst: src,
+                flow,
+            },
         }
     }
 
     pub fn src(&self) -> SocketAddr {
         match self {
             RedirectFlowFooter::V4 { src, .. } => SocketAddr::V4(*src),
-            RedirectFlowFooter::V6 { src: (ip, port), flow, .. } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
+            RedirectFlowFooter::V6 {
+                src: (ip, port),
+                flow,
+                ..
+            } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
         }
     }
 
     pub fn dst(&self) -> SocketAddr {
         match self {
             RedirectFlowFooter::V4 { dst, .. } => SocketAddr::V4(*dst),
-            RedirectFlowFooter::V6 { dst: (ip, port), flow, .. } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
+            RedirectFlowFooter::V6 {
+                dst: (ip, port),
+                flow,
+                ..
+            } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
         }
     }
 
@@ -115,7 +127,7 @@ impl RedirectFlowFooter {
                     flow,
                 })
             }
-            _ => None
+            _ => None,
         }
     }
 
@@ -158,7 +170,7 @@ mod test {
         let flow = RedirectFlowFooter::V6 {
             src: ("2602:fbaf::100".parse().unwrap(), 142),
             dst: ("2602:fbaf::200".parse().unwrap(), 142),
-            flow: 1234
+            flow: 1234,
         };
         flow.write_to(&mut buf[100 - V6_LEN..]);
 

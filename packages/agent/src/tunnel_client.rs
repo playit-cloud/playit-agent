@@ -6,16 +6,20 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 use slab::Slab;
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, RwLock};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot::{
     channel as oneshot, Receiver as OneshotReceiver, Sender as OneshotSender,
 };
+use tokio::sync::{Mutex, RwLock};
 
-use agent_common::{AgentRegistered, ClaimError, ClaimLease, ClaimLeaseV4, NewClient, NewClientV4, Ping, Pong, RpcMessage, SetupUdpChannelDetails, SetupUdpChannelDetailsV4, TunnelFeed, TunnelRequest, TunnelResponse};
 use agent_common::api::SessionSecret;
 use agent_common::auth::SignatureError;
 use agent_common::rpc::SignedRpcRequest;
+use agent_common::{
+    AgentRegistered, ClaimError, ClaimLease, NewClient, Ping, Pong,
+    RpcMessage, SetupUdpChannelDetails, TunnelFeed, TunnelRequest,
+    TunnelResponse,
+};
 
 use crate::api_client::{ApiClient, ApiError};
 use crate::dependent_task::DependentTask;
@@ -65,7 +69,8 @@ impl TunnelClient {
         let udp = UdpSocket::bind(match control_addr {
             SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(0.into()), 0),
             SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(0.into()), 0),
-        }).await?;
+        })
+        .await?;
 
         let inner = Inner {
             udp,
@@ -116,7 +121,9 @@ impl TunnelClient {
             .await?;
 
         match handle.await {
-            Ok(TunnelResponse::ClaimResponse(r)) => r.map(|v| v.into()).map_err(TunnelClientError::ClaimError),
+            Ok(TunnelResponse::ClaimResponse(r)) => {
+                r.map(|v| v.into()).map_err(TunnelClientError::ClaimError)
+            }
             Ok(TunnelResponse::ClaimResponseV2(r)) => r.map_err(TunnelClientError::ClaimError),
             Ok(TunnelResponse::SignatureError(e)) => Err(TunnelClientError::SignatureError(e)),
             Ok(response) => {
@@ -335,7 +342,7 @@ impl ControlClientTask {
                 Duration::from_millis(RESEND_CHECK_INTERVAL + 1),
                 self.receive_message(),
             )
-                .await;
+            .await;
 
             match res {
                 Ok(Some(msg)) => {
@@ -384,7 +391,7 @@ impl ControlClientTask {
 
         for request_id in to_remove {
             let request = locked.remove(request_id);
-            request.handler.send(TunnelResponse::Failed);
+            request.handler.send(TunnelResponse::Failed).unwrap();
         }
     }
 

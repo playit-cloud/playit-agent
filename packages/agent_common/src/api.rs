@@ -4,9 +4,9 @@ use std::net::SocketAddr;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentRegistered, TunnelRequest};
 use crate::agent_config::AgentConfig;
 use crate::rpc::SignedRpcRequest;
+use crate::{AgentRegistered, TunnelRequest};
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 #[non_exhaustive]
@@ -63,21 +63,16 @@ pub enum AgentApiResponse {
 #[serde(tag = "status")]
 pub enum AgentAccountStatus {
     #[serde(rename = "no-account")]
-    NoAccount {
-    },
+    NoAccount {},
     #[serde(rename = "guest-account")]
     GuestAccount {
         account_id: u64,
         web_session_key: String,
     },
     #[serde(rename = "unverified-account")]
-    UnverifiedAccount {
-        account_id: u64
-    },
+    UnverifiedAccount { account_id: u64 },
     #[serde(rename = "verified-account")]
-    VerifiedAccount {
-        account_id: u64
-    },
+    VerifiedAccount { account_id: u64 },
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
