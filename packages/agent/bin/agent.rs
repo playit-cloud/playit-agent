@@ -10,7 +10,7 @@ use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScree
 use tokio::sync::{MappedMutexGuard, RwLock};
 use tokio::sync::mpsc::channel;
 use tokio::task::JoinHandle;
-use tracing::Level;
+use tracing::{Instrument, Level};
 use tui::{Frame, Terminal};
 use tui::backend::{Backend, CrosstermBackend};
 use tui::layout::{Alignment, Constraint, Corner, Direction, Layout, Rect};
@@ -30,6 +30,7 @@ use agent_common::agent_config::AgentConfig;
 use agent_common::Proto;
 
 use clap::Parser;
+use agent::ping_task::PingTask;
 
 pub const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -106,6 +107,9 @@ async fn main() {
     let render_state = Arc::new(RwLock::new(
         AgentState::PreparingConfig(agent_config.status.clone())
     ));
+
+    let ping_task = PingTask::new(agent_config.clone());
+    tokio::spawn(ping_task.run().instrument(tracing::info_span!("ping task")));
 
     let app = Application {
         events,
