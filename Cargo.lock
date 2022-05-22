@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "agent"
-version = "0.8.0-beta"
+version = "0.8.1-beta"
 dependencies = [
  "agent-common",
  "byteorder",
