@@ -130,7 +130,10 @@ impl RedirectFlowFooter {
             _ => None,
         }
     }
-
+    
+    pub fn is_empty(&self) -> bool  {
+        unimplemented!();
+    }
     pub fn len(&self) -> usize {
         match self {
             RedirectFlowFooter::V4 { .. } => V4_LEN,
