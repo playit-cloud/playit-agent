@@ -7,6 +7,7 @@ homepage = "https://playit.gg"
 repository = "https://github.com/playit-cloud/playit-agent"
 
 [dependencies]
+anyhow = "1.0.57"
 tokio = { version = "1.12", features = ["full"] }
 tracing = "0.1"
 serde = "1"

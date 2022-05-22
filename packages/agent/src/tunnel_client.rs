@@ -16,9 +16,8 @@ use agent_common::api::SessionSecret;
 use agent_common::auth::SignatureError;
 use agent_common::rpc::SignedRpcRequest;
 use agent_common::{
-    AgentRegistered, ClaimError, ClaimLease, NewClient, Ping, Pong,
-    RpcMessage, SetupUdpChannelDetails, TunnelFeed, TunnelRequest,
-    TunnelResponse,
+    AgentRegistered, ClaimError, ClaimLease, NewClient, Ping, Pong, RpcMessage,
+    SetupUdpChannelDetails, TunnelFeed, TunnelRequest, TunnelResponse,
 };
 
 use crate::api_client::{ApiClient, ApiError};

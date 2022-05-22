@@ -40,7 +40,7 @@ impl AgentConfig {
     pub fn get_api_url(&self) -> String {
         match &self.api_url {
             Some(v) => v.clone(),
-            None => DEFAULT_API.to_string()
+            None => DEFAULT_API.to_string(),
         }
     }
 }

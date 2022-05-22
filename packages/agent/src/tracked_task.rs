@@ -21,8 +21,8 @@ impl TrackedTask {
         TrackedTask { done, task }
     }
 
-    pub async fn wait(self) {
-        self.task.await;
+    pub async fn wait(self) -> anyhow::Result<()> {
+        Ok(self.task.await?)
     }
 
     pub fn is_done(&self) -> bool {

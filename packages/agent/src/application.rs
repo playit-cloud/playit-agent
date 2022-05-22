@@ -15,7 +15,7 @@ use crate::agent_config::{AgentConfigStatus, ManagedAgentConfig};
 use crate::api_client::ApiClient;
 use crate::events::{PlayitEventDetails, PlayitEvents};
 use crate::now_milli;
-use crate::tcp_client::{TcpConnection};
+use crate::tcp_client::TcpConnection;
 use crate::tunnel_client::TunnelClient;
 use crate::udp_client::UdpClients;
 
@@ -105,7 +105,7 @@ impl Application {
                             .add_event(PlayitEventDetails::ClientConnected { client_id })
                             .await;
 
-                        pipe.wait().await;
+                        pipe.wait().await.unwrap_or_else(|e| println!("error: {e}"));
                         this.events
                             .add_event(PlayitEventDetails::ClientDisconnected { client_id })
                             .await;
@@ -186,7 +186,7 @@ impl Application {
             }
         };
 
-        let mut last_udp_keep_alive_response = Arc::new(AtomicU64::new(now_milli()));
+        let last_udp_keep_alive_response = Arc::new(AtomicU64::new(now_milli()));
 
         let keep_udp_alive = {
             let udp_tunnel = udp_tunnel.clone();
@@ -310,11 +310,22 @@ impl Application {
             })
         };
 
-        config_update_task.await;
-        keep_alive_task.await;
-        handle_tcp_clients.await;
-        keep_udp_alive.await;
-        handle_udp_packets.await;
+        // TODO use e.g. marco
+        config_update_task
+            .await
+            .unwrap_or_else(|e| println!("error: {e}"));
+        keep_alive_task
+            .await
+            .unwrap_or_else(|e| println!("error: {e}"));
+        handle_tcp_clients
+            .await
+            .unwrap_or_else(|e| println!("error: {e}"));
+        keep_udp_alive
+            .await
+            .unwrap_or_else(|e| println!("error: {e}"));
+        handle_udp_packets
+            .await
+            .unwrap_or_else(|e| println!("error: {e}"));
     }
 
     async fn handle_udp_packet(&self, udp_clients: &mut UdpClients, buffer: &[u8]) -> bool {

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use tokio::sync::{RwLock};
+use tokio::sync::RwLock;
 
 use agent_common::Proto;
 
@@ -44,6 +44,12 @@ impl PlayitEvents {
     pub fn with_events<T, F: Fn(&[PlayitEvent]) -> T>(&self, handle: F) -> T {
         let guard = futures::executor::block_on(self.inner.read());
         handle(guard.items.as_slice())
+    }
+}
+
+impl Default for PlayitEvents {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -7,6 +7,7 @@ name = "agent"
 version = "0.8.0-beta"
 dependencies = [
  "agent-common",
+ "anyhow",
  "byteorder",
  "clap",
  "crossterm 0.23.0",
@@ -32,6 +33,7 @@ dependencies = [
 name = "agent-common"
 version = "0.2.0"
 dependencies = [
+ "anyhow",
  "bincode",
  "byteorder",
  "chrono",
@@ -51,6 +53,12 @@ checksum = "d52a9bb7ec0cf484c551830a7ce27bd20d67eac647e1befb56b0be4ee39a55d2"
 dependencies = [
  "winapi",
 ]
+
+[[package]]
+name = "anyhow"
+version = "1.0.57"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08f9b8508dccb7687a1d6c4ce66b2b0ecef467c94667de27d8d7fe1f8d2a9cdc"
 
 [[package]]
 name = "atty"
