@@ -7,7 +7,7 @@ use crate::{ClaimProto, Proto};
 
 pub const DEFAULT_API: &str = "https://api.playit.cloud/agent";
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone)]
+#[derive(Serialize, Deserialize, Debug, JsonSchema, Eq, PartialEq, Clone)]
 pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_update: Option<u64>,
