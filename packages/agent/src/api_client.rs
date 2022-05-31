@@ -51,7 +51,9 @@ impl ApiClient {
     }
 
     pub async fn get_agent_account_status(&self) -> Result<AgentAccountStatus, ApiError> {
-        match self.req(&AgentApiRequest::GetAgentAccountStatus).await? {
+        match self.req(&AgentApiRequest::GetAgentAccountStatus {
+            client_version: Some(env!("CARGO_PKG_VERSION").to_string())
+        }).await? {
             AgentApiResponse::AgentAccountStatus(status) => Ok(status),
             resp => Err(ApiError::UnexpectedResponse(resp)),
         }
@@ -97,7 +99,9 @@ impl ApiClient {
     }
 
     pub async fn get_agent_config(&self) -> Result<AgentConfig, ApiError> {
-        let res = self.req(&AgentApiRequest::GetAgentConfig).await;
+        let res = self.req(&AgentApiRequest::GetAgentConfig {
+            client_version: Some(env!("CARGO_PKG_VERSION").to_string())
+        }).await;
 
         match res {
             Ok(AgentApiResponse::AgentConfig(config)) => Ok(config),
@@ -113,7 +117,7 @@ impl ApiClient {
 
         if let Some(secret) = &self.agent_secret {
             builder = builder.header(
-                hyper::header::AUTHORIZATION,
+                header::AUTHORIZATION,
                 format!("agent-key {}", secret),
             );
         }

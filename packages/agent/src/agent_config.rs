@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use rand::Rng;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::lookup_host;
 use tokio::sync::RwLock;
 
 use agent_common::agent_config::{AgentConfig, DEFAULT_API};
@@ -34,7 +35,7 @@ impl ManagedAgentConfig {
                 api_url: None,
                 ping_targets: None,
                 control_address: None,
-                refresh_from_api: false,
+                refresh_from_api: true,
                 secret_key: "".to_string(),
                 mappings: vec![],
             })),
@@ -79,7 +80,7 @@ impl ManagedAgentConfig {
             }
 
             if api_config.control_address.is_none() {
-                api_config.control_address = current.control_address;
+                api_config.control_address = current.control_address.clone();
             }
 
             api_config.last_update = current.last_update;
@@ -118,7 +119,18 @@ impl ManagedAgentConfig {
     }
 
     pub async fn control_address(&self) -> Option<SocketAddr> {
-        self.config.read().await.control_address
+        let control = match &self.config.read().await.control_address {
+            Some(v) => v.clone(),
+            None => "control.playit.gg:5523".to_string(),
+        };
+
+        match lookup_host(control.clone()).await {
+            Ok(mut v) => v.next(),
+            Err(error) => {
+                tracing::error!(?error, address=%control, "failed to lookup control address");
+                None
+            }
+        }
     }
 }
 
@@ -137,6 +149,10 @@ pub enum AgentConfigStatus {
         url: Arc<String>,
     },
     PleaseActiveProgram {
+        url: Arc<String>,
+    },
+    UserNotice {
+        message: Arc<String>,
         url: Arc<String>,
     },
     ProgramActivated,
@@ -195,8 +211,29 @@ pub async fn prepare_config(config_path: &str, prepare_status: &RwLock<AgentConf
                         if let Err(error) = webbrowser::open(&guest_login_url) {
                             tracing::error!(?error, url = %guest_login_url, "failed to open guest login URL in web browser");
                         }
+
                         *prepare_status.write().await = AgentConfigStatus::PleaseCreateAccount { url: Arc::new(guest_login_url) };
                         return Ok(config);
+                    }
+                    AgentAccountStatus::UserNotice { notice_url, message, important, prevent_usage } => {
+                        let url = Arc::new(notice_url);
+
+                        *prepare_status.write().await = AgentConfigStatus::UserNotice {
+                            message: Arc::new(message),
+                            url: url.clone(),
+                        };
+
+                        if important {
+                            tracing::info!(?url, "opening important user notice in browser");
+                            if let Err(error) = webbrowser::open(&url) {
+                                tracing::error!(?error, ?url, "failed to user notice in web browser");
+                            }
+                        }
+
+                        if !prevent_usage {
+                            tokio::time::sleep(Duration::from_secs(10)).await;
+                            return Ok(config);
+                        }
                     }
                 }
             }

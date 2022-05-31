@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ pub struct AgentConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ping_targets: Option<Vec<SocketAddr>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub control_address: Option<SocketAddr>,
+    pub control_address: Option<String>,
     #[serde(default)]
     pub refresh_from_api: bool,
     pub secret_key: String,
@@ -76,7 +76,7 @@ impl AgentConfig {
         let mut candidate: Option<(Option<IpAddr>, SocketAddr)> = None;
 
         /* tunnel ip can be announced at multiple subnets for routing optimizations */
-        let addr_ip_number = get_ip_number(addr.ip());
+        let addr_ip_number = get_match_ip(addr.ip());
 
         for mapping in &self.mappings {
             match (mapping.proto, proto) {
@@ -103,7 +103,7 @@ impl AgentConfig {
                 SocketAddr::new(local_ip, local_port),
             );
 
-            let tunnel_ip_number = get_ip_number(mapping.tunnel_ip);
+            let tunnel_ip_number = get_match_ip(mapping.tunnel_ip);
             if tunnel_ip_number == addr_ip_number {
                 candidate = Some(found);
             }
@@ -117,21 +117,21 @@ impl AgentConfig {
     }
 }
 
-fn get_ip_number(ip: IpAddr) -> Option<u8> {
+fn get_match_ip(ip: IpAddr) -> Ipv6Addr {
     match ip {
-        IpAddr::V4(ip) => Some(ip.octets()[3]),
+        IpAddr::V4(ip) => {
+            let mut octs = [0u8; 16];
+            octs[15] = ip.octets()[3];
+            octs.into()
+        }
         IpAddr::V6(ip) => {
-            let ip = ip.octets();
-            let mut ip_value = Some(ip[15]);
+            let mut ip = ip.octets();
 
-            for pos in 6..16 {
-                if ip[pos] != 0 {
-                    ip_value = None;
-                    break;
-                }
-            }
+            /* clear out datacenter selector part of address */
+            ip[4] &= 0xF0;
+            ip[5] = 0;
 
-            ip_value
+            ip.into()
         }
     }
 }

@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use byteorder::{BigEndian, ByteOrder};
 
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 
@@ -7,7 +8,7 @@ pub struct LanAddress;
 impl LanAddress {
     pub async fn tcp_socket(special_lan_ip: bool, peer: SocketAddr, host: SocketAddr) -> std::io::Result<TcpStream> {
         if host.ip().is_loopback() && special_lan_ip {
-            let local_ip = map_to_local(peer.ip());
+            let local_ip = map_to_local_ip4(peer.ip());
             let socket = TcpSocket::new_v4()?;
 
             match socket.bind(SocketAddrV4::new(local_ip, 0).into()) {
@@ -36,7 +37,7 @@ impl LanAddress {
 
     pub async fn udp_socket(special_lan_ip: bool, peer: SocketAddr, host: SocketAddr) -> std::io::Result<UdpSocket> {
         if host.ip().is_loopback() && special_lan_ip {
-            let local_ip = map_to_local(peer.ip());
+            let local_ip = map_to_local_ip4(peer.ip());
             let local_port = 40000 + (peer.port() % 24000);
 
             match UdpSocket::bind(SocketAddrV4::new(local_ip, local_port)).await {
@@ -60,22 +61,32 @@ impl LanAddress {
 }
 
 fn as_local_masked(mut ip: u32) -> u32 {
-    ip = ((ip >> 16) ^ ip).overflowing_mul(0x45d9f3u32).0;
-    ip = ((ip >> 16) ^ ip).overflowing_mul(0x45d9f3u32).0;
-    ip = (ip >> 16) ^ ip;
-    ip = ip & 0x00FFFFFFu32;
+    ip = shuffle(ip) & 0x00FFFFFFu32;
     if ip == 0 {
         ip = 1;
     }
     ip | 0x7F000000u32
 }
 
-fn map_to_local(ip: IpAddr) -> Ipv4Addr {
+fn shuffle(mut v: u32) -> u32 {
+    v = ((v >> 16) ^ v).overflowing_mul(0x45d9f3u32).0;
+    v = ((v >> 16) ^ v).overflowing_mul(0x45d9f3u32).0;
+    v = (v >> 16) ^ v;
+    v
+}
+
+fn map_to_local_ip4(ip: IpAddr) -> Ipv4Addr {
     Ipv4Addr::from(as_local_masked(match ip {
         IpAddr::V4(ip) => u32::from(ip),
         IpAddr::V6(ip) => {
-            let n = u128::from_be_bytes(ip.octets());
-            (n | n >> 32 | n >> 64 | n >> 96) as u32
+            let bytes = ip.octets();
+
+            let compressed = shuffle(BigEndian::read_u32(&bytes[..4]))
+                ^ shuffle(BigEndian::read_u32(&bytes[4..8]))
+                ^ shuffle(BigEndian::read_u32(&bytes[4..8]))
+                ^ shuffle(BigEndian::read_u32(&bytes[4..8]));
+
+            compressed
         }
     }))
 }

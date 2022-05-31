@@ -350,6 +350,9 @@ impl Renderer {
             AgentConfigStatus::ErrorLoadingAccountStatus => Paragraph::new("Failed to load account status"),
             AgentConfigStatus::AccountVerified => Paragraph::new("Found verified account"),
             AgentConfigStatus::ProgramActivated => Paragraph::new("Program activated"),
+            AgentConfigStatus::UserNotice { message, url } => Paragraph::new(
+                format!("System Notice: {}\n{}", message, url)
+            ),
         }
             .alignment(Alignment::Center)
             .wrap(Wrap { trim: false });

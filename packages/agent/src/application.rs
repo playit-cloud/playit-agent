@@ -347,13 +347,15 @@ impl Application {
             let mut claims = Vec::new();
 
             for mapping in &config.mappings {
-                claims.push(ClaimLease {
+                let claim = ClaimLease {
                     ip: mapping.tunnel_ip,
                     from_port: mapping.tunnel_from_port,
-                    to_port: mapping.tunnel_to_port
-                        .unwrap_or(mapping.tunnel_from_port + 1),
+                    to_port: mapping.tunnel_to_port.unwrap_or(mapping.tunnel_from_port + 1),
                     proto: mapping.proto,
-                });
+                };
+
+                tracing::info!(?claim, "queue claim port lease");
+                claims.push(claim);
             }
 
             claims
