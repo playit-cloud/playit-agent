@@ -1,6 +1,6 @@
 # The playit program
 
-* Latest Release: 0.8.1-beta
+* Latest Release: 0.8.3-beta
 * Offical Website: https://playit.gg
 * Offical Downloads: https://playit.gg/download
 

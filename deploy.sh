@@ -10,6 +10,7 @@ echo "deploying version ${VERSION} to ${DEPLOY_TARGET}:${REMOTE_PATH}"
 # build
 bash ${FOLDER}/build-scripts/ubuntu-deb.sh
 cross build --release --target x86_64-pc-windows-gnu --bin=agent
+cargo build --release --bin=agent
 
 # upload
 scp ${FOLDER}/target/aarch64-unknown-linux-gnu/release/agent ${DEPLOY_TARGET}:${REMOTE_PATH}/playit-${VERSION}-aarch64
