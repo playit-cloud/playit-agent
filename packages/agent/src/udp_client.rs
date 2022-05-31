@@ -166,7 +166,7 @@ impl UdpClientForwarder {
 
             let res = {
                 let tunnel_addr = self.channel_details.read().await.tunnel_addr;
-                tracing::info!(?tunnel_addr, flow = ?self.client.to_tunnel_flow, "forward packet");
+                tracing::trace!(?tunnel_addr, flow = ?self.client.to_tunnel_flow, "forward packet");
                 self.tunnel_udp.send_to(&buffer[..updated_len], tunnel_addr).await
             };
 

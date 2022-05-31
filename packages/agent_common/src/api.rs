@@ -16,7 +16,7 @@ pub enum AgentApiRequest {
     GetControlAddr,
 
     #[serde(rename = "get-agent-account-status")]
-    GetAgentAccountStatus,
+    GetAgentAccountStatus { client_version: Option<String> },
 
     #[serde(rename = "sign-tunnel-request")]
     SignControlRequest(TunnelRequest),
@@ -31,7 +31,7 @@ pub enum AgentApiRequest {
     ExchangeClaimForSecret(ExchangeClaimForSecret),
 
     #[serde(rename = "get-agent-config")]
-    GetAgentConfig,
+    GetAgentConfig { client_version: Option<String> },
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
@@ -77,6 +77,13 @@ pub enum AgentAccountStatus {
     #[serde(rename = "verified-account")]
     VerifiedAccount {
         account_id: u64
+    },
+    #[serde(rename = "user-notice")]
+    UserNotice {
+        message: String,
+        notice_url: String,
+        important: bool,
+        prevent_usage: bool,
     },
 }
 

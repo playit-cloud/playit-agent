@@ -165,8 +165,12 @@ pub struct ActiveTcpConnection {
 
 impl ActiveTcpConnection {
     pub async fn wait(self) {
-        self.host_to_tunnel.await;
-        self.tunnel_to_host.await;
+        if let Err(error) = self.host_to_tunnel.await {
+            tracing::error!(?error, "error joining host=>tunnel");
+        }
+        if let Err(error) = self.tunnel_to_host.await {
+            tracing::error!(?error, "error joining tunnel=>host");
+        }
     }
 }
 

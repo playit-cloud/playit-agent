@@ -62,6 +62,8 @@ impl TunnelClient {
             None => api.get_control_addr().await?,
         };
 
+        tracing::info!(?control_addr, "tunnel client starting");
+
         let udp = UdpSocket::bind(match control_addr {
             SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(0.into()), 0),
             SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(0.into()), 0),

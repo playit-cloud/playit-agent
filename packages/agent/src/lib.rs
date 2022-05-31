@@ -16,3 +16,17 @@ pub fn now_milli() -> u64 {
         .unwrap()
         .as_millis() as u64
 }
+
+#[cfg(test)]
+mod test {
+    use tokio::net::{lookup_host, TcpStream};
+    use tokio::net::ToSocketAddrs;
+
+    #[tokio::test]
+    async fn test() {
+        let hosts = lookup_host("numbers-charms.at.playit.gg:1234").await.unwrap();
+        for host in hosts {
+            println!("peer addr: {:?}", host);
+        }
+    }
+}
