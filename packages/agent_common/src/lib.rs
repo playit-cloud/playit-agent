@@ -13,6 +13,7 @@ pub mod rpc;
 pub mod udp;
 pub mod agent_config;
 pub mod hmac;
+pub mod utils;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
 pub struct RpcMessage<T> {
@@ -182,7 +183,7 @@ pub struct ClaimLeaseV4 {
     pub proto: ClaimProto,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Hash, PartialEq)]
 pub struct ClaimLease {
     pub ip: IpAddr,
     pub from_port: u16,
@@ -201,7 +202,7 @@ impl From<ClaimLeaseV4> for ClaimLease {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, Eq, PartialEq, JsonSchema)]
+#[derive(Serialize, Deserialize, Hash, Debug, Clone, Copy, Eq, PartialEq, JsonSchema)]
 pub enum ClaimProto {
     #[serde(rename = "udp")]
     Udp,
@@ -209,6 +210,24 @@ pub enum ClaimProto {
     Tcp,
     #[serde(rename = "both")]
     Both,
+}
+
+impl ClaimProto {
+    pub fn has_tcp(&self) -> bool {
+        match self {
+            ClaimProto::Udp => false,
+            ClaimProto::Tcp => true,
+            ClaimProto::Both => true,
+        }
+    }
+
+    pub fn has_udp(&self) -> bool {
+        match self {
+            ClaimProto::Udp => true,
+            ClaimProto::Tcp => false,
+            ClaimProto::Both => true,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, JsonSchema)]
@@ -274,7 +293,7 @@ pub fn abs_diff<T: Ord + Sub<Output=T>>(a: T, b: T) -> T {
 
 #[cfg(test)]
 mod test {
-    use crate::{TunnelFeed, TunnelRequest};
+    use crate::{ClaimInstructionVersioned, TunnelFeed, TunnelRequest};
 
     #[test]
     fn test_pares_tunnel_requests() {
@@ -290,5 +309,22 @@ mod test {
         let bytes = hex::decode(hex).unwrap();
         let parsed: TunnelFeed = bincode::deserialize(&bytes).unwrap();
         println!("{:?}", parsed);
+    }
+
+    #[test]
+    fn parse() {
+        let bytes = hex::decode("0100000093b9ddc0dd63c0a811b35cc7010000002602fbaf000000000000000000000002071c4c0000000000000004002993b9ddc063ddc0a811b3c75c83ed2e0d1c0762c756ad00000000000000010000000000000001dfd0220b1f16c7b3f337269d5b766584608f17c477b8c08f784cacd038c9370a000000040000000000000074657374").unwrap();
+        let parsed: TunnelFeed = bincode::deserialize(&bytes).unwrap();
+        match parsed {
+            TunnelFeed::NewClientV4(client) => {
+                match client.claim_instructions {
+                    ClaimInstructionVersioned::Tcp4 { .. } => panic!(),
+                    ClaimInstructionVersioned::Tcp6 { token, .. } => {
+                        println!("{}", hex::encode(token));
+                    }
+                }
+            }
+            _ => panic!(),
+        }
     }
 }
