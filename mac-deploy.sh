@@ -4,7 +4,7 @@ DEPLOY_TARGET=$1
 FOLDER=$(dirname "$0")
 REMOTE_PATH=/var/www/playit/downloads
 
-VERSION="$(toml get "${FOLDER}/packages/agent/Cargo.toml" package.version | sed "s/\"//g")"
+VERSION="$(toml get "${FOLDER}/packages/agent_cli/Cargo.toml" package.version | sed "s/\"//g")"
 
 bash ${FOLDER}/build-scripts/macos-app.sh
 scp ${FOLDER}/build-scripts/out/playit.dmg ${DEPLOY_TARGET}:${REMOTE_PATH}/playit-${VERSION}.dmg
