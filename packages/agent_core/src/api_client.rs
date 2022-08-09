@@ -7,10 +7,10 @@ use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use serde::{Deserialize, Serialize};
 use tracing::instrument::WithSubscriber;
 
-use agent_common::{AgentRegistered, TunnelRequest};
-use agent_common::agent_config::AgentConfig;
-use agent_common::api::{AgentAccountStatus, AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret};
-use agent_common::rpc::SignedRpcRequest;
+use playit_agent_common::{AgentRegistered, TunnelRequest};
+use playit_agent_common::agent_config::AgentConfigBuilder;
+use playit_agent_common::api::{AgentAccountStatus, AgentApiRequest, AgentApiResponse, ExchangeClaimForSecret, SessionSecret};
+use playit_agent_common::rpc::SignedRpcRequest;
 
 pub struct ApiClient {
     api_base: String,
@@ -98,7 +98,7 @@ impl ApiClient {
         }
     }
 
-    pub async fn get_agent_config(&self) -> Result<AgentConfig, ApiError> {
+    pub async fn get_agent_config(&self) -> Result<AgentConfigBuilder, ApiError> {
         let res = self.req(&AgentApiRequest::GetAgentConfig {
             client_version: Some(env!("CARGO_PKG_VERSION").to_string())
         }).await;

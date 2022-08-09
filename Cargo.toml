@@ -1,6 +1,7 @@
 [workspace]
 members = [
-    "packages/agent",
+    "packages/agent_cli",
+    "packages/agent_core",
     "packages/agent_common",
 ]
 

@@ -1,6 +1,6 @@
 [package]
-name = "agent"
-version = "0.8.3-beta"
+name = "playit-agent"
+version = "0.9.0-rc1"
 edition = "2021"
 description = "using playit.gg makes it possible to host game servers at home without port forwarding"
 homepage = "https://playit.gg"
@@ -9,30 +9,17 @@ repository = "https://github.com/playit-cloud/playit-agent"
 [dependencies]
 tokio = { version = "1.12", features = ["full"] }
 tracing = "0.1"
-serde = "1"
-serde_json = "1"
-agent-common = { path = "../agent_common" }
-hex = "0.4.3"
-slab = "0.4.5"
-toml = "0.5.8"
-byteorder = "1.4.3"
-rand = "0.8.5"
-webbrowser = { git = "https://github.com/playit-cloud/webbrowser-rs", rev = "820f661c2d0afe87ca838546beef4ff9b8b1a10b", features = ["suppress-logs"] }
-tracing-appender = "0.2.0"
 tracing-subscriber = "0.3.8"
-futures = "0.3.21"
-tui = "0.17.0"
-crossterm = "0.23.0"
-hyper-rustls = { version = "0.23.0", features = ["webpki-tokio", "http2"] }
-hyper = { version = "0.14.17", features = ["full"] }
-clap = { version = "3.1.2", features = ["derive"] }
+playit-agent-core = { path = "../agent_core" }
+playit-agent-common = { path = "../agent_common" }
+rand = "0.8.5"
+tui = "0.18.0"
+crossterm = "0.24.0"
+webbrowser = { git = "https://github.com/playit-cloud/webbrowser-rs", rev = "820f661c2d0afe87ca838546beef4ff9b8b1a10b", features = ["suppress-logs"] }
+clap = { version = "3.2.16", features = ["derive"] }
 
 [build-dependencies]
 embed-resource = "1.6"
-
-[[bin]]
-name = "agent"
-path = "bin/agent.rs"
 
 [package.metadata.deb]
 copyright = "Developed Methods LLC 2022"

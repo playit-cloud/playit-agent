@@ -101,6 +101,7 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
     pub fn new_system_signed<K: Into<T>>(
         key: &HmacSha256,
         account_id: u64,
+        agent_id: u64,
         timestamp: u64,
         data: K,
     ) -> Self {
@@ -110,6 +111,7 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
             let og_data_len = data.len();
             data.write_u64::<BigEndian>(account_id).unwrap();
             data.write_u64::<BigEndian>(timestamp).unwrap();
+            data.write_u64::<BigEndian>(agent_id).unwrap();
 
             let sig = key.sign(&data);
 
@@ -125,7 +127,7 @@ impl<T: DeserializeOwned + Serialize> SignedRpcRequest<T> {
                 details: RequestDetails {
                     account_id,
                     request_timestamp: timestamp,
-                    session_id: None,
+                    session_id: Some(agent_id),
                 },
                 signature: Signature::System(SystemSignature {
                     signature,

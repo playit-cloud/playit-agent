@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{AgentRegistered, TunnelRequest};
-use crate::agent_config::AgentConfig;
+use crate::agent_config::AgentConfigBuilder;
 use crate::rpc::SignedRpcRequest;
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]
@@ -53,7 +53,7 @@ pub enum AgentApiResponse {
     AgentSecret(AgentSecret),
 
     #[serde(rename = "agent-config")]
-    AgentConfig(AgentConfig),
+    AgentConfig(AgentConfigBuilder),
 
     #[serde(rename = "agent-account-status")]
     AgentAccountStatus(AgentAccountStatus),

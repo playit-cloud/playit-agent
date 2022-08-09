@@ -126,11 +126,11 @@ impl RedirectFlowFooter {
         }
     }
 
-    pub fn len_v4() -> usize {
+    pub const fn len_v4() -> usize {
         V4_LEN
     }
 
-    pub fn len_v6() -> usize {
+    pub const fn len_v6() -> usize {
         V6_LEN
     }
 }

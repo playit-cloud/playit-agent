@@ -38,8 +38,8 @@ pub struct SessionSignature {
     pub(crate) signature: [u8; 32],
 }
 
-const MAX_API_TIME_DIFF: u64 = 60_000 /* 1 minute */;
-const MAX_USER_TIME_DIFF: u64 = 300_000 /* 5 minutes */;
+pub const MAX_SIGNATURE_AGE: u64 = 300_000 /* 5 minute */;
+pub const MAX_SESSION_AGE: u64 = 300_000 /* 5 minutes */;
 
 impl Signature {
     pub fn validate(
@@ -49,12 +49,12 @@ impl Signature {
         data: &mut Vec<u8>,
         secret: &HmacSha256,
     ) -> Result<Authorization, SignatureError> {
-        let (max_diff, from_system) = match self {
-            Signature::System(_) => (MAX_API_TIME_DIFF, true),
-            Signature::Session(_) => (MAX_USER_TIME_DIFF, false),
+        let from_system = match self {
+            Signature::System(_) => true,
+            Signature::Session(_) => false,
         };
 
-        if abs_diff(details.request_timestamp, now) > max_diff {
+        if abs_diff(details.request_timestamp, now) > MAX_SIGNATURE_AGE {
             return Err(SignatureError::SignatureExpired {
                 now,
                 timestamp: details.request_timestamp,
@@ -65,7 +65,7 @@ impl Signature {
         match self {
             Signature::System(s) => s
                 .validate(details, data, secret)
-                .map(|account_id| Authorization::SystemLevel { account_id, sig_epoch: details.request_timestamp }),
+                .map(|(account_id, agent_id)| Authorization::SystemLevel { account_id, agent_id, sig_epoch: details.request_timestamp }),
             Signature::Session(s) => {
                 s.validate(details, now, data, secret)
                     .map(|(account_id, session_id)| Authorization::SessionLevel {
@@ -84,16 +84,20 @@ impl SystemSignature {
         details: &RequestDetails,
         data: &mut Vec<u8>,
         key: &HmacSha256,
-    ) -> Result<u64, SignatureError> {
+    ) -> Result<(u64, Option<u64>), SignatureError> {
         let og_data_len = data.len();
         data.write_u64::<BigEndian>(details.account_id).unwrap();
         data.write_u64::<BigEndian>(details.request_timestamp).unwrap();
+        if let Some(agent_id) = details.session_id {
+            data.write_u64::<BigEndian>(agent_id).unwrap();
+        }
+
         let verify = key.verify(data, &self.signature);
         data.truncate(og_data_len);
 
         verify.map_err(|_| SignatureError::InvalidSignature)?;
 
-        Ok(details.account_id)
+        Ok((details.account_id, details.session_id))
     }
 }
 
@@ -110,11 +114,11 @@ impl SessionSignature {
             None => return Err(SignatureError::MissingSessionId),
         };
 
-        if abs_diff(self.session_timestamp, now) > MAX_API_TIME_DIFF {
+        if abs_diff(self.session_timestamp, now) > MAX_SESSION_AGE {
             return Err(SignatureError::SignatureExpired {
                 now,
                 timestamp: self.session_timestamp,
-                from_system: false,
+                from_system: true,
             });
         }
 
@@ -190,8 +194,8 @@ pub fn generate_signature(
 
 #[derive(Debug)]
 pub enum Authorization {
-    SystemLevel { account_id: u64, sig_epoch: u64, },
-    SessionLevel { account_id: u64, session_id: u64, sig_epoch: u64, },
+    SystemLevel { account_id: u64, agent_id: Option<u64>, sig_epoch: u64 },
+    SessionLevel { account_id: u64, session_id: u64, sig_epoch: u64 },
 }
 
 #[derive(Serialize, Deserialize, Debug, JsonSchema)]

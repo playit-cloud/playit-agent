@@ -2,6 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use byteorder::{BigEndian, ByteOrder};
 
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
+use playit_agent_common::utils::shuffle;
 
 pub struct LanAddress;
 
@@ -66,13 +67,6 @@ fn as_local_masked(mut ip: u32) -> u32 {
         ip = 1;
     }
     ip | 0x7F000000u32
-}
-
-fn shuffle(mut v: u32) -> u32 {
-    v = ((v >> 16) ^ v).overflowing_mul(0x45d9f3u32).0;
-    v = ((v >> 16) ^ v).overflowing_mul(0x45d9f3u32).0;
-    v = (v >> 16) ^ v;
-    v
 }
 
 fn map_to_local_ip4(ip: IpAddr) -> Ipv4Addr {
