@@ -1,25 +1,21 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::io::Stdout;
-use std::net::{IpAddr, SocketAddr};
-use std::ops::BitOr;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crossterm::event;
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use tokio::runtime::Handle;
 use tokio::sync::RwLock;
 use tui::{Frame, Terminal};
 use tui::backend::{Backend, CrosstermBackend};
-use tui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use tui::layout::{Alignment, Constraint, Rect};
 use tui::style::{Color, Modifier, Style};
 use tui::text::{Span, Spans, Text};
 use tui::widgets::{BarChart, Block, Borders, BorderType, Cell, Paragraph, Row, Table, Wrap};
 
-use playit_agent_common::{ClaimProto, Proto};
 use playit_agent_common::agent_config::{AgentConfig, get_match_ip, PortMappingConfig};
 use playit_agent_core::agent_state::AgentState;
 use playit_agent_core::tcp_client::TcpClients;
@@ -57,7 +53,6 @@ pub struct Notice {
 pub struct Connected {
     pub focused: ConnectedElement,
     pub ping_samples: VecDeque<u64>,
-    pub errors: VecDeque<ErrorMessage>,
     pub config: Arc<AgentConfig>,
     pub log_reader: LogReader,
     pub logs: VecDeque<String>,
@@ -80,18 +75,6 @@ impl Default for ConnectedElement {
     }
 }
 
-pub enum ErrorMessage {
-    FailedToConnectToLocal {
-        server_name: String,
-        local_address: String,
-    },
-}
-
-pub struct TunnelName {
-    pub name: String,
-    pub address: String,
-}
-
 #[derive(Debug)]
 pub enum TunnelStatus {
     SettingUp,
@@ -112,7 +95,7 @@ impl GraphicInterface {
             return Err(());
         }
 
-        let mut stdout = std::io::stdout();
+        let stdout = std::io::stdout();
         let backend = CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend).unwrap();
 
@@ -197,7 +180,7 @@ impl GraphicInterface {
                 self.terminal.autoresize().unwrap();
                 let mut frame = self.terminal.get_frame();
                 state.render(&mut frame).await;
-                self.terminal.draw(|f| {}).unwrap();
+                self.terminal.draw(|_| {}).unwrap();
             }
 
             /* open web browser to notice */
@@ -260,22 +243,29 @@ impl GraphicState {
     fn notice<B: Backend>(&self, frame: &mut Frame<B>, notice: &Notice) {
         let size = frame.size();
 
-        let mut lines = 0;
+        let line_count;
         let paragraph = if size.height >= 3 {
-            lines = 3;
+            line_count = 3;
 
-            Paragraph::new(Text {
-                lines: vec![
-                    Spans(vec![Span::styled(format!("playit.gg agent version: {}", env!("CARGO_PKG_VERSION")), Style::default())]),
-                    Spans(vec![Span::styled(&notice.message, Style::default().add_modifier(Modifier::BOLD))]),
+            let mut lines = vec![
+                Spans(vec![Span::styled(format!("playit.gg agent version: {}", env!("CARGO_PKG_VERSION")), Style::default())]),
+                Spans(vec![Span::styled(&notice.message, Style::default().add_modifier(Modifier::BOLD))]),
+            ];
+
+            if notice.url.len() + 6 < (size.width as usize) {
+                lines.push(
                     Spans(vec![
                         Span::styled("Visit: ", Style::default().add_modifier(Modifier::BOLD)),
-                        Span::styled(&notice.url, Style::default().add_modifier(Modifier::UNDERLINED)),
-                    ]),
-                ]
+                        Span::styled(format!("{:?}", notice.url), Style::default().add_modifier(Modifier::UNDERLINED)),
+                    ])
+                );
+            }
+
+            Paragraph::new(Text {
+                lines,
             }).wrap(Wrap { trim: true }).alignment(Alignment::Center)
         } else {
-            lines = 2;
+            line_count = 2;
 
             Paragraph::new(Text {
                 lines: vec![
@@ -291,10 +281,10 @@ impl GraphicState {
         let default_style = Style::default().bg(Color::Black).fg(Color::White);
         frame.render_widget(Block::default().style(default_style), size);
 
-        let y_offset = (size.height / 2).max(lines / 2);
+        let y_offset = (size.height / 2).max(line_count / 2);
         frame.render_widget(
             paragraph.style(default_style),
-            Rect::new(0, y_offset - lines / 2, size.width, lines),
+            Rect::new(0, y_offset - line_count / 2, size.width, line_count),
         );
     }
 
@@ -448,7 +438,6 @@ impl GraphicState {
                             if get_match_ip(claim.tunnel_ip) == search_ip
                                 && claim.from_port <= selected_tunnel.tunnel_from_port
                                 && claim.to_port >= selected_tunnel.tunnel_to_port {
-
                                 if claim.should_remove {
                                     found = TunnelStatus::Removing;
                                 } else if claim.last_ack != 0 {
@@ -669,11 +658,7 @@ impl GraphicState {
     fn link_agent<B: Backend>(&self, frame: &mut Frame<B>, url: &str) {
         let size = frame.size();
 
-        let mut lines = 0;
-
         let paragraph = if size.height < 3 {
-            lines = 1;
-
             Paragraph::new(Text {
                 lines: vec![
                     Spans(vec![
@@ -683,8 +668,6 @@ impl GraphicState {
                 ]
             }).wrap(Wrap { trim: true })
         } else {
-            lines = 2;
-
             let code = last_split(url.split("/")).unwrap();
 
             Paragraph::new(Text {

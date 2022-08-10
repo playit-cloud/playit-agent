@@ -63,8 +63,7 @@ pub enum AgentApiResponse {
 #[serde(tag = "status")]
 pub enum AgentAccountStatus {
     #[serde(rename = "no-account")]
-    NoAccount {
-    },
+    NoAccount {},
     #[serde(rename = "guest-account")]
     GuestAccount {
         account_id: u64,

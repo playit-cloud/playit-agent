@@ -140,7 +140,7 @@ impl SessionSignature {
 
         /* validate signature */
         {
-            let mut key = HmacSha256::create(shared_secret.as_ref());
+            let key = HmacSha256::create(shared_secret.as_ref());
 
             let og_data_len = data.len();
             data.write_u64::<BigEndian>(details.account_id).unwrap();

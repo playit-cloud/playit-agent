@@ -1,14 +1,11 @@
-use std::cmp::max;
-use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::RwLock;
-use playit_agent_common::{AgentRegistered, ClaimError, ClaimLease, ClaimProto, RpcMessage, SetupUdpChannelDetails, TunnelFeed, TunnelRequest, TunnelResponse};
-use playit_agent_common::agent_config::{AgentConfig, AgentConfigBuilder};
-use playit_agent_common::auth::SignatureError;
-use super::api_client::ApiError;
-use crate::tunnel_api::{TunnelApi, TunnelApiError};
+use playit_agent_common::{ClaimLease, ClaimProto, SetupUdpChannelDetails};
+use playit_agent_common::agent_config::{AgentConfig};
+
+
 use crate::now_milli;
 use crate::udp_client::UdpTunnel;
 
@@ -230,7 +227,6 @@ impl PortClaimState {
                         existing.should_remove = true;
                         existing.request_id = request_id.fetch_add(1, Ordering::SeqCst);
                     }
-                    found = true
                 }
                 /*
                  * Flag current to be removed

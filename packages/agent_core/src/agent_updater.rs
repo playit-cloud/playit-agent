@@ -1,11 +1,9 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{Ordering};
 
-use tokio::sync::RwLock;
-use tracing_subscriber::fmt::time;
 
-use playit_agent_common::{ClaimError, ClaimLease, NewClient, RpcMessage, SetupUdpChannelDetails, TunnelFeed, TunnelResponse};
-use playit_agent_common::agent_config::{AgentConfig, AgentConfigBuilder};
+use playit_agent_common::{ClaimError, NewClient, RpcMessage, SetupUdpChannelDetails, TunnelFeed, TunnelResponse};
+
 use playit_agent_common::auth::{MAX_SESSION_AGE, SignatureError};
 
 use crate::now_milli;

@@ -1,5 +1,4 @@
 use std::fmt::{Debug, Formatter};
-use ring::hmac::Key;
 
 #[derive(Clone)]
 pub struct HmacSha256(ring::hmac::Key);

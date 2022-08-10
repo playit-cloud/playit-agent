@@ -1,11 +1,11 @@
-use std::net::{SocketAddr, SocketAddrV6};
+use std::net::{SocketAddr};
 
 use hyper::{Body, header, Method, Request};
 use hyper::body::Buf;
 use hyper::client::HttpConnector;
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use serde::{Deserialize, Serialize};
-use tracing::instrument::WithSubscriber;
+
 
 use playit_agent_common::{AgentRegistered, TunnelRequest};
 use playit_agent_common::agent_config::AgentConfigBuilder;

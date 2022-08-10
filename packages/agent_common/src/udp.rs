@@ -52,19 +52,19 @@ impl RedirectFlowFooter {
 
         match self {
             RedirectFlowFooter::V4 { src, dst } => {
-                slice.write_u32::<BigEndian>((*src.ip()).into());
-                slice.write_u32::<BigEndian>((*dst.ip()).into());
-                slice.write_u16::<BigEndian>(src.port());
-                slice.write_u16::<BigEndian>(dst.port());
-                slice.write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_OLD);
+                slice.write_u32::<BigEndian>((*src.ip()).into()).unwrap();
+                slice.write_u32::<BigEndian>((*dst.ip()).into()).unwrap();
+                slice.write_u16::<BigEndian>(src.port()).unwrap();
+                slice.write_u16::<BigEndian>(dst.port()).unwrap();
+                slice.write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_OLD).unwrap();
             }
             RedirectFlowFooter::V6 { src, dst, flow } => {
-                slice.write_u128::<BigEndian>(src.0.into());
-                slice.write_u128::<BigEndian>(dst.0.into());
-                slice.write_u16::<BigEndian>(src.1);
-                slice.write_u16::<BigEndian>(dst.1);
-                slice.write_u32::<BigEndian>(*flow);
-                slice.write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID);
+                slice.write_u128::<BigEndian>(src.0.into()).unwrap();
+                slice.write_u128::<BigEndian>(dst.0.into()).unwrap();
+                slice.write_u16::<BigEndian>(src.1).unwrap();
+                slice.write_u16::<BigEndian>(dst.1).unwrap();
+                slice.write_u32::<BigEndian>(*flow).unwrap();
+                slice.write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID).unwrap();
             }
         }
 
@@ -158,7 +158,7 @@ mod test {
         let flow = RedirectFlowFooter::V6 {
             src: ("2602:fbaf::100".parse().unwrap(), 142),
             dst: ("2602:fbaf::200".parse().unwrap(), 142),
-            flow: 1234
+            flow: 1234,
         };
         flow.write_to(&mut buf[100 - V6_LEN..]);
 

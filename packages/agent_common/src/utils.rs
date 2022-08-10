@@ -1,4 +1,3 @@
-use std::net::Ipv6Addr;
 use byteorder::{BigEndian, ReadBytesExt};
 
 pub fn shuffle(mut v: u32) -> u32 {

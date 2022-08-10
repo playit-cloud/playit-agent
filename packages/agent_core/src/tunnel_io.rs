@@ -1,5 +1,5 @@
 use std::net::{IpAddr, SocketAddr};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;

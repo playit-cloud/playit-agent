@@ -1,6 +1,6 @@
-use std::net::{IpAddr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -302,7 +302,7 @@ async fn pipe(
                 Ok(Ok(received)) => {
                     client.last_msg_at.store(now_milli(), Ordering::SeqCst);
                     received
-                },
+                }
                 Ok(Err(error)) => {
                     tracing::error!(?error, "failed to read data");
                     return Err(error);

@@ -1,8 +1,7 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{ClaimProto, Proto};
 
@@ -95,7 +94,7 @@ impl PortMappingConfig {
             tunnel_to_port: if self.tunnel_to_port == self.tunnel_from_port + 1 { None } else { Some(self.tunnel_to_port) },
             bind_ip: self.bind_ip,
             local_ip: if self.local_ip == Ipv4Addr::new(127, 0, 0, 1) { None } else { Some(self.local_ip) },
-            local_port: if self.local_port == self.tunnel_from_port { None } else { Some(self.local_port) }
+            local_port: if self.local_port == self.tunnel_from_port { None } else { Some(self.local_port) },
         }
     }
 }
@@ -321,7 +320,7 @@ mod test {
             tunnel_to_port: 200,
             bind_ip: None,
             local_ip: "127.0.0.133".parse().unwrap(),
-            local_port: 9912
+            local_port: 9912,
         });
 
         agent_config.mappings.push(PortMappingConfig {
@@ -333,42 +332,42 @@ mod test {
             tunnel_to_port: 200,
             bind_ip: None,
             local_ip: "127.0.0.199".parse().unwrap(),
-            local_port: 444
+            local_port: 444,
         });
 
         assert_eq!(agent_config.find_local_addr(
             "[2602:fbaf:1c0::c0]:100".parse().unwrap(),
-            Proto::Tcp
+            Proto::Tcp,
         ), None);
 
         assert_eq!(agent_config.find_local_addr(
             "[2602:fbaf:1c0::c0]:100".parse().unwrap(),
-            Proto::Udp
+            Proto::Udp,
         ).unwrap().1, "127.0.0.133:9912".parse().unwrap());
 
         assert_eq!(agent_config.find_local_addr(
             "[2602:fbaf:1c0::c0]:100".parse().unwrap(),
-            Proto::Udp
+            Proto::Udp,
         ).unwrap().1, "127.0.0.133:9912".parse().unwrap());
 
         assert_eq!(agent_config.find_local_addr(
             "[2602:fbaf::c0]:100".parse().unwrap(),
-            Proto::Udp
+            Proto::Udp,
         ).unwrap().1, "127.0.0.133:9912".parse().unwrap());
 
         assert_eq!(agent_config.find_local_addr(
             "[2603:fbaf:1c0::c0]:100".parse().unwrap(),
-            Proto::Udp
+            Proto::Udp,
         ), None);
 
         assert_eq!(agent_config.find_local_addr(
             "[2602:fbaf::2]:100".parse().unwrap(),
-            Proto::Udp
+            Proto::Udp,
         ).unwrap().1, "127.0.0.199:444".parse().unwrap());
 
         assert_eq!(agent_config.find_local_addr(
             "199.33.123.2:100".parse().unwrap(),
-            Proto::Udp
+            Proto::Udp,
         ).unwrap().1, "127.0.0.199:444".parse().unwrap());
     }
 }

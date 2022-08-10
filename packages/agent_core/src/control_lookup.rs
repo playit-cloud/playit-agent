@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
+
 use std::time::Duration;
-use tokio::net::UdpSocket;
+
 use tracing::Instrument;
 use playit_agent_common::rpc::SignedRpcRequest;
 use playit_agent_common::{Ping, RpcMessage, TunnelFeed, TunnelRequest, TunnelResponse};
@@ -11,7 +11,7 @@ use crate::tunnel_io::TunnelIO;
 
 pub async fn get_working_io(address: &str) -> Option<TunnelIO> {
     let mut options = address_lookup(address, 5523).await;
-    options.sort_by(|a, b| {
+    options.sort_by(|a, _b| {
         if a.is_ipv6() {
             Ordering::Less
         } else {

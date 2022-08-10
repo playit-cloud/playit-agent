@@ -1,31 +1,22 @@
-use std::cmp::Ordering;
-use std::collections::{HashMap, VecDeque};
-use std::collections::hash_map::Entry;
 use std::fmt::Display;
-use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
-use rand::random;
-use tokio::net::lookup_host;
 use tokio::sync::{RwLock, RwLockMappedWriteGuard, RwLockWriteGuard};
 use tracing::Level;
 
-use graphics::{Connected, ErrorMessage, GraphicInterface, GraphicState, TunnelStatus};
-use playit_agent_common::{Proto, TunnelFeed};
-use playit_agent_common::agent_config::{AgentConfig, AgentConfigBuilder, get_match_ip};
+use graphics::{Connected, GraphicInterface, GraphicState};
+use playit_agent_common::Proto;
+use playit_agent_common::agent_config::AgentConfigBuilder;
 use playit_agent_core::agent_state::AgentState;
 use playit_agent_core::agent_updater::AgentUpdater;
 use playit_agent_core::api_client::ApiClient;
 use playit_agent_core::control_lookup::get_working_io;
-use playit_agent_core::name_lookup::address_lookup;
-use playit_agent_core::now_milli;
 use playit_agent_core::setup_config::{AgentConfigStatus, prepare_config};
 use playit_agent_core::tcp_client::{TcpClients, TcpConnection};
 use playit_agent_core::tunnel_api::TunnelApi;
-use playit_agent_core::tunnel_io::TunnelIO;
 
-use crate::graphics::{ConnectedElement, Notice, TunnelName};
+use crate::graphics::{ConnectedElement, Notice};
 use crate::logging::{LoggingBuffer, LogReader};
 use crate::start_settings::StartSettings;
 
@@ -52,7 +43,6 @@ impl GraphicWrapper {
                 *other = GraphicState::Connected(Connected {
                     focused: ConnectedElement::Overview,
                     ping_samples: Default::default(),
-                    errors: Default::default(),
                     config: Arc::new(AgentConfigBuilder::default().build()),
                     log_reader: self.log_reader.take().unwrap(),
                     logs: Default::default(),
@@ -166,12 +156,19 @@ async fn main() {
             AgentConfigStatus::AccountVerified => {
                 graphics.set_loading("account verified").await;
             }
+            AgentConfigStatus::PleaseActiveProgram { url } => {
+                graphics.set_activate_link(url).await;
+            }
+            AgentConfigStatus::ProgramActivated => {
+                graphics.set_loading("playit.toml loaded").await;
+            }
             AgentConfigStatus::PleaseVerifyAccount { url } => {
                 graphics.set(GraphicState::Notice(Notice {
                     message: "Please verify your account".to_string(),
                     url: (**url).clone(),
                     important: true,
                 })).await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
             }
             AgentConfigStatus::PleaseCreateAccount { url } => {
                 graphics.set(GraphicState::Notice(Notice {
@@ -179,9 +176,7 @@ async fn main() {
                     url: (**url).clone(),
                     important: true,
                 })).await;
-            }
-            AgentConfigStatus::PleaseActiveProgram { url } => {
-                graphics.set_activate_link(url).await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
             }
             AgentConfigStatus::UserNotice { message, url, important } => {
                 graphics.set(GraphicState::Notice(Notice {
@@ -189,9 +184,14 @@ async fn main() {
                     url: (**url).clone(),
                     important: *important,
                 })).await;
-            }
-            AgentConfigStatus::ProgramActivated => {
-                graphics.set_loading("playit.toml loaded").await;
+
+                let wait = if *important {
+                    10
+                } else {
+                    5
+                };
+
+                tokio::time::sleep(Duration::from_secs(wait)).await;
             }
         }
 
@@ -205,7 +205,7 @@ async fn main() {
         Err(error) => {
             tracing::error!(?error, "failed to prepare config");
             tokio::time::sleep(Duration::from_secs(2)).await;
-            graphics.set_loading("failed to prepare config, maybe delete the playit.toml file");
+            graphics.set_loading("failed to prepare config, maybe delete the playit.toml file").await;
             tokio::time::sleep(Duration::from_secs(5)).await;
             return;
         }
@@ -219,7 +219,7 @@ async fn main() {
             Ok(updated) => agent_config.to_updated(updated.build()),
             Err(error) => {
                 tracing::error!(?error, "failed to load latest config");
-                graphics.set_loading("failed to load latest config");
+                graphics.set_loading("failed to load latest config").await;
                 tokio::time::sleep(Duration::from_secs(5)).await;
                 return;
             }
@@ -233,7 +233,7 @@ async fn main() {
     let tunnel_io = match get_working_io(&agent_config.control_address).await {
         Some(v) => v,
         None => {
-            graphics.set_loading("failed to connect to tunnel");
+            graphics.set_loading("failed to connect to tunnel").await;
             tokio::time::sleep(Duration::from_secs(5)).await;
             return;
         }
@@ -275,7 +275,7 @@ async fn main() {
     let tcp_clients = Arc::new(TcpClients::default());
 
     /* process messages from tunnel server */
-    let message_process_task = {
+    let _message_process_task = {
         let agent_updater = agent_updater.clone();
         let tcp_clients = tcp_clients.clone();
 
@@ -389,5 +389,7 @@ async fn main() {
         });
     }
 
-    agent_update_loop.await;
+    if let Err(error) = agent_update_loop.await {
+        tracing::error!(?error, "update loop error");
+    }
 }

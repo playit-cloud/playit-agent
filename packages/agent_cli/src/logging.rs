@@ -1,5 +1,4 @@
-use std::collections::VecDeque;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing_subscriber::fmt::MakeWriter;
 
@@ -26,6 +25,7 @@ impl LoggingBuffer {
         Some(LogReader {
             reader,
             dropped: self.dropped.clone(),
+            sent_drop_last: false,
         })
     }
 }
@@ -33,21 +33,23 @@ impl LoggingBuffer {
 pub struct LogReader {
     reader: tokio::sync::mpsc::Receiver<String>,
     dropped: Arc<AtomicU64>,
+    sent_drop_last: bool,
 }
 
 impl LogReader {
     pub fn try_read(&mut self) -> Option<String> {
+        if !self.sent_drop_last {
+            let dropped = self.dropped.swap(0, Ordering::SeqCst);
+
+            if dropped > 0 {
+                self.sent_drop_last = true;
+                return Some(format!("dropped {} log messages", dropped));
+            }
+        }
+
+        self.sent_drop_last = false;
         self.reader.try_recv().ok()
     }
-
-    pub async fn read(&mut self) -> Option<String> {
-        self.reader.recv().await
-    }
-}
-
-struct Inner {
-    lines: VecDeque<Arc<String>>,
-    line_count: usize,
 }
 
 pub struct LogWriter {

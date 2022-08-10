@@ -9,7 +9,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use playit_agent_common::agent_config::get_match_ip;
 
-use playit_agent_common::{Proto, SetupUdpChannelDetails};
+use playit_agent_common::{Proto};
 use playit_agent_common::udp::{RedirectFlowFooter, UDP_CHANNEL_ESTABLISH_ID};
 
 use crate::agent_state::{AgentState, KeepFreshTimes};
@@ -36,7 +36,7 @@ impl UdpTunnel {
             udp,
             udp_clients: Default::default(),
             keep_alive: Default::default(),
-            state
+            state,
         })
     }
 
@@ -55,7 +55,6 @@ impl UdpTunnel {
 
         let mut res = Vec::new();
         for (flow, client) in &*clients_lock {
-
             let matches = get_match_ip(flow.tunnel_addr.ip()) == search_ip
                 && tunnel_from_port <= flow.tunnel_addr.port()
                 && flow.tunnel_addr.port() < tunnel_to_port;

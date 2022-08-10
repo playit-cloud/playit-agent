@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::{SocketAddr};
 use tokio::net::lookup_host;
 
 pub async fn address_lookup(name: &str, default_port: u16) -> Vec<SocketAddr> {
@@ -24,7 +24,7 @@ pub async fn address_lookup(name: &str, default_port: u16) -> Vec<SocketAddr> {
 }
 
 async fn ip_lookup(name: &str) -> Vec<SocketAddr> {
-    let mut iter = match lookup_host(name).await {
+    let iter = match lookup_host(name).await {
         Ok(v) => v,
         Err(error) => {
             tracing::error!(?error, %name, "failed to perform hostname lookup");

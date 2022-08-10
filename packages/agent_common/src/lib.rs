@@ -155,7 +155,7 @@ impl From<SetupUdpChannelDetailsV4> for SetupUdpChannelDetails {
     fn from(details: SetupUdpChannelDetailsV4) -> Self {
         SetupUdpChannelDetails {
             tunnel_addr: details.tunnel_addr.into(),
-            token: details.token
+            token: details.token,
         }
     }
 }
@@ -164,7 +164,7 @@ impl From<SetupUdpChannelDetailsV6> for SetupUdpChannelDetails {
     fn from(details: SetupUdpChannelDetailsV6) -> Self {
         SetupUdpChannelDetails {
             tunnel_addr: details.tunnel_addr.into(),
-            token: details.token
+            token: details.token,
         }
     }
 }
@@ -197,7 +197,7 @@ impl From<ClaimLeaseV4> for ClaimLease {
             ip: claim.ip.into(),
             from_port: claim.from_port,
             to_port: claim.to_port,
-            proto: claim.proto
+            proto: claim.proto,
         }
     }
 }
