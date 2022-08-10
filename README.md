@@ -1,8 +1,9 @@
 # The playit program
 
-* Latest Release: 0.8.3-beta
+* Latest Release: 0.9.0-rc2
 * Offical Website: https://playit.gg
 * Offical Downloads: https://playit.gg/download
+* Releases: https://github.com/playit-cloud/playit-agent/releases
 
 Installing on ubuntu or debian
 
