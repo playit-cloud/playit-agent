@@ -4,7 +4,7 @@ version = 3
 
 [[package]]
 name = "agent"
-version = "0.9.0-rc1"
+version = "0.9.0-rc2"
 dependencies = [
  "clap",
  "crossterm 0.24.0",
