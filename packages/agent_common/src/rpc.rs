@@ -3,9 +3,11 @@ use std::fmt::{Debug, Formatter};
 use std::marker::PhantomData;
 
 use byteorder::{BigEndian, WriteBytesExt};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+
+#[cfg(feature = "use-schema")]
+use schemars::JsonSchema;
 
 use crate::AgentRegistered;
 use crate::auth::{
@@ -14,7 +16,8 @@ use crate::auth::{
 };
 use crate::hmac::HmacSha256;
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize)]
 pub struct SignedRpcRequest<T: DeserializeOwned + Serialize> {
     auth: Option<Authentication>,
     content: Vec<u8>,

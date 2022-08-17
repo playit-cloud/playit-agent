@@ -10,6 +10,7 @@ pub mod control_lookup;
 pub mod tcp_client;
 pub mod lan_address;
 pub mod udp_client;
+pub mod ping_task;
 
 pub fn now_milli() -> u64 {
     std::time::SystemTime::now()

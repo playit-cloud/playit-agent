@@ -1,24 +1,29 @@
 use byteorder::{BigEndian, WriteBytesExt};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{abs_diff};
+use crate::abs_diff;
 use crate::hmac::HmacSha256;
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg(feature = "use-schema")]
+use schemars::JsonSchema;
+
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Authentication {
     pub(crate) details: RequestDetails,
     pub(crate) signature: Signature,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct RequestDetails {
     pub(crate) account_id: u64,
     pub(crate) request_timestamp: u64,
     pub(crate) session_id: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum Signature {
     /* provided by API */
     System(SystemSignature),
@@ -26,12 +31,14 @@ pub enum Signature {
     Session(SessionSignature),
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct SystemSignature {
     pub(crate) signature: [u8; 32],
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct SessionSignature {
     pub(crate) session_timestamp: u64,
     pub(crate) session_signature: [u8; 32],
@@ -198,7 +205,8 @@ pub enum Authorization {
     SessionLevel { account_id: u64, session_id: u64, sig_epoch: u64 },
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum SignatureError {
     MissingSessionId,
     SignatureExpired {

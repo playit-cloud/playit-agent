@@ -1,6 +1,7 @@
 use std::fmt::{Debug, Formatter};
 use std::net::SocketAddr;
 
+#[cfg(feature = "use-schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -8,7 +9,8 @@ use crate::{AgentRegistered, TunnelRequest};
 use crate::agent_config::AgentConfigBuilder;
 use crate::rpc::SignedRpcRequest;
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 #[non_exhaustive]
 #[serde(tag = "type")]
 pub enum AgentApiRequest {
@@ -31,10 +33,13 @@ pub enum AgentApiRequest {
     ExchangeClaimForSecret(ExchangeClaimForSecret),
 
     #[serde(rename = "get-agent-config")]
-    GetAgentConfig { client_version: Option<String> },
+    GetAgentConfig {
+        client_version: Option<String>,
+    },
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum AgentApiResponse {
     #[serde(rename = "control-address")]
@@ -59,7 +64,8 @@ pub enum AgentApiResponse {
     AgentAccountStatus(AgentAccountStatus),
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "status")]
 pub enum AgentAccountStatus {
     #[serde(rename = "no-account")]
@@ -86,7 +92,8 @@ pub enum AgentAccountStatus {
     },
 }
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize)]
 pub struct SessionSecret {
     pub agent_registered: AgentRegistered,
     pub secret: String,
@@ -102,28 +109,33 @@ impl Debug for SessionSecret {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct ControlAddress {
     pub control_address: SocketAddr,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GetTunnelServerDetails {
     pub tunnel_server_id: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TunnelServerDetails {
     pub name: String,
     pub datacenter_name: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ExchangeClaimForSecret {
     pub claim_key: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AgentSecret {
     pub secret_key: String,
 }

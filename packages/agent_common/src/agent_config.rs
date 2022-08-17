@@ -1,9 +1,11 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{ClaimProto, Proto};
+
+#[cfg(feature = "use-schema")]
+use schemars::JsonSchema;
 
 pub const DEFAULT_API: &'static str = "https://api.playit.cloud/agent";
 pub const DEFAULT_CONTROL: &'static str = "control.playit.gg";
@@ -15,6 +17,7 @@ pub struct AgentConfig {
     pub ping_target_addresses: Vec<String>,
     pub control_address: String,
     pub api_refresh_rate: Option<u64>,
+    pub ping_interval: u64,
     pub secret_key: String,
     pub mappings: Vec<PortMappingConfig>,
 
@@ -57,6 +60,7 @@ impl AgentConfig {
             control_address: Some(self.control_address.clone()),
             refresh_from_api: Some(self.api_refresh_rate.is_some()),
             api_refresh_rate: self.api_refresh_rate,
+            ping_interval: Some(self.ping_interval),
             secret_key: self.secret_key.clone(),
             mappings: self.mappings.iter().map(|v| v.as_builder()).collect(),
         }
@@ -101,7 +105,8 @@ impl PortMappingConfig {
 
 /* user friendly versions with optionals */
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone, Default)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Default)]
 pub struct AgentConfigBuilder {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_update: Option<u64>,
@@ -115,7 +120,10 @@ pub struct AgentConfigBuilder {
     pub control_address: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_from_api: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_refresh_rate: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ping_interval: Option<u64>,
     pub secret_key: String,
     #[serde(alias = "mapping")]
     pub mappings: Vec<PortMappingBuilder>,
@@ -182,11 +190,13 @@ impl AgentConfigBuilder {
             },
             api_url_set,
             control_addr_set,
+            ping_interval: self.ping_interval.unwrap_or(5_000),
         }
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema, PartialEq, Clone)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct PortMappingBuilder {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

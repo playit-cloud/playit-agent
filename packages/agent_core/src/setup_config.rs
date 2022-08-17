@@ -131,6 +131,7 @@ pub async fn prepare_config(config_path: &str, prepare_status: &RwLock<AgentConf
                 control_address: None,
                 refresh_from_api: Some(true),
                 api_refresh_rate: None,
+                ping_interval: None,
                 secret_key,
                 mappings: vec![],
             }
@@ -206,6 +207,7 @@ async fn load_or_create_config_file(config_path: &str) -> std::io::Result<Option
                     control_address: None,
                     refresh_from_api: Some(true),
                     api_refresh_rate: None,
+                    ping_interval: None,
                     secret_key: "put-secret-here".to_string(),
                     mappings: vec![],
                 }).unwrap().as_bytes(),
