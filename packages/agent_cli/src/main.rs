@@ -12,6 +12,7 @@ use playit_agent_core::agent_state::AgentState;
 use playit_agent_core::agent_updater::AgentUpdater;
 use playit_agent_core::api_client::ApiClient;
 use playit_agent_core::control_lookup::get_working_io;
+use playit_agent_core::ping_task::PingTask;
 use playit_agent_core::setup_config::{AgentConfigStatus, prepare_config};
 use playit_agent_core::tcp_client::{TcpClients, TcpConnection};
 use playit_agent_core::tunnel_api::TunnelApi;
@@ -270,6 +271,11 @@ async fn main() {
                 tokio::time::sleep(Duration::from_millis(wait)).await;
             }
         })
+    };
+
+    let _ping_task_loop = {
+        let ping_task = PingTask::new(agent_updater.state());
+        tokio::spawn(ping_task.run())
     };
 
     let tcp_clients = Arc::new(TcpClients::default());

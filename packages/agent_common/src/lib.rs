@@ -1,6 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::ops::Sub;
 
+#[cfg(feature = "use-schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
@@ -15,20 +16,23 @@ pub mod agent_config;
 pub mod hmac;
 pub mod utils;
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct RpcMessage<T> {
     pub request_id: u64,
     pub content: T,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum TunnelFeed {
     Response(RpcMessage<TunnelResponse>),
     NewClientV4(NewClientV4),
     NewClientV6(NewClientV6),
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct NewClientV4 {
     pub connect_addr: SocketAddrV4,
     pub peer_addr: SocketAddrV4,
@@ -36,7 +40,8 @@ pub struct NewClientV4 {
     pub from_tunnel_server: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct NewClientV6 {
     pub connect_addr: SocketAddrV6,
     pub peer_addr: SocketAddrV6,
@@ -44,7 +49,8 @@ pub struct NewClientV6 {
     pub from_tunnel_server: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct NewClient {
     pub connect_addr: SocketAddr,
     pub peer_addr: SocketAddr,
@@ -74,7 +80,8 @@ impl From<NewClientV6> for NewClient {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum ClaimInstructionVersioned {
     Tcp4 {
         address: SocketAddrV4,
@@ -100,7 +107,8 @@ pub struct ClaimInstruction {
     pub token: Vec<u8>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub enum TunnelRequest {
     Ping(Ping),
     RegisterAgent,
@@ -119,7 +127,8 @@ impl TunnelRequest {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum TunnelResponse {
     AgentRegistered(AgentRegistered),
     ClaimResponse(Result<ClaimLeaseV4, ClaimError>),
@@ -133,19 +142,22 @@ pub enum TunnelResponse {
     ClaimResponseV2(Result<ClaimLease, ClaimError>),
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct SetupUdpChannelDetailsV4 {
     pub tunnel_addr: SocketAddrV4,
     pub token: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct SetupUdpChannelDetailsV6 {
     pub tunnel_addr: SocketAddrV6,
     pub token: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct SetupUdpChannelDetails {
     pub tunnel_addr: SocketAddr,
     pub token: Vec<u8>,
@@ -169,13 +181,15 @@ impl From<SetupUdpChannelDetailsV6> for SetupUdpChannelDetails {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub enum ClaimError {
     NotRegistered,
     LeaseConflict,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ClaimLeaseV4 {
     pub ip: Ipv4Addr,
     pub from_port: u16,
@@ -183,7 +197,8 @@ pub struct ClaimLeaseV4 {
     pub proto: ClaimProto,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, JsonSchema, Hash, PartialEq)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Clone, Debug, Hash, PartialEq)]
 pub struct ClaimLease {
     pub ip: IpAddr,
     pub from_port: u16,
@@ -202,7 +217,8 @@ impl From<ClaimLeaseV4> for ClaimLease {
     }
 }
 
-#[derive(Serialize, Deserialize, Hash, Debug, Clone, Copy, Eq, PartialEq, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Hash, Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ClaimProto {
     #[serde(rename = "udp")]
     Udp,
@@ -230,7 +246,8 @@ impl ClaimProto {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Copy, Clone, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug, Copy, Clone)]
 pub enum Proto {
     #[serde(rename = "udp")]
     Udp,
@@ -238,7 +255,8 @@ pub enum Proto {
     Tcp,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AgentRegistered {
     pub account_id: u64,
     pub session_id: u64,
@@ -246,18 +264,21 @@ pub struct AgentRegistered {
     pub signature: [u8; 32],
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct Ping {
     pub id: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Pong {
     pub id: u64,
     pub tunnel_server_id: u64,
 }
 
-#[derive(Serialize, Deserialize, Debug, JsonSchema)]
+#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct KeptAlive {
     pub alive: bool,
     pub tunnel_server_id: u64,
@@ -293,6 +314,7 @@ pub fn abs_diff<T: Ord + Sub<Output=T>>(a: T, b: T) -> T {
 
 #[cfg(test)]
 mod test {
+    use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
     use crate::{ClaimInstructionVersioned, TunnelFeed, TunnelRequest};
 
     #[test]
