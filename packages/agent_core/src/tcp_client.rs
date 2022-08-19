@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -19,11 +20,18 @@ use crate::now_milli;
 #[derive(Default)]
 pub struct TcpClients {
     client_id: AtomicU64,
-    clients: RwLock<Vec<Arc<TcpClient>>>,
+    clients: RwLock<TcpClientLookup>,
+}
+
+#[derive(Default)]
+struct TcpClientLookup {
+    active: HashSet<(SocketAddr, SocketAddr)>,
+    clients: Vec<Arc<TcpClient>>,
 }
 
 #[derive(Debug)]
 pub enum SetupFailReason {
+    AlreadyProcessing,
     TunnelServerNoConnect(std::io::Error),
     LocalServerNoConnect(std::io::Error),
 }
@@ -34,16 +42,16 @@ impl TcpClients {
     }
 
     pub async fn client_count(&self) -> usize {
-        self.clients.read().await.len()
+        self.clients.read().await.clients.len()
     }
 
     pub async fn client_for_tunnel(&self, tunnel_ip: IpAddr, tunnel_from_port: u16, tunnel_to_port: u16) -> Vec<Arc<TcpClient>> {
         let mut res = Vec::new();
-        let clients = self.clients.read().await;
+        let lookup = self.clients.read().await;
 
         let search = get_match_ip(tunnel_ip);
 
-        for client in clients.iter() {
+        for client in lookup.clients.iter() {
             let client_tunnel_addr = get_match_ip(client.tunnel_addr.ip());
             let matches = client_tunnel_addr == search
                 && tunnel_from_port <= client.tunnel_addr.port()
@@ -58,16 +66,19 @@ impl TcpClients {
     }
 
     pub async fn add_client(&self, client: Arc<TcpClient>) {
-        let mut clients = self.clients.write().await;
-        clients.push(client);
+        let mut lookup = self.clients.write().await;
+        lookup.active.insert((client.client_addr, client.tunnel_addr));
+        lookup.clients.push(client);
     }
 
     pub async fn remove_client(&self, client_id: u64) {
-        let mut clients = self.clients.write().await;
+        let mut lookup = self.clients.write().await;
 
+        let clients = &mut lookup.clients;
         for i in 0..clients.len() {
             if clients[i].id == client_id {
-                clients.remove(i);
+                let removed = clients.remove(i);
+                lookup.active.remove(&(removed.client_addr, removed.tunnel_addr));
                 return;
             }
         }
@@ -105,6 +116,16 @@ const RESP_LEN: usize = 8;
 
 impl TcpConnection {
     pub async fn spawn(client: NewClient, host_addr: SocketAddr, tcp_clients: Arc<TcpClients>) -> Result<ActiveTcpConnection, SetupFailReason> {
+        let connection_flow = (client.peer_addr, client.connect_addr);
+        let tcp_clients_copy = tcp_clients.clone();
+
+        {
+            let mut lookup = tcp_clients_copy.clients.write().await;
+            if !lookup.active.insert(connection_flow) {
+                return Err(SetupFailReason::AlreadyProcessing);
+            }
+        }
+
         let ClaimInstruction {
             address,
             token
@@ -116,7 +137,8 @@ impl TcpConnection {
         );
 
         let conn_span = span.clone();
-        async {
+
+        let result = async {
             tracing::info!("new client");
 
             let tcp_conn = TcpConnection {
@@ -149,7 +171,16 @@ impl TcpConnection {
             tracing::info!("connection setup");
 
             Ok(active)
-        }.instrument(span).await
+        }.instrument(span).await;
+
+        match result {
+            Ok(v) => Ok(v),
+            Err(error) => {
+                let mut lookup = tcp_clients_copy.clients.write().await;
+                lookup.active.remove(&connection_flow);
+                Err(error)
+            }
+        }
     }
 
     pub async fn establish(self) -> std::io::Result<ReadyTcpConnection> {

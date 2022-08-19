@@ -1,6 +1,6 @@
 # The playit program
 
-* Latest Release: 0.9.0-rc2
+* Latest Release: 0.9.2
 * Offical Website: https://playit.gg
 * Offical Downloads: https://playit.gg/download
 * Releases: https://github.com/playit-cloud/playit-agent/releases

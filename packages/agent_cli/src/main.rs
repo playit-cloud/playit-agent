@@ -302,7 +302,7 @@ async fn main() {
                                 match config.find_local_addr(client.connect_addr, Proto::Tcp) {
                                     Some(v) => v,
                                     None => {
-                                        tracing::info!("could not find tunnel for new connection");
+                                        tracing::info!(connect_addr = %client.connect_addr, "could not find tunnel for new connection");
                                         return;
                                     }
                                 }
