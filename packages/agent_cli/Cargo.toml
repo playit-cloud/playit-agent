@@ -1,6 +1,6 @@
 [package]
 name = "agent"
-version = "0.9.2"
+version = "0.9.3"
 edition = "2021"
 description = "using playit.gg makes it possible to host game servers at home without port forwarding"
 homepage = "https://playit.gg"

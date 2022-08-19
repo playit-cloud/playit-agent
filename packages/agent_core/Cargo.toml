@@ -1,6 +1,6 @@
 [package]
 name = "playit-agent-core"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -14,7 +14,7 @@ serde = "1"
 serde_json = "1"
 rand = "0.8.5"
 hyper = { version = "0.14.20", features = ["client", "http2", "http1"] }
-hyper-rustls = { version = "0.23.0", features = ["webpki-tokio", "http2"] }
+hyper-rustls = { version = "0.23.0", features = ["http2"] }
 hex = "0.4.3"
 toml = "0.5.9"
 byteorder = "1.4.3"

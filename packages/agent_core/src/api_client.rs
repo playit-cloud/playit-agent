@@ -22,14 +22,14 @@ impl ApiClient {
     pub fn new(api_base: String, agent_secret: Option<String>) -> Self {
         let connector = if api_base.starts_with("http://") {
             HttpsConnectorBuilder::new()
-                .with_webpki_roots()
+                .with_native_roots()
                 .https_or_http()
                 .enable_http1()
                 .enable_http2()
                 .build()
         } else {
             HttpsConnectorBuilder::new()
-                .with_webpki_roots()
+                .with_native_roots()
                 .https_only()
                 .enable_http1()
                 .enable_http2()
