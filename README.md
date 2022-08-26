@@ -15,7 +15,7 @@ sudo apt install playit
 ```
 
 **Note**
-Please only use the playit program if you downloaded if from an offical source or are compiling and running from source.
+Please only use the playit program if you downloaded it from an offical source or are compiling and running from source.
 
 ## Building / Running Locally
 
