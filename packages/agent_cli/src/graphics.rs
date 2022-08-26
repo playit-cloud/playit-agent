@@ -85,6 +85,8 @@ pub enum TunnelStatus {
 
 impl Drop for GraphicInterface {
     fn drop(&mut self) {
+        print!("\x1B[2J\x1B[1;1H"); // clear (by scrolldown) and reset cursor pos 
+                                    // https://stackoverflow.com/questions/34837011/how-to-clear-the-terminal-screen-in-rust-after-a-new-line-is-printed
         disable_raw_mode().unwrap();
     }
 }
@@ -125,7 +127,6 @@ impl GraphicInterface {
             match event {
                 Some(Event::Key(key)) => {
                     if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
-                        print!("\x1B[2J\x1B[1;1H");
                         break;
                     }
 
