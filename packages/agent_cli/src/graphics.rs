@@ -85,6 +85,8 @@ pub enum TunnelStatus {
 
 impl Drop for GraphicInterface {
     fn drop(&mut self) {
+        print!("\x1B[2J\x1B[1;1H"); // clear (by scrolldown) and reset cursor pos 
+                                    // https://stackoverflow.com/questions/34837011/how-to-clear-the-terminal-screen-in-rust-after-a-new-line-is-printed
         disable_raw_mode().unwrap();
     }
 }
@@ -133,10 +135,10 @@ impl GraphicInterface {
                     if let GraphicState::Connected(connected) = &mut *write {
                         /* select tab */
                         let target_focus = match key.code {
-                            KeyCode::Char('o') | KeyCode::Char('0') => Some(ConnectedElement::Overview),
-                            KeyCode::Char('t') => Some(ConnectedElement::Tunnels),
-                            KeyCode::Char('n') => Some(ConnectedElement::Network),
-                            KeyCode::Char('l') => Some(ConnectedElement::Logs),
+                            KeyCode::Char('o') | KeyCode::Char('0') | KeyCode::Char('1') => Some(ConnectedElement::Overview),
+                            KeyCode::Char('t') | KeyCode::Char('2') => Some(ConnectedElement::Tunnels),
+                            KeyCode::Char('n') | KeyCode::Char('3') => Some(ConnectedElement::Network),
+                            KeyCode::Char('l') | KeyCode::Char('4') => Some(ConnectedElement::Logs),
                             _ => None,
                         };
 
@@ -561,8 +563,14 @@ impl GraphicState {
             }
             ConnectedElement::Network => {
                 let mut data = Vec::new();
+                let bars_num = body_rect.width / 4;
+
                 for sample in &connected.ping_samples {
-                    data.push(("", *sample));
+                    data.insert(0,("", *sample));
+                    if data.len() >= bars_num.into() {
+                        data.remove(0);
+                    }
+
                 }
 
                 let mut latency_graph = BarChart::default()
