@@ -1,18 +1,19 @@
 use std::net::IpAddr;
-use crate::api::messages::ApiRequest;
+use crate::api::messages::{ApiRequest, SimpleApiRequest};
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "type")]
 pub enum AccountApiRequest {
     #[serde(rename = "create-tunnel")]
     CreateTunnel(CreateTunnel),
 
     #[serde(rename = "list-account-tunnels")]
-    ListAccountTunnels,
+    ListAccountTunnels(ListAccountTunnels),
 }
 
-impl ApiRequest for AccountApiRequest {
+impl SimpleApiRequest for AccountApiRequest {
     type Response = AccountApiResponse;
 
     fn endpoint() -> &'static str {
@@ -31,13 +32,69 @@ pub struct CreateTunnel {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+pub struct ListAccountTunnels;
+
+impl ApiRequest for ListAccountTunnels {
+    type RequestJson = AccountApiRequest;
+    type ResponseJson = AccountApiResponse;
+    type Response = AccountTunnels;
+
+    fn to_req(self) -> Self::RequestJson {
+        AccountApiRequest::ListAccountTunnels(ListAccountTunnels)
+    }
+
+    fn extract_response(parsed: Self::ResponseJson) -> Option<Self::Response> {
+        match parsed {
+            AccountApiResponse::AccountTunnels(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    fn endpoint() -> &'static str {
+        "/account"
+    }
+}
+
+impl ApiRequest for CreateTunnel {
+    type RequestJson = AccountApiRequest;
+    type ResponseJson = AccountApiResponse;
+    type Response = Created;
+
+    fn to_req(self) -> Self::RequestJson {
+        AccountApiRequest::CreateTunnel(self)
+    }
+
+    fn extract_response(parsed: Self::ResponseJson) -> Option<Self::Response> {
+        match parsed {
+            AccountApiResponse::Created(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    fn endpoint() -> &'static str {
+        "/account"
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
 pub enum AccountApiResponse {
     #[serde(rename = "created")]
-    Created { id: Uuid },
+    Created(Created),
 
     #[serde(rename = "account-tunnels")]
-    AccountTunnels { tunnels: Vec<AccountTunnel>, agent_id: Option<Uuid> },
+    AccountTunnels(AccountTunnels),
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Created {
+    pub id: Uuid,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct AccountTunnels {
+    pub tunnels: Vec<AccountTunnel>,
+    pub agent_id: Option<Uuid>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

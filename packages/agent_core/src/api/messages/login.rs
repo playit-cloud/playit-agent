@@ -1,4 +1,4 @@
-use crate::api::messages::ApiRequest;
+use crate::api::messages::{ApiRequest, SimpleApiRequest};
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
 
@@ -13,7 +13,7 @@ pub enum LoginApiRequest {
     CreateGuestSession,
 }
 
-impl ApiRequest for LoginApiRequest {
+impl SimpleApiRequest for LoginApiRequest {
     type Response = LoginApiResponse;
 
     fn endpoint() -> &'static str {

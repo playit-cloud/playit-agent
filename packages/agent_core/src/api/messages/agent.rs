@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use serde::{Deserialize, Serialize};
-use crate::api::messages::ApiRequest;
+use crate::api::messages::{ApiRequest, SimpleApiRequest};
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -19,7 +19,7 @@ pub enum AgentApiRequest {
     SignAgentRegister(SignAgentRegister),
 }
 
-impl ApiRequest for AgentApiRequest {
+impl SimpleApiRequest for AgentApiRequest {
     type Response = AgentApiResponse;
 
     fn endpoint() -> &'static str {
@@ -32,6 +32,27 @@ pub struct SignAgentRegister {
     pub agent_version: u64,
     pub client_addr: SocketAddr,
     pub tunnel_addr: SocketAddr,
+}
+
+impl ApiRequest for SignAgentRegister {
+    type RequestJson = AgentApiRequest;
+    type ResponseJson = AgentApiResponse;
+    type Response = SignedAgentRegister;
+
+    fn to_req(self) -> Self::RequestJson {
+        AgentApiRequest::SignAgentRegister(self)
+    }
+
+    fn extract_response(parsed: Self::ResponseJson) -> Option<Self::Response> {
+        match parsed {
+            AgentApiResponse::SignedAgentRegister(v) => Some(v),
+            _ => None,
+        }
+    }
+
+    fn endpoint() -> &'static str {
+        "/agent"
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
