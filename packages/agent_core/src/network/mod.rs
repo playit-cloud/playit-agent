@@ -1,1 +1,2 @@
-pub mod local_resolver;
+pub mod udp_clients;
+pub mod address_lookup;

@@ -30,8 +30,11 @@ pub struct PortRange {
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Serialize, Deserialize)]
 pub enum PortProto {
+    #[serde(rename = "both")]
     Both,
+    #[serde(rename = "tcp")]
     Tcp,
+    #[serde(rename = "udp")]
     Udp,
 }
 

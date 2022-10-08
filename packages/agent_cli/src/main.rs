@@ -14,6 +14,8 @@ use playit_agent_core::api::client::{ApiClient, ApiError};
 use playit_agent_core::api::messages::{ClaimProto, CreateTunnel, ListAccountTunnels, TunnelType};
 use playit_agent_core::utils::now_milli;
 
+mod tunnel_run;
+
 pub const API_BASE: &'static str = "https://api.playit.cloud";
 
 #[tokio::main]

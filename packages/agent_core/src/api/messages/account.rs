@@ -2,6 +2,7 @@ use std::net::IpAddr;
 use crate::api::messages::{ApiRequest, SimpleApiRequest};
 use serde::{Serialize, Deserialize};
 use uuid::Uuid;
+use playit_agent_proto::PortProto;
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(tag = "type")]
@@ -24,7 +25,7 @@ impl SimpleApiRequest for AccountApiRequest {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CreateTunnel {
     pub tunnel_type: Option<TunnelType>,
-    pub port_type: ClaimProto,
+    pub port_type: PortProto,
     pub port_count: u16,
     pub local_ip: IpAddr,
     pub local_port: Option<u16>,
@@ -111,7 +112,7 @@ pub struct AccountTunnel {
     pub from_port: u16,
     pub to_port: u16,
     pub tunnel_type: Option<TunnelType>,
-    pub port_type: ClaimProto,
+    pub port_type: PortProto,
     pub firewall_id: Option<Uuid>,
     pub protocol: TunnelProtocol,
 }
@@ -135,17 +136,6 @@ pub enum TunnelType {
     SevenDays,
     #[serde(rename = "unturned")]
     Unturned,
-}
-
-#[cfg_attr(feature = "use-schema", derive(JsonSchema))]
-#[derive(Serialize, Deserialize, Hash, Debug, Clone, Copy, Eq, PartialEq)]
-pub enum ClaimProto {
-    #[serde(rename = "udp")]
-    Udp,
-    #[serde(rename = "tcp")]
-    Tcp,
-    #[serde(rename = "both")]
-    Both,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

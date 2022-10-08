@@ -1,3 +1,5 @@
+use std::error::Error;
+use std::fmt::{Display, Formatter};
 use std::future::IntoFuture;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::time::Duration;
@@ -226,6 +228,15 @@ pub enum SetupError {
     NoResponseFromAuthenticate,
     RegisterInvalidSignature,
     RegisterUnauthorized,
+}
+
+impl Display for SetupError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl Error for SetupError {
 }
 
 impl From<std::io::Error> for SetupError {
