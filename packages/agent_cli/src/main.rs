@@ -11,8 +11,9 @@ use tokio::io::AsyncBufReadExt;
 use uuid::Uuid;
 
 use playit_agent_core::api::client::{ApiClient, ApiError};
-use playit_agent_core::api::messages::{ClaimProto, CreateTunnel, ListAccountTunnels, TunnelType};
+use playit_agent_core::api::messages::{CreateTunnel, ListAccountTunnels, TunnelType};
 use playit_agent_core::utils::now_milli;
+use playit_agent_proto::PortProto;
 
 mod tunnel_run;
 
@@ -88,7 +89,7 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                 let name = m.get_one::<String>("NAME").cloned();
                 let tunnel_type: Option<TunnelType> = m.get_one::<String>("TUNNEL_TYPE")
                     .and_then(|v| serde_json::from_str(&format!("{:?}", v)).ok());
-                let port_type = serde_json::from_str::<ClaimProto>(&format!("{:?}", m.get_one::<String>("PORT_TYPE").expect("required")))
+                let port_type = serde_json::from_str::<PortProto>(&format!("{:?}", m.get_one::<String>("PORT_TYPE").expect("required")))
                     .map_err(|_| CliError::InvalidPortType)?;
                 let port_count = m.get_one::<String>("PORT_COUNT").expect("required")
                     .parse::<u16>().map_err(|_| CliError::InvalidPortCount)?;
@@ -108,7 +109,7 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                             continue;
                         }
                     } else {
-                        if (tunnel.port_type == ClaimProto::Both || tunnel.port_type == port_type) && port_count <= tunnel_port_count && tunnel.tunnel_type == tunnel_type {
+                        if (tunnel.port_type == PortProto::Both || tunnel.port_type == port_type) && port_count <= tunnel_port_count && tunnel.tunnel_type == tunnel_type {
                             options.push(tunnel);
                         }
                     }
@@ -164,9 +165,9 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                         "{} {} {} {}",
                         tunnel.id,
                         match tunnel.port_type {
-                            ClaimProto::Both => "both",
-                            ClaimProto::Tcp => "tcp",
-                            ClaimProto::Udp => "udp",
+                            PortProto::Both => "both",
+                            PortProto::Tcp => "tcp",
+                            PortProto::Udp => "udp",
                         },
                         tunnel.to_port - tunnel.from_port,
                         tunnel.display_address,

@@ -27,21 +27,47 @@ impl UdpFlow {
     pub fn flip(self) -> Self {
         match self {
             UdpFlow::V4 { src, dst } => UdpFlow::V4 { src: dst, dst: src },
-            UdpFlow::V6 { src, dst, flow } => UdpFlow::V6 { src: dst, dst: src, flow },
+            UdpFlow::V6 { src, dst, flow } => UdpFlow::V6 {
+                src: dst,
+                dst: src,
+                flow,
+            },
         }
     }
 
     pub fn src(&self) -> SocketAddr {
         match self {
             UdpFlow::V4 { src, .. } => SocketAddr::V4(*src),
-            UdpFlow::V6 { src: (ip, port), flow, .. } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
+            UdpFlow::V6 {
+                src: (ip, port),
+                flow,
+                ..
+            } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
         }
     }
 
     pub fn dst(&self) -> SocketAddr {
         match self {
             UdpFlow::V4 { dst, .. } => SocketAddr::V4(*dst),
-            UdpFlow::V6 { dst: (ip, port), flow, .. } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
+            UdpFlow::V6 {
+                dst: (ip, port),
+                flow,
+                ..
+            } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
+        }
+    }
+
+    pub fn with_src_port(&self, port: u16) -> Self {
+        match self {
+            UdpFlow::V4 { src, dst } => UdpFlow::V4 {
+                src: SocketAddrV4::new(*src.ip(), port),
+                dst: *dst,
+            },
+            UdpFlow::V6 { src, dst, flow } => UdpFlow::V6 {
+                src: (src.0, port),
+                dst: *dst,
+                flow: *flow,
+            },
         }
     }
 
@@ -56,7 +82,9 @@ impl UdpFlow {
                 slice.write_u32::<BigEndian>((*dst.ip()).into()).unwrap();
                 slice.write_u16::<BigEndian>(src.port()).unwrap();
                 slice.write_u16::<BigEndian>(dst.port()).unwrap();
-                slice.write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_OLD).unwrap();
+                slice
+                    .write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_OLD)
+                    .unwrap();
             }
             UdpFlow::V6 { src, dst, flow } => {
                 slice.write_u128::<BigEndian>(src.0.into()).unwrap();
@@ -64,7 +92,9 @@ impl UdpFlow {
                 slice.write_u16::<BigEndian>(src.1).unwrap();
                 slice.write_u16::<BigEndian>(dst.1).unwrap();
                 slice.write_u32::<BigEndian>(*flow).unwrap();
-                slice.write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID).unwrap();
+                slice
+                    .write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID)
+                    .unwrap();
             }
         }
 
@@ -115,7 +145,7 @@ impl UdpFlow {
                     flow,
                 })
             }
-            _ => None
+            _ => None,
         }
     }
 

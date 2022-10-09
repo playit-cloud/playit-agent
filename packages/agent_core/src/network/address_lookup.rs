@@ -9,14 +9,15 @@ pub trait AddressLookup {
             SocketAddr::V4(addr) => (Self::match_ip_v4(*addr.ip()), addr.port()),
         };
 
-        let start_port = self.find_tunnel_start_port(match_ip, port)?;
+        let (from_port, to_port) = self.find_tunnel_port_range(match_ip, port)?;
         Some(MatchAddress {
             ip: match_ip,
-            port: start_port
+            from_port,
+            to_port
         })
     }
 
-    fn find_tunnel_start_port(&self, match_ip: Ipv6Addr, port: u16) -> Option<u16>;
+    fn find_tunnel_port_range(&self, match_ip: Ipv6Addr, port: u16) -> Option<(u16, u16)>;
 
     fn match_ip(ip: IpAddr) -> Ipv6Addr {
         match ip {
@@ -26,18 +27,31 @@ pub trait AddressLookup {
     }
 
     fn match_ip_v4(ip: Ipv4Addr) -> Ipv6Addr {
-        todo!()
+        let mut octs = [0u8; 16];
+        octs[15] = ip.octets()[3];
+        octs.into()
     }
 
     fn match_ip_v6(ip: Ipv6Addr) -> Ipv6Addr {
-        todo!()
+        let mut seg = ip.segments();
+
+        if seg[0] != 0x2602 || seg[1] != 0xfbaf || (seg[2] & 0xF000) != 0x0 {
+            return ip;
+        }
+
+        seg[0] = 0;
+        seg[1] = 0;
+        seg[2] = 0;
+
+        seg.into()
     }
 
     fn local_address(&self, match_addr: MatchAddress, proto: PortProto) -> Option<SocketAddr>;
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debugn)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct MatchAddress {
     pub ip: Ipv6Addr,
-    pub port: u16,
+    pub from_port: u16,
+    pub to_port: u16,
 }
