@@ -8,20 +8,19 @@ use playit_agent_proto::encoding::MessageEncoding;
 use playit_agent_proto::rpc::ControlRpcMessage;
 
 use crate::api::client::ApiClient;
-use crate::tunnel::setup::SetupRequireAuthentication;
+use crate::tunnel::setup::{ConnectedControl, SetupError};
 
 #[derive(Debug)]
-pub struct ControlConnected {
+pub struct AuthenticatedControl {
+    pub(crate) secret_key: String,
     pub(crate) api_client: ApiClient,
-    pub(crate) udp: UdpSocket,
-    pub(crate) control_addr: SocketAddr,
-    pub(crate) og_pong: Pong,
+    pub(crate) conn: ConnectedControl,
     pub(crate) last_pong: Pong,
     pub(crate) registered: AgentRegistered,
     pub(crate) buffer: Vec<u8>,
 }
 
-impl ControlConnected {
+impl AuthenticatedControl {
     pub async fn send_keep_alive(&mut self, request_id: u64) -> Result<(), ControlError> {
         self.send(ControlRpcMessage {
             request_id,
@@ -43,38 +42,50 @@ impl ControlConnected {
         }).await
     }
 
-    pub fn get_expire(&self) -> u64 {
+    pub fn get_expire_at(&self) -> u64 {
         self.registered.expires_at
     }
 
     pub fn is_expired(&self) -> bool {
-        self.last_pong.session_expire_at.is_none()
+        self.last_pong.session_expire_at.is_none() || self.flow_changed()
     }
 
-    pub fn has_flow_changed(&self) -> bool {
-        self.og_pong.client_addr != self.last_pong.client_addr
+    fn flow_changed(&self) -> bool {
+        self.conn.pong.client_addr != self.last_pong.client_addr
     }
 
     async fn send(&mut self, req: ControlRpcMessage<ControlRequest>) -> Result<(), ControlError> {
         self.buffer.clear();
         req.write_to(&mut self.buffer)?;
-        self.udp.send_to(&self.buffer, self.control_addr).await?;
+        self.conn.udp.send_to(&self.buffer, self.conn.control_addr).await?;
         Ok(())
     }
 
-    pub fn into_requires_auth(self) -> SetupRequireAuthentication {
-        SetupRequireAuthentication {
-            control_addr: self.control_addr,
-            udp: self.udp,
+    pub async fn authenticate(&mut self) -> Result<(), SetupError> {
+        let conn = ConnectedControl {
+            control_addr: self.conn.control_addr,
+            udp: self.conn.udp.clone(),
+            pong: self.last_pong.clone(),
+        };
+
+        let res = conn.authenticate(self.secret_key.clone()).await?;
+        *self = res;
+        Ok(())
+    }
+
+    pub fn into_requires_auth(self) -> ConnectedControl {
+        ConnectedControl {
+            control_addr: self.conn.control_addr,
+            udp: self.conn.udp,
             pong: self.last_pong,
         }
     }
 
     pub async fn recv_feed_msg(&mut self) -> Result<ControlFeed, ControlError> {
         self.buffer.resize(1024, 0);
-        let (bytes, remote) = self.udp.recv_from(&mut self.buffer).await?;
-        if remote != self.control_addr {
-            return Err(ControlError::InvalidRemote { expected: self.control_addr, got: remote });
+        let (bytes, remote) = self.conn.udp.recv_from(&mut self.buffer).await?;
+        if remote != self.conn.control_addr {
+            return Err(ControlError::InvalidRemote { expected: self.conn.control_addr, got: remote });
         }
 
         let mut reader = &self.buffer[..bytes];

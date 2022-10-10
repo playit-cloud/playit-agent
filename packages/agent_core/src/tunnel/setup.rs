@@ -2,6 +2,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::future::IntoFuture;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
@@ -15,7 +16,7 @@ use crate::api::client::{ApiClient, ApiError};
 use crate::api::messages::*;
 
 use crate::utils::now_milli;
-use crate::tunnel::control_channel::ControlConnected;
+use crate::tunnel::control::AuthenticatedControl;
 use crate::utils::error_helper::ErrorHelper;
 
 pub struct SetupFindSuitableChannel {
@@ -27,7 +28,7 @@ impl SetupFindSuitableChannel {
         SetupFindSuitableChannel { options }
     }
 
-    pub async fn setup(self) -> Result<SetupRequireAuthentication, SetupError> {
+    pub async fn setup(self) -> Result<ConnectedControl, SetupError> {
         let mut buffer: Vec<u8> = Vec::new();
 
         for addr in self.options {
@@ -84,9 +85,9 @@ impl SetupFindSuitableChannel {
                                     }
 
                                     match msg.content {
-                                        ControlResponse::Pong(pong) => return Ok(SetupRequireAuthentication {
+                                        ControlResponse::Pong(pong) => return Ok(ConnectedControl {
                                             control_addr: addr,
-                                            udp: socket,
+                                            udp: Arc::new(socket),
                                             pong,
                                         }),
                                         other => {
@@ -119,16 +120,15 @@ impl SetupFindSuitableChannel {
 }
 
 #[derive(Debug)]
-pub struct SetupRequireAuthentication {
+pub struct ConnectedControl {
     pub(crate) control_addr: SocketAddr,
-    pub(crate) udp: UdpSocket,
+    pub(crate) udp: Arc<UdpSocket>,
     pub(crate) pong: Pong,
 }
 
-impl SetupRequireAuthentication {
-    pub async fn authenticate(self, secret_key: String) -> Result<ControlConnected, SetupError> {
-        // let api = ApiClient::new("http://localhost:8080/agent".to_string(), Some(secret_key));
-        let api = ApiClient::new("https://api.playit.cloud".to_string(), Some(secret_key));
+impl ConnectedControl {
+    pub async fn authenticate(self, secret_key: String) -> Result<AuthenticatedControl, SetupError> {
+        let api = ApiClient::new("https://api.playit.cloud".to_string(), Some(secret_key.clone()));
 
         let res = api.sign_and_register(SignAgentRegister {
             agent_version: 1,
@@ -176,15 +176,18 @@ impl SetupRequireAuthentication {
                                         tokio::time::sleep(Duration::from_secs(1)).await;
                                         break;
                                     }
-                                    ControlResponse::AgentRegistered(registered) => Ok(ControlConnected {
-                                        api_client: api,
-                                        udp: self.udp,
-                                        control_addr: self.control_addr,
-                                        og_pong: self.pong.clone(),
-                                        last_pong: self.pong,
-                                        registered,
-                                        buffer
-                                    }),
+                                    ControlResponse::AgentRegistered(registered) => {
+                                        let pong = self.pong.clone();
+
+                                        Ok(AuthenticatedControl {
+                                            secret_key,
+                                            api_client: api,
+                                            conn: self,
+                                            last_pong: pong,
+                                            registered,
+                                            buffer
+                                        })
+                                    },
                                     ControlResponse::InvalidSignature => Err(SetupError::RegisterInvalidSignature),
                                     ControlResponse::Unauthorized => Err(SetupError::RegisterUnauthorized),
                                     other => {

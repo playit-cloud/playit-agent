@@ -120,7 +120,7 @@ async fn main() {
             }
         }
 
-        let time_till_expire = control_channel.get_expire().max(now) - now;
+        let time_till_expire = control_channel.get_expire_at().max(now) - now;
         tracing::info!(time_till_expire, "time till expire");
 
         /* 30 seconds till expiry and haven't sent in last 10 sec */
