@@ -47,6 +47,10 @@ impl ControlConnected {
         self.registered.expires_at
     }
 
+    pub fn is_expired(&self) -> bool {
+        self.last_pong.session_expire_at.is_none()
+    }
+
     pub fn has_flow_changed(&self) -> bool {
         self.og_pong.client_addr != self.last_pong.client_addr
     }

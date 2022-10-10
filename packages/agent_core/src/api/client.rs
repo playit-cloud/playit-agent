@@ -83,6 +83,7 @@ impl ApiClient {
     }
 
     pub async fn req<T: ApiRequest>(&self, req: T) -> Result<T::Response, ApiError> where T::ResponseJson: DeserializeOwned, T::RequestJson: Serialize {
+        println!("req: {}", std::any::type_name::<T>());
         let mut builder = Request::builder()
             .uri(format!("{}{}", self.api_base, T::endpoint()))
             .method(Method::POST);
@@ -95,6 +96,7 @@ impl ApiClient {
         }
 
         let request_str = serde_json::to_string(&req.to_req()).unwrap();
+        println!("req body: {}", request_str);
         let request = builder
             .body(Body::from(request_str))
             .unwrap();

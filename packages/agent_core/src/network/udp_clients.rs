@@ -113,6 +113,7 @@ impl<L: AddressLookup> UdpClients<L> {
                         udp_clients: self.udp_clients.clone(),
                     });
 
+                    tokio::spawn(HostToTunnelForwarder(client.clone()).run());
                     v.insert(client)
                 }
             };
@@ -178,6 +179,8 @@ impl HostToTunnelForwarder {
                 }
             };
 
+            tracing::info!(bytes, %source, "got client packet");
+
             if source.ip() != self.0.local_start_addr.ip() {
                 tracing::warn!(
                     source = %source.ip(),
@@ -223,7 +226,9 @@ impl HostToTunnelForwarder {
             Some(v) if !Arc::ptr_eq(&v, &self.0) => {
                 tracing::error!("removing different UDP client when closing");
             }
-            _ => {}
+            _ => {
+                tracing::info!(flow = ?self.0.send_flow, "udp client removed");
+            }
         }
     }
 }

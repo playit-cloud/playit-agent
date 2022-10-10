@@ -11,7 +11,8 @@ use crate::utils::name_lookup::address_lookup;
 use crate::utils::now_milli;
 
 pub struct SimpleTunnel {
-    control_channel: ControlConnected,
+    secret_key: String,
+    control_channel: Option<ControlConnected>,
     udp_tunnel: UdpTunnel,
     last_keep_alive: u64,
     last_ping: u64,
@@ -21,10 +22,11 @@ impl SimpleTunnel {
     pub async fn setup(secret_key: String) -> Result<Self, SetupError> {
         let addresses = address_lookup("control.playit.gg", 5525).await;
         let setup = SetupFindSuitableChannel::new(addresses).setup().await?;
-        let mut control_channel = setup.authenticate(secret_key).await?;
+        let mut control_channel = setup.authenticate(secret_key.clone()).await?;
 
         Ok(SimpleTunnel {
-            control_channel,
+            secret_key,
+            control_channel: Some(control_channel),
             udp_tunnel: Default::default(),
             last_keep_alive: 0,
             last_ping: 0,
@@ -38,20 +40,77 @@ impl SimpleTunnel {
     pub async fn update(&mut self) -> Option<NewClient> {
         let now = now_milli();
 
+        let mut control_channel = match &mut self.control_channel {
+            Some(control) => {
+                if control.is_expired() {
+                    tracing::info!("control session expired, reconnecting");
+
+                    let control_channel = self.control_channel.take().unwrap();
+                    match control_channel
+                        .into_requires_auth()
+                        .authenticate(self.secret_key.clone())
+                        .await
+                    {
+                        Ok(updated) => {
+                            self.udp_tunnel.reset();
+                            self.control_channel.replace(updated);
+                            self.control_channel.as_mut().unwrap()
+                        }
+                        Err(error) => {
+                            tracing::error!(?error, "failed to authenticate control");
+                            return None;
+                        }
+                    }
+                } else {
+                    control
+                }
+            }
+            None => {
+                tracing::info!("create new control session");
+
+                let addresses = address_lookup("control.playit.gg", 5525).await;
+                let setup = match SetupFindSuitableChannel::new(addresses).setup().await {
+                    Ok(v) => v,
+                    Err(error) => {
+                        tracing::error!(
+                            ?error,
+                            "failed to find suitable connection to tunnel server"
+                        );
+                        return None;
+                    }
+                };
+
+                let control = match setup.authenticate(self.secret_key.clone()).await {
+                    Ok(v) => v,
+                    Err(error) => {
+                        tracing::error!(?error, "failed to authenticate");
+                        return None;
+                    }
+                };
+
+                self.udp_tunnel.reset();
+                self.control_channel.replace(control);
+                self.control_channel.as_mut().unwrap()
+            }
+        };
+
         if now - self.last_ping > 5_000 {
             self.last_ping = now;
-            if let Err(error) = self.control_channel.send_ping(200, now).await {
+            tracing::info!("send ping");
+
+            if let Err(error) = control_channel.send_ping(200, now).await {
                 tracing::error!(?error, "failed to send ping");
             }
 
-            if !self.udp_tunnel.is_setup().await {
-                self.control_channel.send_setup_udp_channel(1).await.take_error(|error| {
+            control_channel
+                .send_setup_udp_channel(1)
+                .await
+                .take_error(|error| {
                     tracing::error!(?error, "failed to send setup udp channel request");
                 });
-            }
         }
 
-        let time_till_expire = self.control_channel.get_expire().max(now) - now;
+        let time_till_expire = control_channel.get_expire().max(now) - now;
         tracing::info!(time_till_expire, "time till expire");
 
         /* 30 seconds till expiry and haven't sent in last 10 sec */
@@ -59,27 +118,34 @@ impl SimpleTunnel {
             self.last_keep_alive = now;
 
             tracing::info!("sent KeepAlive");
-            if let Err(error) = self.control_channel.send_keep_alive(100).await {
+            if let Err(error) = control_channel.send_keep_alive(100).await {
                 tracing::error!(?error, "failed to send KeepAlive");
             }
+
+            control_channel
+                .send_setup_udp_channel(1)
+                .await
+                .take_error(|error| {
+                    tracing::error!(?error, "failed to send setup udp channel request");
+                });
         }
 
-        match tokio::time::timeout(Duration::from_secs(10), self.control_channel.recv_feed_msg()).await {
+        match tokio::time::timeout(Duration::from_secs(5), control_channel.recv_feed_msg()).await {
             Ok(Ok(ControlFeed::NewClient(new_client))) => return Some(new_client),
-            Ok(Ok(ControlFeed::Response(msg))) => {
-                match msg.content {
-                    ControlResponse::UdpChannelDetails(details) => {
-                        self.udp_tunnel.set_udp_tunnel(details).await.unwrap();
-                    }
-                    msg => {
-                        tracing::info!(?msg, "got response");
-                    }
+            Ok(Ok(ControlFeed::Response(msg))) => match msg.content {
+                ControlResponse::UdpChannelDetails(details) => {
+                    self.udp_tunnel.set_udp_tunnel(details).await.unwrap();
                 }
-            }
+                msg => {
+                    tracing::info!(?msg, "got response");
+                }
+            },
             Ok(Err(error)) => {
                 tracing::error!(?error, "failed to parse response");
             }
-            Err(_) => {}
+            Err(_) => {
+                tracing::info!("feed recv timeout");
+            }
         }
 
         None

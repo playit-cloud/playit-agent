@@ -128,7 +128,7 @@ pub struct SetupRequireAuthentication {
 impl SetupRequireAuthentication {
     pub async fn authenticate(self, secret_key: String) -> Result<ControlConnected, SetupError> {
         // let api = ApiClient::new("http://localhost:8080/agent".to_string(), Some(secret_key));
-        let api = ApiClient::new("https://api.playit.cloud/agent".to_string(), Some(secret_key));
+        let api = ApiClient::new("https://api.playit.cloud".to_string(), Some(secret_key));
 
         let res = api.sign_and_register(SignAgentRegister {
             agent_version: 1,

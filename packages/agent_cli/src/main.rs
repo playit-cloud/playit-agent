@@ -14,6 +14,7 @@ use playit_agent_core::api::client::{ApiClient, ApiError};
 use playit_agent_core::api::messages::{CreateTunnel, ListAccountTunnels, TunnelType};
 use playit_agent_core::utils::now_milli;
 use playit_agent_proto::PortProto;
+use crate::tunnel_run::TunnelRun;
 
 mod tunnel_run;
 
@@ -177,7 +178,10 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
             _ => return Err(CliError::NotImplemented.into())
         }
         Some(("run", m)) => {
-            let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
+            let _ = tracing_subscriber::fmt().try_init();
+
+            let secret_key = secret.get()?;
+            let api = ApiClient::new(API_BASE.to_string(), Some(secret_key.clone()));
             let tunnels = api.req(ListAccountTunnels).await?;
             let mut tunnel_lookup = HashMap::new();
             let mut tunnel_found = HashSet::new();
@@ -214,6 +218,9 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                     }
                 }
             }
+
+            let tunnel  = TunnelRun::new(secret_key).await?;
+            tunnel.run().await;
 
             println!("{:?}", mapping_overrides);
         }

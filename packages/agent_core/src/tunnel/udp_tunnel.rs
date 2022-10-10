@@ -19,6 +19,7 @@ pub struct UdpTunnel {
 struct Inner {
     udp: RwLock<(Option<(UdpSocket, UdpChannelDetails)>)>,
     details: RwLock<Option<UdpChannelDetails>>,
+    last_confirm: AtomicU64,
 }
 
 impl UdpTunnel {
@@ -30,11 +31,12 @@ impl UdpTunnel {
         self.inner.details.read().await.is_some()
     }
 
+    pub fn last_confirm(&self) -> u64 {
+        self.inner.last_confirm.load(Ordering::SeqCst)
+    }
+
     pub async fn reset(&self) {
-        let mut details_lock = self.inner.details.write().await;
-        let mut udp_lock = self.inner.udp.write().await;
-        let _ = udp_lock.take();
-        let _ = details_lock.take();
+        self.inner.last_confirm.store(0, Ordering::SeqCst);
     }
 
     pub async fn set_udp_tunnel(&self, details: UdpChannelDetails) -> std::io::Result<()> {
@@ -119,6 +121,7 @@ impl UdpTunnel {
         };
 
         if buffer[..bytes].eq(&details.token[..]) {
+            self.inner.last_confirm.store(now_milli(), Ordering::SeqCst);
             return Ok(UdpTunnelRx::ConfirmedConnection);
         }
 
