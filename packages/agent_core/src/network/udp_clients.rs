@@ -132,6 +132,7 @@ struct UdpClient {
     tunnel_from_port: u16,
     tunnel_to_port: u16,
     udp_clients: Arc<RwLock<HashMap<ClientKey, Arc<UdpClient>>>>,
+    last_activity: AtomicU64,
 }
 
 impl UdpClient {
@@ -147,6 +148,7 @@ impl UdpClient {
             )
         };
 
+        self.last_activity.store(now_milli(), Ordering::Relaxed);
         self.local_udp.send_to(data, target_addr).await
     }
 }
@@ -162,7 +164,7 @@ impl HostToTunnelForwarder {
 
             buffer.resize(2048, 0);
             let recv_res = tokio::time::timeout(
-                Duration::from_secs(60),
+                Duration::from_secs(30),
                 self.0.local_udp.recv_from(&mut buffer),
             )
             .await;
@@ -174,8 +176,11 @@ impl HostToTunnelForwarder {
                     break;
                 }
                 Err(_) => {
-                    tracing::info!("60 second timeout for not receiving data from host");
-                    break;
+                    if now_milli() - self.0.last_activity.load(Ordering::Relaxed) > 120_000 {
+                        tracing::info!("2 min timeout for not receiving data from host");
+                        break;
+                    }
+                    continue;
                 }
             };
 

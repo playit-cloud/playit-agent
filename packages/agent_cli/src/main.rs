@@ -221,8 +221,6 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
 
             let tunnel  = TunnelRun::new(secret_key).await?;
             tunnel.run().await;
-
-            println!("{:?}", mapping_overrides);
         }
         _ => return Err(CliError::NotImplemented.into()),
     }
