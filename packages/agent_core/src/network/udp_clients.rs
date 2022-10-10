@@ -111,6 +111,7 @@ impl<L: AddressLookup> UdpClients<L> {
                         tunnel_from_port: match_addr.from_port,
                         tunnel_to_port: match_addr.to_port,
                         udp_clients: self.udp_clients.clone(),
+                        last_activity: Default::default()
                     });
 
                     tokio::spawn(HostToTunnelForwarder(client.clone()).run());

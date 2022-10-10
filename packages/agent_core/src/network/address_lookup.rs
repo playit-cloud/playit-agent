@@ -1,8 +1,13 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::sync::Arc;
 
 use playit_agent_proto::PortProto;
 
-pub trait AddressLookup {
+pub trait AddressLookup: 'static {
+    fn find_tunnel_port_range(&self, match_ip: Ipv6Addr, port: u16) -> Option<(u16, u16)>;
+
+    fn local_address(&self, match_addr: MatchAddress, proto: PortProto) -> Option<SocketAddr>;
+
     fn tunnel_match_address(&self, tunnel_addr: SocketAddr) -> Option<MatchAddress> {
         let (match_ip, port) = match tunnel_addr {
             SocketAddr::V6(addr) => (Self::match_ip_v6(*addr.ip()), addr.port()),
@@ -13,11 +18,9 @@ pub trait AddressLookup {
         Some(MatchAddress {
             ip: match_ip,
             from_port,
-            to_port
+            to_port,
         })
     }
-
-    fn find_tunnel_port_range(&self, match_ip: Ipv6Addr, port: u16) -> Option<(u16, u16)>;
 
     fn match_ip(ip: IpAddr) -> Ipv6Addr {
         match ip {
@@ -45,8 +48,32 @@ pub trait AddressLookup {
 
         seg.into()
     }
+}
 
-    fn local_address(&self, match_addr: MatchAddress, proto: PortProto) -> Option<SocketAddr>;
+impl<T: AddressLookup> AddressLookup for Arc<T> {
+    fn find_tunnel_port_range(&self, match_ip: Ipv6Addr, port: u16) -> Option<(u16, u16)> {
+        (&*self as &T).find_tunnel_port_range(match_ip, port)
+    }
+
+    fn local_address(&self, match_addr: MatchAddress, proto: PortProto) -> Option<SocketAddr> {
+        (&*self as &T).local_address(match_addr, proto)
+    }
+
+    fn tunnel_match_address(&self, tunnel_addr: SocketAddr) -> Option<MatchAddress> {
+        (&*self as &T).tunnel_match_address(tunnel_addr)
+    }
+
+    fn match_ip(ip: IpAddr) -> Ipv6Addr {
+        T::match_ip(ip)
+    }
+
+    fn match_ip_v4(ip: Ipv4Addr) -> Ipv6Addr {
+        T::match_ip_v4(ip)
+    }
+
+    fn match_ip_v6(ip: Ipv6Addr) -> Ipv6Addr {
+        T::match_ip_v6(ip)
+    }
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]

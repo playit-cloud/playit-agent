@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::process::Termination;
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{arg, ArgMatches, Command};
@@ -12,11 +13,10 @@ use uuid::Uuid;
 
 use playit_agent_core::api::client::{ApiClient, ApiError};
 use playit_agent_core::api::messages::{CreateTunnel, ListAccountTunnels, TunnelType};
+use playit_agent_core::network::address_lookup::{AddressLookup, MatchAddress};
+use playit_agent_core::tunnel_runner::TunnelRunner;
 use playit_agent_core::utils::now_milli;
 use playit_agent_proto::PortProto;
-use crate::tunnel_run::TunnelRun;
-
-mod tunnel_run;
 
 pub const API_BASE: &'static str = "https://api.playit.cloud";
 
@@ -219,13 +219,25 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                 }
             }
 
-            let tunnel  = TunnelRun::new(secret_key).await?;
+            let tunnel  = TunnelRunner::new(secret_key, Arc::new(SimpleLookup)).await?;
             tunnel.run().await;
         }
         _ => return Err(CliError::NotImplemented.into()),
     }
 
     Ok(std::process::ExitCode::SUCCESS)
+}
+
+pub struct SimpleLookup;
+
+impl AddressLookup for SimpleLookup {
+    fn find_tunnel_port_range(&self, match_ip: Ipv6Addr, port: u16) -> Option<(u16, u16)> {
+        Some((port, port + 1))
+    }
+
+    fn local_address(&self, match_addr: MatchAddress, proto: PortProto) -> Option<SocketAddr> {
+        Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, match_addr.from_port)))
+    }
 }
 
 pub struct Secrets {
