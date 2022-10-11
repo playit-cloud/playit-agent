@@ -83,7 +83,7 @@ impl ApiClient {
     }
 
     pub async fn req<T: ApiRequest>(&self, req: T) -> Result<T::Response, ApiError> where T::ResponseJson: DeserializeOwned, T::RequestJson: Serialize {
-        println!("req: {}", std::any::type_name::<T>());
+        // println!("req: {}", std::any::type_name::<T>());
         let mut builder = Request::builder()
             .uri(format!("{}{}", self.api_base, T::endpoint()))
             .method(Method::POST);
@@ -96,20 +96,20 @@ impl ApiClient {
         }
 
         let request_str = serde_json::to_string(&req.to_req()).unwrap();
-        println!("req body: {}", request_str);
+        // println!("req body: {}", request_str);
         let request = builder
             .body(Body::from(request_str))
             .unwrap();
 
         let response = self.client.request(request).await?;
         let bytes = hyper::body::aggregate(response.into_body()).await?;
+        let response_txt = String::from_utf8_lossy(bytes.chunk());
 
-        let result = match serde_json::from_slice::<Response<T::ResponseJson>>(bytes.chunk())
+        let result = match serde_json::from_str::<Response<T::ResponseJson>>(&response_txt)
         {
             Ok(v) => v,
             Err(error) => {
-                let content = String::from_utf8_lossy(bytes.chunk());
-                tracing::error!(?error, %content, "failed to parse response");
+                tracing::error!(?error, %response_txt, "failed to parse response");
                 return Err(ApiError::ParseError(error));
             }
         };

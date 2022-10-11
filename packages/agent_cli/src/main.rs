@@ -163,7 +163,7 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                 let tunnels = api.req(ListAccountTunnels).await?;
                 for tunnel in tunnels.tunnels {
                     println!(
-                        "{} {} {} {}",
+                        "{} {} {} {} {}",
                         tunnel.id,
                         match tunnel.port_type {
                             PortProto::Both => "both",
@@ -171,7 +171,11 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                             PortProto::Udp => "udp",
                         },
                         tunnel.to_port - tunnel.from_port,
-                        tunnel.display_address,
+                        {
+                            let mut parts = tunnel.assigned_domain.split(":");
+                            parts.next().unwrap()
+                        },
+                        tunnel.from_port
                     );
                 }
             }
