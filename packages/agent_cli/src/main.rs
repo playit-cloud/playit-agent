@@ -3,6 +3,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::process::Termination;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +13,7 @@ use tokio::io::AsyncBufReadExt;
 use uuid::Uuid;
 
 use playit_agent_core::api::client::{ApiClient, ApiError};
-use playit_agent_core::api::messages::{CreateTunnel, ListAccountTunnels, TunnelType};
+use playit_agent_core::api::messages::{AccountTunnel, CreateGuestSession, CreateTunnel, GetSession, ListAccountTunnels, TunnelType};
 use playit_agent_core::network::address_lookup::{AddressLookup, MatchAddress};
 use playit_agent_core::tunnel_runner::TunnelRunner;
 use playit_agent_core::utils::now_milli;
@@ -28,6 +29,36 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
 
     match matches.subcommand() {
         Some(("version", _)) => println!("{}", env!("CARGO_PKG_VERSION")),
+        Some(("account", m)) => match m.subcommand() {
+            Some(("login-url", _)) => {
+                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
+                match api.req(CreateGuestSession).await {
+                    Ok(res) => println!("https://playit.gg/login/guest-account/{}", res.session_key),
+                    Err(ApiError::HttpError(400, msg)) if msg.eq("must be guest account") => println!("https://playit.gg/login"),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Some(("status", _)) => {
+                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
+                let res = api.req(GetSession).await?;
+                println!("ACCOUNT_ID={}", res.account_id);
+                println!("IS_GUEST={}", res.is_guest);
+                println!("EMAIL_VERIFIED={}", res.email_verified);
+                if let Some(agent_id) = res.agent_id {
+                    println!("AGENT_ID={}", agent_id);
+                }
+                println!("HAS_NOTICE={}", res.notice.is_some());
+            }
+            Some(("notice", _)) => {
+                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
+                let res = api.req(GetSession).await?;
+                match res.notice {
+                    Some(notice) => println!("{}\n{}", notice.url, notice.message),
+                    None => println!("NONE"),
+                }
+            }
+            _ => return Err(CliError::NotImplemented.into()),
+        }
         Some(("claim", m)) => match m.subcommand() {
             Some(("generate", _)) => {
                 let mut buffer = [0u8; 5];
@@ -206,12 +237,19 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
 
                 let tunnel_id: Uuid = parts.next().ok_or(CliError::InvalidMappingOverride)?
                     .parse().map_err(|_| CliError::InvalidMappingOverride)?;
-                let local_port: u16 = parts.next().ok_or(CliError::InvalidMappingOverride)?
-                    .parse().map_err(|_| CliError::InvalidMappingOverride)?;
+
+                let local_addr_str = parts.next().ok_or(CliError::InvalidMappingOverride)?;
+                let local_addr = match SocketAddr::from_str(local_addr_str) {
+                    Ok(addr) => addr,
+                    _ => match u16::from_str(local_addr_str) {
+                        Ok(port) => SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+                        _ => return Err(CliError::InvalidMappingOverride.into()),
+                    }
+                };
 
                 match tunnel_lookup.remove(&tunnel_id) {
-                    Some(v) => {
-                        mapping_overrides.push((v, local_port));
+                    Some(tunnel) => {
+                        mapping_overrides.push(MappingOverride::new(tunnel, local_addr));
                     }
                     None => {
                         return if tunnel_found.contains(&tunnel_id) {
@@ -223,7 +261,7 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                 }
             }
 
-            let tunnel  = TunnelRunner::new(secret_key, Arc::new(SimpleLookup)).await?;
+            let tunnel = TunnelRunner::new(secret_key, Arc::new(LookupWithOverrides(mapping_overrides))).await?;
             tunnel.run().await;
         }
         _ => return Err(CliError::NotImplemented.into()),
@@ -232,14 +270,43 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
     Ok(std::process::ExitCode::SUCCESS)
 }
 
-pub struct SimpleLookup;
+pub struct MappingOverride {
+    tunnel: AccountTunnel,
+    match_ip: Ipv6Addr,
+    local_addr: SocketAddr,
+}
 
-impl AddressLookup for SimpleLookup {
-    fn find_tunnel_port_range(&self, match_ip: Ipv6Addr, port: u16) -> Option<(u16, u16)> {
-        Some((port, port + 1))
+impl MappingOverride {
+    pub fn new(tunnel: AccountTunnel, local_addr: SocketAddr) -> Self {
+        let match_ip = LookupWithOverrides::match_ip(tunnel.ip_address);
+
+        MappingOverride {
+            tunnel,
+            match_ip,
+            local_addr,
+        }
+    }
+}
+
+pub struct LookupWithOverrides(Vec<MappingOverride>);
+
+impl AddressLookup for LookupWithOverrides {
+    fn find_tunnel_port_range(&self, match_ip: Ipv6Addr, port: u16, proto: PortProto) -> Option<(u16, u16)> {
+        for over in &self.0 {
+            if over.match_ip == match_ip && over.tunnel.from_port <= port && port < over.tunnel.to_port && (over.tunnel.port_type == PortProto::Both || over.tunnel.port_type == proto) {
+                return Some((over.tunnel.from_port, over.tunnel.to_port));
+            }
+        }
+        Some((1, u16::MAX))
     }
 
     fn local_address(&self, match_addr: MatchAddress, proto: PortProto) -> Option<SocketAddr> {
+        for over in &self.0 {
+            if over.match_ip == match_addr.ip && over.tunnel.from_port == match_addr.from_port && (over.tunnel.port_type == PortProto::Both || over.tunnel.port_type == proto) {
+                return Some(over.local_addr);
+            }
+        }
+
         Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, match_addr.from_port)))
     }
 }
@@ -306,6 +373,22 @@ fn cli() -> Command {
         .subcommand_required(true)
         .subcommand(Command::new("version"))
         .subcommand(
+            Command::new("account")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("login-url")
+                        .about("Generates a link to allow user to login")
+                )
+                .subcommand(
+                    Command::new("status")
+                        .about("Print account status")
+                )
+                .subcommand(
+                    Command::new("notice")
+                        .about("Print notice for account")
+                )
+        )
+        .subcommand(
             Command::new("claim")
                 .subcommand_required(true)
                 .arg(arg!(--name <TUNNEL_NAME> "name of the agent").required(false))
@@ -351,6 +434,6 @@ fn cli() -> Command {
         .subcommand(
             Command::new("run")
                 .about("Run the playit agent")
-                .arg(arg!([MAPPING_OVERRIDE] "(format \"<tunnel-id>=<local-port> [, ..]\")").required(false).value_delimiter(','))
+                .arg(arg!([MAPPING_OVERRIDE] "(format \"<tunnel-id>=[<local-ip>:]<local-port> [, ..]\")").required(false).value_delimiter(','))
         )
 }

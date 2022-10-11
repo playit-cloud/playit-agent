@@ -44,7 +44,7 @@ impl<L: AddressLookup> UdpClients<L> {
 
     pub async fn forward_packet(&self, flow: &UdpFlow, data: &[u8]) -> std::io::Result<usize> {
         let flow_dst = flow.dst();
-        let match_addr = match self.lookup.tunnel_match_address(flow_dst) {
+        let match_addr = match self.lookup.tunnel_match_address(flow_dst, PortProto::Udp) {
             Some(v) => v,
             None => {
                 return Err(std::io::Error::new(

@@ -1,3 +1,4 @@
+use std::fmt::{Debug, Formatter};
 use std::io::{Error, ErrorKind, Read, Write};
 use std::net::SocketAddr;
 
@@ -22,10 +23,16 @@ pub struct NewClient {
     pub data_center_id: u32,
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Eq, PartialEq, Clone)]
 pub struct ClaimInstructions {
     pub address: SocketAddr,
     pub token: Vec<u8>,
+}
+
+impl Debug for ClaimInstructions {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ClaimInstructions {{ address: {}, token: {} }}", self.address, hex::encode(&self.token))
+    }
 }
 
 impl MessageEncoding for ControlFeed {

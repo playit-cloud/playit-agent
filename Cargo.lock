@@ -529,6 +529,7 @@ name = "playit-agent-proto"
 version = "0.1.0"
 dependencies = [
  "byteorder",
+ "hex",
  "hmac",
  "rand",
  "serde",

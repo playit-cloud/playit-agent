@@ -10,6 +10,7 @@ serde = { version = "1", features = ["derive"] }
 byteorder = "1.4.3"
 sha2 = "0.10.2"
 hmac = "0.12.1"
+hex = "0.4.3"
 
 [dev-dependencies]
 rand = "0.8.5"

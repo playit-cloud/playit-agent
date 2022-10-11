@@ -13,6 +13,52 @@ pub enum LoginApiRequest {
     CreateGuestSession,
 }
 
+pub struct GetSession;
+
+impl ApiRequest for GetSession {
+    type RequestJson = LoginApiRequest;
+    type ResponseJson = LoginApiResponse;
+    type Response = SessionStatus;
+
+    fn to_req(self) -> Self::RequestJson {
+        LoginApiRequest::GetSession
+    }
+
+    fn extract_response(parsed: Self::ResponseJson) -> Option<Self::Response> {
+        match parsed {
+            LoginApiResponse::SessionStatus(s) => Some(s),
+            _ => None,
+        }
+    }
+
+    fn endpoint() -> &'static str {
+        "/login"
+    }
+}
+
+pub struct CreateGuestSession;
+
+impl ApiRequest for CreateGuestSession {
+    type RequestJson = LoginApiRequest;
+    type ResponseJson = LoginApiResponse;
+    type Response = WebSession;
+
+    fn to_req(self) -> Self::RequestJson {
+        LoginApiRequest::CreateGuestSession
+    }
+
+    fn extract_response(parsed: Self::ResponseJson) -> Option<Self::Response> {
+        match parsed {
+            LoginApiResponse::SignedIn(session) => Some(session),
+            _ => None,
+        }
+    }
+
+    fn endpoint() -> &'static str {
+        "/login"
+    }
+}
+
 impl SimpleApiRequest for LoginApiRequest {
     type Response = LoginApiResponse;
 

@@ -2,18 +2,19 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::ops::Add;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::TcpStream;
 
+use tokio::net::TcpStream;
 use tracing::Instrument;
+
+use playit_agent_proto::PortProto;
 
 use crate::network::address_lookup::{AddressLookup, MatchAddress};
 use crate::network::tcp_clients::TcpClients;
+use crate::network::tcp_pipe::pipe;
 use crate::network::udp_clients::UdpClients;
 use crate::tunnel::setup::SetupError;
 use crate::tunnel::simple_tunnel::SimpleTunnel;
 use crate::tunnel::udp_tunnel::UdpTunnelRx;
-use playit_agent_proto::PortProto;
-use crate::network::tcp_pipe::pipe;
 
 pub struct TunnelRunner<L: AddressLookup> {
     lookup: Arc<L>,
@@ -45,7 +46,7 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> {
                     let clients = self.tcp_clients.clone();
                     let span = tracing::info_span!("tcp client", ?new_client);
 
-                    let local_addr = match self.lookup.tunnel_match_address(new_client.connect_addr).and_then(|addr| self.lookup.local_address(addr, PortProto::Tcp)) {
+                    let local_addr = match self.lookup.local_mapping(new_client.connect_addr, PortProto::Tcp) {
                         Some(addr) => addr,
                         None => {
                             tracing::info!("could not find local address for connection");
