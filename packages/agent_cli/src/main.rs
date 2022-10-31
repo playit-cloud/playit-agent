@@ -21,6 +21,8 @@ use playit_agent_proto::PortProto;
 
 pub const API_BASE: &'static str = "https://api.playit.cloud";
 
+pub mod launch;
+
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
     let matches = cli().get_matches();
@@ -61,53 +63,25 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
         }
         Some(("claim", m)) => match m.subcommand() {
             Some(("generate", _)) => {
-                let mut buffer = [0u8; 5];
-                rand::thread_rng().fill(&mut buffer);
-                let claim_key = hex::encode(&buffer);
-                println!("{}", claim_key);
+                println!("{}", claim_generate());
             }
             Some(("url", m)) => {
                 let code = m.get_one::<String>("CLAIM_CODE").expect("required");
-
-                if hex::decode(code).is_err() {
-                    return Err(CliError::InvalidClaimCode.into());
-                }
-
                 let name = m.get_one::<String>("name").expect("required");
                 let agent_type = m.get_one::<String>("type").expect("required");
 
-                println!("https://playit.gg/claim/{}?type={}&name={}", code, urlencoding::encode(agent_type), urlencoding::encode(name))
+                println!("{}", claim_url(code, name, agent_type)?);
             }
             Some(("exchange", m)) => {
                 let claim_code = m.get_one::<String>("CLAIM_CODE").expect("required");
                 let wait: u32 = m.get_one::<String>("wait").expect("required").parse().expect("invalid wait value");
 
-                let api = ApiClient::new(API_BASE.to_string(), None);
-
-                let end_at = if wait == 0 {
-                    u64::MAX
-                } else {
-                    now_milli() + (wait as u64) * 1000
-                };
-
-                let secret_key = loop {
-                    match api.try_exchange_claim_for_secret(claim_code).await {
-                        Ok(Some(value)) => break value,
-                        Err(ApiError::HttpError(401, msg)) if msg.eq("your access has not been confirmed yet") => {
-                            eprintln!("waiting for user approval with claim code \"{}\"", claim_code);
-                        }
-                        Ok(None) => {
-                            eprintln!("code \"{}\" not claimed yet", claim_code);
-                        }
-                        Err(error) => return Err(error.into()),
-                    };
-
-                    if now_milli() > end_at {
+                let secret_key = match claim_exchange(claim_code, wait).await? {
+                    Some(v) => v,
+                    None => {
                         eprintln!("reached time limit");
                         return Ok(std::process::ExitCode::FAILURE);
                     }
-
-                    tokio::time::sleep(Duration::from_secs(2)).await;
                 };
 
                 println!("{}", secret_key);
@@ -128,66 +102,12 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                 let exact = m.get_flag("exact");
                 let ignore_name = m.get_flag("ignore_name");
 
-                let tunnels = api.req(ListAccountTunnels).await?;
+                let tunnel = tunnels_prepare(
+                    api, name, tunnel_type, port_type,
+                    port_count, exact, ignore_name,
+                ).await?;
 
-                let mut options = Vec::new();
-                for tunnel in tunnels.tunnels {
-                    let tunnel_port_count = tunnel.to_port - tunnel.from_port;
-
-                    if exact {
-                        if (ignore_name || tunnel.name.eq(&name)) && tunnel.port_type == port_type && port_count == tunnel_port_count && tunnel.tunnel_type == tunnel_type {
-                            options.push(tunnel);
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        if (tunnel.port_type == PortProto::Both || tunnel.port_type == port_type) && port_count <= tunnel_port_count && tunnel.tunnel_type == tunnel_type {
-                            options.push(tunnel);
-                        }
-                    }
-                }
-
-                /* rank options by how much they match */
-                options.sort_by_key(|option| {
-                    let mut points = 0;
-
-                    if ignore_name {
-                        if name.is_some() && option.name.eq(&name) {
-                            points += 1;
-                        }
-                    } else {
-                        if option.name.eq(&name) {
-                            points += 10;
-                        }
-                    }
-
-                    if option.port_type == port_type {
-                        points += 200;
-                    }
-
-                    let tunnel_port_count = option.to_port - option.from_port;
-                    if port_count == tunnel_port_count {
-                        points += 100;
-                    } else {
-                        points += ((port_count as i32) - (tunnel_port_count as i32)) * 10;
-                    }
-                });
-
-                if let Some(found_tunnel) = options.pop() {
-                    println!("{}", found_tunnel.id);
-                    return Ok(std::process::ExitCode::SUCCESS);
-                }
-
-                let created = api.req(CreateTunnel {
-                    tunnel_type,
-                    port_type,
-                    port_count,
-                    local_ip: "127.0.0.1".parse().unwrap(),
-                    local_port: None,
-                    agent_id: tunnels.agent_id,
-                }).await?;
-
-                println!("{}", created.id);
+                println!("{}", tunnel.id);
             }
             Some(("list", _)) => {
                 let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
@@ -268,6 +188,126 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
     }
 
     Ok(std::process::ExitCode::SUCCESS)
+}
+
+pub fn claim_generate() -> String {
+    let mut buffer = [0u8; 5];
+    rand::thread_rng().fill(&mut buffer);
+    hex::encode(&buffer)
+}
+
+pub fn claim_url(code: &str, name: &str, agent_type: &str) -> Result<String, CliError> {
+    if hex::decode(code).is_err() {
+        return Err(CliError::InvalidClaimCode.into());
+    }
+
+    Ok(format!(
+        "https://playit.gg/claim/{}?type={}&name={}",
+        code,
+        urlencoding::encode(agent_type),
+        urlencoding::encode(name)
+    ))
+}
+
+pub async fn claim_exchange(claim_code: &str, wait_sec: u32) -> Result<Option<String>, CliError> {
+    let api = ApiClient::new(API_BASE.to_string(), None);
+
+    let end_at = if wait_sec == 0 {
+        u64::MAX
+    } else {
+        now_milli() + (wait_sec as u64) * 1000
+    };
+
+    let secret_key = loop {
+        match api.try_exchange_claim_for_secret(claim_code).await {
+            Ok(Some(value)) => break value,
+            Err(ApiError::HttpError(401, msg)) if msg.eq("your access has not been confirmed yet") => {
+                eprintln!("waiting for user approval with claim code \"{}\"", claim_code);
+            }
+            Ok(None) => {
+                eprintln!("code \"{}\" not claimed yet", claim_code);
+            }
+            Err(error) => return Err(error.into()),
+        };
+
+        if now_milli() > end_at {
+            eprintln!("reached time limit");
+            return Ok(None);
+        }
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    };
+
+    Ok(Some(secret_key))
+}
+
+pub async fn tunnels_prepare(api: ApiClient, name: Option<String>, tunnel_type: Option<TunnelType>, port_type: PortProto, port_count: u16, exact: bool, ignore_name: bool) -> Result<AccountTunnel, CliError> {
+    let tunnels = api.req(ListAccountTunnels).await?;
+
+    let mut options = Vec::new();
+    for tunnel in tunnels.tunnels {
+        let tunnel_port_count = tunnel.to_port - tunnel.from_port;
+
+        if exact {
+            if (ignore_name || tunnel.name.eq(&name)) && tunnel.port_type == port_type && port_count == tunnel_port_count && tunnel.tunnel_type == tunnel_type {
+                options.push(tunnel);
+            } else {
+                continue;
+            }
+        } else {
+            if (tunnel.port_type == PortProto::Both || tunnel.port_type == port_type) && port_count <= tunnel_port_count && tunnel.tunnel_type == tunnel_type {
+                options.push(tunnel);
+            }
+        }
+    }
+
+    /* rank options by how much they match */
+    options.sort_by_key(|option| {
+        let mut points = 0;
+
+        if ignore_name {
+            if name.is_some() && option.name.eq(&name) {
+                points += 1;
+            }
+        } else {
+            if option.name.eq(&name) {
+                points += 10;
+            }
+        }
+
+        if option.port_type == port_type {
+            points += 200;
+        }
+
+        let tunnel_port_count = option.to_port - option.from_port;
+        if port_count == tunnel_port_count {
+            points += 100;
+        } else {
+            points += ((port_count as i32) - (tunnel_port_count as i32)) * 10;
+        }
+    });
+
+    if let Some(found_tunnel) = options.pop() {
+        return Ok(found_tunnel);
+    }
+
+    let created = api.req(CreateTunnel {
+        tunnel_type,
+        port_type,
+        port_count,
+        local_ip: "127.0.0.1".parse().unwrap(),
+        local_port: None,
+        agent_id: tunnels.agent_id,
+    }).await?;
+
+    let tunnels = api.req(ListAccountTunnels).await?;
+    for tunnel in tunnels.tunnels {
+        if tunnel.id == created.id {
+            return Ok(tunnel);
+        }
+    }
+
+    Err(CliError::ResourceNotFoundAfterCreate(created.id))
 }
 
 pub struct MappingOverride {
@@ -356,6 +396,14 @@ pub enum CliError {
     InvalidMappingOverride,
     TunnelNotFound(Uuid),
     TunnelOverwrittenAlready(Uuid),
+    ResourceNotFoundAfterCreate(Uuid),
+    ApiError(ApiError),
+}
+
+impl From<ApiError> for CliError {
+    fn from(e: ApiError) -> Self {
+        CliError::ApiError(e)
+    }
 }
 
 impl Display for CliError {

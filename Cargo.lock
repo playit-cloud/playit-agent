@@ -546,6 +546,7 @@ dependencies = [
  "playit-agent-core",
  "playit-agent-proto",
  "rand",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",
