@@ -1,401 +1,509 @@
-use std::fmt::Display;
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::fmt::{Display, Formatter};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
+use std::process::Termination;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{RwLock, RwLockMappedWriteGuard, RwLockWriteGuard};
-use tracing::Level;
+use clap::{arg, ArgMatches, Command};
+use rand::Rng;
+use tokio::io::AsyncBufReadExt;
+use uuid::Uuid;
 
-use graphics::{Connected, GraphicInterface, GraphicState};
-use playit_agent_common::Proto;
-use playit_agent_common::agent_config::AgentConfigBuilder;
-use playit_agent_core::agent_state::AgentState;
-use playit_agent_core::agent_updater::AgentUpdater;
-use playit_agent_core::api_client::ApiClient;
-use playit_agent_core::control_lookup::get_working_io;
-use playit_agent_core::ping_task::PingTask;
-use playit_agent_core::setup_config::{AgentConfigStatus, prepare_config};
-use playit_agent_core::tcp_client::{TcpClients, TcpConnection};
-use playit_agent_core::tunnel_api::TunnelApi;
+use playit_agent_core::api::client::{ApiClient, ApiError};
+use playit_agent_core::api::messages::{AccountTunnel, CreateGuestSession, CreateTunnel, GetSession, ListAccountTunnels, TunnelType};
+use playit_agent_core::network::address_lookup::{AddressLookup, MatchAddress};
+use playit_agent_core::tunnel_runner::TunnelRunner;
+use playit_agent_core::utils::now_milli;
+use playit_agent_proto::PortProto;
+use crate::launch::{launch, LaunchConfig};
+use crate::util::load_config;
 
-use crate::graphics::{ConnectedElement, Notice};
-use crate::logging::{LoggingBuffer, LogReader};
-use crate::start_settings::StartSettings;
+pub const API_BASE: &'static str = "https://api.playit.cloud";
 
-mod graphics;
-mod logging;
-mod start_settings;
-
-struct GraphicWrapper {
-    inner: Option<Arc<RwLock<GraphicState>>>,
-    log_reader: Option<LogReader>,
-}
-
-impl GraphicWrapper {
-    pub fn is_setup(&self) -> bool {
-        self.inner.is_some()
-    }
-
-    pub async fn connected_mut(&mut self) -> Option<RwLockMappedWriteGuard<Connected>> {
-        let mut lock = self.inner.as_ref()?.write().await;
-
-        match &mut *lock {
-            GraphicState::Connected(_) => {}
-            other => {
-                *other = GraphicState::Connected(Connected {
-                    focused: ConnectedElement::Overview,
-                    ping_samples: Default::default(),
-                    config: Arc::new(AgentConfigBuilder::default().build()),
-                    log_reader: self.log_reader.take().unwrap(),
-                    logs: Default::default(),
-                    selected_tunnel_pos: 0,
-                    agent_state: Arc::new(Default::default()),
-                    tcp_clients: Arc::new(Default::default()),
-                });
-            }
-        }
-
-        Some(RwLockWriteGuard::map(lock, |locked| {
-            locked.connected_mut().unwrap()
-        }))
-    }
-
-    pub async fn set_loading<S: ToString + Display>(&mut self, msg: S) {
-        if !self.set(GraphicState::Loading { message: msg.to_string() }).await {
-            tracing::info!(%msg, "loading");
-        }
-    }
-
-    pub async fn set_activate_link<S: ToString + Display>(&mut self, link: S) {
-        if !self.set(GraphicState::LinkAgent { url: link.to_string() }).await {
-            tracing::info!(%link, "visit link to setup playit agent");
-        }
-    }
-
-    async fn set(&mut self, updated: GraphicState) -> bool {
-        if let Some(graphics) = &self.inner {
-            let mut state = graphics.write().await;
-            match std::mem::replace(&mut *state, updated) {
-                GraphicState::Connected(connected) => {
-                    self.log_reader = Some(connected.log_reader);
-                }
-                _ => {}
-            }
-            true
-        } else {
-            false
-        }
-    }
-}
+pub mod launch;
+pub mod util;
 
 #[tokio::main]
-async fn main() {
-    let settings = StartSettings::parse();
-    let mut background_task_handles = Vec::new();
+async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
+    let matches = cli().get_matches();
 
-    let mut graphics = if settings.try_ui {
-        match GraphicInterface::new() {
-            Ok(graphics) => {
-                let state = graphics.state();
-                let task = tokio::spawn(graphics.run());
-                background_task_handles.push(task);
+    let secret = Secrets::load(&matches).await;
 
-                let log_reader = {
-                    let mut log = LoggingBuffer::new();
-                    let log_reader = log.reader().unwrap();
-                    tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).with_writer(log).init();
-                    log_reader
+    match matches.subcommand() {
+        Some(("version", _)) => println!("{}", env!("CARGO_PKG_VERSION")),
+        Some(("account", m)) => match m.subcommand() {
+            Some(("login-url", _)) => {
+                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
+                match api.req(CreateGuestSession).await {
+                    Ok(res) => println!("https://playit.gg/login/guest-account/{}", res.session_key),
+                    Err(ApiError::HttpError(400, msg)) if msg.eq("must be guest account") => println!("https://playit.gg/login"),
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            Some(("status", _)) => {
+                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
+                let res = api.req(GetSession).await?;
+                println!("ACCOUNT_ID={}", res.account_id);
+                println!("IS_GUEST={}", res.is_guest);
+                println!("EMAIL_VERIFIED={}", res.email_verified);
+                if let Some(agent_id) = res.agent_id {
+                    println!("AGENT_ID={}", agent_id);
+                }
+                println!("HAS_NOTICE={}", res.notice.is_some());
+            }
+            Some(("notice", _)) => {
+                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
+                let res = api.req(GetSession).await?;
+                match res.notice {
+                    Some(notice) => println!("{}\n{}", notice.url, notice.message),
+                    None => println!("NONE"),
+                }
+            }
+            _ => return Err(CliError::NotImplemented.into()),
+        }
+        Some(("claim", m)) => match m.subcommand() {
+            Some(("generate", _)) => {
+                println!("{}", claim_generate());
+            }
+            Some(("url", m)) => {
+                let code = m.get_one::<String>("CLAIM_CODE").expect("required");
+                let name = m.get_one::<String>("name").expect("required");
+                let agent_type = m.get_one::<String>("type").expect("required");
+
+                println!("{}", claim_url(code, name, agent_type)?);
+            }
+            Some(("exchange", m)) => {
+                let claim_code = m.get_one::<String>("CLAIM_CODE").expect("required");
+                let wait: u32 = m.get_one::<String>("wait").expect("required").parse().expect("invalid wait value");
+
+                let secret_key = match claim_exchange(claim_code, wait).await? {
+                    Some(v) => v,
+                    None => {
+                        eprintln!("reached time limit");
+                        return Ok(std::process::ExitCode::FAILURE);
+                    }
                 };
 
-                GraphicWrapper { inner: Some(state), log_reader: Some(log_reader) }
+                println!("{}", secret_key);
             }
-            Err(_) => {
-                tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).init();
-                tracing::warn!("failed to start graphical UI, running in 'stdout_logs' mode");
-                GraphicWrapper { inner: None, log_reader: None }
+            _ => return Err(CliError::NotImplemented.into()),
+        },
+        Some(("tunnels", m)) => match m.subcommand() {
+            Some(("prepare", m)) => {
+                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
+
+                let name = m.get_one::<String>("NAME").cloned();
+                let tunnel_type: Option<TunnelType> = m.get_one::<String>("TUNNEL_TYPE")
+                    .and_then(|v| serde_json::from_str(&format!("{:?}", v)).ok());
+                let port_type = serde_json::from_str::<PortProto>(&format!("{:?}", m.get_one::<String>("PORT_TYPE").expect("required")))
+                    .map_err(|_| CliError::InvalidPortType)?;
+                let port_count = m.get_one::<String>("PORT_COUNT").expect("required")
+                    .parse::<u16>().map_err(|_| CliError::InvalidPortCount)?;
+                let exact = m.get_flag("exact");
+                let ignore_name = m.get_flag("ignore_name");
+
+                let tunnel = tunnels_prepare(
+                    &api, name, tunnel_type, port_type,
+                    port_count, exact, ignore_name,
+                ).await?;
+
+                println!("{}", tunnel.id);
             }
+            Some(("list", _)) => {
+                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
+                let tunnels = api.req(ListAccountTunnels).await?;
+                for tunnel in tunnels.tunnels {
+                    println!(
+                        "{} {} {} {} {}",
+                        tunnel.id,
+                        match tunnel.port_type {
+                            PortProto::Both => "both",
+                            PortProto::Tcp => "tcp",
+                            PortProto::Udp => "udp",
+                        },
+                        tunnel.to_port - tunnel.from_port,
+                        {
+                            let mut parts = tunnel.assigned_domain.split(":");
+                            parts.next().unwrap()
+                        },
+                        tunnel.from_port
+                    );
+                }
+            }
+            _ => return Err(CliError::NotImplemented.into())
         }
+        Some(("run", m)) => {
+            let _ = tracing_subscriber::fmt().try_init();
+
+            let secret_key = secret.get()?;
+            let api = ApiClient::new(API_BASE.to_string(), Some(secret_key.clone()));
+            let tunnels = api.req(ListAccountTunnels).await?;
+            let mut tunnel_lookup = HashMap::new();
+            let mut tunnel_found = HashSet::new();
+
+            for tunnel in tunnels.tunnels {
+                tunnel_found.insert(tunnel.id);
+                tunnel_lookup.insert(tunnel.id, tunnel);
+            }
+
+            let mapping_override_strings: Vec<String> = match m.get_many::<String>("MAPPING_OVERRIDE") {
+                Some(v) => v.into_iter().map(|v| v.to_string()).collect(),
+                None => vec![],
+            };
+
+            let mut mapping_overrides = Vec::new();
+            for override_str in mapping_override_strings {
+                let mut parts = override_str.split("=");
+
+                let tunnel_id: Uuid = parts.next().ok_or(CliError::InvalidMappingOverride)?
+                    .parse().map_err(|_| CliError::InvalidMappingOverride)?;
+
+                let local_addr_str = parts.next().ok_or(CliError::InvalidMappingOverride)?;
+                let local_addr = match SocketAddr::from_str(local_addr_str) {
+                    Ok(addr) => addr,
+                    _ => match u16::from_str(local_addr_str) {
+                        Ok(port) => SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
+                        _ => return Err(CliError::InvalidMappingOverride.into()),
+                    }
+                };
+
+                match tunnel_lookup.remove(&tunnel_id) {
+                    Some(tunnel) => {
+                        mapping_overrides.push(MappingOverride::new(tunnel, local_addr));
+                    }
+                    None => {
+                        return if tunnel_found.contains(&tunnel_id) {
+                            Err(CliError::TunnelOverwrittenAlready(tunnel_id).into())
+                        } else {
+                            Err(CliError::TunnelNotFound(tunnel_id).into())
+                        };
+                    }
+                }
+            }
+
+            let tunnel = TunnelRunner::new(secret_key, Arc::new(LookupWithOverrides(mapping_overrides))).await?;
+            tunnel.run().await;
+        }
+        Some(("launch", m)) => {
+            let config_file = m.get_one::<String>("CONFIG_FILE").unwrap();
+            let config = match load_config::<LaunchConfig>(&config_file).await {
+                Some(v) => v,
+                None => {
+                    return Err(CliError::InvalidConfigFile.into());
+                }
+            };
+
+            let _ = tracing_subscriber::fmt().try_init();
+            launch(config).await?;
+        }
+        _ => return Err(CliError::NotImplemented.into()),
+    }
+
+    Ok(std::process::ExitCode::SUCCESS)
+}
+
+pub fn claim_generate() -> String {
+    let mut buffer = [0u8; 5];
+    rand::thread_rng().fill(&mut buffer);
+    hex::encode(&buffer)
+}
+
+pub fn claim_url(code: &str, name: &str, agent_type: &str) -> Result<String, CliError> {
+    if hex::decode(code).is_err() {
+        return Err(CliError::InvalidClaimCode.into());
+    }
+
+    Ok(format!(
+        "https://playit.gg/claim/{}?type={}&name={}",
+        code,
+        urlencoding::encode(agent_type),
+        urlencoding::encode(name)
+    ))
+}
+
+pub async fn claim_exchange(claim_code: &str, wait_sec: u32) -> Result<Option<String>, CliError> {
+    let api = ApiClient::new(API_BASE.to_string(), None);
+
+    let end_at = if wait_sec == 0 {
+        u64::MAX
     } else {
-        tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).init();
-        tracing::info!("starting without trying UI");
-        GraphicWrapper { inner: None, log_reader: None }
+        now_milli() + (wait_sec as u64) * 1000
     };
 
-    tracing::info!(?settings, "starting playit agent, version: {}", env!("CARGO_PKG_VERSION"));
-    graphics.set(GraphicState::Loading { message: format!("loading playit.toml ({})", settings.config_file_path) }).await;
+    let secret_key = loop {
+        match api.try_exchange_claim_for_secret(claim_code).await {
+            Ok(Some(value)) => break value,
+            Err(ApiError::HttpError(401, msg)) if msg.eq("your access has not been confirmed yet") => {
+                eprintln!("waiting for user approval with claim code \"{}\"", claim_code);
+            }
+            Ok(None) => {
+                eprintln!("code \"{}\" not claimed yet", claim_code);
+            }
+            Err(error) => return Err(error.into()),
+        };
 
-    let status = Arc::new(RwLock::new(AgentConfigStatus::default()));
+        if now_milli() > end_at {
+            eprintln!("reached time limit");
+            return Ok(None);
+        }
 
-    let prepare_config_task = {
-        let status = status.clone();
-
-        let config_path = settings.config_file_path.clone();
-        tokio::spawn(async move {
-            prepare_config(&config_path, &status).await
-        })
+        tokio::time::sleep(Duration::from_secs(2)).await;
     };
 
-    let agent_config_res = loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let status = status.read().await;
+    Ok(Some(secret_key))
+}
 
-        match &*status {
-            AgentConfigStatus::Staring => {
-                graphics.set_loading(format!("loading playit.toml ({})", settings.config_file_path)).await;
-            }
-            AgentConfigStatus::ReadingConfigFile => {
-                graphics.set_loading(format!("reading playit.toml ({})", settings.config_file_path)).await;
-            }
-            AgentConfigStatus::FileReadFailed => {
-                graphics.set_loading(format!("failed to read playit.toml (delete \"{}\" and restart)", settings.config_file_path)).await;
-            }
-            AgentConfigStatus::LoadingAccountStatus => {
-                graphics.set_loading("loading account status").await;
-            }
-            AgentConfigStatus::ErrorLoadingAccountStatus => {
-                graphics.set_loading(format!("failed to load account status (delete \"{}\" and restart)", settings.config_file_path)).await;
-            }
-            AgentConfigStatus::AccountVerified => {
-                graphics.set_loading("account verified").await;
-            }
-            AgentConfigStatus::PleaseActiveProgram { url } => {
-                graphics.set_activate_link(url).await;
-            }
-            AgentConfigStatus::ProgramActivated => {
-                graphics.set_loading("playit.toml loaded").await;
-            }
-            AgentConfigStatus::PleaseVerifyAccount { url } => {
-                graphics.set(GraphicState::Notice(Notice {
-                    message: "Please verify your account".to_string(),
-                    url: (**url).clone(),
-                    important: true,
-                })).await;
-                tokio::time::sleep(Duration::from_secs(5)).await;
-            }
-            AgentConfigStatus::PleaseCreateAccount { url } => {
-                graphics.set(GraphicState::Notice(Notice {
-                    message: "Please create an account".to_string(),
-                    url: (**url).clone(),
-                    important: true,
-                })).await;
-                tokio::time::sleep(Duration::from_secs(5)).await;
-            }
-            AgentConfigStatus::UserNotice { message, url, important } => {
-                graphics.set(GraphicState::Notice(Notice {
-                    message: (**message).to_string(),
-                    url: (**url).clone(),
-                    important: *important,
-                })).await;
+pub async fn tunnels_prepare(api: &ApiClient, name: Option<String>, tunnel_type: Option<TunnelType>, port_type: PortProto, port_count: u16, exact: bool, ignore_name: bool) -> Result<AccountTunnel, CliError> {
+    let tunnels = api.req(ListAccountTunnels).await?;
 
-                let wait = if *important {
-                    10
-                } else {
-                    5
-                };
+    let mut options = Vec::new();
+    for tunnel in tunnels.tunnels {
+        let tunnel_port_count = tunnel.to_port - tunnel.from_port;
 
-                tokio::time::sleep(Duration::from_secs(wait)).await;
+        if exact {
+            if (ignore_name || tunnel.name.eq(&name)) && tunnel.port_type == port_type && port_count == tunnel_port_count && tunnel.tunnel_type == tunnel_type {
+                options.push(tunnel);
+            } else {
+                continue;
+            }
+        } else {
+            if (tunnel.port_type == PortProto::Both || tunnel.port_type == port_type) && port_count <= tunnel_port_count && tunnel.tunnel_type == tunnel_type {
+                options.push(tunnel);
+            }
+        }
+    }
+
+    /* rank options by how much they match */
+    options.sort_by_key(|option| {
+        let mut points = 0;
+
+        if ignore_name {
+            if name.is_some() && option.name.eq(&name) {
+                points += 1;
+            }
+        } else {
+            if option.name.eq(&name) {
+                points += 10;
             }
         }
 
-        if prepare_config_task.is_finished() {
-            break prepare_config_task.await.unwrap();
+        if option.port_type == port_type {
+            points += 200;
         }
-    };
 
-    let mut agent_config = match agent_config_res {
-        Ok(config) => config.build(),
-        Err(error) => {
-            tracing::error!(?error, "failed to prepare config");
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            graphics.set_loading("failed to prepare config, maybe delete the playit.toml file").await;
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            return;
+        let tunnel_port_count = option.to_port - option.from_port;
+        if port_count == tunnel_port_count {
+            points += 100;
+        } else {
+            points += ((port_count as i32) - (tunnel_port_count as i32)) * 10;
         }
-    };
+    });
 
-    if agent_config.api_refresh_rate.is_some() {
-        graphics.set_loading("loading latest configuration").await;
+    if let Some(found_tunnel) = options.pop() {
+        return Ok(found_tunnel);
+    }
 
-        let api_client = ApiClient::new(agent_config.api_url.clone(), Some(agent_config.secret_key.clone()));
-        agent_config = match api_client.get_agent_config().await {
-            Ok(updated) => agent_config.to_updated(updated.build()),
-            Err(error) => {
-                tracing::error!(?error, "failed to load latest config");
-                graphics.set_loading("failed to load latest config").await;
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                return;
+    let created = api.req(CreateTunnel {
+        tunnel_type,
+        name,
+        port_type,
+        port_count,
+        local_ip: "127.0.0.1".parse().unwrap(),
+        local_port: None,
+        agent_id: tunnels.agent_id,
+    }).await?;
+
+    let tunnels = api.req(ListAccountTunnels).await?;
+    for tunnel in tunnels.tunnels {
+        if tunnel.id == created.id {
+            return Ok(tunnel);
+        }
+    }
+
+    Err(CliError::ResourceNotFoundAfterCreate(created.id))
+}
+
+pub struct MappingOverride {
+    tunnel: AccountTunnel,
+    match_ip: Ipv6Addr,
+    local_addr: SocketAddr,
+}
+
+impl MappingOverride {
+    pub fn new(tunnel: AccountTunnel, local_addr: SocketAddr) -> Self {
+        let match_ip = LookupWithOverrides::match_ip(tunnel.ip_address);
+
+        MappingOverride {
+            tunnel,
+            match_ip,
+            local_addr,
+        }
+    }
+}
+
+pub struct LookupWithOverrides(Vec<MappingOverride>);
+
+impl AddressLookup for LookupWithOverrides {
+    fn find_tunnel_port_range(&self, match_ip: Ipv6Addr, port: u16, proto: PortProto) -> Option<(u16, u16)> {
+        for over in &self.0 {
+            if over.match_ip == match_ip && over.tunnel.from_port <= port && port < over.tunnel.to_port && (over.tunnel.port_type == PortProto::Both || over.tunnel.port_type == proto) {
+                return Some((over.tunnel.from_port, over.tunnel.to_port));
+            }
+        }
+        Some((1, u16::MAX))
+    }
+
+    fn local_address(&self, match_addr: MatchAddress, proto: PortProto) -> Option<SocketAddr> {
+        for over in &self.0 {
+            if over.match_ip == match_addr.ip && over.tunnel.from_port == match_addr.from_port && (over.tunnel.port_type == PortProto::Both || over.tunnel.port_type == proto) {
+                return Some(over.local_addr);
+            }
+        }
+
+        Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, match_addr.from_port)))
+    }
+}
+
+pub struct Secrets {
+    secret: Option<String>,
+    path: Option<String>,
+}
+
+impl Secrets {
+    pub fn get(&self) -> Result<String, CliError> {
+        match &self.secret {
+            Some(v) => Ok(v.clone()),
+            None => Err(CliError::MissingSecret),
+        }
+    }
+
+    pub async fn load(matches: &ArgMatches) -> Self {
+        let (secret, path) = match matches.get_one::<String>("secret") {
+            Some(v) => (Some(v.clone()), matches.get_one::<String>("secret_path").cloned()),
+            None => match matches.get_one::<String>("secret_path") {
+                Some(path) => {
+                    if let Ok(secret) = tokio::fs::read_to_string(path).await {
+                        (Some(secret), Some(path.clone()))
+                    } else {
+                        (None, Some(path.clone()))
+                    }
+                }
+                None => (None, None),
             }
         };
-    } else {
-        tracing::warn!("refresh_from_api set to false, will not update configuration from API");
-    }
 
-    graphics.set_loading(format!("preparing connection to {:?}", agent_config.control_address)).await;
-
-    let tunnel_io = match get_working_io(&agent_config.control_address).await {
-        Some(v) => v,
-        None => {
-            graphics.set_loading("failed to connect to tunnel").await;
-            tokio::time::sleep(Duration::from_secs(5)).await;
-            return;
-        }
-    };
-
-    tracing::info!("established connection to tunnel");
-    graphics.set_loading("authenticating connection").await;
-
-    let api_client = ApiClient::new(
-        agent_config.api_url.clone(),
-        Some(agent_config.secret_key.clone()),
-    );
-
-    let tunnel_api = TunnelApi::new(api_client, tunnel_io);
-    let agent_updater = Arc::new(AgentUpdater::new(tunnel_api, AgentState {
-        agent_config: RwLock::new(Arc::new(agent_config)),
-        agent_config_save_path: Some(settings.config_file_path),
-        ..AgentState::default()
-    }));
-
-    let agent_update_loop = {
-        let agent_updater = agent_updater.clone();
-
-        tokio::spawn(async move {
-            loop {
-                let wait = match agent_updater.update().await {
-                    Ok(wait) => wait,
-                    Err(error) => {
-                        tracing::error!(?error, "failed to update agent");
-                        1000
-                    }
-                };
-
-                tokio::time::sleep(Duration::from_millis(wait)).await;
-            }
-        })
-    };
-
-    let _ping_task_loop = {
-        let ping_task = PingTask::new(agent_updater.state());
-        tokio::spawn(ping_task.run())
-    };
-
-    let tcp_clients = Arc::new(TcpClients::default());
-
-    /* process messages from tunnel server */
-    let _message_process_task = {
-        let agent_updater = agent_updater.clone();
-        let tcp_clients = tcp_clients.clone();
-
-        tokio::spawn(async move {
-            loop {
-                match agent_updater.process_tunnel_feed().await {
-                    Ok(Some(client)) => {
-                        tracing::info!(?client, "got new client");
-
-                        let agent_updater = agent_updater.clone();
-                        let tcp_clients = tcp_clients.clone();
-
-                        tokio::spawn(async move {
-                            let (_bind_ip, local_addr) = {
-                                let state = agent_updater.state();
-                                let config = state.agent_config.read().await;
-
-                                match config.find_local_addr(client.connect_addr, Proto::Tcp) {
-                                    Some(v) => v,
-                                    None => {
-                                        tracing::info!(connect_addr = %client.connect_addr, "could not find tunnel for new connection");
-                                        return;
-                                    }
-                                }
-                            };
-
-                            let conn_res = TcpConnection::spawn(
-                                client,
-                                local_addr,
-                                tcp_clients,
-                            ).await;
-
-                            let connection = match conn_res {
-                                Ok(connection) => connection,
-                                Err(error) => {
-                                    tracing::error!(?error, "failed to setup connection");
-                                    return;
-                                }
-                            };
-
-                            connection.wait().await;
-                        });
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        tracing::error!(?error, "got error processing tunnel feed");
-                    }
-                }
-            }
-        })
-    };
-
-    let mut i = 0;
-    loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-
-        if agent_updater.state().authenticate_times.has_ack() {
-            break;
-        }
-
-        i += 1;
-        if i % 2 == 0 {
-            graphics.set_loading("authenticating connection...").await;
-        } else {
-            graphics.set_loading("authenticating connection..").await;
+        Secrets {
+            secret,
+            path,
         }
     }
+}
 
-    graphics.set_loading(format!("connection authenticated")).await;
+#[derive(Debug)]
+pub enum CliError {
+    InvalidClaimCode,
+    NotImplemented,
+    MissingSecret,
+    InvalidPortType,
+    InvalidPortCount,
+    InvalidMappingOverride,
+    InvalidConfigFile,
+    TunnelNotFound(Uuid),
+    TunnelOverwrittenAlready(Uuid),
+    ResourceNotFoundAfterCreate(Uuid),
+    ApiError(ApiError),
+}
 
-    /* setup connected UI and set agent_state */
-    if let Some(mut connected) = graphics.connected_mut().await {
-        connected.agent_state = agent_updater.state();
-        connected.tcp_clients = tcp_clients;
+impl From<ApiError> for CliError {
+    fn from(e: ApiError) -> Self {
+        CliError::ApiError(e)
     }
+}
 
-    if graphics.is_setup() {
-        let agent_updater = agent_updater.clone();
-
-        /* task for updating UI state */
-        tokio::spawn(async move {
-            let mut last_ping_received = 0;
-
-            loop {
-                let ping_value = {
-                    let _ = agent_updater.send_ping().await;
-                    let last_ping_time = agent_updater.state().latency_update.load(std::sync::atomic::Ordering::SeqCst);
-
-                    if last_ping_received != last_ping_time {
-                        last_ping_received = last_ping_time;
-                        Some(agent_updater.state().latency.load(std::sync::atomic::Ordering::SeqCst))
-                    } else {
-                        None
-                    }
-                };
-
-                if let Some(mut connected) = graphics.connected_mut().await {
-                    let state = agent_updater.state();
-                    let agent_config = Arc::clone(&*state.agent_config.read().await);
-                    connected.config = agent_config;
-
-                    if let Some(ping) = ping_value {
-                        connected.ping_samples.push_front(ping);
-                    }
-                } else {
-                    break;
-                }
-
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-        });
+impl Display for CliError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
     }
+}
 
-    if let Err(error) = agent_update_loop.await {
-        tracing::error!(?error, "update loop error");
-    }
+impl Error for CliError {}
+
+fn cli() -> Command {
+    Command::new("playit-cli")
+        .arg(arg!(--secret <SECRET> "secret code for the agent").required(false))
+        .arg(arg!(--secret_path <PATH> "path to file containing secret").required(false))
+        .subcommand_required(true)
+        .subcommand(Command::new("version"))
+        .subcommand(
+            Command::new("account")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("login-url")
+                        .about("Generates a link to allow user to login")
+                )
+                .subcommand(
+                    Command::new("status")
+                        .about("Print account status")
+                )
+                .subcommand(
+                    Command::new("notice")
+                        .about("Print notice for account")
+                )
+        )
+        .subcommand(
+            Command::new("claim")
+                .subcommand_required(true)
+                .arg(arg!(--name <TUNNEL_NAME> "name of the agent").required(false))
+                .about("Setting up a new playit agent")
+                .long_about("Provides a URL that can be visited to claim the agent and generate a secret key")
+                .subcommand(
+                    Command::new("generate")
+                        .about("Generates a random claim code")
+                )
+                .subcommand(
+                    Command::new("url")
+                        .about("Print a claim URL given the code and options")
+                        .arg(arg!(<CLAIM_CODE> "claim code"))
+                        .arg(arg!(--name [NAME] "name for the agent").default_value("from-cli"))
+                        .arg(arg!(--type [TYPE] "the agent type").default_value("self-managed"))
+                )
+                .subcommand(
+                    Command::new("exchange")
+                        .about("Exchanges the claim for the secret key")
+                        .arg(arg!(<CLAIM_CODE> "claim code (see \"claim generate\")"))
+                        .arg(arg!(--wait <WAIT_SEC> "number of seconds to wait 0=infinite").default_value("0"))
+                )
+        )
+        .subcommand(
+            Command::new("tunnels")
+                .subcommand_required(true)
+                .about("Manage tunnels")
+                .subcommand(
+                    Command::new("prepare")
+                        .about("Create a tunnel if it doesn't exist with the parameters")
+                        .arg(arg!(--type [TUNNEL_TYPE] "the tunnel type"))
+                        .arg(arg!(--name [NAME] "name of the tunnel"))
+                        .arg(arg!(<PORT_TYPE> "either \"tcp\", \"udp\", or \"both\""))
+                        .arg(arg!(<PORT_COUNT> "number of ports in a series to allocate").default_value("1"))
+                        .arg(arg!(--exact))
+                        .arg(arg!(--ignore_name))
+                )
+                .subcommand(
+                    Command::new("list")
+                        .about("List tunnels (format \"[tunnel-id] [port-type] [port-count] [public-address]\")")
+                )
+        )
+        .subcommand(
+            Command::new("run")
+                .about("Run the playit agent")
+                .arg(arg!([MAPPING_OVERRIDE] "(format \"<tunnel-id>=[<local-ip>:]<local-port> [, ..]\")").required(false).value_delimiter(','))
+        )
+        .subcommand(
+            Command::new("launch")
+                .about("Launches the playit agent with a configuration file")
+                .arg(arg!(<CONFIG_FILE> "configuration file").required(true))
+        )
 }

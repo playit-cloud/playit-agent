@@ -2,7 +2,7 @@
 members = [
     "packages/agent_cli",
     "packages/agent_core",
-    "packages/agent_common",
+    "packages/agent_proto",
 ]
 
 [profile.release]
