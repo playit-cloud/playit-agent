@@ -1,5 +1,8 @@
 # The playit program
 
+
+We're working on a new version of the playit agent, playit-cli has been released. The UI terminal version is still a work in process. **If you're looking for the 0.9.3 code see branch v0.9**
+
 * Latest Release: 0.9.3
 * Offical Website: https://playit.gg
 * Offical Downloads: https://playit.gg/download
