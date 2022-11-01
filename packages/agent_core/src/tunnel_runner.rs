@@ -116,7 +116,7 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> {
 
                 match rx {
                     UdpTunnelRx::ReceivedPacket { bytes, flow } => {
-                        tracing::info!(bytes, ?flow, "got packet");
+                        // tracing::info!(bytes, ?flow, "got packet");
                         udp_clients.forward_packet(&flow, &buffer[..bytes]).await.unwrap();
                     }
                     UdpTunnelRx::ConfirmedConnection => {}

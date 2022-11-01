@@ -82,7 +82,8 @@ pub async fn launch(config: LaunchConfig) -> Result<(), anyhow::Error> {
     for i in 0..tunnels.len() {
         command.env(format!("TUNNEL_{}_PORT", i), tunnels[i].from_port.to_string());
         command.env(format!("TUNNEL_{}_IP", i), tunnels[i].ip_address.to_string());
-        command.env(format!("TUNNEL_{}_HOSTNAME", i), tunnels[i].ip_hostname.to_string());
+        command.env(format!("TUNNEL_{}_HOSTNAME", i), tunnels[i].assigned_domain.to_string());
+        command.env(format!("TUNNEL_{}_HOSTNAME_SHORT", i), tunnels[i].ip_hostname.to_string());
     }
     command.envs(config.env_overrides.iter());
     command.args(config.command_args);

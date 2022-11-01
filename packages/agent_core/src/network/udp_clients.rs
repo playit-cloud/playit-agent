@@ -185,7 +185,7 @@ impl HostToTunnelForwarder {
                 }
             };
 
-            tracing::info!(bytes, %source, "got client packet");
+            // tracing::info!(bytes, %source, "got client packet");
 
             if source.ip() != self.0.local_start_addr.ip() {
                 tracing::warn!(
