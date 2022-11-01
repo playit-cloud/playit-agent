@@ -1,0 +1,23 @@
+name: Manual Build
+
+on: workflow_dispatch
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+      - name: build release
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --all
+      - name: upload playit-cli
+        uses: actions/upload-artifact@v3
+        with:
+          name: playit-cli
+          path: ./target/release/playit-cli
