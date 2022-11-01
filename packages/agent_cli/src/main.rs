@@ -18,10 +18,13 @@ use playit_agent_core::network::address_lookup::{AddressLookup, MatchAddress};
 use playit_agent_core::tunnel_runner::TunnelRunner;
 use playit_agent_core::utils::now_milli;
 use playit_agent_proto::PortProto;
+use crate::launch::{launch, LaunchConfig};
+use crate::util::load_config;
 
 pub const API_BASE: &'static str = "https://api.playit.cloud";
 
 pub mod launch;
+pub mod util;
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
@@ -103,7 +106,7 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                 let ignore_name = m.get_flag("ignore_name");
 
                 let tunnel = tunnels_prepare(
-                    api, name, tunnel_type, port_type,
+                    &api, name, tunnel_type, port_type,
                     port_count, exact, ignore_name,
                 ).await?;
 
@@ -184,6 +187,18 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
             let tunnel = TunnelRunner::new(secret_key, Arc::new(LookupWithOverrides(mapping_overrides))).await?;
             tunnel.run().await;
         }
+        Some(("launch", m)) => {
+            let config_file = m.get_one::<String>("CONFIG_FILE").unwrap();
+            let config = match load_config::<LaunchConfig>(&config_file).await {
+                Some(v) => v,
+                None => {
+                    return Err(CliError::InvalidConfigFile.into());
+                }
+            };
+
+            let _ = tracing_subscriber::fmt().try_init();
+            launch(config).await?;
+        }
         _ => return Err(CliError::NotImplemented.into()),
     }
 
@@ -241,7 +256,7 @@ pub async fn claim_exchange(claim_code: &str, wait_sec: u32) -> Result<Option<St
     Ok(Some(secret_key))
 }
 
-pub async fn tunnels_prepare(api: ApiClient, name: Option<String>, tunnel_type: Option<TunnelType>, port_type: PortProto, port_count: u16, exact: bool, ignore_name: bool) -> Result<AccountTunnel, CliError> {
+pub async fn tunnels_prepare(api: &ApiClient, name: Option<String>, tunnel_type: Option<TunnelType>, port_type: PortProto, port_count: u16, exact: bool, ignore_name: bool) -> Result<AccountTunnel, CliError> {
     let tunnels = api.req(ListAccountTunnels).await?;
 
     let mut options = Vec::new();
@@ -293,6 +308,7 @@ pub async fn tunnels_prepare(api: ApiClient, name: Option<String>, tunnel_type: 
 
     let created = api.req(CreateTunnel {
         tunnel_type,
+        name,
         port_type,
         port_count,
         local_ip: "127.0.0.1".parse().unwrap(),
@@ -394,6 +410,7 @@ pub enum CliError {
     InvalidPortType,
     InvalidPortCount,
     InvalidMappingOverride,
+    InvalidConfigFile,
     TunnelNotFound(Uuid),
     TunnelOverwrittenAlready(Uuid),
     ResourceNotFoundAfterCreate(Uuid),
@@ -483,5 +500,10 @@ fn cli() -> Command {
             Command::new("run")
                 .about("Run the playit agent")
                 .arg(arg!([MAPPING_OVERRIDE] "(format \"<tunnel-id>=[<local-ip>:]<local-port> [, ..]\")").required(false).value_delimiter(','))
+        )
+        .subcommand(
+            Command::new("launch")
+                .about("Launches the playit agent with a configuration file")
+                .arg(arg!(<CONFIG_FILE> "configuration file").required(true))
         )
 }

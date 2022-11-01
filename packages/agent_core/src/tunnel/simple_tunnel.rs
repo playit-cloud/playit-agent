@@ -79,13 +79,13 @@ impl SimpleTunnel {
         }
 
         let time_till_expire = self.control_channel.get_expire_at().max(now) - now;
-        tracing::info!(time_till_expire, "time till expire");
+        tracing::trace!(time_till_expire, "time till expire");
 
         /* 30 seconds till expiry and haven't sent in last 10 sec */
         if 10_000 < now - self.last_keep_alive && time_till_expire < 30_000 {
             self.last_keep_alive = now;
 
-            tracing::info!("sent KeepAlive");
+            tracing::debug!("sent KeepAlive");
             if let Err(error) = self.control_channel.send_keep_alive(100).await {
                 tracing::error!(?error, "failed to send KeepAlive");
             }
@@ -105,14 +105,14 @@ impl SimpleTunnel {
                     self.udp_tunnel.set_udp_tunnel(details).await.unwrap();
                 }
                 msg => {
-                    tracing::info!(?msg, "got response");
+                    tracing::debug!(?msg, "got response");
                 }
             },
             Ok(Err(error)) => {
                 tracing::error!(?error, "failed to parse response");
             }
             Err(_) => {
-                tracing::info!("feed recv timeout");
+                tracing::trace!("feed recv timeout");
             }
         }
 

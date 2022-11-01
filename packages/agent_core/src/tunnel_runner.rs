@@ -1,6 +1,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::ops::Add;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::net::TcpStream;
@@ -21,6 +22,7 @@ pub struct TunnelRunner<L: AddressLookup> {
     tunnel: SimpleTunnel,
     udp_clients: UdpClients<Arc<L>>,
     tcp_clients: TcpClients,
+    keep_running: Arc<AtomicBool>,
 }
 
 impl<L: AddressLookup + Sync + Send> TunnelRunner<L> {
@@ -33,15 +35,21 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> {
             tunnel,
             udp_clients,
             tcp_clients: TcpClients::new(),
+            keep_running: Arc::new(AtomicBool::new(true)),
         })
+    }
+
+    pub fn keep_running(&self) -> Arc<AtomicBool> {
+        self.keep_running.clone()
     }
 
     pub async fn run(mut self) {
         let mut tunnel = self.tunnel;
         let mut udp = tunnel.udp_tunnel();
 
+        let tunnel_run = self.keep_running.clone();
         let tunnel_task = tokio::spawn(async move {
-            loop {
+            while tunnel_run.load(Ordering::SeqCst) {
                 if let Some(new_client) = tunnel.update().await {
                     let clients = self.tcp_clients.clone();
                     let span = tracing::info_span!("tcp client", ?new_client);
@@ -85,17 +93,26 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> {
         });
 
         let mut udp_clients = self.udp_clients;
+        let udp_run = self.keep_running.clone();
+
         let udp_task = tokio::spawn(async move {
             let mut buffer = vec![0u8; 2048];
-            loop {
-                let rx = match udp.receive_from(&mut buffer).await {
-                    Ok(v) => v,
-                    Err(error) => {
-                        tracing::error!(?error, "got error");
+            let mut had_success = false;
+
+            while udp_run.load(Ordering::SeqCst) {
+                let rx = match tokio::time::timeout(Duration::from_secs(1), udp.receive_from(&mut buffer)).await {
+                    Ok(Ok(v)) => v,
+                    Ok(Err(error)) => {
+                        if had_success {
+                            tracing::error!(?error, "got error");
+                        }
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         continue;
                     }
+                    Err(_) => continue,
                 };
+
+                had_success = true;
 
                 match rx {
                     UdpTunnelRx::ReceivedPacket { bytes, flow } => {

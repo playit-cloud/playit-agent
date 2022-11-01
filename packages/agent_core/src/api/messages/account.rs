@@ -25,6 +25,7 @@ impl SimpleApiRequest for AccountApiRequest {
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CreateTunnel {
     pub tunnel_type: Option<TunnelType>,
+    pub name: Option<String>,
     pub port_type: PortProto,
     pub port_count: u16,
     pub local_ip: IpAddr,
@@ -98,7 +99,7 @@ pub struct AccountTunnels {
     pub agent_id: Option<Uuid>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AccountTunnel {
     pub id: Uuid,
     pub enabled: bool,
@@ -138,14 +139,14 @@ pub enum TunnelType {
     Unturned,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CustomDomain {
     pub id: Uuid,
     pub name: String,
     pub target: Option<CustomDomainTarget>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type")]
 pub enum CustomDomainTarget {
     #[serde(rename = "port-allocation")]
@@ -154,7 +155,7 @@ pub enum CustomDomainTarget {
     IpAddress { ip: IpAddr },
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "protocol")]
 pub enum TunnelProtocol {
     #[serde(rename = "to-agent")]
