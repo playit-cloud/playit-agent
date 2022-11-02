@@ -104,6 +104,8 @@ impl<L: AddressLookup> UdpClients<L> {
                     };
 
                     let client_key = v.key().clone();
+                    tracing::info!(?client_key, "setup new udp client");
+
                     let client = Arc::new(UdpClient {
                         client_key,
                         send_flow,
