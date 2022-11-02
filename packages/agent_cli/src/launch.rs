@@ -30,6 +30,13 @@ pub struct LaunchConfig {
     #[serde(default)]
     pub env_overrides: HashMap<String, String>,
     pub tunnels: Vec<Tunnel>,
+
+    #[serde(default = "default_as_true")]
+    pub special_lan: bool,
+}
+
+fn default_as_true() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize)]
@@ -90,10 +97,12 @@ pub async fn launch(config: LaunchConfig) -> Result<(), anyhow::Error> {
 
     tracing::info!("setting up connection to tunnel server");
 
-    let tunnel = TunnelRunner::new(
+    let mut tunnel = TunnelRunner::new(
         secret,
         Arc::new(LookupWithOverrides(mapping_overrides)),
     ).await?;
+
+    tunnel.set_use_special_lan(config.special_lan);
 
     let keep_running = tunnel.keep_running();
 

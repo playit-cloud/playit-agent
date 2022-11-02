@@ -39,6 +39,11 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> {
         })
     }
 
+    pub fn set_use_special_lan(&mut self, set_use: bool) {
+        self.tcp_clients.use_special_lan = set_use;
+        self.udp_clients.use_special_lan = set_use;
+    }
+
     pub fn keep_running(&self) -> Arc<AtomicBool> {
         self.keep_running.clone()
     }

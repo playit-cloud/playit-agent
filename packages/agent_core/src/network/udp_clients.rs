@@ -20,6 +20,7 @@ pub struct UdpClients<L: AddressLookup> {
     udp_tunnel: UdpTunnel,
     lookup: L,
     udp_clients: Arc<RwLock<HashMap<ClientKey, Arc<UdpClient>>>>,
+    pub use_special_lan: bool,
 }
 
 #[derive(Eq, PartialEq, Hash, Debug, Clone)]
@@ -34,6 +35,7 @@ impl<L: AddressLookup> UdpClients<L> {
             udp_tunnel: tunnel,
             lookup,
             udp_clients: Default::default(),
+            use_special_lan: true,
         }
     }
 
@@ -105,7 +107,7 @@ impl<L: AddressLookup> UdpClients<L> {
                     let client = Arc::new(UdpClient {
                         client_key,
                         send_flow,
-                        local_udp: LanAddress::udp_socket(true, client_addr, local_addr).await?,
+                        local_udp: LanAddress::udp_socket(self.use_special_lan, client_addr, local_addr).await?,
                         udp_tunnel: self.udp_tunnel.clone(),
                         local_start_addr: local_addr,
                         tunnel_from_port: match_addr.from_port,

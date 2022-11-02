@@ -17,6 +17,7 @@ use crate::tunnel::tcp_tunnel::TcpTunnel;
 #[derive(Clone)]
 pub struct TcpClients {
     inner: Arc<RwLock<Inner>>,
+    pub use_special_lan: bool,
 }
 
 struct Inner {
@@ -28,12 +29,14 @@ impl TcpClients {
         TcpClients {
             inner: Arc::new(RwLock::new(Inner {
                 active: HashMap::new(),
-            }))
+            })),
+            use_special_lan: true
         }
     }
 
     pub async fn connect(&self, new_client: NewClient) -> std::io::Result<Option<TcpClient>> {
-        let key = (new_client.peer_addr, new_client.connect_addr);
+        let peer_addr = new_client.peer_addr;
+        let key = (peer_addr, new_client.connect_addr);
 
         let claim_instructions = new_client.claim_instructions.clone();
 
@@ -51,7 +54,14 @@ impl TcpClients {
             inner: self.inner.clone(),
         };
 
-        let stream = TcpTunnel::new(claim_instructions).connect().await?;
+        let mut tunnel = TcpTunnel::new(
+            claim_instructions,
+            peer_addr
+        );
+        tunnel.use_special_lan = self.use_special_lan;
+
+        let stream = tunnel.connect().await?;
+
         Ok(Some(TcpClient {
             stream,
             dropper,

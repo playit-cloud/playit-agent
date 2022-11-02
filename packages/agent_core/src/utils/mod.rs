@@ -1,6 +1,5 @@
 pub mod name_lookup;
 pub mod error_helper;
-pub mod lan_address;
 pub mod shuffle;
 
 pub fn now_milli() -> u64 {
