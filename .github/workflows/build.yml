@@ -58,5 +58,15 @@ jobs:
               with:
                   targets: ${{ matrix.target.target }}
 
-            - name: Build
+            - uses: dbhi/qus/action@main
+              if: ${{ matrix.target.docker }}
+            - name: Build with Docker (if needed)
+              uses: addnab/docker-run-action@v3
+              if: ${{ matrix.target.docker }}
+              with:
+                  image: ${{ matrix.target.docker.image }}
+                  options: "--user 0:0 -v ${{ github.workspace }}:/build -w /build --platform ${{ matrix.target.docker.platform }}"
+                  run: cargo build --release --target ${{ matrix.target.target }} --locked
+            - name: Build on host (if not building with Docker)
+              if: ${{ !matrix.target.docker }}
               run: cargo build --release --target ${{ matrix.target.target }} --locked
