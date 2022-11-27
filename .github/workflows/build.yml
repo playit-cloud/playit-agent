@@ -9,12 +9,6 @@ on:
 jobs:
     build:
         runs-on: ${{ matrix.target.os || 'ubuntu-latest' }}
-        container:
-            image: ${{ matrix.target.docker.image }}
-            options: -w /build --platform ${{ matrix.target.docker.platform }}
-            volumes:
-                - ${{ github.workspace }}:/build
-
         environment: production
         defaults:
             run:
