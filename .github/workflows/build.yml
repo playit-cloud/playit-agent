@@ -3,8 +3,6 @@ name: Build & Release
 on:
     release:
         types: [published]
-    # FIXME: Remove this line before merging
-    push:
 
 jobs:
     build:
@@ -51,3 +49,11 @@ jobs:
 
             - name: Build
               run: cargo build --release --target ${{ matrix.target.target }} --locked
+
+            - name: Upload Release Asset
+              if: ${{ github.event_name == 'release' }}
+              uses: softprops/action-gh-release@1
+              with:
+                  files: |
+                      target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}.exe
+                      target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}
