@@ -21,13 +21,13 @@ jobs:
                       os: ubuntu-latest
                     - target: i686-unknown-linux-gnu
                       os: ubuntu-latest
-                      prebuild: apt-get install gcc-multilib
+                      prebuild: sudo apt-get install -y gcc-multilib
                     - target: aarch64-unknown-linux-gnu
                       os: ubuntu-latest
-                      prebuild: apt-get install -y gcc-aarch64-linux-gnu
+                      prebuild: sudo apt-get install -y gcc-aarch64-linux-gnu
                     - target: armv7-unknown-linux-gnueabihf
                       os: ubuntu-latest
-                      prebuild: apt-get install -y gcc-arm-linux-gnueabihf
+                      prebuild: sudo apt-get install -y gcc-arm-linux-gnueabihf
 
                     - target: x86_64-pc-windows-msvc
                       os: windows-latest
