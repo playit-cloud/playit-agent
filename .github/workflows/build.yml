@@ -8,7 +8,7 @@ on:
 
 jobs:
     build:
-        runs-on: ${{ matrix.target.os }}
+        runs-on: ${{ matrix.target.os || 'ubuntu-latest' }}
         environment: production
         strategy:
             fail-fast: false
@@ -19,14 +19,19 @@ jobs:
                     - target: i686-unknown-linux-gnu
                       os: ubuntu-latest
                     - target: aarch64-unknown-linux-gnu
-                      os: ubuntu-latest
+                      docker: arm64v8/rust
+                    - target: armv7-unknown-linux-gnueabihf
+                      docker: arm32v7/rust
 
                     - target: x86_64-pc-windows-msvc
                       os: windows-latest
                     - target: i686-pc-windows-msvc
                       os: windows-latest
-                    - target: aarch64-pc-windows-msvc
-                      os: windows-latest
+                    # FIXME: https://github.com/briansmith/ring/issues/1167
+                    # - target: aarch64-pc-windows-msvc
+                    #   os: windows-latest
+                    # - target: armv7-pc-windows-msvc
+                    #   os: windows-latest
 
                     - target: x86_64-apple-darwin
                       os: macos-latest
@@ -36,7 +41,17 @@ jobs:
         steps:
             - uses: actions/checkout@v3
             - uses: dtolnay/rust-toolchain@stable
+              if: ${{ !matrix.target.docker }}
               with:
                   targets: ${{ matrix.target.target }}
-            - name: Build
+
+            - name: Build with Docker (if needed)
+              uses: addnab/docker-run-action@v3
+              if: ${{ matrix.target.docker }}
+              with:
+                  image: ${{ matrix.settings.docker }}
+                  options: "--user 0:0 -v ${{ github.workspace }}:/build -w /build"
+                  run: cargo build --release --target ${{ matrix.target.target }} --locked
+            - name: Build with Rustup (if needed)
+              if: ${{ !matrix.target.docker }}
               run: cargo build --release --target ${{ matrix.target.target }} --locked
