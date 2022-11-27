@@ -19,31 +19,20 @@ jobs:
                 target:
                     - target: x86_64-unknown-linux-gnu
                       os: ubuntu-latest
-                    # - target: i686-unknown-linux-gnu
-                    #   os: ubuntu-latest
+                    - target: i686-unknown-linux-gnu
+                      os: ubuntu-latest
+                      prebuild: apt-get install gcc-multilib
                     - target: aarch64-unknown-linux-gnu
                       os: ubuntu-latest
-                      prebuild: |
-                          sudo apt-get update
-                          sudo apt-get install -y gcc-aarch64-linux-gnu
+                      prebuild: apt-get install -y gcc-aarch64-linux-gnu
                     - target: armv7-unknown-linux-gnueabihf
                       os: ubuntu-latest
-                      prebuild: |
-                          sudo apt-get update
-                          sudo apt-get install -y gcc-arm-linux-gnueabihf
-                      # docker:
-                      #     image: arm32v7/rust
-                      #     platform: linux/arm/v7
+                      prebuild: apt-get install -y gcc-arm-linux-gnueabihf
 
                     - target: x86_64-pc-windows-msvc
                       os: windows-latest
                     - target: i686-pc-windows-msvc
                       os: windows-latest
-                    # FIXME: https://github.com/briansmith/ring/issues/1167
-                    # - target: aarch64-pc-windows-msvc
-                    #   os: windows-latest
-                    # - target: armv7-pc-windows-msvc
-                    #   os: windows-latest
 
                     - target: x86_64-apple-darwin
                       os: macos-latest
@@ -53,29 +42,12 @@ jobs:
         steps:
             - uses: actions/checkout@v3
             - uses: dtolnay/rust-toolchain@stable
-              # if: ${{ !matrix.target.docker }}
               with:
                   targets: ${{ matrix.target.target }}
 
-            # - uses: dbhi/qus/action@main
-            #   if: ${{ matrix.target.docker }}
-            # - name: Run Docker on TMPFS
-            #   if: ${{ matrix.target.docker }}
-            #   uses: JonasAlfredsson/docker-on-tmpfs@v1
-            #   with:
-            #       tmpfs_size: 5
-            #       swap_size: 4
-            #       swap_location: "/mnt/swapfile"
-            # - name: Build with Docker (if needed)
-            #   uses: addnab/docker-run-action@v3
-            #   if: ${{ matrix.target.docker }}
-            #   with:
-            #       image: ${{ matrix.target.docker.image }}
-            #       options: "--user 0:0 -v ${{ github.workspace }}:/build -w /build --platform ${{ matrix.target.docker.platform }}"
-            #       run: cargo build --release --target ${{ matrix.target.target }} --locked
             - name: Run Prebuild Commands
               if: ${{ matrix.target.prebuild }}
               run: ${{ matrix.target.prebuild }}
+
             - name: Build
-              # if: ${{ !matrix.target.docker }}
               run: cargo build --release --target ${{ matrix.target.target }} --locked
