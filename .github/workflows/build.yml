@@ -1,4 +1,4 @@
-name: Build & Release
+name: Build & Upload Assets
 
 on:
     release:
@@ -52,8 +52,8 @@ jobs:
 
             - name: Upload Release Asset
               if: ${{ github.event_name == 'release' }}
-              uses: softprops/action-gh-release@1
+              uses: AButler/upload-release-assets@v2.0
               with:
-                  files: |
-                      target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}.exe
-                      target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}
+                  files: target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}[.exe]
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+                  release-tag: ${{ github.event.release.tag_name }}
