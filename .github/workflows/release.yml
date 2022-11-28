@@ -28,7 +28,11 @@ jobs:
                       os: windows-latest
                     - target: i686-pc-windows-msvc
                       os: windows-latest
+                    # hthttps://github.com/briansmith/ring/issues/1167
+                    # - target: aarch64-pc-windows-msvc
+                    #   os: windows-latest
 
+                    # TODO: Automate bundling of macOS binaries
                     - target: x86_64-apple-darwin
                       os: macos-latest
                     - target: aarch64-apple-darwin
@@ -47,15 +51,17 @@ jobs:
             - name: Build
               run: cargo build --release --target ${{ matrix.target.target }} --locked
 
-            - name: Upload Release Asset (Linux)
-              if: ${{ matrix.target.os == 'ubuntu-latest' }}
+            # I understand that `actions/upload-release-asset` is deprecated,
+            # but it's the easiest way to upload the artifacts.
+            - name: Upload Release Asset (Non-Windows)
+              if: ${{ matrix.target.os != 'windows-latest' }}
               uses: actions/upload-release-asset@v1
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               with:
                   upload_url: ${{ github.event.release.upload_url }}
-                  asset_path: ./target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}
-                  asset_name: ${{ github.event.repository.name }}-${{ matrix.target.target }}
+                  asset_path: ./target/${{ matrix.target.target }}/release/playit-cli
+                  asset_name: playit-cli-${{ matrix.target.target }}
                   asset_content_type: application/octet-stream
             - name: Upload Release Asset (Windows)
               if: ${{ matrix.target.os == 'windows-latest' }}
@@ -64,6 +70,7 @@ jobs:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               with:
                   upload_url: ${{ github.event.release.upload_url }}
-                  asset_path: ./target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}.exe
-                  asset_name: ${{ github.event.repository.name }}-${{ matrix.target.target }}.exe
+                  # TODO: Don't hardcode the binary name
+                  asset_path: ./target/${{ matrix.target.target }}/release/playit-cli.exe
+                  asset_name: playit-cli-${{ matrix.target.target }}.exe
                   asset_content_type: application/octet-stream
