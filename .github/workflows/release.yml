@@ -1,8 +1,9 @@
 name: Release
 
 on:
-    release:
-        types: [published]
+    # release:
+    #     types: [published]
+    push:
 
 jobs:
     build:
@@ -55,14 +56,17 @@ jobs:
               id: data
               run: |
                   cargo install tomato-toml
+                  which tomato
                   bin=$(tomato get package.name packages/agent_cli/Cargo.toml)
+                  echo "$bin"
                   ext=$([[ ${{ matrix.target.target }} =~ "windows" ]] && echo ".exe")
+                  echo "$ext"
                   echo "BIN=$bin$ext" >> $GITHUB_OUTPUT
               shell: bash
 
-            - name: Upload Release
-              uses: AButler/upload-release-assets@v2.0
-              with:
-                  files: "target/${{ matrix.target.target }}/release/${{ steps.data.outputs.BIN }}"
-                  repo-token: ${{ secrets.GITHUB_TOKEN }}
-                  release-tag: ${{ github.ref }}
+            # - name: Upload Release
+            #   uses: AButler/upload-release-assets@v2.0
+            #   with:
+            #       files: "target/${{ matrix.target.target }}/release/${{ steps.data.outputs.BIN }}"
+            #       repo-token: ${{ secrets.GITHUB_TOKEN }}
+            #       release-tag: ${{ github.ref }}
