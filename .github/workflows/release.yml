@@ -61,11 +61,13 @@ jobs:
                   echo "$bin"
                   ext=$([[ ${{ matrix.target.target }} =~ "windows" ]] && echo ".exe" || echo "")
                   echo "$ext"
-                  echo "BIN=$bin$ext" >> $GITHUB_OUTPUT
+                  file="$bin-${{ matrix.target.target }}$ext"
+                  mv "target/${{ matrix.target.target }}/release/$bin$ext" "target/${{ matrix.target.target }}/release/$file"
+                  echo "FILE=$file" >> $GITHUB_OUTPUT
               shell: bash
 
             - name: Upload Release
               uses: AButler/upload-release-assets@v2.0
               with:
-                  files: target/${{ matrix.target.target }}/release/${{ steps.data.outputs.BIN }}
+                  files: target/${{ matrix.target.target }}/release/${{ steps.data.outputs.FILE }}
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
