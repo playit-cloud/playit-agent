@@ -1,18 +1,13 @@
 name: Release
 
 on:
-    push:
-        # Run workflow on tag push that starts with `v`
-        # e.g. v1.0.0
-        tags: [v*]
+    release:
+        types: [published]
 
 jobs:
     build:
-        runs-on: ${{ matrix.target.os || 'ubuntu-latest' }}
+        runs-on: ${{ matrix.target.os }}
         environment: production
-        defaults:
-            run:
-                shell: bash
         strategy:
             fail-fast: false
             matrix:
@@ -52,9 +47,23 @@ jobs:
             - name: Build
               run: cargo build --release --target ${{ matrix.target.target }} --locked
 
-            - name: Release
-              uses: softprops/action-gh-release@v1
+            - name: Upload Release Asset (Linux)
+              if: ${{ matrix.target.os == 'ubuntu-latest' }}
+              uses: actions/upload-release-asset@v1
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               with:
-                  files: |
-                      target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}.exe
-                      target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}
+                  upload_url: ${{ github.event.release.upload_url }}
+                  asset_path: ./target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}
+                  asset_name: ${{ github.event.repository.name }}-${{ matrix.target.target }}
+                  asset_content_type: application/octet-stream
+            - name: Upload Release Asset (Windows)
+              if: ${{ matrix.target.os == 'windows-latest' }}
+              uses: actions/upload-release-asset@v1
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              with:
+                  upload_url: ${{ github.event.release.upload_url }}
+                  asset_path: ./target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}.exe
+                  asset_name: ${{ github.event.repository.name }}-${{ matrix.target.target }}.exe
+                  asset_content_type: application/octet-stream
