@@ -1,8 +1,10 @@
-name: Build & Upload Assets
+name: Release
 
 on:
-    release:
-        types: [published]
+    push:
+        # Run workflow on tag push that starts with `v`
+        # e.g. v1.0.0
+        tags: [v*]
 
 jobs:
     build:
@@ -50,10 +52,9 @@ jobs:
             - name: Build
               run: cargo build --release --target ${{ matrix.target.target }} --locked
 
-            - name: Upload Release Asset
-              if: ${{ github.event_name == 'release' }}
-              uses: AButler/upload-release-assets@v2.0
+            - name: Release
+              uses: softprops/action-gh-release@v1
               with:
-                  files: target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}[.exe]
-                  repo-token: ${{ secrets.GITHUB_TOKEN }}
-                  release-tag: ${{ github.event.release.tag_name }}
+                  files: |
+                      target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}.exe
+                      target/${{ matrix.target.target }}/release/${{ github.event.repository.name }}
