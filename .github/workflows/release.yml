@@ -1,9 +1,8 @@
 name: Release
 
 on:
-    # release:
-    #     types: [published]
-    push:
+    release:
+        types: [published]
 
 jobs:
     build:
@@ -42,6 +41,17 @@ jobs:
         steps:
             - uses: actions/checkout@v3
 
+            - uses: dtolnay/rust-toolchain@stable
+              with:
+                  targets: ${{ matrix.target.target }}
+
+            - name: Run Prebuild Commands
+              if: ${{ matrix.target.prebuild }}
+              run: ${{ matrix.target.prebuild }}
+
+            - name: Build
+              run: cargo build --release --target ${{ matrix.target.target }} --locked
+
             - name: Get Release Data
               id: data
               run: |
@@ -54,20 +64,9 @@ jobs:
                   echo "BIN=$bin$ext" >> $GITHUB_OUTPUT
               shell: bash
 
-            - uses: dtolnay/rust-toolchain@stable
+            - name: Upload Release
+              uses: AButler/upload-release-assets@v2.0
               with:
-                  targets: ${{ matrix.target.target }}
-
-            - name: Run Prebuild Commands
-              if: ${{ matrix.target.prebuild }}
-              run: ${{ matrix.target.prebuild }}
-
-            - name: Build
-              run: cargo build --release --target ${{ matrix.target.target }} --locked
-
-            # - name: Upload Release
-            #   uses: AButler/upload-release-assets@v2.0
-            #   with:
-            #       files: "target/${{ matrix.target.target }}/release/${{ steps.data.outputs.BIN }}"
-            #       repo-token: ${{ secrets.GITHUB_TOKEN }}
-            #       release-tag: ${{ github.ref }}
+                  files: "target/${{ matrix.target.target }}/release/${{ steps.data.outputs.BIN }}"
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+                  release-tag: ${{ github.ref }}
