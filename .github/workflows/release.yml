@@ -28,7 +28,7 @@ jobs:
                       os: windows-latest
                     - target: i686-pc-windows-msvc
                       os: windows-latest
-                    # hthttps://github.com/briansmith/ring/issues/1167
+                    # https://github.com/briansmith/ring/issues/1167
                     # - target: aarch64-pc-windows-msvc
                     #   os: windows-latest
 
