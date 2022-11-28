@@ -41,6 +41,19 @@ jobs:
 
         steps:
             - uses: actions/checkout@v3
+
+            - name: Get Release Data
+              id: data
+              run: |
+                  cargo install tomato-toml
+                  which tomato
+                  bin=$(tomato get package.name packages/agent_cli/Cargo.toml)
+                  echo "$bin"
+                  ext=$([[ ${{ matrix.target.target }} =~ "windows" ]] && echo ".exe" || echo "")
+                  echo "$ext"
+                  echo "BIN=$bin$ext" >> $GITHUB_OUTPUT
+              shell: bash
+
             - uses: dtolnay/rust-toolchain@stable
               with:
                   targets: ${{ matrix.target.target }}
@@ -51,18 +64,6 @@ jobs:
 
             - name: Build
               run: cargo build --release --target ${{ matrix.target.target }} --locked
-
-            - name: Get Release Data
-              id: data
-              run: |
-                  cargo install tomato-toml
-                  which tomato
-                  bin=$(tomato get package.name packages/agent_cli/Cargo.toml)
-                  echo "$bin"
-                  ext=$([[ ${{ matrix.target.target }} =~ "windows" ]] && echo ".exe")
-                  echo "$ext"
-                  echo "BIN=$bin$ext" >> $GITHUB_OUTPUT
-              shell: bash
 
             # - name: Upload Release
             #   uses: AButler/upload-release-assets@v2.0
