@@ -60,6 +60,7 @@ jobs:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               with:
                   upload_url: ${{ github.event.release.upload_url }}
+                  # TODO: Don't hardcode the binary name
                   asset_path: ./target/${{ matrix.target.target }}/release/playit-cli
                   asset_name: playit-cli-${{ matrix.target.target }}
                   asset_content_type: application/octet-stream
