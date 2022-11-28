@@ -54,8 +54,8 @@ jobs:
       - name: Get Release Data
         run: |
           cargo install tomato-toml
-          bin=$(tomato get packages/agent_cli/Cargo.toml package.name)
-          ext=$(if [[ "${{ matrix.target.target }}" == *windows* ]]; then echo ".exe"; fi)
+          bin=$(tomato get package.name packages/agent_cli/Cargo.toml)
+          ext=$([[ "${{ matrix.target.target }}" == *windows* ]] && echo ".exe")
           echo "BIN=$bin$ext" >> $GITHUB_ENV
         shell: bash
 
