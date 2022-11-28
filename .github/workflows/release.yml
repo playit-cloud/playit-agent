@@ -67,6 +67,5 @@ jobs:
             - name: Upload Release
               uses: AButler/upload-release-assets@v2.0
               with:
-                  files: "target/${{ matrix.target.target }}/release/${{ steps.data.outputs.BIN }}"
+                  files: target/${{ matrix.target.target }}/release/${{ steps.data.outputs.BIN }}
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
-                  release-tag: ${{ github.ref }}
