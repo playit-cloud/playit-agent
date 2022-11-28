@@ -1,77 +1,67 @@
 name: Release
 
 on:
-    release:
-        types: [published]
+  release:
+    types: [published]
 
 jobs:
-    build:
-        runs-on: ${{ matrix.target.os }}
-        environment: production
-        strategy:
-            fail-fast: false
-            matrix:
-                target:
-                    - target: x86_64-unknown-linux-gnu
-                      os: ubuntu-latest
-                    - target: i686-unknown-linux-gnu
-                      os: ubuntu-latest
-                      prebuild: sudo apt-get install -y gcc-multilib
-                    - target: aarch64-unknown-linux-gnu
-                      os: ubuntu-latest
-                      prebuild: sudo apt-get install -y gcc-aarch64-linux-gnu
-                    - target: armv7-unknown-linux-gnueabihf
-                      os: ubuntu-latest
-                      prebuild: sudo apt-get install -y gcc-arm-linux-gnueabihf
+  build:
+    runs-on: ${{ matrix.target.os }}
+    environment: production
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            prebuild: sudo apt-get install -y gcc-multilib
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            prebuild: sudo apt-get install -y gcc-aarch64-linux-gnu
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            prebuild: sudo apt-get install -y gcc-arm-linux-gnueabihf
 
-                    - target: x86_64-pc-windows-msvc
-                      os: windows-latest
-                    - target: i686-pc-windows-msvc
-                      os: windows-latest
-                    # https://github.com/briansmith/ring/issues/1167
-                    # - target: aarch64-pc-windows-msvc
-                    #   os: windows-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+          # https://github.com/briansmith/ring/issues/1167
+          # - target: aarch64-pc-windows-msvc
+          #   os: windows-latest
 
-                    # TODO: Automate bundling of macOS binaries
-                    - target: x86_64-apple-darwin
-                      os: macos-latest
-                    - target: aarch64-apple-darwin
-                      os: macos-latest
+          # TODO: Automate bundling of macOS binaries
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
 
-        steps:
-            - uses: actions/checkout@v3
-            - uses: dtolnay/rust-toolchain@stable
-              with:
-                  targets: ${{ matrix.target.target }}
+    steps:
+      - uses: actions/checkout@v3
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target.target }}
 
-            - name: Run Prebuild Commands
-              if: ${{ matrix.target.prebuild }}
-              run: ${{ matrix.target.prebuild }}
+      - name: Run Prebuild Commands
+        if: ${{ matrix.target.prebuild }}
+        run: ${{ matrix.target.prebuild }}
 
-            - name: Build
-              run: cargo build --release --target ${{ matrix.target.target }} --locked
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target.target }} --locked
 
-            # I understand that `actions/upload-release-asset` is deprecated,
-            # but it's the easiest way to upload the artifacts.
-            - name: Upload Release Asset (Non-Windows)
-              if: ${{ matrix.target.os != 'windows-latest' }}
-              uses: actions/upload-release-asset@v1
-              env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              with:
-                  upload_url: ${{ github.event.release.upload_url }}
-                  # TODO: Don't hardcode the binary name
-                  asset_path: ./target/${{ matrix.target.target }}/release/playit-cli
-                  asset_name: playit-cli-${{ matrix.target.target }}
-                  asset_content_type: application/octet-stream
-            - name: Upload Release Asset (Windows)
-              if: ${{ matrix.target.os == 'windows-latest' }}
-              uses: actions/upload-release-asset@v1
-              env:
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-              with:
-                  upload_url: ${{ github.event.release.upload_url }}
-                  # TODO: Don't hardcode the binary name
-                  asset_path: ./target/${{ matrix.target.target }}/release/playit-cli.exe
-                  asset_name: playit-cli-${{ matrix.target.target }}.exe
-                  asset_content_type: application/octet-stream
+      - name: Get Release Data
+        run: |
+          cargo install tomato-toml
+          bin=$(tomato get packages/agent_cli/Cargo.toml package.name)
+          ext=$(if [[ "${{ matrix.target.target }}" == *windows* ]]; then echo ".exe"; fi)
+          echo "BIN=$bin$ext" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Upload Release
+        uses: AButler/upload-release-assets@v2.0
+        with:
+          files: "target/${{ matrix.target.target }}/release/${{ env.BIN }}"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          release-tag: ${{ github.ref }}
