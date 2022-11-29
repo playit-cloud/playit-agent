@@ -75,11 +75,11 @@ jobs:
                   file="target/${{ matrix.target.target }}/release/$bin-${{ matrix.target.target }}$ext"
                   mv "target/${{ matrix.target.target }}/release/$bin$ext" "$file"
                   if [[ ${{ matrix.target.target }} =~ "linux" ]]; then
-                      file+=";target/${{ matrix.target.target }}/bundle/deb/*.deb"
+                      file+=";target/${{ matrix.target.target }}/release/bundle/deb/*.deb"
                   #elif [[ ${{ matrix.target.target }} =~ "windows" ]]; then
-                  #    file+=";target/${{ matrix.target.target }}/bundle/msi/*.msi"
+                  #    file+=";target/${{ matrix.target.target }}/release/bundle/msi/*.msi"
                   elif [[ ${{ matrix.target.target }} =~ "apple" ]]; then
-                      file+=";target/${{ matrix.target.target }}/bundle/osx/*.app"
+                      file+=";target/${{ matrix.target.target }}/release/bundle/osx/*.app"
                   fi
 
                   echo "FILE=$file" >> $GITHUB_OUTPUT
