@@ -3,6 +3,7 @@ name: Release
 on:
     release:
         types: [published]
+    push:
 
 jobs:
     build:
@@ -52,6 +53,12 @@ jobs:
             - name: Build
               run: cargo build --release --target ${{ matrix.target.target }} --locked
 
+            - name: Build Deb Package
+              if: ${{ contains(matrix.target.target, 'linux') }}
+              run: |
+                  cargo install cargo-deb
+                  cargo deb --target ${{ matrix.target.target }} -- --locked
+
             - name: Get Release Data
               id: data
               run: |
@@ -61,13 +68,18 @@ jobs:
                   echo "$bin"
                   ext=$([[ ${{ matrix.target.target }} =~ "windows" ]] && echo ".exe" || echo "")
                   echo "$ext"
-                  file="$bin-${{ matrix.target.target }}$ext"
-                  mv "target/${{ matrix.target.target }}/release/$bin$ext" "target/${{ matrix.target.target }}/release/$file"
+                  file="target/${{ matrix.target.target }}/release/$bin-${{ matrix.target.target }}$ext"
+                  mv "target/${{ matrix.target.target }}/release/$bin$ext" "$file"
+                  if [[ ${{ matrix.target.target }} =~ "linux" ]]; then
+                      file+=";target/${{ matrix.target.target }}/debian/*.deb"
+                  fi
+
                   echo "FILE=$file" >> $GITHUB_OUTPUT
               shell: bash
 
             - name: Upload Release
+              if: ${{ github.event_name == 'release' }}
               uses: AButler/upload-release-assets@v2.0
               with:
-                  files: target/${{ matrix.target.target }}/release/${{ steps.data.outputs.FILE }}
+                  files: ${{ steps.data.outputs.FILE }}
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
