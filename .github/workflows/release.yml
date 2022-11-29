@@ -51,27 +51,36 @@ jobs:
               run: ${{ matrix.target.prebuild }}
 
             - name: Build
-              run: cargo build --release --target ${{ matrix.target.target }} --locked
+              run: cargo build --release --target ${{ matrix.target.target }}
 
-            - name: Build Deb Package
-              if: ${{ contains(matrix.target.target, 'linux') }}
+            - name: Get Binary Package Name
+              id: package
               run: |
-                  cargo install cargo-deb
-                  cargo deb --target ${{ matrix.target.target }} -- --locked
+                  cargo install tomato-toml
+                  echo "NAME=$(tomato get package.name packages/agent_cli/Cargo.toml)" >> $GITHUB_OUTPUT
+
+            - name: Build Install Package
+              if: ${{ contains(matrix.target.target, 'linux') || contains(matrix.target.target, 'linux') }}
+              run: |
+                  cargo install cargo-bundle
+                  cd packages/agent_cli
+                  cargo bundle --release --target ${{ matrix.target.target }}
 
             - name: Get Release Data
               id: data
               run: |
-                  cargo install tomato-toml
-                  which tomato
-                  bin=$(tomato get package.name packages/agent_cli/Cargo.toml)
+                  bin=${{ steps.package.outputs.NAME }}
                   echo "$bin"
                   ext=$([[ ${{ matrix.target.target }} =~ "windows" ]] && echo ".exe" || echo "")
                   echo "$ext"
                   file="target/${{ matrix.target.target }}/release/$bin-${{ matrix.target.target }}$ext"
                   mv "target/${{ matrix.target.target }}/release/$bin$ext" "$file"
                   if [[ ${{ matrix.target.target }} =~ "linux" ]]; then
-                      file+=";target/${{ matrix.target.target }}/debian/*.deb"
+                      file+=";target/${{ matrix.target.target }}/bundle/deb/*.deb"
+                  #elif [[ ${{ matrix.target.target }} =~ "windows" ]]; then
+                  #    file+=";target/${{ matrix.target.target }}/bundle/msi/*.msi"
+                  elif [[ ${{ matrix.target.target }} =~ "apple" ]]; then
+                      file+=";target/${{ matrix.target.target }}/bundle/osx/*.app"
                   fi
 
                   echo "FILE=$file" >> $GITHUB_OUTPUT

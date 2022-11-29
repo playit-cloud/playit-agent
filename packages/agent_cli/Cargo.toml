@@ -2,6 +2,7 @@
 name = "playit-cli"
 version = "1.0.0-rc2"
 edition = "2021"
+description = ""
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -21,3 +22,9 @@ serde = { version = "1", features = ["derive"] }
 uuid = "1.1.2"
 tracing = "0.1.37"
 tracing-subscriber = "0.3.16"
+
+[package.metadata.bundle]
+# FIXME: This is the minimum configuration. Add or change stuff as needed.
+identifier = "com.playit.cli"
+icon = ["../../assets/playit@2x.png"]
+linux_use_terminal = true
