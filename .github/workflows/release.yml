@@ -33,7 +33,6 @@ jobs:
                     # - target: aarch64-pc-windows-msvc
                     #   os: windows-latest
 
-                    # TODO: Automate bundling of macOS binaries
                     - target: x86_64-apple-darwin
                       os: macos-latest
                     - target: aarch64-apple-darwin
@@ -60,7 +59,7 @@ jobs:
                   echo "NAME=$(tomato get package.name packages/agent_cli/Cargo.toml)" >> $GITHUB_OUTPUT
 
             - name: Build Install Package
-              if: ${{ contains(matrix.target.target, 'linux') || contains(matrix.target.target, 'linux') }}
+              if: ${{ contains(matrix.target.target, 'linux') || contains(matrix.target.target, 'apple') }}
               run: |
                   cargo install cargo-bundle
                   cd packages/agent_cli
