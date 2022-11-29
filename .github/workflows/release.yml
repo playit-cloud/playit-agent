@@ -57,6 +57,7 @@ jobs:
               run: |
                   cargo install tomato-toml
                   echo "NAME=$(tomato get package.name packages/agent_cli/Cargo.toml)" >> $GITHUB_OUTPUT
+              shell: bash
 
             - name: Build Install Package
               if: ${{ contains(matrix.target.target, 'linux') || contains(matrix.target.target, 'apple') }}
