@@ -80,7 +80,8 @@ jobs:
                   #elif [[ ${{ matrix.target.target }} =~ "windows" ]]; then
                   #    file+=";target/${{ matrix.target.target }}/release/bundle/msi/*.msi"
                   elif [[ ${{ matrix.target.target }} =~ "apple" ]]; then
-                      file+=";target/${{ matrix.target.target }}/release/bundle/osx/*.app"
+                      hdiutil create -volname "PlayIt Installer" -srcfolder "target/${{ matrix.target.target }}/release/bundle/osx/$bin.app" -fs HFS+ -ov -format UDZO playit.dmg
+                      file+="playit.dmg"
                   fi
 
                   echo "FILE=$file" >> $GITHUB_OUTPUT
