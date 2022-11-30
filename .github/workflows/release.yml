@@ -71,7 +71,7 @@ jobs:
               run: |
                   bin=${{ steps.package.outputs.NAME }}
                   echo "$bin"
-                  $target=${{ matrix.target.target }}
+                  target=${{ matrix.target.target }}
                   ext=$([[ "$target" =~ "windows" ]] && echo ".exe" || echo "")
                   echo "$ext"
                   file="target/$target/release/$bin-$$target$ext"
