@@ -74,7 +74,7 @@ jobs:
                   target=${{ matrix.target.target }}
                   ext=$([[ "$target" =~ "windows" ]] && echo ".exe" || echo "")
                   echo "$ext"
-                  file="target/$target/release/$bin-$$target$ext"
+                  file="target/$target/release/$bin-$target$ext"
                   mv "target/$target/release/$bin$ext" "$file"
                   if [[ "$target" =~ "linux" ]]; then
                       file+=";target/$target/release/bundle/deb/*.deb"
