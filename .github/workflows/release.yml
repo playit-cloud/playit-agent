@@ -71,19 +71,19 @@ jobs:
               run: |
                   bin=${{ steps.package.outputs.NAME }}
                   echo "$bin"
-                  ext=$([[ ${{ matrix.target.target }} =~ "windows" ]] && echo ".exe" || echo "")
+                  $target=${{ matrix.target.target }}
+                  ext=$([[ "$target" =~ "windows" ]] && echo ".exe" || echo "")
                   echo "$ext"
-                  file="target/${{ matrix.target.target }}/release/$bin-${{ matrix.target.target }}$ext"
-                  mv "target/${{ matrix.target.target }}/release/$bin$ext" "$file"
-                  if [[ ${{ matrix.target.target }} =~ "linux" ]]; then
-                      file+=";target/${{ matrix.target.target }}/release/bundle/deb/*.deb"
-                  #elif [[ ${{ matrix.target.target }} =~ "windows" ]]; then
-                  #    file+=";target/${{ matrix.target.target }}/release/bundle/msi/*.msi"
-                  elif [[ ${{ matrix.target.target }} =~ "apple" ]]; then
-                      hdiutil create -volname "PlayIt Installer" -srcfolder "target/${{ matrix.target.target }}/release/bundle/osx/$bin.app" -fs HFS+ -ov -format UDZO playit.dmg
-                      file+="playit.dmg"
+                  file="target/$target/release/$bin-$$target$ext"
+                  mv "target/$target/release/$bin$ext" "$file"
+                  if [[ "$target" =~ "linux" ]]; then
+                      file+=";target/$target/release/bundle/deb/*.deb"
+                  elif [[ "$target" =~ "apple" ]]; then
+                      hdiutil create -volname "PlayIt Installer" -srcfolder "target/$target/release/bundle/osx/$bin.app" -ov -format UDZO "playit-$target.dmg"
+                      file+=";playit-$target.dmg"
                   fi
 
+                  echo "FILE=$file"
                   echo "FILE=$file" >> $GITHUB_OUTPUT
               shell: bash
 
