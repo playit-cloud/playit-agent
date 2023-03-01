@@ -8,9 +8,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::io::{Stdout, stdout};
 use uuid::Uuid;
+use playit_agent_core::api::api::{AccountTunnelAllocation, PlayitApiClient, PortType, TunnelType};
+use playit_agent_core::api::http_client::HttpClient;
+use playit_agent_core::api::PlayitApi;
 
-use playit_agent_core::api::client::ApiClient;
-use playit_agent_core::api::messages::TunnelType;
 use playit_agent_core::tunnel_runner::TunnelRunner;
 use playit_agent_proto::PortProto;
 
@@ -44,7 +45,7 @@ pub struct Tunnel {
     pub id: Option<Uuid>,
     pub tunnel_type: Option<TunnelType>,
     pub name: String,
-    pub proto: PortProto,
+    pub proto: PortType,
     pub port_count: u16,
     pub local: Option<u16>,
 }
@@ -55,7 +56,7 @@ pub async fn launch(config: LaunchConfig) -> Result<(), anyhow::Error> {
         None => config.setup_new(&config.secret_path.as_ref().unwrap()).await?,
     };
 
-    let api = ApiClient::new(
+    let api = PlayitApi::create(
         API_BASE.to_string(),
         Some(secret.clone()),
     );
@@ -76,21 +77,28 @@ pub async fn launch(config: LaunchConfig) -> Result<(), anyhow::Error> {
 
         tunnels.push(tunnel.clone());
 
-        if let Some(local_port) = tunnel_config.local {
-            mapping_overrides.push(MappingOverride::new(
-                tunnel,
-                SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), local_port)
-            ));
+        let over = tunnel_config.local.and_then(|port|
+            MappingOverride::new(tunnel, SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        );
+
+        if let Some(over) = over {
+            mapping_overrides.push(over);
         }
     }
 
     let mut command = tokio::process::Command::new(config.command);
 
-    for i in 0..tunnels.len() {
-        command.env(format!("TUNNEL_{}_PORT", i), tunnels[i].from_port.to_string());
-        command.env(format!("TUNNEL_{}_IP", i), tunnels[i].ip_address.to_string());
-        command.env(format!("TUNNEL_{}_HOSTNAME", i), tunnels[i].assigned_domain.to_string());
-        command.env(format!("TUNNEL_{}_HOSTNAME_SHORT", i), tunnels[i].ip_hostname.to_string());
+    let mut i = 0;
+    for tunnel in &tunnels {
+        match &tunnel.alloc {
+            AccountTunnelAllocation::Allocated(alloc) => {
+                command.env(format!("TUNNEL_{}_PORT", i), alloc.port_start.to_string());
+                command.env(format!("TUNNEL_{}_HOSTNAME", i), alloc.assigned_domain.clone());
+                command.env(format!("TUNNEL_{}_HOSTNAME_SHORT", i), alloc.ip_hostname.clone());
+                i += 1;
+            }
+            _ => continue,
+        }
     }
     command.envs(config.env_overrides.iter());
     command.args(config.command_args);
@@ -153,20 +161,20 @@ impl LaunchConfig {
 
         for tunnel in &self.tunnels {
             match tunnel.proto {
-                PortProto::Both => {
+                PortType::Both => {
                     tcp_ports += tunnel.port_count;
                     udp_ports += tunnel.port_count;
                 }
-                PortProto::Tcp => {
+                PortType::Tcp => {
                     tcp_ports += tunnel.port_count;
                 }
-                PortProto::Udp => {
+                PortType::Udp => {
                     udp_ports += tunnel.port_count;
                 }
             }
         }
 
-        let url = claim_url(&claim_code, &self.agent_name, "self-managed")?;
+        let url = claim_url(&claim_code)?;
 
         let secret = loop {
             println!("Visit URL to setup:\n{}", url);

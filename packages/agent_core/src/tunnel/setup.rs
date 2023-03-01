@@ -12,8 +12,9 @@ use playit_agent_proto::control_messages::{AgentRegister, AgentRegistered, Contr
 use playit_agent_proto::encoding::MessageEncoding;
 use playit_agent_proto::raw_slice::RawSlice;
 use playit_agent_proto::rpc::ControlRpcMessage;
-use crate::api::client::{ApiClient, ApiError};
-use crate::api::messages::*;
+use crate::api::api::{ApiError, ApiErrorNoFail, ApiResponseError, Platform, PlayitAgentVersion, ReqProtoRegister};
+use crate::api::http_client::HttpClientError;
+use crate::api::PlayitApi;
 
 use crate::utils::now_milli;
 use crate::tunnel::control::AuthenticatedControl;
@@ -128,15 +129,21 @@ pub struct ConnectedControl {
 
 impl ConnectedControl {
     pub async fn authenticate(self, secret_key: String) -> Result<AuthenticatedControl, SetupError> {
-        let api = ApiClient::new("https://api.playit.cloud".to_string(), Some(secret_key.clone()));
+        let api = PlayitApi::create("https://api.playit.gg".to_string(), Some(secret_key.clone()));
+        // let api = PlayitApi::create("http://localhost:8080".to_string(), Some(secret_key.clone()));
 
-        let res = api.sign_and_register(SignAgentRegister {
-            agent_version: 1,
+        let res = api.proto_register(ReqProtoRegister {
+            agent_version: PlayitAgentVersion {
+                platform: Platform::Linux,
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                official: false,
+                details_website: None,
+            },
             client_addr: self.pong.client_addr,
             tunnel_addr: self.pong.tunnel_addr,
         }).await.with_error(|error| tracing::error!(?error, "failed to sign and register"))?;
 
-        let bytes = match hex::decode(&res.data) {
+        let bytes = match hex::decode(&res.key) {
             Ok(data) => data,
             Err(_) => return Err(SetupError::FailedToDecodeSignedAgentRegisterHex),
         };
@@ -226,11 +233,32 @@ impl ConnectedControl {
 pub enum SetupError {
     IoError(std::io::Error),
     FailedToConnect,
-    ApiError(ApiError),
+    ApiFail(String),
+    ApiError(ApiResponseError),
+    RequestError(HttpClientError),
     FailedToDecodeSignedAgentRegisterHex,
     NoResponseFromAuthenticate,
     RegisterInvalidSignature,
     RegisterUnauthorized,
+}
+
+impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for SetupError {
+    fn from(value: ApiError<F, HttpClientError>) -> Self {
+        match value {
+            ApiError::ApiError(api) => SetupError::ApiError(api),
+            ApiError::ClientError(error) => SetupError::RequestError(error),
+            ApiError::Fail(fail) => SetupError::ApiFail(serde_json::to_string(&fail).unwrap())
+        }
+    }
+}
+
+impl From<ApiErrorNoFail<HttpClientError>> for SetupError {
+    fn from(value: ApiErrorNoFail<HttpClientError>) -> Self {
+        match value {
+            ApiErrorNoFail::ApiError(api) => SetupError::ApiError(api),
+            ApiErrorNoFail::ClientError(error) => SetupError::RequestError(error),
+        }
+    }
 }
 
 impl Display for SetupError {
@@ -245,10 +273,5 @@ impl Error for SetupError {
 impl From<std::io::Error> for SetupError {
     fn from(e: std::io::Error) -> Self {
         SetupError::IoError(e)
-    }
-}
-impl From<ApiError> for SetupError {
-    fn from(e: ApiError) -> Self {
-        SetupError::ApiError(e)
     }
 }

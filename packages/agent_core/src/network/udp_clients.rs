@@ -9,8 +9,9 @@ use hyper::Client;
 use playit_agent_proto::PortProto;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
+use crate::api::api::PortType;
+use crate::network::address_lookup::AddressLookup;
 
-use crate::network::address_lookup::{AddressLookup, MatchAddress};
 use crate::network::lan_address::LanAddress;
 use crate::tunnel::udp_proto::UdpFlow;
 use crate::tunnel::udp_tunnel::UdpTunnel;
@@ -29,7 +30,7 @@ struct ClientKey {
     tunnel_addr: SocketAddr,
 }
 
-impl<L: AddressLookup> UdpClients<L> {
+impl<L: AddressLookup> UdpClients<L> where L::Value: Into<SocketAddr> {
     pub fn new(tunnel: UdpTunnel, lookup: L) -> Self {
         UdpClients {
             udp_tunnel: tunnel,
@@ -46,20 +47,14 @@ impl<L: AddressLookup> UdpClients<L> {
 
     pub async fn forward_packet(&self, flow: &UdpFlow, data: &[u8]) -> std::io::Result<usize> {
         let flow_dst = flow.dst();
-        let match_addr = match self.lookup.tunnel_match_address(flow_dst, PortProto::Udp) {
-            Some(v) => v,
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::ConnectionRefused,
-                    "could not find tunnel",
-                ))
-            }
-        };
 
-        /* normalize port */
+        let found = self.lookup.lookup(flow_dst.ip(), flow_dst.port(), PortType::Udp)
+            .ok_or(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "could not find tunnel"))?;
+
+        /* normalize port to share same UDP socket from same client */
         let key = ClientKey {
             client_addr: flow.src(),
-            tunnel_addr: SocketAddr::new(flow.dst().ip(), match_addr.from_port),
+            tunnel_addr: SocketAddr::new(flow_dst.ip(), found.from_port),
         };
 
         {
@@ -75,27 +70,19 @@ impl<L: AddressLookup> UdpClients<L> {
             let client = match clients.entry(key) {
                 Entry::Occupied(o) => o.into_mut(),
                 Entry::Vacant(v) => {
-                    let local_addr = match self.lookup.local_address(match_addr, PortProto::Udp) {
-                        Some(v) => v,
-                        None => {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::ConnectionRefused,
-                                "could not find tunnel",
-                            ))
-                        }
-                    };
+                    let local_addr = found.value.into();
 
                     let (send_flow, client_addr) = match flow {
                         UdpFlow::V4 { src, dst } => (
                             UdpFlow::V4 {
-                                src: SocketAddrV4::new(*dst.ip(), match_addr.from_port),
+                                src: SocketAddrV4::new(*dst.ip(), found.from_port),
                                 dst: *src,
                             },
                             SocketAddr::V4(SocketAddrV4::new(*src.ip(), src.port())),
                         ),
                         UdpFlow::V6 { src, dst, flow } => (
                             UdpFlow::V6 {
-                                src: (dst.0, match_addr.from_port),
+                                src: (dst.0, found.from_port),
                                 dst: *src,
                                 flow: *flow,
                             },
@@ -112,8 +99,8 @@ impl<L: AddressLookup> UdpClients<L> {
                         local_udp: LanAddress::udp_socket(self.use_special_lan, client_addr, local_addr).await?,
                         udp_tunnel: self.udp_tunnel.clone(),
                         local_start_addr: local_addr,
-                        tunnel_from_port: match_addr.from_port,
-                        tunnel_to_port: match_addr.to_port,
+                        tunnel_from_port: found.from_port,
+                        tunnel_to_port: found.to_port,
                         udp_clients: self.udp_clients.clone(),
                         last_activity: Default::default()
                     });
@@ -236,8 +223,8 @@ impl HostToTunnelForwarder {
             Some(v) if !Arc::ptr_eq(&v, &self.0) => {
                 tracing::error!("removing different UDP client when closing");
             }
-            _ => {
-                tracing::info!(flow = ?self.0.send_flow, "udp client removed");
+            Some(client) => {
+                tracing::info!(flow = ?self.0.send_flow, key = ?client.client_key, "udp client removed");
             }
         }
     }

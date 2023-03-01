@@ -19,6 +19,8 @@ toml = "0.5.9"
 byteorder = "1.4.3"
 playit-agent-proto = { path = "../agent_proto" }
 uuid = { version = "1.1.2", features = ["serde"] }
+async-trait = "0.1.60"
+chrono = { version = "0.4", features = ["serde"] }
 
 [[example]]
 name = "echo_tunnel"

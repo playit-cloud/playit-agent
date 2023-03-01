@@ -12,16 +12,18 @@ use rand::Rng;
 use tokio::io::AsyncBufReadExt;
 use uuid::Uuid;
 
-use playit_agent_core::api::client::{ApiClient, ApiError};
-use playit_agent_core::api::messages::{AccountTunnel, CreateGuestSession, CreateTunnel, GetSession, ListAccountTunnels, TunnelType};
-use playit_agent_core::network::address_lookup::{AddressLookup, MatchAddress};
+use playit_agent_core::api::api::{AccountTunnel, AccountTunnelAllocation, AgentType, ApiError, ApiErrorNoFail, ApiResponseError, AssignedManagedCreate, ClaimExchangeError, ClaimSetupResponse, PortType, ReqClaimExchange, ReqClaimSetup, ReqTunnelsCreate, ReqTunnelsList, TunnelAllocated, TunnelOriginCreate, TunnelType};
+use playit_agent_core::api::http_client::HttpClientError;
+use playit_agent_core::api::PlayitApi;
+use playit_agent_core::network::address_lookup::{AddressLookup, AddressValue};
 use playit_agent_core::tunnel_runner::TunnelRunner;
 use playit_agent_core::utils::now_milli;
 use playit_agent_proto::PortProto;
+
 use crate::launch::{launch, LaunchConfig};
 use crate::util::load_config;
 
-pub const API_BASE: &'static str = "https://api.playit.cloud";
+pub const API_BASE: &'static str = "https://api.playit.gg";
 
 pub mod launch;
 pub mod util;
@@ -36,31 +38,32 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
         Some(("version", _)) => println!("{}", env!("CARGO_PKG_VERSION")),
         Some(("account", m)) => match m.subcommand() {
             Some(("login-url", _)) => {
-                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
-                match api.req(CreateGuestSession).await {
-                    Ok(res) => println!("https://playit.gg/login/guest-account/{}", res.session_key),
-                    Err(ApiError::HttpError(400, msg)) if msg.eq("must be guest account") => println!("https://playit.gg/login"),
-                    Err(error) => return Err(error.into()),
-                }
+                let api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
+                let session = api.login_create_guest().await?;
+                println!("https://playit.gg/login/guest-account/{}", session.session_key)
             }
             Some(("status", _)) => {
-                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
-                let res = api.req(GetSession).await?;
-                println!("ACCOUNT_ID={}", res.account_id);
-                println!("IS_GUEST={}", res.is_guest);
-                println!("EMAIL_VERIFIED={}", res.email_verified);
-                if let Some(agent_id) = res.agent_id {
-                    println!("AGENT_ID={}", agent_id);
-                }
-                println!("HAS_NOTICE={}", res.notice.is_some());
+                let api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
+                println!("not implemented");
+
+                // let res = api.req(GetSession).await?;
+                // println!("ACCOUNT_ID={}", res.account_id);
+                // println!("IS_GUEST={}", res.is_guest);
+                // println!("EMAIL_VERIFIED={}", res.email_verified);
+                // if let Some(agent_id) = res.agent_id {
+                //     println!("AGENT_ID={}", agent_id);
+                // }
+                // println!("HAS_NOTICE={}", res.notice.is_some());
             }
             Some(("notice", _)) => {
-                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
-                let res = api.req(GetSession).await?;
-                match res.notice {
-                    Some(notice) => println!("{}\n{}", notice.url, notice.message),
-                    None => println!("NONE"),
-                }
+                let api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
+                println!("not implemented");
+
+                // let res = api.req(GetSession).await?;
+                // match res.notice {
+                //     Some(notice) => println!("{}\n{}", notice.url, notice.message),
+                //     None => println!("NONE"),
+                // }
             }
             _ => return Err(CliError::NotImplemented.into()),
         }
@@ -70,10 +73,7 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
             }
             Some(("url", m)) => {
                 let code = m.get_one::<String>("CLAIM_CODE").expect("required");
-                let name = m.get_one::<String>("name").expect("required");
-                let agent_type = m.get_one::<String>("type").expect("required");
-
-                println!("{}", claim_url(code, name, agent_type)?);
+                println!("{}", claim_url(code)?);
             }
             Some(("exchange", m)) => {
                 let claim_code = m.get_one::<String>("CLAIM_CODE").expect("required");
@@ -93,12 +93,12 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
         },
         Some(("tunnels", m)) => match m.subcommand() {
             Some(("prepare", m)) => {
-                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
+                let api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
 
                 let name = m.get_one::<String>("NAME").cloned();
                 let tunnel_type: Option<TunnelType> = m.get_one::<String>("TUNNEL_TYPE")
                     .and_then(|v| serde_json::from_str(&format!("{:?}", v)).ok());
-                let port_type = serde_json::from_str::<PortProto>(&format!("{:?}", m.get_one::<String>("PORT_TYPE").expect("required")))
+                let port_type = serde_json::from_str::<PortType>(&format!("{:?}", m.get_one::<String>("PORT_TYPE").expect("required")))
                     .map_err(|_| CliError::InvalidPortType)?;
                 let port_count = m.get_one::<String>("PORT_COUNT").expect("required")
                     .parse::<u16>().map_err(|_| CliError::InvalidPortCount)?;
@@ -113,24 +113,10 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                 println!("{}", tunnel.id);
             }
             Some(("list", _)) => {
-                let api = ApiClient::new(API_BASE.to_string(), Some(secret.get()?));
-                let tunnels = api.req(ListAccountTunnels).await?;
+                let api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
+                let tunnels = api.tunnels_list(ReqTunnelsList { tunnel_id: None, agent_id: None }).await?;
                 for tunnel in tunnels.tunnels {
-                    println!(
-                        "{} {} {} {} {}",
-                        tunnel.id,
-                        match tunnel.port_type {
-                            PortProto::Both => "both",
-                            PortProto::Tcp => "tcp",
-                            PortProto::Udp => "udp",
-                        },
-                        tunnel.to_port - tunnel.from_port,
-                        {
-                            let mut parts = tunnel.assigned_domain.split(":");
-                            parts.next().unwrap()
-                        },
-                        tunnel.from_port
-                    );
+                    println!("{}", serde_json::to_string(&tunnel).unwrap());
                 }
             }
             _ => return Err(CliError::NotImplemented.into())
@@ -139,8 +125,8 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
             let _ = tracing_subscriber::fmt().try_init();
 
             let secret_key = secret.get()?;
-            let api = ApiClient::new(API_BASE.to_string(), Some(secret_key.clone()));
-            let tunnels = api.req(ListAccountTunnels).await?;
+            let api = PlayitApi::create(API_BASE.to_string(), Some(secret_key.clone()));
+            let tunnels = api.tunnels_list(ReqTunnelsList { tunnel_id: None, agent_id: None }).await?;
             let mut tunnel_lookup = HashMap::new();
             let mut tunnel_found = HashSet::new();
 
@@ -172,7 +158,9 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
 
                 match tunnel_lookup.remove(&tunnel_id) {
                     Some(tunnel) => {
-                        mapping_overrides.push(MappingOverride::new(tunnel, local_addr));
+                        if let Some(over) = MappingOverride::new(tunnel, local_addr) {
+                            mapping_overrides.push(over);
+                        }
                     }
                     None => {
                         return if tunnel_found.contains(&tunnel_id) {
@@ -211,21 +199,19 @@ pub fn claim_generate() -> String {
     hex::encode(&buffer)
 }
 
-pub fn claim_url(code: &str, name: &str, agent_type: &str) -> Result<String, CliError> {
+pub fn claim_url(code: &str) -> Result<String, CliError> {
     if hex::decode(code).is_err() {
         return Err(CliError::InvalidClaimCode.into());
     }
 
     Ok(format!(
-        "https://playit.gg/claim/{}?type={}&name={}",
+        "https://new.playit.gg/claim/{}",
         code,
-        urlencoding::encode(agent_type),
-        urlencoding::encode(name)
     ))
 }
 
 pub async fn claim_exchange(claim_code: &str, wait_sec: u32) -> Result<Option<String>, CliError> {
-    let api = ApiClient::new(API_BASE.to_string(), None);
+    let api = PlayitApi::create(API_BASE.to_string(), None);
 
     let end_at = if wait_sec == 0 {
         u64::MAX
@@ -233,14 +219,38 @@ pub async fn claim_exchange(claim_code: &str, wait_sec: u32) -> Result<Option<St
         now_milli() + (wait_sec as u64) * 1000
     };
 
-    let secret_key = loop {
-        match api.try_exchange_claim_for_secret(claim_code).await {
-            Ok(Some(value)) => break value,
-            Err(ApiError::HttpError(401, msg)) if msg.eq("your access has not been confirmed yet") => {
-                eprintln!("waiting for user approval with claim code \"{}\"", claim_code);
+    loop {
+        let setup = api.claim_setup(ReqClaimSetup {
+            code: claim_code.to_string(),
+            agent_type: AgentType::SelfManaged,
+            version: format!("playit-cli {}", env!("CARGO_PKG_VERSION")),
+        }).await?;
+
+        match setup {
+            ClaimSetupResponse::WaitingForUserVisit => {
+                eprintln!("Waiting for user to visit {}", claim_url(claim_code)?);
             }
-            Ok(None) => {
-                eprintln!("code \"{}\" not claimed yet", claim_code);
+            ClaimSetupResponse::WaitingForUser => {
+                eprintln!("Waiting for user to approve");
+            }
+            ClaimSetupResponse::UserAccepted => {
+                eprintln!("User accepted, exchanging code for secret");
+                break;
+            }
+            ClaimSetupResponse::UserRejected => {
+                eprintln!("User rejected");
+                return Err(CliError::AgentClaimRejected);
+            }
+        }
+
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+
+    let secret_key = loop {
+        match api.claim_exchange(ReqClaimExchange { code: claim_code.to_string() }).await {
+            Ok(res) => break res.secret_key,
+            Err(ApiError::Fail(status)) => {
+                eprintln!("code \"{}\" not ready, {:?}", claim_code, status);
             }
             Err(error) => return Err(error.into()),
         };
@@ -256,12 +266,15 @@ pub async fn claim_exchange(claim_code: &str, wait_sec: u32) -> Result<Option<St
     Ok(Some(secret_key))
 }
 
-pub async fn tunnels_prepare(api: &ApiClient, name: Option<String>, tunnel_type: Option<TunnelType>, port_type: PortProto, port_count: u16, exact: bool, ignore_name: bool) -> Result<AccountTunnel, CliError> {
-    let tunnels = api.req(ListAccountTunnels).await?;
+pub async fn tunnels_prepare(api: &PlayitApi, name: Option<String>, tunnel_type: Option<TunnelType>, port_type: PortType, port_count: u16, exact: bool, ignore_name: bool) -> Result<AccountTunnel, CliError> {
+    let tunnels = api.tunnels_list(ReqTunnelsList { tunnel_id: None, agent_id: None }).await?;
 
     let mut options = Vec::new();
     for tunnel in tunnels.tunnels {
-        let tunnel_port_count = tunnel.to_port - tunnel.from_port;
+        let tunnel_port_count = match &tunnel.alloc {
+            AccountTunnelAllocation::Allocated(alloc) => alloc.port_end - alloc.port_start,
+            _ => continue,
+        };
 
         if exact {
             if (ignore_name || tunnel.name.eq(&name)) && tunnel.port_type == port_type && port_count == tunnel_port_count && tunnel.tunnel_type == tunnel_type {
@@ -270,7 +283,7 @@ pub async fn tunnels_prepare(api: &ApiClient, name: Option<String>, tunnel_type:
                 continue;
             }
         } else {
-            if (tunnel.port_type == PortProto::Both || tunnel.port_type == port_type) && port_count <= tunnel_port_count && tunnel.tunnel_type == tunnel_type {
+            if (tunnel.port_type == PortType::Both || tunnel.port_type == port_type) && port_count <= tunnel_port_count && tunnel.tunnel_type == tunnel_type {
                 options.push(tunnel);
             }
         }
@@ -294,29 +307,37 @@ pub async fn tunnels_prepare(api: &ApiClient, name: Option<String>, tunnel_type:
             points += 200;
         }
 
-        let tunnel_port_count = option.to_port - option.from_port;
-        if port_count == tunnel_port_count {
+        if port_count == option.port_count {
             points += 100;
         } else {
-            points += ((port_count as i32) - (tunnel_port_count as i32)) * 10;
+            points += ((port_count as i32) - (option.port_count as i32)) * 10;
         }
+
+        points += match option.alloc {
+            AccountTunnelAllocation::Pending => -10,
+            AccountTunnelAllocation::Disabled => -40,
+            AccountTunnelAllocation::Allocated(_) => 0,
+        };
+
+        points
     });
 
     if let Some(found_tunnel) = options.pop() {
         return Ok(found_tunnel);
     }
 
-    let created = api.req(CreateTunnel {
-        tunnel_type,
+    let created = api.tunnels_create(ReqTunnelsCreate {
         name,
+        tunnel_type,
         port_type,
         port_count,
-        local_ip: "127.0.0.1".parse().unwrap(),
-        local_port: None,
-        agent_id: tunnels.agent_id,
+        origin: TunnelOriginCreate::Managed(AssignedManagedCreate { agent_id: None }),
+        enabled: true,
+        alloc: None,
+        firewall_id: None,
     }).await?;
 
-    let tunnels = api.req(ListAccountTunnels).await?;
+    let tunnels = api.tunnels_list(ReqTunnelsList { tunnel_id: None, agent_id: None }).await?;
     for tunnel in tunnels.tunnels {
         if tunnel.id == created.id {
             return Ok(tunnel);
@@ -328,42 +349,49 @@ pub async fn tunnels_prepare(api: &ApiClient, name: Option<String>, tunnel_type:
 
 pub struct MappingOverride {
     tunnel: AccountTunnel,
-    match_ip: Ipv6Addr,
+    alloc: TunnelAllocated,
+    match_ip: MatchIp,
     local_addr: SocketAddr,
 }
 
 impl MappingOverride {
-    pub fn new(tunnel: AccountTunnel, local_addr: SocketAddr) -> Self {
-        let match_ip = LookupWithOverrides::match_ip(tunnel.ip_address);
+    pub fn new(tunnel: AccountTunnel, local_addr: SocketAddr) -> Option<Self> {
+        let alloc = match &tunnel.alloc {
+            AccountTunnelAllocation::Allocated(alloc) => alloc.clone(),
+            _ => return None,
+        };
 
-        MappingOverride {
+        let match_ip = MatchIp::new(alloc.tunnel_ip);
+        Some(MappingOverride {
             tunnel,
+            alloc,
             match_ip,
             local_addr,
-        }
+        })
     }
 }
 
 pub struct LookupWithOverrides(Vec<MappingOverride>);
 
 impl AddressLookup for LookupWithOverrides {
-    fn find_tunnel_port_range(&self, match_ip: Ipv6Addr, port: u16, proto: PortProto) -> Option<(u16, u16)> {
-        for over in &self.0 {
-            if over.match_ip == match_ip && over.tunnel.from_port <= port && port < over.tunnel.to_port && (over.tunnel.port_type == PortProto::Both || over.tunnel.port_type == proto) {
-                return Some((over.tunnel.from_port, over.tunnel.to_port));
-            }
-        }
-        Some((1, u16::MAX))
-    }
+    type Value = SocketAddr;
 
-    fn local_address(&self, match_addr: MatchAddress, proto: PortProto) -> Option<SocketAddr> {
+    fn lookup(&self, ip: IpAddr, port: u16, proto: PortType) -> Option<AddressValue<SocketAddr>> {
         for over in &self.0 {
-            if over.match_ip == match_addr.ip && over.tunnel.from_port == match_addr.from_port && (over.tunnel.port_type == PortProto::Both || over.tunnel.port_type == proto) {
-                return Some(over.local_addr);
+            if over.tunnel.port_type == proto && over.match_ip.matches(ip) {
+                return Some(AddressValue {
+                    value: over.local_addr,
+                    from_port: over.alloc.port_start,
+                    to_port: over.alloc.port_end,
+                });
             }
         }
 
-        Some(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, match_addr.from_port)))
+        Some(AddressValue {
+            value: "127.0.0.1".parse().unwrap(),
+            from_port: port,
+            to_port: port + 1,
+        })
     }
 }
 
@@ -410,16 +438,32 @@ pub enum CliError {
     InvalidPortType,
     InvalidPortCount,
     InvalidMappingOverride,
+    AgentClaimRejected,
     InvalidConfigFile,
     TunnelNotFound(Uuid),
     TunnelOverwrittenAlready(Uuid),
     ResourceNotFoundAfterCreate(Uuid),
-    ApiError(ApiError),
+    RequestError(HttpClientError),
+    ApiError(ApiResponseError),
+    ApiFail(String),
 }
 
-impl From<ApiError> for CliError {
-    fn from(e: ApiError) -> Self {
-        CliError::ApiError(e)
+impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for CliError {
+    fn from(e: ApiError<F, HttpClientError>) -> Self {
+        match e {
+            ApiError::ApiError(e) => CliError::ApiError(e),
+            ApiError::ClientError(e) => CliError::RequestError(e),
+            ApiError::Fail(fail) => CliError::ApiFail(serde_json::to_string(&fail).unwrap())
+        }
+    }
+}
+
+impl From<ApiErrorNoFail<HttpClientError>> for CliError {
+    fn from(e: ApiErrorNoFail<HttpClientError>) -> Self {
+        match e {
+            ApiErrorNoFail::ApiError(e) => CliError::ApiError(e),
+            ApiErrorNoFail::ClientError(e) => CliError::RequestError(e),
+        }
     }
 }
 
@@ -506,4 +550,79 @@ fn cli() -> Command {
                 .about("Launches the playit agent with a configuration file")
                 .arg(arg!(<CONFIG_FILE> "configuration file").required(true))
         )
+}
+
+pub struct MatchIp {
+    pub ip_number: u64,
+    pub region_id: u16,
+}
+
+impl MatchIp {
+    pub fn new(ip: Ipv6Addr) -> Self {
+        let parts = ip.octets();
+
+        /* 6 bytes /48 BGP Routing */
+        /* 2 bytes for region id */
+        let region_id = u16::from_be_bytes([parts[6], parts[7]]);
+
+        /* 8 bytes for ip number */
+        let ip_number = u64::from_be_bytes([
+            parts[8],
+            parts[9],
+            parts[10],
+            parts[11],
+            parts[12],
+            parts[13],
+            parts[14],
+            parts[15],
+        ]);
+
+        MatchIp {
+            ip_number,
+            region_id,
+        }
+    }
+
+    fn region_number_v4(ip: Ipv4Addr) -> u16 {
+        let octs = ip.octets();
+
+        /* 209.25.140.0/22 (1 to 4) */
+        if octs[0] == 209 && octs[1] == 25 && octs[2] >= 140 && octs[2] <= 143 {
+            1u16 + (octs[2] - 140) as u16
+        }
+        /* 23.133.216.0/24 (5) */
+        else if octs[0] == 23 && octs[1] == 133 && octs[2] == 216 {
+            5u16
+        }
+        /* global IP */
+        else {
+            0
+        }
+    }
+
+    pub fn matches(&self, ip: IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(ip) => {
+                let octs = ip.octets();
+
+                if octs[3] as u64 != self.ip_number {
+                    return false;
+                }
+
+                if self.region_id == 0 {
+                    return true;
+                }
+
+                self.region_id == Self::region_number_v4(ip)
+            }
+            IpAddr::V6(ip) => {
+                let other = MatchIp::new(ip);
+                if self.region_id == 0 {
+                    self.ip_number == other.ip_number
+                } else {
+                    self.ip_number == other.ip_number && self.region_id == other.region_id
+                }
+            }
+        }
+    }
 }
