@@ -17,6 +17,9 @@ tui = "0.19.0"
 crossterm = "0.25.0"
 webbrowser = { git = "https://github.com/playit-cloud/webbrowser-rs", rev = "820f661c2d0afe87ca838546beef4ff9b8b1a10b", features = ["suppress-logs"] }
 clap = { version = "3.2.16", features = ["derive"] }
+winapi = {version = "0.3", features = ["wincon", "winuser"]}
+tray-item = "0.7.1"
+anyhow = "1.0.70"
 
 [build-dependencies]
 embed-resource = "1.6"

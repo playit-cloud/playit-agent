@@ -20,10 +20,12 @@ use playit_agent_core::tunnel_api::TunnelApi;
 use crate::graphics::{ConnectedElement, Notice};
 use crate::logging::{LoggingBuffer, LogReader};
 use crate::start_settings::StartSettings;
+use crate::tray::setup_tray;
 
 mod graphics;
 mod logging;
 mod start_settings;
+mod tray;
 
 struct GraphicWrapper {
     inner: Option<Arc<RwLock<GraphicState>>>,
@@ -91,6 +93,11 @@ impl GraphicWrapper {
 async fn main() {
     let settings = StartSettings::parse();
     let mut background_task_handles = Vec::new();
+
+    
+    if cfg!(windows) {
+        let _task = tokio::spawn(setup_tray());
+    }
 
     let mut graphics = if settings.try_ui {
         match GraphicInterface::new() {
