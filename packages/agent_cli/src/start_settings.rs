@@ -31,6 +31,12 @@ impl StartSettings {
             }
         }
 
+        #[cfg(target_os = "windows")]
+        {
+            use crate::tray::setup_tray;
+            let _task = tokio::spawn(setup_tray());
+        }
+
         StartSettings {
             config_file_path: args.config_file.unwrap_or_else(||
                 if args.use_linux_path_defaults {
