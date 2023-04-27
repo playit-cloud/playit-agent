@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use playit_agent_core::api::api::{AccountTunnel, AccountTunnelAllocation, AgentType, ApiError, ApiErrorNoFail, ApiResponseError, AssignedManagedCreate, ClaimExchangeError, ClaimSetupResponse, PortType, ReqClaimExchange, ReqClaimSetup, ReqTunnelsCreate, ReqTunnelsList, TunnelAllocated, TunnelOriginCreate, TunnelType};
 use playit_agent_core::api::http_client::HttpClientError;
+use playit_agent_core::api::ip_resource::IpResource;
 use playit_agent_core::api::PlayitApi;
 use playit_agent_core::network::address_lookup::{AddressLookup, AddressValue};
 use playit_agent_core::tunnel_runner::TunnelRunner;
@@ -350,7 +351,7 @@ pub async fn tunnels_prepare(api: &PlayitApi, name: Option<String>, tunnel_type:
 pub struct MappingOverride {
     tunnel: AccountTunnel,
     alloc: TunnelAllocated,
-    match_ip: MatchIp,
+    ip_resource: IpResource,
     local_addr: SocketAddr,
 }
 
@@ -361,11 +362,11 @@ impl MappingOverride {
             _ => return None,
         };
 
-        let match_ip = MatchIp::new(alloc.tunnel_ip);
+        let ip_resource = IpResource::from_ip(alloc.tunnel_ip);
         Some(MappingOverride {
             tunnel,
             alloc,
-            match_ip,
+            ip_resource,
             local_addr,
         })
     }
@@ -377,8 +378,10 @@ impl AddressLookup for LookupWithOverrides {
     type Value = SocketAddr;
 
     fn lookup(&self, ip: IpAddr, port: u16, proto: PortType) -> Option<AddressValue<SocketAddr>> {
+        let resource = IpResource::from_ip(ip);
+
         for over in &self.0 {
-            if over.tunnel.port_type == proto && over.match_ip.matches(ip) {
+            if over.tunnel.port_type == proto && over.ip_resource == resource {
                 return Some(AddressValue {
                     value: over.local_addr,
                     from_port: over.alloc.port_start,

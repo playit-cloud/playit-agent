@@ -3,6 +3,7 @@ use crate::api::http_client::HttpClient;
 
 pub mod api;
 pub mod http_client;
+pub mod ip_resource;
 
 pub type PlayitApi = PlayitApiClient<HttpClient>;
 

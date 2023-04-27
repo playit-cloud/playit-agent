@@ -1,5 +1,3 @@
-use std::net::Ipv6Addr;
-
 impl<C: PlayitHttpClient> PlayitApiClient<C> {
     pub fn new(client: C) -> Self {
         PlayitApiClient { client }
@@ -341,6 +339,8 @@ pub struct AccountTunnel {
     pub origin: TunnelOrigin,
     pub domain: Option<TunnelDomain>,
     pub firewall_id: Option<uuid::Uuid>,
+    pub ratelimit: Ratelimit,
+    pub active: bool,
 }
 
 
@@ -360,7 +360,7 @@ pub struct TunnelAllocated {
     pub id: uuid::Uuid,
     pub ip_hostname: String,
     pub assigned_domain: String,
-    pub tunnel_ip: Ipv6Addr,
+    pub tunnel_ip: std::net::IpAddr,
     pub port_start: u16,
     pub port_end: u16,
     pub assignment: TunnelAssignment,
@@ -396,6 +396,8 @@ pub enum IpType {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub enum AllocationRegion {
+    #[serde(rename = "smart-global")]
+    SmartGlobal,
     #[serde(rename = "global")]
     Global,
     #[serde(rename = "north-america")]
@@ -406,6 +408,8 @@ pub enum AllocationRegion {
     Asia,
     #[serde(rename = "india")]
     India,
+    #[serde(rename = "south-america")]
+    SouthAmerica,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -456,6 +460,12 @@ pub enum TunnelDomainSource {
     FromTunnel,
     #[serde(rename = "from-agent-ip")]
     FromAgentIp,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct Ratelimit {
+    pub bytes_per_second: Option<u32>,
+    pub packets_per_second: Option<u32>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -892,10 +902,15 @@ pub struct ReqProtoRegister {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct PlayitAgentVersion {
-    pub platform: Platform,
-    pub version: String,
+    pub version: AgentVersion,
     pub official: bool,
     pub details_website: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AgentVersion {
+    pub platform: Platform,
+    pub version: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]

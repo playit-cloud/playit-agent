@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::Level;
 
 use playit_agent_core::tunnel::setup::SetupFindSuitableChannel;
@@ -28,7 +28,7 @@ async fn main() {
     let mut last_keep_alive = 0;
     let mut last_ping = 0;
 
-    let udp_tunnel = UdpTunnel::default();
+    let udp_tunnel = UdpTunnel::new().await.unwrap();
 
     {
         let udp_tunnel = udp_tunnel.clone();
@@ -41,8 +41,8 @@ async fn main() {
 
                 match tokio::time::timeout(Duration::from_secs(2), udp_tunnel.receive_from(&mut buffer)).await {
                     Err(_) => {
-                        if now_milli() - last_confirm > 15_000 {
-                            udp_tunnel.resend_setup().await.take_error(|error| {
+                        if udp_tunnel.requires_resend() {
+                            udp_tunnel.resend_token().await.take_error(|error| {
                                 tracing::error!(?error, "failed to resend setup");
                             });
                         }
@@ -73,7 +73,7 @@ async fn main() {
                 tracing::info!(?new_client, "got new client");
 
                 tokio::spawn(async move {
-                    let mut tcp = TcpTunnel::new(new_client.claim_instructions.clone()).connect().await
+                    let mut tcp = TcpTunnel::new(new_client.claim_instructions.clone(), new_client.peer_addr).connect().await
                         .unwrap();
 
                     let mut buffer = vec![0u8; 2048];

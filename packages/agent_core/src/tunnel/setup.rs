@@ -12,7 +12,7 @@ use playit_agent_proto::control_messages::{AgentRegister, AgentRegistered, Contr
 use playit_agent_proto::encoding::MessageEncoding;
 use playit_agent_proto::raw_slice::RawSlice;
 use playit_agent_proto::rpc::ControlRpcMessage;
-use crate::api::api::{ApiError, ApiErrorNoFail, ApiResponseError, Platform, PlayitAgentVersion, ReqProtoRegister};
+use crate::api::api::{AgentVersion, ApiError, ApiErrorNoFail, ApiResponseError, Platform, PlayitAgentVersion, ReqProtoRegister};
 use crate::api::http_client::HttpClientError;
 use crate::api::PlayitApi;
 
@@ -134,8 +134,10 @@ impl ConnectedControl {
 
         let res = api.proto_register(ReqProtoRegister {
             agent_version: PlayitAgentVersion {
-                platform: Platform::Linux,
-                version: env!("CARGO_PKG_VERSION").to_string(),
+                version: AgentVersion {
+                    platform: Platform::Linux,
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                },
                 official: false,
                 details_website: None,
             },
