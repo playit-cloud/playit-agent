@@ -1,5 +1,5 @@
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
-use std::ops::Add;
+use std::net::{SocketAddr};
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -7,7 +7,7 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tracing::Instrument;
 
-use playit_agent_proto::PortProto;
+
 use crate::api::api::PortType;
 
 use crate::network::address_lookup::AddressLookup;
@@ -49,9 +49,9 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<Socket
         self.keep_running.clone()
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(self) {
         let mut tunnel = self.tunnel;
-        let mut udp = tunnel.udp_tunnel();
+        let udp = tunnel.udp_tunnel();
 
         let tunnel_run = self.keep_running.clone();
         let tunnel_task = tokio::spawn(async move {
@@ -102,7 +102,7 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<Socket
             }
         });
 
-        let mut udp_clients = self.udp_clients;
+        let udp_clients = self.udp_clients;
         let udp_run = self.keep_running.clone();
 
         let udp_task = tokio::spawn(async move {

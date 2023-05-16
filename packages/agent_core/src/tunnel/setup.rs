@@ -1,14 +1,14 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::future::IntoFuture;
+
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
-use playit_agent_proto::AgentSessionId;
+
 use playit_agent_proto::control_feed::ControlFeed;
-use playit_agent_proto::control_messages::{AgentRegister, AgentRegistered, ControlRequest, ControlResponse, Ping, Pong};
+use playit_agent_proto::control_messages::{ControlRequest, ControlResponse, Ping, Pong};
 use playit_agent_proto::encoding::MessageEncoding;
 use playit_agent_proto::raw_slice::RawSlice;
 use playit_agent_proto::rpc::ControlRpcMessage;
@@ -35,7 +35,7 @@ impl SetupFindSuitableChannel {
         for addr in self.options {
             tracing::info!(?addr, "trying to establish tunnel connection");
 
-            let mut socket = match UdpSocket::bind(match addr {
+            let socket = match UdpSocket::bind(match addr {
                 SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
                 SocketAddr::V6(_) => SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0)),
             }).await {

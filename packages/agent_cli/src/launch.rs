@@ -1,19 +1,19 @@
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::process::Stdio;
+
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{Stdout, stdout};
+
 use uuid::Uuid;
-use playit_agent_core::api::api::{AccountTunnelAllocation, PlayitApiClient, PortType, TunnelType};
-use playit_agent_core::api::http_client::HttpClient;
+use playit_agent_core::api::api::{AccountTunnelAllocation, PortType, TunnelType};
+
 use playit_agent_core::api::PlayitApi;
 
 use playit_agent_core::tunnel_runner::TunnelRunner;
-use playit_agent_proto::PortProto;
+
 
 use crate::{API_BASE, claim_exchange, claim_generate, claim_url, CliError, LookupWithOverrides, MappingOverride, tunnels_prepare};
 

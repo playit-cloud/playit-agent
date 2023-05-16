@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use hyper::{Body, header, Method, Request, Response};
+use hyper::{Body, header, Method, Request};
 use hyper::body::Buf;
 use hyper::client::HttpConnector;
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};

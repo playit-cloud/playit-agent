@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
-use std::process::Termination;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,14 +12,14 @@ use rand::Rng;
 use tokio::io::AsyncBufReadExt;
 use uuid::Uuid;
 
-use playit_agent_core::api::api::{AccountTunnel, AccountTunnelAllocation, AgentType, ApiError, ApiErrorNoFail, ApiResponseError, AssignedManagedCreate, ClaimExchangeError, ClaimSetupResponse, PortType, ReqClaimExchange, ReqClaimSetup, ReqTunnelsCreate, ReqTunnelsList, TunnelAllocated, TunnelOriginCreate, TunnelType};
+use playit_agent_core::api::api::{AccountTunnel, AccountTunnelAllocation, AgentType, ApiError, ApiErrorNoFail, ApiResponseError, AssignedManagedCreate, ClaimSetupResponse, PortType, ReqClaimExchange, ReqClaimSetup, ReqTunnelsCreate, ReqTunnelsList, TunnelAllocated, TunnelOriginCreate, TunnelType};
 use playit_agent_core::api::http_client::HttpClientError;
 use playit_agent_core::api::ip_resource::IpResource;
 use playit_agent_core::api::PlayitApi;
 use playit_agent_core::network::address_lookup::{AddressLookup, AddressValue};
 use playit_agent_core::tunnel_runner::TunnelRunner;
 use playit_agent_core::utils::now_milli;
-use playit_agent_proto::PortProto;
+
 
 use crate::launch::{launch, LaunchConfig};
 use crate::util::load_config;
@@ -44,7 +44,7 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                 println!("https://playit.gg/login/guest-account/{}", session.session_key)
             }
             Some(("status", _)) => {
-                let api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
+                let _api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
                 println!("not implemented");
 
                 // let res = api.req(GetSession).await?;
@@ -57,7 +57,7 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                 // println!("HAS_NOTICE={}", res.notice.is_some());
             }
             Some(("notice", _)) => {
-                let api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
+                let _api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
                 println!("not implemented");
 
                 // let res = api.req(GetSession).await?;

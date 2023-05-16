@@ -1,12 +1,12 @@
 use std::collections::{hash_map::Entry, HashMap};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use byteorder::{BigEndian, ByteOrder};
-use hyper::Client;
-use playit_agent_proto::PortProto;
+
+
+
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use crate::api::api::PortType;

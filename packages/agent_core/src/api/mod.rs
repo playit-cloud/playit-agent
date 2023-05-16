@@ -15,7 +15,7 @@ impl PlayitApi {
 
 #[cfg(test)]
 mod test {
-    use crate::api::api::{AgentType, ReqClaimDetails, ReqClaimSetup, ReqTunnelsList};
+    use crate::api::api::{AgentType, ReqClaimSetup};
     use crate::api::PlayitApi;
 
     #[tokio::test]

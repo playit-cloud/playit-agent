@@ -25,7 +25,7 @@ impl SimpleTunnel {
 
         let addresses = address_lookup("control.playit.gg", 5525).await;
         let setup = SetupFindSuitableChannel::new(addresses).setup().await?;
-        let mut control_channel = setup.authenticate(secret_key.clone()).await?;
+        let control_channel = setup.authenticate(secret_key.clone()).await?;
 
         Ok(SimpleTunnel {
             secret_key,

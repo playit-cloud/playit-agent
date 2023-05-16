@@ -3,8 +3,6 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 
 use crate::{AgentSessionId, PortRange};
 use crate::encoding::MessageEncoding;
@@ -523,10 +521,10 @@ mod test {
             7 => ControlResponse::UdpChannelDetails(UdpChannelDetails {
                 tunnel_addr: rng_socket_address(rng),
                 token: {
-                    let mut len = ((rng.next_u64() % 30) + 32) as usize;
+                    let len = ((rng.next_u64() % 30) + 32) as usize;
                     let mut buffer = vec![0u8; len];
                     rng.fill_bytes(&mut buffer);
-                    buffer
+                    Arc::new(buffer)
                 },
             }),
             _ => unreachable!()

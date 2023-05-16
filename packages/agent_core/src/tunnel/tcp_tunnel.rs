@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use playit_agent_proto::control_feed::{ClaimInstructions, NewClient};
+use playit_agent_proto::control_feed::{ClaimInstructions};
 
 use crate::network::lan_address::LanAddress;
 
