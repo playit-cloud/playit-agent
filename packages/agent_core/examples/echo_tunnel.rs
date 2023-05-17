@@ -13,8 +13,6 @@ use playit_agent_core::utils::now_milli;
 use playit_agent_proto::control_feed::ControlFeed;
 use playit_agent_proto::control_messages::{ControlResponse};
 
-
-
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().with_ansi(false).with_max_level(Level::INFO).init();

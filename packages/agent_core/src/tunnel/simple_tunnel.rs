@@ -11,7 +11,6 @@ use crate::utils::name_lookup::address_lookup;
 use crate::utils::now_milli;
 
 pub struct SimpleTunnel {
-    secret_key: String,
     control_channel: AuthenticatedControl,
     udp_tunnel: UdpTunnel,
     last_keep_alive: u64,
@@ -28,7 +27,6 @@ impl SimpleTunnel {
         let control_channel = setup.authenticate(secret_key.clone()).await?;
 
         Ok(SimpleTunnel {
-            secret_key,
             control_channel,
             udp_tunnel,
             last_keep_alive: 0,

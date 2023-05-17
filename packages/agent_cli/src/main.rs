@@ -7,9 +7,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use autorun::autorun;
 use clap::{arg, ArgMatches, Command};
+use playit_agent_core::tunnel::setup::SetupError;
+use playit_secret::PlayitSecret;
 use rand::Rng;
-use tokio::io::AsyncBufReadExt;
 use uuid::Uuid;
 
 use playit_agent_core::api::api::{AccountTunnel, AccountTunnelAllocation, AgentType, ApiError, ApiErrorNoFail, ApiResponseError, AssignedManagedCreate, ClaimSetupResponse, PortType, ReqClaimExchange, ReqClaimSetup, ReqTunnelsCreate, ReqTunnelsList, TunnelAllocated, TunnelOriginCreate, TunnelType};
@@ -21,80 +23,87 @@ use playit_agent_core::tunnel_runner::TunnelRunner;
 use playit_agent_core::utils::now_milli;
 
 
-use crate::launch::{launch, LaunchConfig};
-use crate::util::load_config;
+// use crate::launch::{launch, LaunchConfig};
+use crate::ui::UI;
 
-pub const API_BASE: &'static str = "https://api.playit.gg";
+// pub const API_BASE: &'static str = "https://api.playit.gg";
+pub const API_BASE: &'static str = "http://localhost:8080";
 
-pub mod launch;
+// pub mod launch;
 pub mod util;
+pub mod autorun;
+pub mod playit_secret;
+pub mod playit_agent;
+pub mod match_ip;
+pub mod ui;
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
     let matches = cli().get_matches();
+    let secret = PlayitSecret::from_args(&matches).await;
 
-    let secret = Secrets::load(&matches).await;
+    let mut ui = ui::UI {
+        auto_answer: None,
+    };
 
     match matches.subcommand() {
+        None => {
+            ui.write_screen("auto run")?;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            autorun(&mut ui, secret).await?;
+        }
         Some(("version", _)) => println!("{}", env!("CARGO_PKG_VERSION")),
         Some(("account", m)) => match m.subcommand() {
             Some(("login-url", _)) => {
-                let api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
+                let api = secret.create_api().await?;
                 let session = api.login_create_guest().await?;
                 println!("https://playit.gg/login/guest-account/{}", session.session_key)
             }
-            Some(("status", _)) => {
-                let _api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
-                println!("not implemented");
+            // Some(("status", _)) => {
+            //     let _api = secret.create_api().await?;
+            //     println!("not implemented");
 
-                // let res = api.req(GetSession).await?;
-                // println!("ACCOUNT_ID={}", res.account_id);
-                // println!("IS_GUEST={}", res.is_guest);
-                // println!("EMAIL_VERIFIED={}", res.email_verified);
-                // if let Some(agent_id) = res.agent_id {
-                //     println!("AGENT_ID={}", agent_id);
-                // }
-                // println!("HAS_NOTICE={}", res.notice.is_some());
-            }
-            Some(("notice", _)) => {
-                let _api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
-                println!("not implemented");
+            //     // let res = api.req(GetSession).await?;
+            //     // println!("ACCOUNT_ID={}", res.account_id);
+            //     // println!("IS_GUEST={}", res.is_guest);
+            //     // println!("EMAIL_VERIFIED={}", res.email_verified);
+            //     // if let Some(agent_id) = res.agent_id {
+            //     //     println!("AGENT_ID={}", agent_id);
+            //     // }
+            //     // println!("HAS_NOTICE={}", res.notice.is_some());
+            // }
+            // Some(("notice", _)) => {
+            //     let _api = secret.create_api().await?;
+            //     println!("not implemented");
 
-                // let res = api.req(GetSession).await?;
-                // match res.notice {
-                //     Some(notice) => println!("{}\n{}", notice.url, notice.message),
-                //     None => println!("NONE"),
-                // }
-            }
+            //     // let res = api.req(GetSession).await?;
+            //     // match res.notice {
+            //     //     Some(notice) => println!("{}\n{}", notice.url, notice.message),
+            //     //     None => println!("NONE"),
+            //     // }
+            // }
             _ => return Err(CliError::NotImplemented.into()),
         }
         Some(("claim", m)) => match m.subcommand() {
             Some(("generate", _)) => {
-                println!("{}", claim_generate());
+                ui.write_screen(claim_generate())?;
             }
             Some(("url", m)) => {
                 let code = m.get_one::<String>("CLAIM_CODE").expect("required");
-                println!("{}", claim_url(code)?);
+                ui.write_screen(format!("{}", claim_url(code)?))?;
             }
             Some(("exchange", m)) => {
                 let claim_code = m.get_one::<String>("CLAIM_CODE").expect("required");
                 let wait: u32 = m.get_one::<String>("wait").expect("required").parse().expect("invalid wait value");
 
-                let secret_key = match claim_exchange(claim_code, wait).await? {
-                    Some(v) => v,
-                    None => {
-                        eprintln!("reached time limit");
-                        return Ok(std::process::ExitCode::FAILURE);
-                    }
-                };
-
-                println!("{}", secret_key);
+                let secret_key = claim_exchange(&mut ui, claim_code, AgentType::SelfManaged, wait).await?;
+                ui.write_screen(secret_key)?;
             }
             _ => return Err(CliError::NotImplemented.into()),
         },
         Some(("tunnels", m)) => match m.subcommand() {
             Some(("prepare", m)) => {
-                let api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
+                let api = secret.create_api().await?;
 
                 let name = m.get_one::<String>("NAME").cloned();
                 let tunnel_type: Option<TunnelType> = m.get_one::<String>("TUNNEL_TYPE")
@@ -114,7 +123,7 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
                 println!("{}", tunnel.id);
             }
             Some(("list", _)) => {
-                let api = PlayitApi::create(API_BASE.to_string(), Some(secret.get()?));
+                let api = secret.create_api().await?;
                 let tunnels = api.tunnels_list(ReqTunnelsList { tunnel_id: None, agent_id: None }).await?;
                 for tunnel in tunnels.tunnels {
                     println!("{}", serde_json::to_string(&tunnel).unwrap());
@@ -125,7 +134,7 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
         Some(("run", m)) => {
             let _ = tracing_subscriber::fmt().try_init();
 
-            let secret_key = secret.get()?;
+            let secret_key = secret.get().await?;
             let api = PlayitApi::create(API_BASE.to_string(), Some(secret_key.clone()));
             let tunnels = api.tunnels_list(ReqTunnelsList { tunnel_id: None, agent_id: None }).await?;
             let mut tunnel_lookup = HashMap::new();
@@ -176,18 +185,18 @@ async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
             let tunnel = TunnelRunner::new(secret_key, Arc::new(LookupWithOverrides(mapping_overrides))).await?;
             tunnel.run().await;
         }
-        Some(("launch", m)) => {
-            let config_file = m.get_one::<String>("CONFIG_FILE").unwrap();
-            let config = match load_config::<LaunchConfig>(&config_file).await {
-                Some(v) => v,
-                None => {
-                    return Err(CliError::InvalidConfigFile.into());
-                }
-            };
+        // Some(("launch", m)) => {
+        //     let config_file = m.get_one::<String>("CONFIG_FILE").unwrap();
+        //     let config = match load_config::<LaunchConfig>(&config_file).await {
+        //         Some(v) => v,
+        //         None => {
+        //             return Err(CliError::InvalidConfigFile.into());
+        //         }
+        //     };
 
-            let _ = tracing_subscriber::fmt().try_init();
-            launch(config).await?;
-        }
+        //     let _ = tracing_subscriber::fmt().try_init();
+        //     launch(config).await?;
+        // }
         _ => return Err(CliError::NotImplemented.into()),
     }
 
@@ -206,12 +215,12 @@ pub fn claim_url(code: &str) -> Result<String, CliError> {
     }
 
     Ok(format!(
-        "https://new.playit.gg/claim/{}",
+        "https://playit.gg/claim/{}",
         code,
     ))
 }
 
-pub async fn claim_exchange(claim_code: &str, wait_sec: u32) -> Result<Option<String>, CliError> {
+pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType, wait_sec: u32) -> Result<String, CliError> {
     let api = PlayitApi::create(API_BASE.to_string(), None);
 
     let end_at = if wait_sec == 0 {
@@ -223,23 +232,24 @@ pub async fn claim_exchange(claim_code: &str, wait_sec: u32) -> Result<Option<St
     loop {
         let setup = api.claim_setup(ReqClaimSetup {
             code: claim_code.to_string(),
-            agent_type: AgentType::SelfManaged,
+            agent_type,
             version: format!("playit-cli {}", env!("CARGO_PKG_VERSION")),
         }).await?;
 
         match setup {
             ClaimSetupResponse::WaitingForUserVisit => {
-                eprintln!("Waiting for user to visit {}", claim_url(claim_code)?);
+                let msg = format!("Waiting for user to visit {}", claim_url(claim_code)?);
+                ui.write_screen(msg)?;
             }
             ClaimSetupResponse::WaitingForUser => {
-                eprintln!("Waiting for user to approve");
+                ui.write_screen("Waiting for user to approve")?;
             }
             ClaimSetupResponse::UserAccepted => {
-                eprintln!("User accepted, exchanging code for secret");
+                ui.write_screen("User accepted, exchanging code for secret")?;
                 break;
             }
             ClaimSetupResponse::UserRejected => {
-                eprintln!("User rejected");
+                ui.write_screen("User rejected")?;
                 return Err(CliError::AgentClaimRejected);
             }
         }
@@ -251,20 +261,21 @@ pub async fn claim_exchange(claim_code: &str, wait_sec: u32) -> Result<Option<St
         match api.claim_exchange(ReqClaimExchange { code: claim_code.to_string() }).await {
             Ok(res) => break res.secret_key,
             Err(ApiError::Fail(status)) => {
-                eprintln!("code \"{}\" not ready, {:?}", claim_code, status);
+                let msg = format!("code \"{}\" not ready, {:?}", claim_code, status);
+                ui.write_screen(msg)?;
             }
             Err(error) => return Err(error.into()),
         };
 
         if now_milli() > end_at {
-            eprintln!("reached time limit");
-            return Ok(None);
+            ui.write_screen("reached time limit")?;
+            return Err(CliError::TimedOut);
         }
 
         tokio::time::sleep(Duration::from_secs(2)).await;
     };
 
-    Ok(Some(secret_key))
+    Ok(secret_key)
 }
 
 pub async fn tunnels_prepare(api: &PlayitApi, name: Option<String>, tunnel_type: Option<TunnelType>, port_type: PortType, port_count: u16, exact: bool, ignore_name: bool) -> Result<AccountTunnel, CliError> {
@@ -398,57 +409,31 @@ impl AddressLookup for LookupWithOverrides {
     }
 }
 
-pub struct Secrets {
-    secret: Option<String>,
-    path: Option<String>,
-}
-
-impl Secrets {
-    pub fn get(&self) -> Result<String, CliError> {
-        match &self.secret {
-            Some(v) => Ok(v.clone()),
-            None => Err(CliError::MissingSecret),
-        }
-    }
-
-    pub async fn load(matches: &ArgMatches) -> Self {
-        let (secret, path) = match matches.get_one::<String>("secret") {
-            Some(v) => (Some(v.clone()), matches.get_one::<String>("secret_path").cloned()),
-            None => match matches.get_one::<String>("secret_path") {
-                Some(path) => {
-                    if let Ok(secret) = tokio::fs::read_to_string(path).await {
-                        (Some(secret), Some(path.clone()))
-                    } else {
-                        (None, Some(path.clone()))
-                    }
-                }
-                None => (None, None),
-            }
-        };
-
-        Secrets {
-            secret,
-            path,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub enum CliError {
     InvalidClaimCode,
     NotImplemented,
     MissingSecret,
+    MalformedSecret,
+    InvalidSecret,
+    RenderError(std::io::Error),
+    SecretFileLoadError,
+    SecretFileWriteError(std::io::Error),
+    SecretFilePathMissing,
     InvalidPortType,
     InvalidPortCount,
     InvalidMappingOverride,
     AgentClaimRejected,
     InvalidConfigFile,
     TunnelNotFound(Uuid),
+    TimedOut,
+    AnswerNotProvided,
     TunnelOverwrittenAlready(Uuid),
     ResourceNotFoundAfterCreate(Uuid),
     RequestError(HttpClientError),
     ApiError(ApiResponseError),
     ApiFail(String),
+    TunnelSetupError(SetupError),
 }
 
 impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for CliError {
@@ -482,7 +467,7 @@ fn cli() -> Command {
     Command::new("playit-cli")
         .arg(arg!(--secret <SECRET> "secret code for the agent").required(false))
         .arg(arg!(--secret_path <PATH> "path to file containing secret").required(false))
-        .subcommand_required(true)
+        .subcommand_required(false)
         .subcommand(Command::new("version"))
         .subcommand(
             Command::new("account")
@@ -553,79 +538,4 @@ fn cli() -> Command {
                 .about("Launches the playit agent with a configuration file")
                 .arg(arg!(<CONFIG_FILE> "configuration file").required(true))
         )
-}
-
-pub struct MatchIp {
-    pub ip_number: u64,
-    pub region_id: u16,
-}
-
-impl MatchIp {
-    pub fn new(ip: Ipv6Addr) -> Self {
-        let parts = ip.octets();
-
-        /* 6 bytes /48 BGP Routing */
-        /* 2 bytes for region id */
-        let region_id = u16::from_be_bytes([parts[6], parts[7]]);
-
-        /* 8 bytes for ip number */
-        let ip_number = u64::from_be_bytes([
-            parts[8],
-            parts[9],
-            parts[10],
-            parts[11],
-            parts[12],
-            parts[13],
-            parts[14],
-            parts[15],
-        ]);
-
-        MatchIp {
-            ip_number,
-            region_id,
-        }
-    }
-
-    fn region_number_v4(ip: Ipv4Addr) -> u16 {
-        let octs = ip.octets();
-
-        /* 209.25.140.0/22 (1 to 4) */
-        if octs[0] == 209 && octs[1] == 25 && octs[2] >= 140 && octs[2] <= 143 {
-            1u16 + (octs[2] - 140) as u16
-        }
-        /* 23.133.216.0/24 (5) */
-        else if octs[0] == 23 && octs[1] == 133 && octs[2] == 216 {
-            5u16
-        }
-        /* global IP */
-        else {
-            0
-        }
-    }
-
-    pub fn matches(&self, ip: IpAddr) -> bool {
-        match ip {
-            IpAddr::V4(ip) => {
-                let octs = ip.octets();
-
-                if octs[3] as u64 != self.ip_number {
-                    return false;
-                }
-
-                if self.region_id == 0 {
-                    return true;
-                }
-
-                self.region_id == Self::region_number_v4(ip)
-            }
-            IpAddr::V6(ip) => {
-                let other = MatchIp::new(ip);
-                if self.region_id == 0 {
-                    self.ip_number == other.ip_number
-                } else {
-                    self.ip_number == other.ip_number && self.region_id == other.region_id
-                }
-            }
-        }
-    }
 }

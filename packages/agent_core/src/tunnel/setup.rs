@@ -120,6 +120,26 @@ impl SetupFindSuitableChannel {
     }
 }
 
+fn get_platform() -> Platform {
+    #[cfg(target_os = "window")]
+    return Platform::Windows;
+
+    #[cfg(target_os = "linux")]
+    return Platform::Linux;
+
+    #[cfg(target_os = "macos")]
+    return Platform::Macos;
+
+    #[cfg(target_os = "android")]
+    return Platform::Android;
+
+    #[cfg(target_os = "ios")]
+    return Platform::Ios;
+
+    #[allow(unreachable_code)]
+    Platform::Unknown
+}
+
 #[derive(Debug)]
 pub struct ConnectedControl {
     pub(crate) control_addr: SocketAddr,
@@ -130,15 +150,14 @@ pub struct ConnectedControl {
 impl ConnectedControl {
     pub async fn authenticate(self, secret_key: String) -> Result<AuthenticatedControl, SetupError> {
         let api = PlayitApi::create("https://api.playit.gg".to_string(), Some(secret_key.clone()));
-        // let api = PlayitApi::create("http://localhost:8080".to_string(), Some(secret_key.clone()));
 
         let res = api.proto_register(ReqProtoRegister {
             agent_version: PlayitAgentVersion {
                 version: AgentVersion {
-                    platform: Platform::Linux,
+                    platform: get_platform(),
                     version: env!("CARGO_PKG_VERSION").to_string(),
                 },
-                official: false,
+                official: true,
                 details_website: None,
             },
             client_addr: self.pong.client_addr,

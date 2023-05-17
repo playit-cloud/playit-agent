@@ -156,25 +156,7 @@ impl LaunchConfig {
     pub async fn setup_new(&self, secret_path: &str) -> Result<String, CliError> {
         let claim_code = claim_generate();
 
-        let mut tcp_ports = 0;
-        let mut udp_ports = 0;
-
-        for tunnel in &self.tunnels {
-            match tunnel.proto {
-                PortType::Both => {
-                    tcp_ports += tunnel.port_count;
-                    udp_ports += tunnel.port_count;
-                }
-                PortType::Tcp => {
-                    tcp_ports += tunnel.port_count;
-                }
-                PortType::Udp => {
-                    udp_ports += tunnel.port_count;
-                }
-            }
-        }
-
-        let url = claim_url(&claim_code)?;
+        let url: String = claim_url(&claim_code)?;
 
         let secret = loop {
             println!("Visit URL to setup:\n{}", url);

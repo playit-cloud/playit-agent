@@ -9,7 +9,7 @@ pub type PlayitApi = PlayitApiClient<HttpClient>;
 
 impl PlayitApi {
     pub fn create(api_base: String, secret: Option<String>) -> Self {
-        PlayitApiClient::new(HttpClient::new(api_base, secret.map(|v| format!("Agent-Key {}", v))))
+        PlayitApiClient::new(HttpClient::new(api_base, secret.map(|v| format!("Agent-Key {}", v.trim()))))
     }
 }
 
