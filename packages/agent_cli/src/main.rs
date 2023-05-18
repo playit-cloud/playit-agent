@@ -26,8 +26,7 @@ use playit_agent_core::utils::now_milli;
 // use crate::launch::{launch, LaunchConfig};
 use crate::ui::UI;
 
-// pub const API_BASE: &'static str = "https://api.playit.gg";
-pub const API_BASE: &'static str = "http://localhost:8080";
+pub const API_BASE: &'static str = "https://api.playit.gg";
 
 // pub mod launch;
 pub mod util;

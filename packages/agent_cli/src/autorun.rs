@@ -68,7 +68,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
     ui.write_screen("tunnel running")?;
 
     loop {
-        tokio::time::sleep(Duration::from_secs(10)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
 
         let account_tunnels_res = api
             .tunnels_list(ReqTunnelsList {
@@ -87,7 +87,8 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         };
 
         ui.write_screen(format!(
-            "{} tunnel running, {} tunnels regisgered",
+            "{}: {} tunnel running, {} tunnels regisgered",
+            env!("CARGO_PKG_VERSION"),
             now_milli(),
             account_tunnels.tunnels.len()
         ))?;
