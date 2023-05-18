@@ -1,19 +1,18 @@
 use std::net::SocketAddr;
 
-use tokio::net::UdpSocket;
+
 
 use playit_agent_proto::control_feed::ControlFeed;
 use playit_agent_proto::control_messages::{AgentRegistered, ControlRequest, ControlResponse, Ping, Pong};
 use playit_agent_proto::encoding::MessageEncoding;
 use playit_agent_proto::rpc::ControlRpcMessage;
+use crate::api::PlayitApi;
 
-use crate::api::client::ApiClient;
 use crate::tunnel::setup::{ConnectedControl, SetupError};
 
-#[derive(Debug)]
 pub struct AuthenticatedControl {
     pub(crate) secret_key: String,
-    pub(crate) api_client: ApiClient,
+    pub(crate) api_client: PlayitApi,
     pub(crate) conn: ConnectedControl,
     pub(crate) last_pong: Pong,
     pub(crate) registered: AgentRegistered,

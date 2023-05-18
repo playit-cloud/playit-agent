@@ -76,8 +76,6 @@ fn map_to_local_ip4(ip: IpAddr) -> Ipv4Addr {
         IpAddr::V6(ip) => {
             let bytes = ip.octets();
 
-            
-
             shuffle(BigEndian::read_u32(&bytes[..4]))
                 ^ shuffle(BigEndian::read_u32(&bytes[4..8]))
                 ^ shuffle(BigEndian::read_u32(&bytes[4..8]))

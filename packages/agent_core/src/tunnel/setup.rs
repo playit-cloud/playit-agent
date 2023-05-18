@@ -1,19 +1,20 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::future::IntoFuture;
+
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
 
-use playit_agent_proto::AgentSessionId;
+
 use playit_agent_proto::control_feed::ControlFeed;
-use playit_agent_proto::control_messages::{AgentRegister, AgentRegistered, ControlRequest, ControlResponse, Ping, Pong};
+use playit_agent_proto::control_messages::{ControlRequest, ControlResponse, Ping, Pong};
 use playit_agent_proto::encoding::MessageEncoding;
 use playit_agent_proto::raw_slice::RawSlice;
 use playit_agent_proto::rpc::ControlRpcMessage;
-use crate::api::client::{ApiClient, ApiError};
-use crate::api::messages::*;
+use crate::api::api::{AgentVersion, ApiError, ApiErrorNoFail, ApiResponseError, Platform, PlayitAgentVersion, ReqProtoRegister};
+use crate::api::http_client::HttpClientError;
+use crate::api::PlayitApi;
 
 use crate::utils::now_milli;
 use crate::tunnel::control::AuthenticatedControl;
@@ -34,7 +35,7 @@ impl SetupFindSuitableChannel {
         for addr in self.options {
             tracing::info!(?addr, "trying to establish tunnel connection");
 
-            let mut socket = match UdpSocket::bind(match addr {
+            let socket = match UdpSocket::bind(match addr {
                 SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
                 SocketAddr::V6(_) => SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0)),
             }).await {
@@ -119,6 +120,26 @@ impl SetupFindSuitableChannel {
     }
 }
 
+fn get_platform() -> Platform {
+    #[cfg(target_os = "window")]
+    return Platform::Windows;
+
+    #[cfg(target_os = "linux")]
+    return Platform::Linux;
+
+    #[cfg(target_os = "macos")]
+    return Platform::Macos;
+
+    #[cfg(target_os = "android")]
+    return Platform::Android;
+
+    #[cfg(target_os = "ios")]
+    return Platform::Ios;
+
+    #[allow(unreachable_code)]
+    Platform::Unknown
+}
+
 #[derive(Debug)]
 pub struct ConnectedControl {
     pub(crate) control_addr: SocketAddr,
@@ -128,15 +149,22 @@ pub struct ConnectedControl {
 
 impl ConnectedControl {
     pub async fn authenticate(self, secret_key: String) -> Result<AuthenticatedControl, SetupError> {
-        let api = ApiClient::new("https://api.playit.cloud".to_string(), Some(secret_key.clone()));
+        let api = PlayitApi::create("https://api.playit.gg".to_string(), Some(secret_key.clone()));
 
-        let res = api.sign_and_register(SignAgentRegister {
-            agent_version: 1,
+        let res = api.proto_register(ReqProtoRegister {
+            agent_version: PlayitAgentVersion {
+                version: AgentVersion {
+                    platform: get_platform(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                },
+                official: true,
+                details_website: None,
+            },
             client_addr: self.pong.client_addr,
             tunnel_addr: self.pong.tunnel_addr,
         }).await.with_error(|error| tracing::error!(?error, "failed to sign and register"))?;
 
-        let bytes = match hex::decode(&res.data) {
+        let bytes = match hex::decode(&res.key) {
             Ok(data) => data,
             Err(_) => return Err(SetupError::FailedToDecodeSignedAgentRegisterHex),
         };
@@ -226,11 +254,32 @@ impl ConnectedControl {
 pub enum SetupError {
     IoError(std::io::Error),
     FailedToConnect,
-    ApiError(ApiError),
+    ApiFail(String),
+    ApiError(ApiResponseError),
+    RequestError(HttpClientError),
     FailedToDecodeSignedAgentRegisterHex,
     NoResponseFromAuthenticate,
     RegisterInvalidSignature,
     RegisterUnauthorized,
+}
+
+impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for SetupError {
+    fn from(value: ApiError<F, HttpClientError>) -> Self {
+        match value {
+            ApiError::ApiError(api) => SetupError::ApiError(api),
+            ApiError::ClientError(error) => SetupError::RequestError(error),
+            ApiError::Fail(fail) => SetupError::ApiFail(serde_json::to_string(&fail).unwrap())
+        }
+    }
+}
+
+impl From<ApiErrorNoFail<HttpClientError>> for SetupError {
+    fn from(value: ApiErrorNoFail<HttpClientError>) -> Self {
+        match value {
+            ApiErrorNoFail::ApiError(api) => SetupError::ApiError(api),
+            ApiErrorNoFail::ClientError(error) => SetupError::RequestError(error),
+        }
+    }
 }
 
 impl Display for SetupError {
@@ -245,10 +294,5 @@ impl Error for SetupError {
 impl From<std::io::Error> for SetupError {
     fn from(e: std::io::Error) -> Self {
         SetupError::IoError(e)
-    }
-}
-impl From<ApiError> for SetupError {
-    fn from(e: ApiError) -> Self {
-        SetupError::ApiError(e)
     }
 }

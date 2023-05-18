@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap};
 use std::io::Error;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -10,7 +10,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 
-use playit_agent_proto::control_feed::{ClaimInstructions, NewClient};
+use playit_agent_proto::control_feed::{NewClient};
 
 use crate::tunnel::tcp_tunnel::TcpTunnel;
 

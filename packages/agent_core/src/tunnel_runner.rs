@@ -1,5 +1,5 @@
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
-use std::ops::Add;
+use std::net::{SocketAddr};
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -7,9 +7,10 @@ use std::time::Duration;
 use tokio::net::TcpStream;
 use tracing::Instrument;
 
-use playit_agent_proto::PortProto;
 
-use crate::network::address_lookup::{AddressLookup, MatchAddress};
+use crate::api::api::PortType;
+
+use crate::network::address_lookup::AddressLookup;
 use crate::network::tcp_clients::TcpClients;
 use crate::network::tcp_pipe::pipe;
 use crate::network::udp_clients::UdpClients;
@@ -25,7 +26,7 @@ pub struct TunnelRunner<L: AddressLookup> {
     keep_running: Arc<AtomicBool>,
 }
 
-impl<L: AddressLookup + Sync + Send> TunnelRunner<L> {
+impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<SocketAddr> {
     pub async fn new(secret_key: String, lookup: Arc<L>) -> Result<Self, SetupError> {
         let tunnel = SimpleTunnel::setup(secret_key).await?;
         let udp_clients = UdpClients::new(tunnel.udp_tunnel(), lookup.clone());
@@ -48,9 +49,9 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> {
         self.keep_running.clone()
     }
 
-    pub async fn run(mut self) {
+    pub async fn run(self) {
         let mut tunnel = self.tunnel;
-        let mut udp = tunnel.udp_tunnel();
+        let udp = tunnel.udp_tunnel();
 
         let tunnel_run = self.keep_running.clone();
         let tunnel_task = tokio::spawn(async move {
@@ -59,8 +60,12 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> {
                     let clients = self.tcp_clients.clone();
                     let span = tracing::info_span!("tcp client", ?new_client);
 
-                    let local_addr = match self.lookup.local_mapping(new_client.connect_addr, PortProto::Tcp) {
-                        Some(addr) => addr,
+                    let local_addr = match self.lookup.lookup(new_client.connect_addr.ip(), new_client.connect_addr.port(), PortType::Tcp) {
+                        Some(found) => {
+                            let addr = found.value.into();
+                            let port_offset = new_client.connect_addr.port() - found.from_port;
+                            SocketAddr::new(addr.ip(), port_offset + addr.port())
+                        },
                         None => {
                             tracing::info!("could not find local address for connection");
                             continue;
@@ -97,7 +102,7 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> {
             }
         });
 
-        let mut udp_clients = self.udp_clients;
+        let udp_clients = self.udp_clients;
         let udp_run = self.keep_running.clone();
 
         let udp_task = tokio::spawn(async move {

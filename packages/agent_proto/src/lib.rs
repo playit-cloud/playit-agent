@@ -56,7 +56,7 @@ impl MessageEncoding for AgentSessionId {
 }
 
 impl MessageEncoding for PortRange {
-    fn write_to<T: Write>(&self, mut out: &mut T) -> std::io::Result<()> {
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
         self.ip.write_to(out)?;
         out.write_u16::<BigEndian>(self.port_start)?;
         out.write_u16::<BigEndian>(self.port_end)?;
