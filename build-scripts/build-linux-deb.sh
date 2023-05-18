@@ -3,7 +3,7 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 CROSS_ARCH="$1"
 ARCH="$2"
 
-cross build --release --bin=agent --target="${CROSS_ARCH}"
+cross build --release --bin=playit-cli --target="${CROSS_ARCH}"
 
 TEMP_DIR_NAME="temp-build-${ARCH}"
 
@@ -26,7 +26,7 @@ WK_DIR=$(pwd)
 # Copy over playit binary
 echo "PREPARE BINARY AND RUN SCRIPT"
 mkdir -p "${WK_DIR}${INSTALL_FOLDER}"
-cp "${SCRIPT_DIR}/../target/${CROSS_ARCH}/release/agent" "${WK_DIR}${INSTALL_FOLDER}/agent"
+cp "${SCRIPT_DIR}/../target/${CROSS_ARCH}/release/playit-cli" "${WK_DIR}${INSTALL_FOLDER}/agent"
 
 # Create run script
 echo "#!/bin/bash
