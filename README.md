@@ -23,5 +23,5 @@ Please only use the playit program if you downloaded if from an offical source o
 ## Building / Running Locally
 
 Requires Rust: https://rustup.rs
-Run using `cargo run --release --bin=agent`
-
+Run using `cargo run --release --bin=playit-cli`
+Binary will be in target/ directory
