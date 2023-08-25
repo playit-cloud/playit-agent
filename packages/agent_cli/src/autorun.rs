@@ -2,6 +2,7 @@ use std::{
     net::{IpAddr, SocketAddr},
     sync::{atomic::Ordering, Arc, Mutex},
     time::Duration,
+    fmt::Write,
 };
 
 use playit_agent_core::{
@@ -10,6 +11,7 @@ use playit_agent_core::{
     tunnel_runner::TunnelRunner,
     utils::now_milli,
 };
+use playit_agent_core::api::api::AgentType;
 
 use crate::{match_ip::MatchIp, playit_secret::PlayitSecret, ui::UI, CliError};
 
@@ -22,6 +24,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         .await?;
 
     let api = secret.create_api().await?;
+    let agents = api.agents_list().await?;
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -86,14 +89,49 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
             }
         };
 
-        ui.write_screen(format!(
-            "{}: {} tunnel running, {} tunnels regisgered",
+        let mut msg = format!(
+            "playit (v{}): {} tunnel running, {} tunnels registered\n\nTUNNELS\n",
             env!("CARGO_PKG_VERSION"),
             now_milli(),
             account_tunnels.tunnels.len()
-        ))?;
+        );
+
+
+        if account_tunnels.tunnels.len() == 0 {
+            let agent = &agents.agents[0];
+            let agent_id = match agent.agent_type {
+                AgentType::Default => "default".to_string(),
+                AgentType::Assignable => agent.id.to_string(),
+                AgentType::SelfManaged => agent.id.to_string(),
+            };
+
+            writeln!(msg, "Add tunnels here: https://playit.gg/account/agents/{}", agent_id).unwrap();
+        }
+        else {
+            for tunnel in &account_tunnels.tunnels {
+                let mut alloc_port = None;
+
+                let src = match &tunnel.alloc {
+                    AccountTunnelAllocation::Pending => "pending".to_string(),
+                    AccountTunnelAllocation::Disabled => format!("action required https://playit.gg/account/tunnel/{}", tunnel.id),
+                    AccountTunnelAllocation::Allocated(alloc) => {
+                        alloc_port = Some(alloc.port_start);
+                        alloc.assigned_srv.clone().unwrap_or_else(|| format!("{}:{}", alloc.assigned_domain, alloc.port_start))
+                    }
+                };
+
+                let dst = match &tunnel.origin {
+                    TunnelOrigin::Agent(agent) => format!("{}:{}", agent.local_ip, agent.local_port.or(alloc_port).map(|v| v.to_string()).unwrap_or("?".to_string())),
+                    TunnelOrigin::Default(agent) => format!("{}:{}", agent.local_ip, agent.local_port.or(alloc_port).map(|v| v.to_string()).unwrap_or("?".to_string())),
+                    TunnelOrigin::Managed(_) => "managed".to_string(),
+                };
+
+                writeln!(msg, "{} => {}", src, dst).unwrap();
+            }
+        }
 
         lookup.update(account_tunnels).await;
+        ui.write_screen(msg)?;
     }
 
     let _ = runner.await;

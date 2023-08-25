@@ -60,7 +60,11 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<Socket
                     let clients = self.tcp_clients.clone();
                     let span = tracing::info_span!("tcp client", ?new_client);
 
-                    let local_addr = match self.lookup.lookup(new_client.connect_addr.ip(), new_client.connect_addr.port(), PortType::Tcp) {
+                    let local_addr = match self.lookup.lookup(
+                        new_client.connect_addr.ip(),
+                        new_client.connect_addr.port(),
+                        PortType::Tcp
+                    ) {
                         Some(found) => {
                             let addr = found.value.into();
                             let port_offset = new_client.connect_addr.port() - found.from_port;
