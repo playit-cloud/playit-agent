@@ -58,6 +58,8 @@ jobs:
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+          target: ${{ matrix.platform.arch }}
+          override: true
 
       - uses: Swatinem/rust-cache@v2
 
@@ -65,7 +67,6 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          target: ${{ matrix.platform.arch }}
           args: --release --all
 
       - name: Upload .exe
@@ -77,6 +78,7 @@ jobs:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
           asset_path: ./target/release/playit-cli.exe
           asset_name: ${{ matrix.platform.artifact }}
+          asset_content_type: application/octet-stream
 
       - name: Upload Binary
         if: matrix.platform.os != 'windows-latest'
