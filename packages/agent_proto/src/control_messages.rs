@@ -340,6 +340,7 @@ mod test {
     use std::net::Ipv4Addr;
 
     use rand::{Rng, RngCore, thread_rng};
+    use crate::control_feed::ControlFeed;
 
     use crate::PortProto;
     use crate::rpc::ControlRpcMessage;

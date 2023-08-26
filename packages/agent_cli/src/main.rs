@@ -1,27 +1,25 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use autorun::autorun;
-use clap::{arg, ArgMatches, Command};
-use playit_agent_core::tunnel::setup::SetupError;
-use playit_secret::PlayitSecret;
+use clap::{arg, Command};
 use rand::Rng;
 use uuid::Uuid;
 
+use autorun::autorun;
 use playit_agent_core::api::api::{AccountTunnel, AccountTunnelAllocation, AgentType, ApiError, ApiErrorNoFail, ApiResponseError, AssignedManagedCreate, ClaimSetupResponse, PortType, ReqClaimExchange, ReqClaimSetup, ReqTunnelsCreate, ReqTunnelsList, TunnelAllocated, TunnelOriginCreate, TunnelType};
 use playit_agent_core::api::http_client::HttpClientError;
 use playit_agent_core::api::ip_resource::IpResource;
 use playit_agent_core::api::PlayitApi;
 use playit_agent_core::network::address_lookup::{AddressLookup, AddressValue};
+use playit_agent_core::tunnel::setup::SetupError;
 use playit_agent_core::tunnel_runner::TunnelRunner;
 use playit_agent_core::utils::now_milli;
-
+use playit_secret::PlayitSecret;
 
 // use crate::launch::{launch, LaunchConfig};
 use crate::ui::UI;
@@ -38,16 +36,18 @@ pub mod ui;
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
+    // tracing_subscriber::fmt().try_init().unwrap();
+
     let matches = cli().get_matches();
     let secret = PlayitSecret::from_args(&matches).await;
 
-    let mut ui = ui::UI {
+    let mut ui = UI {
         auto_answer: None,
     };
 
     match matches.subcommand() {
         None => {
-            ui.write_screen("auto run")?;
+            ui.write_screen("no command provided, doing auto run")?;
             tokio::time::sleep(Duration::from_secs(1)).await;
             autorun(&mut ui, secret).await?;
         }

@@ -1,8 +1,9 @@
 use std::net::{Ipv6Addr, Ipv4Addr, IpAddr};
 
+#[derive(Debug)]
 pub struct MatchIp {
     pub ip_number: u64,
-    pub region_id: u16,
+    pub region_id: Option<u16>,
 }
 
 impl MatchIp {
@@ -27,7 +28,11 @@ impl MatchIp {
 
         MatchIp {
             ip_number,
-            region_id,
+            region_id: if region_id == 0 {
+                None
+            } else {
+                Some(region_id - 1)
+            },
         }
     }
 
@@ -61,17 +66,27 @@ impl MatchIp {
                     return false;
                 }
 
-                self.region_id == 0 || self.region_id == Self::region_number_v4(ip)
+                self.region_id.map(|v| v == Self::region_number_v4(ip)).unwrap_or(true)
             }
             IpAddr::V6(ip) => {
                 let other = MatchIp::new(ip);
-
-                if self.ip_number != other.ip_number {
-                    return false;
-                }
-
-                self.region_id == 0 || self.ip_number == other.ip_number
+                self.ip_number == other.ip_number && self.region_id == other.region_id
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_match_ip() {
+        let ip = MatchIp::new("2602:fbaf:0:2::10".parse().unwrap());
+        assert!(ip.matches("2602:fbaf:0:2::10".parse().unwrap()));
+        assert!(ip.matches("2602:fbaf:808:2::10".parse().unwrap()));
+        assert!(!ip.matches("2602:fbaf:808:3::10".parse().unwrap()));
+        assert!(ip.matches("209.25.140.16".parse().unwrap()));
+        assert!(!ip.matches("209.25.141.16".parse().unwrap()));
     }
 }

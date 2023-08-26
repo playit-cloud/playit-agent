@@ -91,3 +91,20 @@ impl MessageEncoding for ClaimInstructions {
         })
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn parse_control() {
+        let data = "0000000204d1198d10046804d053c766cc4904d1198c029306000000000000004c2\
+        c003cd1198d100468d053c766cc49cba8329c930664e9431200000000000000010000000000298c05779c\
+        9306000000000e00000000000065b2000171012de0fdb1b6d5de58be82911b07bc00000000000065b20000000e";
+
+        let bytes = hex::decode(data).unwrap();
+        let mut reader = &bytes[..];
+        let req = ControlFeed::read_from(&mut reader).unwrap();
+        println!("{:?}", req);
+    }
+}

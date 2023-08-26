@@ -1,11 +1,11 @@
-use std::io::{stdout, Write};
+use std::io::stdout;
 
 use crossterm::{
     cursor::RestorePosition,
-    event::{self, KeyCode, Event, KeyEvent}, execute,
-    style::{Color, Print, ResetColor, SetBackgroundColor, SetForegroundColor},
-    terminal::Clear,
+    event::{self, Event, KeyCode, KeyEvent},
     ExecutableCommand,
+    style::{Print, ResetColor},
+    terminal::Clear,
 };
 
 use crate::CliError;

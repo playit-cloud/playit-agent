@@ -1,4 +1,5 @@
 use std::collections::{HashMap};
+use std::collections::hash_map::Entry;
 use std::io::Error;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -16,43 +17,68 @@ use crate::tunnel::tcp_tunnel::TcpTunnel;
 
 #[derive(Clone)]
 pub struct TcpClients {
-    inner: Arc<RwLock<Inner>>,
+    active: ActiveClients,
     pub use_special_lan: bool,
 }
 
-struct Inner {
-    active: HashMap<(SocketAddr, SocketAddr), NewClient>,
+#[derive(Clone)]
+pub struct ActiveClients {
+    active: Arc<RwLock<HashMap<(SocketAddr, SocketAddr), NewClient>>>,
+}
+
+impl ActiveClients {
+    async fn add_new(&self, client: NewClient) -> Option<Dropper> {
+        let key = (client.peer_addr, client.connect_addr);
+        let mut lock = self.active.write().await;
+
+        match lock.entry(key) {
+            Entry::Occupied(_) => None,
+            Entry::Vacant(v) => {
+                v.insert(client);
+
+                Some(Dropper {
+                    key,
+                    inner: self.clone(),
+                })
+            }
+        }
+    }
+
+    pub async fn len(&self) -> usize {
+        self.active.read().await.len()
+    }
+
+    pub async fn get_clients(&self) -> Vec<NewClient> {
+        let lock = self.active.read().await;
+        lock.values().map(|v| v.clone()).collect()
+    }
+}
+
+impl Default for ActiveClients {
+    fn default() -> Self {
+        ActiveClients {
+            active: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
 }
 
 impl TcpClients {
     pub fn new() -> Self {
         TcpClients {
-            inner: Arc::new(RwLock::new(Inner {
-                active: HashMap::new(),
-            })),
+            active: ActiveClients::default(),
             use_special_lan: true
         }
     }
 
+    pub fn active_clients(&self) -> ActiveClients {
+        self.active.clone()
+    }
+
     pub async fn connect(&self, new_client: NewClient) -> std::io::Result<Option<TcpClient>> {
         let peer_addr = new_client.peer_addr;
-        let key = (peer_addr, new_client.connect_addr);
-
         let claim_instructions = new_client.claim_instructions.clone();
 
-        {
-            let mut lock = self.inner.write().await;
-            if lock.active.contains_key(&key) {
-                return Ok(None);
-            }
-            lock.active.insert(key, new_client);
-        }
-
-        /* create dropper before connect so on failure / timeout we clean up active map */
-        let dropper = Dropper {
-            key,
-            inner: self.inner.clone(),
-        };
+        let Some(dropper) = self.active.add_new(new_client).await else { return Ok(None) };
 
         let mut tunnel = TcpTunnel::new(
             claim_instructions,
@@ -86,7 +112,7 @@ pub struct TcpClientRead {
 
 struct Dropper {
     key: (SocketAddr, SocketAddr),
-    inner: Arc<RwLock<Inner>>,
+    inner: ActiveClients,
 }
 
 impl TcpClient {
@@ -151,11 +177,11 @@ impl AsyncRead for TcpClientRead {
 impl Drop for Dropper {
     fn drop(&mut self) {
         let key = self.key;
-        let inner = self.inner.clone();
+        let inner = self.inner.active.clone();
 
         tokio::spawn(async move {
             let mut lock = inner.write().await;
-            lock.active.remove(&key);
+            lock.remove(&key);
         });
     }
 }
