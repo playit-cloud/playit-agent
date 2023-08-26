@@ -87,3 +87,4 @@ jobs:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
           asset_path: ./target/release/playit-cli
           asset_name: ${{ matrix.platform.artifact }}
+          asset_content_type: application/octet-stream
