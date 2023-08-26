@@ -9,64 +9,78 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [macos-latest, ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.platform }}
+        platform:
+          - name: macos intel
+            os: macos-latest
+            arch: x86_64-apple-darwin
+            artifact: playit-darwin-intel
+
+          - name: macos arm
+            os: macos-latest
+            arch: aarch64-apple-darwin
+            artifact: playit-darwin-arm
+
+          - name: linux 64bit
+            os: ubuntu-latest
+            arch: x86_64-unknown-linux-musl
+            artifact: playit-linux-amd64
+
+          - name: linux arm64
+            os: ubuntu-latest
+            arch: aarch64-unknown-linux-musl
+            artifact: playit-linux-aarch64
+
+          - name: linux arm32
+            os: ubuntu-latest
+            arch: arm-unknown-linux-musleabi
+            artifact: playit-linux-arm
+
+          - name: linux arm32
+            os: ubuntu-latest
+            arch: arm-unknown-linux-musleabi
+            artifact: playit-linux-arm
+
+          - name: windows 32bit
+            os: windows-latest
+            arch: i686-pc-windows-msvc
+            artifact: playit-windows-i686.exe
+
+          - name: windows 64bit
+            os: windows-latest
+            arch: x86_64-pc-windows-msvc
+            artifact: playit-windows-amd64.exe
+
+    runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
       - uses: Swatinem/rust-cache@v2
+
       - name: build release
         uses: actions-rs/cargo@v1
         with:
           command: build
+          target: ${{ matrix.platform.arch }}
           args: --release --all
-      - name: upload playit-cli
-        uses: actions/upload-artifact@v3
+
+      - name: Upload .exe
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
-          name: playit-${{ matrix.platform }}
-          path: ./target/release/playit-cli
-  upload:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-    - name: Download macos
-      uses: actions/download-artifact@v3
-      with:
-        name: playit-macos-latest
-    - name: Download linux
-      uses: actions/download-artifact@v3
-      with:
-        name: playit-ubuntu-latest
-    - name: Download windows
-      uses: actions/download-artifact@v3
-      with:
-        name: playit-windows-latest
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/release/playit-cli.exe
+          asset_name: ${{ matrix.platform.artifact }}
 
-    - name: Upload MacOS
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-      with:
-        upload_url: ${{ steps.get_release.outputs.upload_url }}
-        asset_path: ./playit-macos-latest
-        asset_name: playit-darwin
-
-    - name: Upload Linux
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-      with:
-        upload_url: ${{ steps.get_release.outputs.upload_url }}
-        asset_path: ./playit-ubuntu-latest
-        asset_name: playit-amd64
-
-    - name: Upload Windows
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ github.token }}
-      with:
-        upload_url: ${{ steps.get_release.outputs.upload_url }}
-        asset_path: ./playit-windows-latest
-        asset_name: playit.exe
+      - name: Upload Binary
+        if: matrix.platform != 'windows-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/release/playit-cli
+          asset_name: ${{ matrix.platform.artifact }}
