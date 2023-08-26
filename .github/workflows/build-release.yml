@@ -35,11 +35,6 @@ jobs:
             arch: arm-unknown-linux-musleabi
             artifact: playit-linux-arm
 
-          - name: linux arm32
-            os: ubuntu-latest
-            arch: arm-unknown-linux-musleabi
-            artifact: playit-linux-arm
-
           - name: windows 32bit
             os: windows-latest
             arch: i686-pc-windows-msvc
@@ -53,9 +48,17 @@ jobs:
     runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v3
+
+      - name: Get release
+        id: get_release
+        uses: bruceadams/get-release@v1.2.3
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
+
       - uses: Swatinem/rust-cache@v2
 
       - name: build release
@@ -66,7 +69,7 @@ jobs:
           args: --release --all
 
       - name: Upload .exe
-        if: matrix.platform == 'windows-latest'
+        if: matrix.platform.os == 'windows-latest'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -76,7 +79,7 @@ jobs:
           asset_name: ${{ matrix.platform.artifact }}
 
       - name: Upload Binary
-        if: matrix.platform != 'windows-latest'
+        if: matrix.platform.os != 'windows-latest'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
