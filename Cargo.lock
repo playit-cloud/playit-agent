@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "playit-cli"
-version = "1.0.0-rc3"
+version = "1.0.0-rc4"
 dependencies = [
  "anyhow",
  "clap",

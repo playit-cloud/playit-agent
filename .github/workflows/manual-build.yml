@@ -4,8 +4,12 @@ on: workflow_dispatch
 
 jobs:
   build:
-    runs-on: ubuntu-latest
     environment: production
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
