@@ -67,6 +67,10 @@ jobs:
           command: build
           args: --target ${{ matrix.platform.arch }} --release --all
 
+      - name: Install musl-tools on Linux
+        run: sudo apt-get update --yes && sudo apt-get install --yes musl-tools
+        if: contains(matrix.platform.os, 'ubuntu')
+
       - name: Upload .exe
         if: matrix.platform.os == 'windows-latest'
         uses: actions/upload-release-asset@v1
@@ -74,7 +78,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./target/release/playit-cli.exe
+          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli.exe
           asset_name: ${{ matrix.platform.artifact }}
           asset_content_type: application/octet-stream
 
@@ -85,6 +89,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./target/release/playit-cli
+          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
           asset_name: ${{ matrix.platform.artifact }}
           asset_content_type: application/octet-stream
