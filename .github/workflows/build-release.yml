@@ -61,15 +61,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install musl-tools on Linux
+        run: sudo apt-get update --yes && sudo apt-get install --yes musl-tools
+        if: contains(matrix.platform.os, 'ubuntu')
+
       - name: build release
         uses: actions-rs/cargo@v1
         with:
           command: build
           args: --target ${{ matrix.platform.arch }} --release --all
-
-      - name: Install musl-tools on Linux
-        run: sudo apt-get update --yes && sudo apt-get install --yes musl-tools
-        if: contains(matrix.platform.os, 'ubuntu')
 
       - name: Upload .exe
         if: matrix.platform.os == 'windows-latest'
