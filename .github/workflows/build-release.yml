@@ -55,11 +55,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - uses: actions-rs/toolchain@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: stable
-          target: ${{ matrix.platform.arch }}
-          override: true
+          targets: ${{ matrix.platform.arch }}
 
       - uses: Swatinem/rust-cache@v2
 
@@ -67,7 +65,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --release --all
+          args: --target ${{ matrix.platform.arch }} --release --all
 
       - name: Upload .exe
         if: matrix.platform.os == 'windows-latest'
