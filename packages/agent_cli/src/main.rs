@@ -237,23 +237,24 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
 
         match setup {
             ClaimSetupResponse::WaitingForUserVisit => {
-                let msg = format!("Waiting for user to visit {}", claim_url(claim_code)?);
+                let msg = format!("Visit link to setup {}", claim_url(claim_code)?);
                 ui.write_screen(msg)?;
             }
             ClaimSetupResponse::WaitingForUser => {
-                ui.write_screen("Waiting for user to approve")?;
+                ui.write_screen(format!("Approve program at {}", claim_url(claim_code)?))?;
             }
             ClaimSetupResponse::UserAccepted => {
-                ui.write_screen("User accepted, exchanging code for secret")?;
+                ui.write_screen("Program approved :). Secret code being setup.")?;
                 break;
             }
             ClaimSetupResponse::UserRejected => {
-                ui.write_screen("User rejected")?;
+                ui.write_screen("Program rejected :(")?;
+                tokio::time::sleep(Duration::from_secs(3)).await;
                 return Err(CliError::AgentClaimRejected);
             }
         }
 
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 
     let secret_key = loop {
@@ -267,7 +268,8 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
         };
 
         if now_milli() > end_at {
-            ui.write_screen("reached time limit")?;
+            ui.write_screen("you took too long to approve the program, closing")?;
+            tokio::time::sleep(Duration::from_secs(2)).await;
             return Err(CliError::TimedOut);
         }
 
