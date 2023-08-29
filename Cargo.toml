@@ -7,3 +7,6 @@ members = [
 
 [profile.release]
 strip = "debuginfo"
+opt-level = "z"
+lto = true
+codegen-units = 1

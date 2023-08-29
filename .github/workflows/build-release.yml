@@ -23,17 +23,20 @@ jobs:
           - name: linux 64bit
             os: ubuntu-latest
             arch: x86_64-unknown-linux-musl
+            apt_install: musl-tools
             artifact: playit-linux-amd64
 
           - name: linux arm64
             os: ubuntu-latest
-            arch: aarch64-unknown-linux-musl
+            arch: aarch64-unknown-linux-gnu
+            apt_install: gcc-aarch64-linux-gnu
             artifact: playit-linux-aarch64
 
-          - name: linux arm32
+          - name: linux arm7
             os: ubuntu-latest
-            arch: arm-unknown-linux-musleabi
-            artifact: playit-linux-arm
+            arch: armv7-unknown-linux-gnueabihf
+            apt_install: gcc-arm-linux-gnueabihf
+            artifact: playit-linux-armv7
 
           - name: windows 32bit
             os: windows-latest
@@ -59,11 +62,9 @@ jobs:
         with:
           targets: ${{ matrix.platform.arch }}
 
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install musl-tools on Linux
-        run: sudo apt-get update --yes && sudo apt-get install --yes musl-tools
-        if: contains(matrix.platform.os, 'ubuntu')
+      - name: Run optional apt install
+        if: ${{ matrix.platform.apt_install }}
+        run: sudo apt-get update --yes && sudo apt-get install --yes ${{ matrix.platform.apt_install }}
 
       - name: build release
         uses: actions-rs/cargo@v1
