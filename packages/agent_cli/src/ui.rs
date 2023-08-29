@@ -15,18 +15,30 @@ pub struct UI {
 }
 
 impl UI {
-    pub fn write_screen<T: std::fmt::Display>(&mut self, content: T) -> Result<(), CliError> {
+    pub fn write_screen<T: std::fmt::Display>(&mut self, content: T) {
+        let content_ref = &content;
         let res: std::io::Result<()> = (|| {
-            stdout()
-                .execute(RestorePosition)?
-                .execute(ResetColor)?
-                .execute(Clear(crossterm::terminal::ClearType::All))?
-                .execute(Print(content))?;
+            let cleared = stdout()
+                .execute(Clear(crossterm::terminal::ClearType::All))
+                .is_ok();
+
+            if !cleared {
+                stdout()
+                    .execute(Print(format!("\n{}", content_ref)))?;
+            } else {
+                stdout()
+                    .execute(RestorePosition)?
+                    .execute(ResetColor)?
+                    .execute(Print(content_ref))?;
+            }
 
             Ok(())
         })();
 
-        res.map_err(|e| CliError::RenderError(e))
+        if let Err(error) = res {
+            tracing::error!(?error, "failed to write to screen");
+            println!("{}", content);
+        }
     }
 
     pub fn yn_question<T: std::fmt::Display>(&mut self, question: T, default_yes: Option<bool>) -> Result<bool, CliError> {
@@ -46,12 +58,12 @@ impl UI {
 
             if let Some(default_yes) = default_yes {
                 if default_yes {
-                    self.write_screen(format!("{}{} (Y/n)? ", pref, question))?;
+                    self.write_screen(format!("{}{} (Y/n)? ", pref, question));
                 } else {
-                    self.write_screen(format!("{}{} (y/N)? ", pref, question))?;
+                    self.write_screen(format!("{}{} (y/N)? ", pref, question));
                 }
             } else {
-                self.write_screen(format!("{}{} (y/n)? ", pref, question))?;
+                self.write_screen(format!("{}{} (y/n)? ", pref, question));
             }
 
             loop {
@@ -102,7 +114,7 @@ impl UI {
         &mut self,
         msg: M,
         error: E,
-    ) -> Result<(), CliError> {
+    ) {
         self.write_screen(format!("Got Error\nMSG: {}\nError: {:?}\n", msg, error))
     }
 }

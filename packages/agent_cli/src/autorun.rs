@@ -46,7 +46,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
 
     let mut error_count = 0;
 
-    ui.write_screen("starting up tunnel connection")?;
+    ui.write_screen("starting up tunnel connection");
 
     let runner = loop {
         match TunnelRunner::new(secret_code.clone(), lookup.clone()).await {
@@ -54,12 +54,12 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
             Err(error) => {
                 error_count += 1;
                 if error_count > 5 {
-                    ui.write_error("Final attempted failed to setup tunnel", &error)?;
+                    ui.write_error("Final attempted failed to setup tunnel", &error);
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     return Err(CliError::TunnelSetupError(error));
                 };
 
-                ui.write_error("Failed to setup tunnel client", error)?;
+                ui.write_error("Failed to setup tunnel client", error);
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
@@ -68,7 +68,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
     let signal = runner.keep_running();
     let runner = tokio::spawn(runner.run());
 
-    ui.write_screen("tunnel running")?;
+    ui.write_screen("tunnel running");
 
     loop {
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -83,7 +83,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         let account_tunnels = match account_tunnels_res {
             Ok(v) => v,
             Err(error) => {
-                ui.write_error("Failed to load latest tunnels", error)?;
+                ui.write_error("Failed to load latest tunnels", error);
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 continue;
             }
@@ -131,7 +131,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         }
 
         lookup.update(account_tunnels).await;
-        ui.write_screen(msg)?;
+        ui.write_screen(msg);
     }
 
     let _ = runner.await;

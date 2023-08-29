@@ -1,6 +1,6 @@
 [package]
 name = "playit-cli"
-version = "1.0.0-rc5"
+version = "1.0.0-rc6"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

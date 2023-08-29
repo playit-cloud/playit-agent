@@ -47,7 +47,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
     match matches.subcommand() {
         None => {
-            ui.write_screen("no command provided, doing auto run")?;
+            ui.write_screen("no command provided, doing auto run");
             tokio::time::sleep(Duration::from_secs(1)).await;
             autorun(&mut ui, secret).await?;
         }
@@ -85,18 +85,18 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         }
         Some(("claim", m)) => match m.subcommand() {
             Some(("generate", _)) => {
-                ui.write_screen(claim_generate())?;
+                ui.write_screen(claim_generate());
             }
             Some(("url", m)) => {
                 let code = m.get_one::<String>("CLAIM_CODE").expect("required");
-                ui.write_screen(format!("{}", claim_url(code)?))?;
+                ui.write_screen(format!("{}", claim_url(code)?));
             }
             Some(("exchange", m)) => {
                 let claim_code = m.get_one::<String>("CLAIM_CODE").expect("required");
                 let wait: u32 = m.get_one::<String>("wait").expect("required").parse().expect("invalid wait value");
 
                 let secret_key = claim_exchange(&mut ui, claim_code, AgentType::SelfManaged, wait).await?;
-                ui.write_screen(secret_key)?;
+                ui.write_screen(secret_key);
             }
             _ => return Err(CliError::NotImplemented.into()),
         },
@@ -238,17 +238,17 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
         match setup {
             ClaimSetupResponse::WaitingForUserVisit => {
                 let msg = format!("Visit link to setup {}", claim_url(claim_code)?);
-                ui.write_screen(msg)?;
+                ui.write_screen(msg);
             }
             ClaimSetupResponse::WaitingForUser => {
-                ui.write_screen(format!("Approve program at {}", claim_url(claim_code)?))?;
+                ui.write_screen(format!("Approve program at {}", claim_url(claim_code)?));
             }
             ClaimSetupResponse::UserAccepted => {
-                ui.write_screen("Program approved :). Secret code being setup.")?;
+                ui.write_screen("Program approved :). Secret code being setup.");
                 break;
             }
             ClaimSetupResponse::UserRejected => {
-                ui.write_screen("Program rejected :(")?;
+                ui.write_screen("Program rejected :(");
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 return Err(CliError::AgentClaimRejected);
             }
@@ -262,13 +262,13 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
             Ok(res) => break res.secret_key,
             Err(ApiError::Fail(status)) => {
                 let msg = format!("code \"{}\" not ready, {:?}", claim_code, status);
-                ui.write_screen(msg)?;
+                ui.write_screen(msg);
             }
             Err(error) => return Err(error.into()),
         };
 
         if now_milli() > end_at {
-            ui.write_screen("you took too long to approve the program, closing")?;
+            ui.write_screen("you took too long to approve the program, closing");
             tokio::time::sleep(Duration::from_secs(2)).await;
             return Err(CliError::TimedOut);
         }
