@@ -35,7 +35,7 @@ pub mod match_ip;
 pub mod ui;
 
 #[tokio::main]
-async fn main() -> Result<std::process::ExitCode, anyhow::Error> {
+async fn main() -> Result<std::process::ExitCode, CliError> {
     // tracing_subscriber::fmt().try_init().unwrap();
 
     let matches = cli().get_matches();
@@ -453,6 +453,12 @@ impl From<ApiErrorNoFail<HttpClientError>> for CliError {
             ApiErrorNoFail::ApiError(e) => CliError::ApiError(e),
             ApiErrorNoFail::ClientError(e) => CliError::RequestError(e),
         }
+    }
+}
+
+impl From<SetupError> for CliError {
+    fn from(e: SetupError) -> Self {
+        CliError::TunnelSetupError(e)
     }
 }
 

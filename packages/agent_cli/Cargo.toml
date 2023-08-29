@@ -6,19 +6,20 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-tokio = { version = "1.21.2", features = ["full"] }
+tokio = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+
+clap = { version = "4.4", features = ["derive"] }
+urlencoding = "2.1"
+serde_yaml = "0.9"
+crossterm = "0.26"
+
 playit-agent-core = { path = "../agent_core" }
 playit-agent-proto = { path = "../agent_proto" }
-clap = { version = "4.0.10", features = ["derive"] }
-rand = "0.8.5"
-hex = "0.4.3"
-anyhow = "1.0"
-urlencoding = "2.1.2"
-serde_json = "1"
-toml = "0.7.6"
-serde_yaml = "0.9.14"
-serde = { version = "1", features = ["derive"] }
-uuid = "1.1.2"
-tracing = "0.1.37"
-tracing-subscriber = "0.3.16"
-crossterm = "0.26.1"
