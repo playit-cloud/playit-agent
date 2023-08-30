@@ -39,11 +39,12 @@ pub enum PortProto {
 }
 
 impl MessageEncoding for AgentSessionId {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
-        out.write_u64::<BigEndian>(self.session_id)?;
-        out.write_u64::<BigEndian>(self.account_id)?;
-        out.write_u64::<BigEndian>(self.agent_id)?;
-        Ok(())
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+        sum += self.session_id.write_to(out)?;
+        sum += self.account_id.write_to(out)?;
+        sum += self.agent_id.write_to(out)?;
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -56,11 +57,13 @@ impl MessageEncoding for AgentSessionId {
 }
 
 impl MessageEncoding for PortRange {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
-        self.ip.write_to(out)?;
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut len = 4;
+        len += self.ip.write_to(out)?;
         out.write_u16::<BigEndian>(self.port_start)?;
         out.write_u16::<BigEndian>(self.port_end)?;
-        self.port_proto.write_to(out)
+        len += self.port_proto.write_to(out)?;
+        Ok(len)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -74,12 +77,14 @@ impl MessageEncoding for PortRange {
 }
 
 impl MessageEncoding for PortProto {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         match self {
             PortProto::Tcp => out.write_u8(1),
             PortProto::Udp => out.write_u8(2),
             PortProto::Both => out.write_u8(3),
-        }
+        }?;
+
+        Ok(1)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {

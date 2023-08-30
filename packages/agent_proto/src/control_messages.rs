@@ -18,29 +18,33 @@ pub enum ControlRequest {
 }
 
 impl MessageEncoding for ControlRequest {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+
         match self {
-            ControlRequest::Ping(ping) => {
-                out.write_u32::<BigEndian>(1)?;
-                ping.write_to(out)
+            ControlRequest::Ping(data) => {
+                sum += 6u32.write_to(out)?;
+                sum += data.write_to(out)?;
             }
-            ControlRequest::AgentRegister(register) => {
-                out.write_u32::<BigEndian>(2)?;
-                register.write_to(out)
+            ControlRequest::AgentRegister(data) => {
+                sum += 2u32.write_to(out)?;
+                sum += data.write_to(out)?;
             }
-            ControlRequest::AgentKeepAlive(id) => {
-                out.write_u32::<BigEndian>(3)?;
-                id.write_to(out)
+            ControlRequest::AgentKeepAlive(data) => {
+                sum += 3u32.write_to(out)?;
+                sum += data.write_to(out)?;
             }
-            ControlRequest::SetupUdpChannel(id) => {
-                out.write_u32::<BigEndian>(4)?;
-                id.write_to(out)
+            ControlRequest::SetupUdpChannel(data) => {
+                sum += 4u32.write_to(out)?;
+                sum += data.write_to(out)?;
             }
-            ControlRequest::AgentCheckPortMapping(check) => {
-                out.write_u32::<BigEndian>(5)?;
-                check.write_to(out)
+            ControlRequest::AgentCheckPortMapping(data) => {
+                sum += 5u32.write_to(out)?;
+                sum += data.write_to(out)?;
             }
         }
+
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -62,9 +66,11 @@ pub struct AgentCheckPortMapping {
 }
 
 impl MessageEncoding for AgentCheckPortMapping {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
-        self.agent_session_id.write_to(out)?;
-        self.port_range.write_to(out)
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+        sum += self.agent_session_id.write_to(out)?;
+        sum += self.port_range.write_to(out)?;
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -78,22 +84,28 @@ impl MessageEncoding for AgentCheckPortMapping {
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct Ping {
     pub now: u64,
+    pub current_ping: Option<u32>,
     pub session_id: Option<AgentSessionId>,
 }
 
 impl MessageEncoding for Ping {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
-        out.write_u64::<BigEndian>(self.now)?;
-        self.session_id.write_to(out)
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+        sum += self.now.write_to(out)?;
+        sum += self.current_ping.write_to(out)?;
+        sum += self.session_id.write_to(out)?;
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         Ok(Ping {
-            now: read.read_u64::<BigEndian>()?,
-            session_id: Option::read_from(read)?,
+            now: MessageEncoding::read_from(read)?,
+            current_ping: MessageEncoding::read_from(read)?,
+            session_id: MessageEncoding::read_from(read)?,
         })
     }
 }
+
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct AgentRegister {
@@ -129,17 +141,19 @@ impl AgentRegister {
 }
 
 impl MessageEncoding for AgentRegister {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         out.write_u64::<BigEndian>(self.account_id)?;
         out.write_u64::<BigEndian>(self.agent_id)?;
         out.write_u64::<BigEndian>(self.agent_version)?;
         out.write_u64::<BigEndian>(self.timestamp)?;
-        self.client_addr.write_to(out)?;
-        self.tunnel_addr.write_to(out)?;
+        let mut len = 8 + 8 + 8 + 8;
+        len += self.client_addr.write_to(out)?;
+        len += self.tunnel_addr.write_to(out)?;
         if out.write(&self.signature)? != 32 {
             return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "failed to write full signature"));
         }
-        Ok(())
+        len += 32;
+        Ok(len)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -174,29 +188,41 @@ pub enum ControlResponse {
 }
 
 impl MessageEncoding for ControlResponse {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+
         match self {
-            ControlResponse::Pong(pong) => {
-                out.write_u32::<BigEndian>(1)?;
-                pong.write_to(out)
+            ControlResponse::Pong(data) => {
+                sum += 1u32.write_to(out)?;
+                sum += data.write_to(out)?;
             }
-            ControlResponse::InvalidSignature => out.write_u32::<BigEndian>(2),
-            ControlResponse::Unauthorized => out.write_u32::<BigEndian>(3),
-            ControlResponse::RequestQueued => out.write_u32::<BigEndian>(4),
-            ControlResponse::TryAgainLater => out.write_u32::<BigEndian>(5),
-            ControlResponse::AgentRegistered(registered) => {
-                out.write_u32::<BigEndian>(6)?;
-                registered.write_to(out)
+            ControlResponse::InvalidSignature => {
+                sum += 2u32.write_to(out)?;
             }
-            ControlResponse::AgentPortMapping(mapping) => {
-                out.write_u32::<BigEndian>(7)?;
-                mapping.write_to(out)
+            ControlResponse::Unauthorized => {
+                sum += 3u32.write_to(out)?;
             }
-            ControlResponse::UdpChannelDetails(details) => {
-                out.write_u32::<BigEndian>(8)?;
-                details.write_to(out)
+            ControlResponse::RequestQueued => {
+                sum += 4u32.write_to(out)?;
+            }
+            ControlResponse::TryAgainLater => {
+                sum += 5u32.write_to(out)?;
+            }
+            ControlResponse::AgentRegistered(data) => {
+                sum += 6u32.write_to(out)?;
+                sum += data.write_to(out)?;
+            }
+            ControlResponse::AgentPortMapping(data) => {
+                sum += 7u32.write_to(out)?;
+                sum += data.write_to(out)?;
+            }
+            ControlResponse::UdpChannelDetails(data) => {
+                sum += 8u32.write_to(out)?;
+                sum += data.write_to(out)?;
             }
         }
+
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -221,9 +247,11 @@ pub struct AgentPortMapping {
 }
 
 impl MessageEncoding for AgentPortMapping {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
-        self.range.write_to(out)?;
-        self.found.write_to(out)
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+        sum += self.range.write_to(out)?;
+        sum += self.found.write_to(out)?;
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -240,13 +268,17 @@ pub enum AgentPortMappingFound {
 }
 
 impl MessageEncoding for AgentPortMappingFound {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+
         match self {
             AgentPortMappingFound::ToAgent(id) => {
-                out.write_u32::<BigEndian>(1)?;
-                id.write_to(out)
+                sum += 1u32.write_to(out)?;
+                sum += id.write_to(out)?;
             }
         }
+
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -264,9 +296,11 @@ pub struct UdpChannelDetails {
 }
 
 impl MessageEncoding for UdpChannelDetails {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
-        self.tunnel_addr.write_to(out)?;
-        self.token.write_to(out)
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+        sum += self.tunnel_addr.write_to(out)?;
+        sum += self.token.write_to(out)?;
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -289,16 +323,16 @@ pub struct Pong {
 }
 
 impl MessageEncoding for Pong {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
-        out.write_u64::<BigEndian>(self.request_now)?;
-        out.write_u64::<BigEndian>(self.server_now)?;
-        out.write_u64::<BigEndian>(self.server_id)?;
-        out.write_u32::<BigEndian>(self.data_center_id)?;
-        self.client_addr.write_to(out)?;
-        self.tunnel_addr.write_to(out)?;
-        self.session_expire_at.write_to(out)?;
-
-        Ok(())
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+        sum += self.request_now.write_to(out)?;
+        sum += self.server_now.write_to(out)?;
+        sum += self.server_id.write_to(out)?;
+        sum += self.data_center_id.write_to(out)?;
+        sum += self.client_addr.write_to(out)?;
+        sum += self.tunnel_addr.write_to(out)?;
+        sum += self.session_expire_at.write_to(out)?;
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -321,9 +355,11 @@ pub struct AgentRegistered {
 }
 
 impl MessageEncoding for AgentRegistered {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
-        self.id.write_to(out)?;
-        out.write_u64::<BigEndian>(self.expires_at)
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+        sum += self.id.write_to(out)?;
+        sum += self.expires_at.write_to(out)?;
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -340,7 +376,6 @@ mod test {
     use std::net::Ipv4Addr;
 
     use rand::{Rng, RngCore, thread_rng};
-    use crate::control_feed::ControlFeed;
 
     use crate::PortProto;
     use crate::rpc::ControlRpcMessage;
@@ -407,7 +442,7 @@ mod test {
                     })
                 } else {
                     None
-                }
+                },
             }),
             1 => ControlRequest::AgentRegister(AgentRegister {
                 account_id: rng.next_u64(),
