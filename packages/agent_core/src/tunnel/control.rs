@@ -1,14 +1,13 @@
 use std::net::SocketAddr;
 
-
-
 use playit_agent_proto::control_feed::ControlFeed;
 use playit_agent_proto::control_messages::{AgentRegistered, ControlRequest, ControlResponse, Ping, Pong};
 use playit_agent_proto::encoding::MessageEncoding;
 use playit_agent_proto::rpc::ControlRpcMessage;
-use crate::api::PlayitApi;
 
+use crate::api::PlayitApi;
 use crate::tunnel::setup::{ConnectedControl, SetupError};
+use crate::utils::now_milli;
 
 pub struct AuthenticatedControl {
     pub(crate) secret_key: String,
@@ -17,6 +16,7 @@ pub struct AuthenticatedControl {
     pub(crate) last_pong: Pong,
     pub(crate) registered: AgentRegistered,
     pub(crate) buffer: Vec<u8>,
+    pub(crate) current_ping: Option<u32>,
 }
 
 impl AuthenticatedControl {
@@ -37,7 +37,7 @@ impl AuthenticatedControl {
     pub async fn send_ping(&mut self, request_id: u64, now: u64) -> Result<(), ControlError> {
         self.send(ControlRpcMessage {
             request_id,
-            content: ControlRequest::Ping(Ping { now, session_id: Some(self.registered.id.clone()) }),
+            content: ControlRequest::Ping(Ping { now, current_ping: self.current_ping, session_id: Some(self.registered.id.clone()) }),
         }).await
     }
 
@@ -96,6 +96,7 @@ impl AuthenticatedControl {
                     self.registered = registered.clone();
                 }
                 ControlResponse::Pong(pong) => {
+                    self.current_ping = Some((now_milli() - pong.request_now) as u32);
                     self.last_pong = pong.clone();
                     if let Some(expires_at) = pong.session_expire_at {
                         self.registered.expires_at = expires_at;

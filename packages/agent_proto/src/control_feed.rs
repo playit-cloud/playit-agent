@@ -36,17 +36,21 @@ impl Debug for ClaimInstructions {
 }
 
 impl MessageEncoding for ControlFeed {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+
         match self {
             ControlFeed::Response(res) => {
-                out.write_u32::<BigEndian>(1)?;
-                res.write_to(out)
+                sum += 1u32.write_to(out)?;
+                sum += res.write_to(out)?;
             }
             ControlFeed::NewClient(client) => {
-                out.write_u32::<BigEndian>(2)?;
-                client.write_to(out)
+                sum += 2u32.write_to(out)?;
+                sum += client.write_to(out)?;
             }
         }
+
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -59,12 +63,14 @@ impl MessageEncoding for ControlFeed {
 }
 
 impl MessageEncoding for NewClient {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
-        self.connect_addr.write_to(out)?;
-        self.peer_addr.write_to(out)?;
-        self.claim_instructions.write_to(out)?;
-        out.write_u64::<BigEndian>(self.tunnel_server_id)?;
-        out.write_u32::<BigEndian>(self.data_center_id)
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+        sum += self.connect_addr.write_to(out)?;
+        sum += self.peer_addr.write_to(out)?;
+        sum += self.claim_instructions.write_to(out)?;
+        sum += self.tunnel_server_id.write_to(out)?;
+        sum += self.data_center_id.write_to(out)?;
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
@@ -79,9 +85,11 @@ impl MessageEncoding for NewClient {
 }
 
 impl MessageEncoding for ClaimInstructions {
-    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<()> {
-        self.address.write_to(out)?;
-        self.token.write_to(out)
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+        sum += self.address.write_to(out)?;
+        sum += self.token.write_to(out)?;
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {

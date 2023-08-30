@@ -9,9 +9,11 @@ pub struct ControlRpcMessage<T: MessageEncoding> {
 }
 
 impl<T: MessageEncoding> MessageEncoding for ControlRpcMessage<T> {
-    fn write_to<I: Write>(&self, out: &mut I) -> std::io::Result<()> {
-        out.write_u64::<BigEndian>(self.request_id)?;
-        self.content.write_to(out)
+    fn write_to<I: Write>(&self, out: &mut I) -> std::io::Result<usize> {
+        let mut sum = 0;
+        sum += self.request_id.write_to(out)?;
+        sum += self.content.write_to(out)?;
+        Ok(sum)
     }
 
     fn read_from<I: Read>(read: &mut I) -> std::io::Result<Self> {

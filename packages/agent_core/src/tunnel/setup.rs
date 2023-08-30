@@ -53,6 +53,7 @@ impl SetupFindSuitableChannel {
                     request_id: 1,
                     content: ControlRequest::Ping(Ping {
                         now: now_milli(),
+                        current_ping: None,
                         session_id: None
                     }),
                 }.write_to(&mut buffer)?;
@@ -213,7 +214,8 @@ impl ConnectedControl {
                                             conn: self,
                                             last_pong: pong,
                                             registered,
-                                            buffer
+                                            buffer,
+                                            current_ping: None,
                                         })
                                     },
                                     ControlResponse::InvalidSignature => Err(SetupError::RegisterInvalidSignature),
