@@ -85,18 +85,18 @@
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
         <Property Id='DiskPrompt' Value='Playit Installation'/>
 
-        <Directory Id="LocalAppDataFolder">
-            <Directory Id="MyAppDirectory" Name="playit_gg">
-                <Component Id="MyComponent">
-                    <CreateFolder />
-                    <RemoveFolder Id="RemoveMyAppDirectory" On="uninstall" />
-                </Component>
-            </Directory>
-        </Directory>
-
         <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id="LocalAppDataFolder">
+                <Directory Id="MyAppDirectory" Name="playit_gg">
+                    <Component Id="MyComponent">
+                        <CreateFolder />
+                        <RemoveFolder Id="RemoveMyAppDirectory" On="uninstall" />
+                    </Component>
+                </Directory>
+            </Directory>
+
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
-                <Directory Id='APPLICATIONFOLDER' Name='playit'>
+                <Directory Id='APPLICATIONFOLDER' Name='playit_gg'>
 
                     <!--
                       Enabling the license sidecar file in the installer is a four step process:
