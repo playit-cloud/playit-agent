@@ -102,7 +102,7 @@
                         <Shortcut Id="ApplicationStartMenuShortcut"
                                   Name="Playit.gg"
                                   Description="Makes local ports public. Put your game servers online."
-                                  Target="bin/playit.exe"
+                                  Target="bin\playit.exe"
                                   WorkingDirectory="APPLICATIONROOTDIRECTORY"/>
                         <RemoveFolder Id="CleanUpShortCut" Directory="ApplicationProgramsFolder" On="uninstall"/>
                         <RegistryValue Root="HKCU" Key="Software\DevelopedMethodsLLC\playit_gg" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
