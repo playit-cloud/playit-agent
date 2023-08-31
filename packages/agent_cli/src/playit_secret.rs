@@ -34,7 +34,16 @@ impl PlayitSecret {
             return self;
         }
 
-        let config_folder = format!("{}/playit_gg", config_path.unwrap().to_string_lossy());
+        let config_root = config_path.unwrap().to_string_lossy();
+
+        /* old linux versions saved data in playit folder not playit_gg */
+        let old_config_path = format!("{}/playit/playit.toml", config_root);
+        if tokio::fs::try_exists(&old_config_path).await.unwrap_or(false) {
+            self.path = Some(old_config_path);
+            return self;
+        }
+
+        let config_folder = format!("{}/playit_gg", config_root);
         if let Err(error) = tokio::fs::create_dir_all(&config_folder).await {
             tracing::error!(?error, "failed to create configuration folder");
             self.path = Some("playit.toml".to_string());

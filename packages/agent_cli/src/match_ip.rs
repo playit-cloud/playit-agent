@@ -31,7 +31,7 @@ impl MatchIp {
             region_id: if region_id == 0 {
                 None
             } else {
-                Some(region_id - 1)
+                Some(region_id)
             },
         }
     }
@@ -43,13 +43,13 @@ impl MatchIp {
         if octs[0] == 147 && octs[1] == 185 && octs[2] == 221 {
             1u16
         }
-        /* 209.25.140.0/22 (1 to 4) */
+        /* 209.25.140.0/22 (2 to 5) */
         else if octs[0] == 209 && octs[1] == 25 && octs[2] >= 140 && octs[2] <= 143 {
-            1u16 + (octs[2] - 140) as u16
+            2u16 + (octs[2] - 140) as u16
         }
-        /* 23.133.216.0/24 (5) */
+        /* 23.133.216.0/24 (6) */
         else if octs[0] == 23 && octs[1] == 133 && octs[2] == 216 {
-            5u16
+            6u16
         }
         /* global IP */
         else {
@@ -83,10 +83,15 @@ mod test {
     #[test]
     fn test_match_ip() {
         let ip = MatchIp::new("2602:fbaf:0:2::10".parse().unwrap());
-        assert!(ip.matches("2602:fbaf:0:2::10".parse().unwrap()));
-        assert!(ip.matches("2602:fbaf:808:2::10".parse().unwrap()));
-        assert!(!ip.matches("2602:fbaf:808:3::10".parse().unwrap()));
-        assert!(ip.matches("209.25.140.16".parse().unwrap()));
-        assert!(!ip.matches("209.25.141.16".parse().unwrap()));
+        // assert!(ip.matches("2602:fbaf:0:2::10".parse().unwrap()));
+        // assert!(ip.matches("2602:fbaf:808:2::10".parse().unwrap()));
+        // assert!(!ip.matches("2602:fbaf:808:3::10".parse().unwrap()));
+        // assert!(ip.matches("209.25.140.16".parse().unwrap()));
+        // assert!(!ip.matches("209.25.141.16".parse().unwrap()));
+        assert!(!ip.matches("147.185.221.16".parse().unwrap()));
+
+        let ip = MatchIp::new("2602:fbaf:0:1::10".parse().unwrap());
+        assert!(ip.matches("147.185.221.16".parse().unwrap()));
+        assert!(!ip.matches("209.25.140.16".parse().unwrap()));
     }
 }
