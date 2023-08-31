@@ -5,82 +5,82 @@ on:
     types: [created]
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - name: macos intel
-            os: macos-latest
-            arch: x86_64-apple-darwin
-            artifact: playit-darwin-intel
-
-          - name: macos arm
-            os: macos-latest
-            arch: aarch64-apple-darwin
-            artifact: playit-darwin-arm
-
-          - name: linux 64bit
-            os: ubuntu-latest
-            arch: x86_64-unknown-linux-musl
-            apt_install: musl-tools
-            artifact: playit-linux-amd64
-
-          - name: linux arm64
-            os: ubuntu-latest
-            arch: aarch64-unknown-linux-gnu
-            apt_install: gcc-aarch64-linux-gnu
-            artifact: playit-linux-aarch64
-
-          - name: linux arm7
-            os: ubuntu-latest
-            arch: armv7-unknown-linux-gnueabihf
-            apt_install: gcc-arm-linux-gnueabihf
-            artifact: playit-linux-armv7
-
-    runs-on: ${{ matrix.platform.os }}
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Get release
-        id: get_release
-        uses: bruceadams/get-release@v1.2.3
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform.arch }}
-
-      - name: Run optional apt install
-        if: ${{ matrix.platform.apt_install }}
-        run: sudo apt-get update --yes && sudo apt-get install --yes ${{ matrix.platform.apt_install }}
-
-      - name: build release
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --target ${{ matrix.platform.arch }} --release --all
-
-      - name: Upload Binary
-        if: matrix.platform.os != 'windows-latest'
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
-          asset_name: ${{ matrix.platform.artifact }}
-          asset_content_type: application/octet-stream
+#  build:
+#    strategy:
+#      fail-fast: false
+#      matrix:
+#        platform:
+#          - name: macos intel
+#            os: macos-latest
+#            arch: x86_64-apple-darwin
+#            artifact: playit-darwin-intel
+#
+#          - name: macos arm
+#            os: macos-latest
+#            arch: aarch64-apple-darwin
+#            artifact: playit-darwin-arm
+#
+#          - name: linux 64bit
+#            os: ubuntu-latest
+#            arch: x86_64-unknown-linux-musl
+#            apt_install: musl-tools
+#            artifact: playit-linux-amd64
+#
+#          - name: linux arm64
+#            os: ubuntu-latest
+#            arch: aarch64-unknown-linux-gnu
+#            apt_install: gcc-aarch64-linux-gnu
+#            artifact: playit-linux-aarch64
+#
+#          - name: linux arm7
+#            os: ubuntu-latest
+#            arch: armv7-unknown-linux-gnueabihf
+#            apt_install: gcc-arm-linux-gnueabihf
+#            artifact: playit-linux-armv7
+#
+#    runs-on: ${{ matrix.platform.os }}
+#    steps:
+#      - uses: actions/checkout@v3
+#
+#      - name: Get release
+#        id: get_release
+#        uses: bruceadams/get-release@v1.2.3
+#        env:
+#          GITHUB_TOKEN: ${{ github.token }}
+#
+#      - uses: dtolnay/rust-toolchain@stable
+#        with:
+#          targets: ${{ matrix.platform.arch }}
+#
+#      - name: Run optional apt install
+#        if: ${{ matrix.platform.apt_install }}
+#        run: sudo apt-get update --yes && sudo apt-get install --yes ${{ matrix.platform.apt_install }}
+#
+#      - name: build release
+#        uses: actions-rs/cargo@v1
+#        with:
+#          command: build
+#          args: --target ${{ matrix.platform.arch }} --release --all
+#
+#      - name: Upload Binary
+#        if: matrix.platform.os != 'windows-latest'
+#        uses: actions/upload-release-asset@v1
+#        env:
+#          GITHUB_TOKEN: ${{ github.token }}
+#        with:
+#          upload_url: ${{ steps.get_release.outputs.upload_url }}
+#          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
+#          asset_name: ${{ matrix.platform.artifact }}
+#          asset_content_type: application/octet-stream
   windows_build:
     strategy:
       fail-fast: false
       matrix:
         platform:
-          - name: windows 32bit
-            os: windows-latest
-            arch: i686-pc-windows-msvc
-            artifact: playit-windows-i686
+#          - name: windows 32bit
+#            os: windows-latest
+#            arch: i686-pc-windows-msvc
+#            artifact: playit-windows-i686
           - name: windows 64bit
             os: windows-latest
             arch: x86_64-pc-windows-msvc
@@ -106,7 +106,7 @@ jobs:
         with:
           targets: ${{ matrix.platform.arch }}
 
-      - run: cargo install wix
+      - run: cargo install cargo-wix
       - run: cargo wix --target ${{ matrix.platform.arch }} --package playit-cli
 
       - name: Upload .exe
