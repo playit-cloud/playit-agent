@@ -91,30 +91,27 @@
                     <Component Id="PlayitLocalAppDataFolder">
                         <CreateFolder />
                         <RemoveFolder Id="RemovePlayitLocalAppDataFolder" On="uninstall" />
-                        <RegistryKey Root="HKCU" Key="Software\DevelopedMethodsLLC\playit_gg">
-                            <RegistryValue Name="AppDataPath" Value="1" KeyPath="yes" Type="integer" />
-                        </RegistryKey>
+                        <RegistryValue Root="HKCU" Key="Software\DevelopedMethodsLLC\playit_gg" Name="AppDataPath" Type="integer" Value="1" KeyPath="yes"/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <Directory Id="ProgramMenuFolder">
+                <Directory Id="ApplicationProgramsFolder" Name="Playit.gg">
+                    <Component Id="ApplicationShortcut">
+                        <Shortcut Id="ApplicationStartMenuShortcut"
+                                  Name="Playit.gg"
+                                  Description="Makes local ports public. Put your game servers online."
+                                  Target="bin/playit.exe"
+                                  WorkingDirectory="APPLICATIONROOTDIRECTORY"/>
+                        <RemoveFolder Id="CleanUpShortCut" Directory="ApplicationProgramsFolder" On="uninstall"/>
+                        <RegistryValue Root="HKCU" Key="Software\DevelopedMethodsLLC\playit_gg" Name="installed" Type="integer" Value="1" KeyPath="yes"/>
                     </Component>
                 </Directory>
             </Directory>
 
             <Directory Id="$(var.PlatformProgramFilesFolder)" Name="PFiles">
                 <Directory Id="APPLICATIONFOLDER" Name="playit_gg">
-
-                    <!--
-                      Enabling the license sidecar file in the installer is a four step process:
-
-                      1. Uncomment the `Component` tag and its contents.
-                      2. Change the value for the `Source` attribute in the `File` tag to a path
-                         to the file that should be included as the license sidecar file. The path
-                         can, and probably should be, relative to this file.
-                      3. Change the value for the `Name` attribute in the `File` tag to the
-                         desired name for the file when it is installed alongside the `bin` folder
-                         in the installation directory. This can be omitted if the desired name is
-                         the same as the file name.
-                      4. Uncomment the `ComponentRef` tag with the Id attribute value of "License"
-                         further down in this file.
-                    -->
                     <!--
                     <Component Id="License" Guid="*">
                         <File Id="LicenseFile" Name="ChangeMe" DiskId="1" Source="C:\Path\To\File" KeyPath="yes"/>
@@ -155,14 +152,9 @@
             Display="expand"
             Absent="disallow">
 
-            <!--
-              Uncomment the following `ComponentRef` tag to add the license
-              sidecar file to the installer.
-            -->
-            <!--<ComponentRef Id="License"/>-->
-
             <ComponentRef Id="binary0"/>
             <ComponentRef Id="PlayitLocalAppDataFolder"/>
+            <ComponentRef Id="ApplicationShortcut"/>
 
             <Feature
                 Id="Environment"
