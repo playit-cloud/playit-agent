@@ -34,7 +34,7 @@ impl PlayitSecret {
             return self;
         }
 
-        let config_root = config_path.unwrap().to_string_lossy();
+        let config_root = config_path.as_ref().unwrap().to_string_lossy();
 
         /* old linux versions saved data in playit folder not playit_gg */
         let old_config_path = format!("{}/playit/playit.toml", config_root);
