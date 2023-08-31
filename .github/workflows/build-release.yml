@@ -93,3 +93,14 @@ jobs:
           asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
           asset_name: ${{ matrix.platform.artifact }}
           asset_content_type: application/octet-stream
+
+      - name: Upload Binary
+        if: matrix.platform.os != 'windows-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
+          asset_name: ${{ matrix.platform.artifact }}
+          asset_content_type: application/octet-stream

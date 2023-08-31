@@ -22,10 +22,26 @@ impl PlayitSecret {
         Ok(PlayitApi::create(API_BASE.to_string(), Some(secret)))
     }
 
-    pub fn with_default_path(&mut self) -> &mut Self {
-        if self.path.is_none() {
-            self.path.replace("playit.toml".to_string());
+    pub async fn with_default_path(&mut self) -> &mut Self {
+        if self.path.is_some() {
+            return self;
         }
+
+        let config_path = dirs::config_local_dir();
+
+        if config_path.is_none() || tokio::fs::try_exists("playit.toml").await.unwrap_or(false) {
+            self.path = Some("playit.toml".to_string());
+            return self;
+        }
+
+        let config_folder = format!("{}/playit_gg", config_path.unwrap().to_string_lossy());
+        if let Err(error) = tokio::fs::create_dir_all(&config_folder).await {
+            tracing::error!(?error, "failed to create configuration folder");
+            self.path = Some("playit.toml".to_string());
+            return self;
+        }
+
+        self.path = Some(format!("{}/playit.toml", config_folder));
         self
     }
 

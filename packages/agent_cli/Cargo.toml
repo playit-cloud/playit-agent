@@ -1,6 +1,6 @@
 [package]
 name = "playit-cli"
-version = "1.0.0-rc7"
+version = "0.10.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -20,6 +20,10 @@ clap = { version = "4.4", features = ["derive"] }
 urlencoding = "2.1"
 serde_yaml = "0.9"
 crossterm = "0.26"
+dirs = "5.0.1"
 
 playit-agent-core = { path = "../agent_core" }
 playit-agent-proto = { path = "../agent_proto" }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

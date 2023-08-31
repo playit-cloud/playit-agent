@@ -17,7 +17,7 @@ use crate::{match_ip::MatchIp, playit_secret::PlayitSecret, ui::UI, CliError};
 
 pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliError> {
     let secret_code = secret
-        .with_default_path()
+        .with_default_path().await
         .ensure_valid(ui)
         .await?
         .get_or_setup(ui)
