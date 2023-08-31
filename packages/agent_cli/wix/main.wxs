@@ -89,9 +89,12 @@
         <Directory Id="TARGETDIR" Name="SourceDir">
             <Directory Id="LocalAppDataFolder">
                 <Directory Id="MyAppDirectory" Name="playit_gg">
-                    <Component Id="PlayitLocalAppDataFolder" Guid="*">
+                    <Component Id="PlayitLocalAppDataFolder">
                         <CreateFolder />
                         <RemoveFolder Id="RemovePlayitLocalAppDataFolder" On="uninstall" />
+                        <RegistryKey Root="HKCU" Key="Software\DevelopedMethodsLLC\playit_gg">
+                            <RegistryValue Name="AppDataPath" Value="1" KeyPath="yes" Type="integer" />
+                        </RegistryKey>
                     </Component>
                 </Directory>
             </Directory>
