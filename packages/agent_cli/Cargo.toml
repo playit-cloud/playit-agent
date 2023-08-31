@@ -23,3 +23,6 @@ crossterm = "0.26"
 
 playit-agent-core = { path = "../agent_core" }
 playit-agent-proto = { path = "../agent_proto" }
+
+[build-dependencies]
+embed-resource = "2.2.0"
