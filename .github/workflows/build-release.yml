@@ -81,12 +81,10 @@ jobs:
             os: windows-latest
             arch: i686-pc-windows-msvc
             artifact: playit-windows-x86
-            arch_code: x86
           - name: windows 64bit
             os: windows-latest
             arch: x86_64-pc-windows-msvc
             artifact: playit-windows-x86_64
-            arch_code: x86_64
     runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v3
@@ -109,7 +107,7 @@ jobs:
           targets: ${{ matrix.platform.arch }}
 
       - run: cargo install cargo-wix
-      - run: cargo wix --target ${{ matrix.platform.arch }} --package playit-cli --nocapture
+      - run: cargo wix --target ${{ matrix.platform.arch }} --package playit-cli --nocapture --output=target/wix/${{ matrix.platform.artifact }}.msi
 
       - name: Upload .exe
         uses: actions/upload-release-asset@v1
@@ -127,6 +125,6 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./target/wix/playit-cli-*-${{ matrix.platform.arch_code }}.msi
+          asset_path: ./target/wix/${{ matrix.platform.artifact }}.msi
           asset_name: ${{ matrix.platform.artifact }}.msi
           asset_content_type: application/octet-stream
