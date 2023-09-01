@@ -64,76 +64,110 @@ jobs:
           asset_content_type: application/octet-stream
 
   build_macos:
-      strategy:
-        fail-fast: false
-        matrix:
-          platform:
-            - name: macos intel
-              os: macos-latest
-              arch: x86_64-apple-darwin
-              artifact: playit-darwin-intel
-              codesign: apple
+    environment: production
 
-            - name: macos arm
-              os: macos-latest
-              arch: aarch64-apple-darwin
-              artifact: playit-darwin-arm
-              codesign: apple
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: macos intel
+            os: macos-latest
+            arch: x86_64-apple-darwin
+            artifact: playit-darwin-intel
 
-      runs-on: ${{ matrix.platform.os }}
-      steps:
-        - uses: actions/checkout@v3
+          - name: macos arm
+            os: macos-latest
+            arch: aarch64-apple-darwin
+            artifact: playit-darwin-arm
 
-        - name: Get release
-          id: get_release
-          uses: bruceadams/get-release@v1.2.3
-          env:
-            GITHUB_TOKEN: ${{ github.token }}
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v3
 
-        - uses: dtolnay/rust-toolchain@stable
-          with:
-            targets: ${{ matrix.platform.arch }}
+      - name: Get release
+        id: get_release
+        uses: bruceadams/get-release@v1.2.3
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
-        - name: Run optional apt install
-          if: ${{ matrix.platform.apt_install }}
-          run: sudo apt-get update --yes && sudo apt-get install --yes ${{ matrix.platform.apt_install }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform.arch }}
 
-        - name: build release
-          uses: actions-rs/cargo@v1
-          with:
-            command: build
-            args: --target ${{ matrix.platform.arch }} --release --all
+      - name: Run optional apt install
+        if: ${{ matrix.platform.apt_install }}
+        run: sudo apt-get update --yes && sudo apt-get install --yes ${{ matrix.platform.apt_install }}
 
-        # TODO: follow https://federicoterzi.com/blog/automatic-code-signing-and-notarization-for-macos-apps-using-github-actions/
-        - name: codesign apple
-          if: matrix.platform.codesign == 'apple'
-          env:
-            BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
-            TMP_KEYCHAIN_PASS: ${{ secrets.TMP_KEYCHAIN_PASS }}
-          run: |
-            # setup certificate file
-            echo $MACOS_CERTIFICATE | base64 —decode > $RUNNER_TEMP/certificate.p12
+      - name: build release
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --target ${{ matrix.platform.arch }} --release --all
 
-            # setup temp keychain
-            security create-keychain -p "$TMP_KEYCHAIN_PASS" $RUNNER_TEMP/build.keychain
-            security default-keychain -s $RUNNER_TEMP/build.keychain
-            security unlock-keychain -p "$TMP_KEYCHAIN_PASS" $RUNNER_TEMP/build.keychain
+      # reference: https://federicoterzi.com/blog/automatic-code-signing-and-notarization-for-macos-apps-using-github-actions/
+      - name: Codesign binary
+        # Extract the secrets we defined earlier as environment variables
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.PROD_MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.PROD_MACOS_CERTIFICATE_PWD }}
+          MACOS_CERTIFICATE_NAME: ${{ secrets.PROD_MACOS_CERTIFICATE_NAME }}
+          MACOS_CI_KEYCHAIN_PWD: ${{ secrets.PROD_MACOS_CI_KEYCHAIN_PWD }}
+        run: |
+          # Turn our base64-encoded certificate back to a regular .p12 file
 
-            # sign binary
-            security import $RUNNER_TEMP/certificate.p12 -k $RUNNER_TEMP/build.keychain -T /usr/bin/codesign
-            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$TMP_KEYCHAIN_PASS" $RUNNER_TEMP/build.keychain
-            /usr/bin/codesign --force -s <identity-id> ./path/to/you/app -v
+          echo $MACOS_CERTIFICATE | base64 --decode > certificate.p12
 
-        - name: Upload Binary
-          if: matrix.platform.os != 'windows-latest'
-          uses: actions/upload-release-asset@v1
-          env:
-            GITHUB_TOKEN: ${{ github.token }}
-          with:
-            upload_url: ${{ steps.get_release.outputs.upload_url }}
-            asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
-            asset_name: ${{ matrix.platform.artifact }}
-            asset_content_type: application/octet-stream
+          # We need to create a new keychain, otherwise using the certificate will prompt
+          # with a UI dialog asking for the certificate password, which we can't
+          # use in a headless CI environment
+
+          security create-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
+          security import certificate.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_CI_KEYCHAIN_PWD" build.keychain
+
+          /usr/bin/codesign --force -s "$MACOS_CERTIFICATE_NAME" --options runtime target/${{ matrix.platform.arch }}/release/playit-cli
+
+      - name: Notorize binary
+        env:
+          PROD_MACOS_NOTARIZATION_APPLE_ID: ${{ secrets.PROD_MACOS_NOTARIZATION_APPLE_ID }}
+          PROD_MACOS_NOTARIZATION_TEAM_ID: ${{ secrets.PROD_MACOS_NOTARIZATION_TEAM_ID }}
+          PROD_MACOS_NOTARIZATION_PWD: ${{ secrets.PROD_MACOS_NOTARIZATION_PWD }}
+        run: |
+          echo "Create keychain profile"
+          xcrun notarytool store-credentials "notarytool-profile" --apple-id "$PROD_MACOS_NOTARIZATION_APPLE_ID" --team-id "$PROD_MACOS_NOTARIZATION_TEAM_ID" --password "$PROD_MACOS_NOTARIZATION_PWD"
+
+          # We can't notarize an app bundle directly, but we need to compress it as an archive.
+          # Therefore, we create a zip file containing our app bundle, so that we can send it to the
+          # notarization service
+
+          echo "Creating temp notarization archive"
+          ditto -c -k --keepParent "target/${{ matrix.platform.arch }}/release/playit-cli" "notarization.zip"
+
+          # Here we send the notarization request to the Apple's Notarization service, waiting for the result.
+          # This typically takes a few seconds inside a CI environment, but it might take more depending on the App
+          # characteristics. Visit the Notarization docs for more information and strategies on how to optimize it if
+          # you're curious
+
+          echo "Notarize app"
+          xcrun notarytool submit "notarization.zip" --keychain-profile "notarytool-profile" --wait
+
+          # Finally, we need to "attach the staple" to our executable, which will allow our app to be
+          # validated by macOS even when an internet connection is not available.
+          echo "Attach staple"
+          xcrun stapler staple "target/${{ matrix.platform.arch }}/release/playit-cli"
+
+      - name: Upload Binary
+        if: matrix.platform.os != 'windows-latest'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
+          asset_name: ${{ matrix.platform.artifact }}
+          asset_content_type: application/octet-stream
 
   windows_build:
     strategy:
