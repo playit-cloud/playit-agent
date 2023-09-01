@@ -15,18 +15,21 @@ jobs:
             arch: x86_64-unknown-linux-musl
             apt_install: musl-tools
             artifact: playit-linux-amd64
+            deb_arch: amd64
 
           - name: linux arm64
             os: ubuntu-latest
             arch: aarch64-unknown-linux-gnu
             apt_install: gcc-aarch64-linux-gnu
             artifact: playit-linux-aarch64
+            deb_arch: arm64
 
           - name: linux arm7
             os: ubuntu-latest
             arch: armv7-unknown-linux-gnueabihf
             apt_install: gcc-arm-linux-gnueabihf
             artifact: playit-linux-armv7
+            deb_arch: armhf
 
     runs-on: ${{ matrix.platform.os }}
     steps:
@@ -53,7 +56,6 @@ jobs:
           args: --target ${{ matrix.platform.arch }} --release --all
 
       - name: Upload Binary
-        if: matrix.platform.os != 'windows-latest'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -61,6 +63,19 @@ jobs:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
           asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
           asset_name: ${{ matrix.platform.artifact }}
+          asset_content_type: application/octet-stream
+
+      - name: Package .deb
+        run: bash ./build-scripts/package-linux-deb.sh "${{ matrix.platform.arch }}" "${{ matrix.platform.deb_arch }}"
+
+      - name: Upload .deb
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/deb/playit_${{ matrix.platform.deb_arch }}.deb
+          asset_name: playit_${{ matrix.platform.deb_arch }}.deb
           asset_content_type: application/octet-stream
 
   build_macos:
@@ -129,37 +144,37 @@ jobs:
 
           /usr/bin/codesign --force -s "$MACOS_CERTIFICATE_NAME" --options runtime target/${{ matrix.platform.arch }}/release/playit-cli
 
-      - name: Notorize binary
-        env:
-          PROD_MACOS_NOTARIZATION_APPLE_ID: ${{ secrets.PROD_MACOS_NOTARIZATION_APPLE_ID }}
-          PROD_MACOS_NOTARIZATION_TEAM_ID: ${{ secrets.PROD_MACOS_NOTARIZATION_TEAM_ID }}
-          PROD_MACOS_NOTARIZATION_PWD: ${{ secrets.PROD_MACOS_NOTARIZATION_PWD }}
-        run: |
-          echo "Create keychain profile"
-          xcrun notarytool store-credentials "notarytool-profile" --apple-id "$PROD_MACOS_NOTARIZATION_APPLE_ID" --team-id "$PROD_MACOS_NOTARIZATION_TEAM_ID" --password "$PROD_MACOS_NOTARIZATION_PWD"
-
-          # We can't notarize an app bundle directly, but we need to compress it as an archive.
-          # Therefore, we create a zip file containing our app bundle, so that we can send it to the
-          # notarization service
-
-          echo "Creating temp notarization archive"
-          ditto -c -k --keepParent "target/${{ matrix.platform.arch }}/release/playit-cli" "notarization.zip"
-
-          # Here we send the notarization request to the Apple's Notarization service, waiting for the result.
-          # This typically takes a few seconds inside a CI environment, but it might take more depending on the App
-          # characteristics. Visit the Notarization docs for more information and strategies on how to optimize it if
-          # you're curious
-
-          echo "Notarize app"
-          xcrun notarytool submit "notarization.zip" --keychain-profile "notarytool-profile" --wait
-
-          # Finally, we need to "attach the staple" to our executable, which will allow our app to be
-          # validated by macOS even when an internet connection is not available.
-          echo "Attach staple"
-          xcrun stapler staple "target/${{ matrix.platform.arch }}/release/playit-cli"
+#      TODO: use webhooks to kick off another job that will update release
+#      - name: Notorize binary
+#        env:
+#          PROD_MACOS_NOTARIZATION_APPLE_ID: ${{ secrets.PROD_MACOS_NOTARIZATION_APPLE_ID }}
+#          PROD_MACOS_NOTARIZATION_TEAM_ID: ${{ secrets.PROD_MACOS_NOTARIZATION_TEAM_ID }}
+#          PROD_MACOS_NOTARIZATION_PWD: ${{ secrets.PROD_MACOS_NOTARIZATION_PWD }}
+#        run: |
+#          echo "Create keychain profile"
+#          xcrun notarytool store-credentials "notarytool-profile" --apple-id "$PROD_MACOS_NOTARIZATION_APPLE_ID" --team-id "$PROD_MACOS_NOTARIZATION_TEAM_ID" --password "$PROD_MACOS_NOTARIZATION_PWD"
+#
+#          # We can't notarize an app bundle directly, but we need to compress it as an archive.
+#          # Therefore, we create a zip file containing our app bundle, so that we can send it to the
+#          # notarization service
+#
+#          echo "Creating temp notarization archive"
+#          ditto -c -k --keepParent "target/${{ matrix.platform.arch }}/release/playit-cli" "notarization.zip"
+#
+#          # Here we send the notarization request to the Apple's Notarization service, waiting for the result.
+#          # This typically takes a few seconds inside a CI environment, but it might take more depending on the App
+#          # characteristics. Visit the Notarization docs for more information and strategies on how to optimize it if
+#          # you're curious
+#
+#          echo "Notarize app"
+#          xcrun notarytool submit "notarization.zip" --keychain-profile "notarytool-profile" --wait
+#
+#          # Finally, we need to "attach the staple" to our executable, which will allow our app to be
+#          # validated by macOS even when an internet connection is not available.
+#          echo "Attach staple"
+#          xcrun stapler staple "target/${{ matrix.platform.arch }}/release/playit-cli"
 
       - name: Upload Binary
-        if: matrix.platform.os != 'windows-latest'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -169,7 +184,7 @@ jobs:
           asset_name: ${{ matrix.platform.artifact }}
           asset_content_type: application/octet-stream
 
-  windows_build:
+  build_windows:
     strategy:
       fail-fast: false
       matrix:
