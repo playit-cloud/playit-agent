@@ -27,8 +27,8 @@ pub struct TunnelRunner<L: AddressLookup> {
 }
 
 impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<SocketAddr> {
-    pub async fn new(secret_key: String, lookup: Arc<L>) -> Result<Self, SetupError> {
-        let tunnel = SimpleTunnel::setup(secret_key).await?;
+    pub async fn new(api_url: String, secret_key: String, lookup: Arc<L>) -> Result<Self, SetupError> {
+        let tunnel = SimpleTunnel::setup(api_url, secret_key).await?;
         let udp_clients = UdpClients::new(tunnel.udp_tunnel(), lookup.clone());
 
         Ok(TunnelRunner {

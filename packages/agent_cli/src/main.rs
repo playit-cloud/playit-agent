@@ -179,7 +179,12 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 }
             }
 
-            let tunnel = TunnelRunner::new(secret_key, Arc::new(LookupWithOverrides(mapping_overrides))).await?;
+            let tunnel = TunnelRunner::new(
+                API_BASE.to_string(),
+                secret_key,
+                Arc::new(LookupWithOverrides(mapping_overrides))
+            ).await?;
+
             tunnel.run().await;
         }
         // Some(("launch", m)) => {
@@ -326,7 +331,7 @@ pub async fn tunnels_prepare(api: &PlayitApi, name: Option<String>, tunnel_type:
 
         points += match option.alloc {
             AccountTunnelAllocation::Pending => -10,
-            AccountTunnelAllocation::Disabled => -40,
+            AccountTunnelAllocation::Disabled(_) => -40,
             AccountTunnelAllocation::Allocated(_) => 0,
         };
 

@@ -2,6 +2,9 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 	pub fn new(client: C) -> Self {
 		PlayitApiClient { client }
 	}
+	pub fn get_client(&self) -> &C {
+		&self.client
+	}
 	fn unwrap<S, F>(res: Result<ApiResult<S, F>, C::Error>) -> Result<S, ApiError<F, C::Error>> {
 		match res {
 			Ok(ApiResult::Success(v)) => Ok(v),
@@ -83,25 +86,25 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 #[serde(tag = "status", content = "data")]
 pub enum ApiResult<S, F> {
-    #[serde(rename = "success")]
-    Success(S),
-    #[serde(rename = "fail")]
-    Fail(F),
-    #[serde(rename = "error")]
-    Error(ApiResponseError),
+	#[serde(rename = "success")]
+	Success(S),
+	#[serde(rename = "fail")]
+	Fail(F),
+	#[serde(rename = "error")]
+	Error(ApiResponseError),
 }
 
 #[derive(Debug)]
 pub enum ApiError<F, C> {
-    Fail(F),
-    ApiError(ApiResponseError),
-    ClientError(C),
+	Fail(F),
+	ApiError(ApiResponseError),
+	ClientError(C),
 }
 
 impl<F: std::fmt::Debug, C: std::fmt::Debug> std::fmt::Display for ApiError<F, C> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
 }
 
 impl<F: std::fmt::Debug, C: std::fmt::Debug> std::error::Error for ApiError<F, C> {
@@ -110,14 +113,14 @@ impl<F: std::fmt::Debug, C: std::fmt::Debug> std::error::Error for ApiError<F, C
 
 #[derive(Debug)]
 pub enum ApiErrorNoFail<C> {
-    ApiError(ApiResponseError),
-    ClientError(C),
+	ApiError(ApiResponseError),
+	ClientError(C),
 }
 
 impl<C: std::fmt::Debug> std::fmt::Display for ApiErrorNoFail<C> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
 }
 
 impl<C: std::fmt::Debug> std::error::Error for ApiErrorNoFail<C> {
@@ -127,13 +130,13 @@ impl<C: std::fmt::Debug> std::error::Error for ApiErrorNoFail<C> {
 
 #[async_trait::async_trait]
 pub trait PlayitHttpClient {
-    type Error;
+	type Error;
 
-    async fn call<Req: serde::Serialize + std::marker::Send, Res: serde::de::DeserializeOwned, Err: serde::de::DeserializeOwned>(&self, path: &str, req: Req) -> Result<ApiResult<Res, Err>, Self::Error>;
+	async fn call<Req: serde::Serialize + std::marker::Send, Res: serde::de::DeserializeOwned, Err: serde::de::DeserializeOwned>(&self, path: &str, req: Req) -> Result<ApiResult<Res, Err>, Self::Error>;
 }
 
 pub struct PlayitApiClient<C: PlayitHttpClient> {
-    client: C,
+	client: C,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -142,13 +145,18 @@ pub enum ApiResponseError {
 	#[serde(rename = "validation")]
 	Validation(String),
 	#[serde(rename = "path-not-found")]
-	PathNotFound,
+	PathNotFound(PathNotFound),
 	#[serde(rename = "auth")]
 	Auth(AuthError),
 	#[serde(rename = "internal")]
 	Internal,
 }
 
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PathNotFound {
+	pub path: String,
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub enum AuthError {
@@ -164,6 +172,8 @@ pub enum AuthError {
 	NoLongerValid,
 	GuestAccountNotAllowed,
 	EmailMustBeVerified,
+	AccountDoesNotExist,
+	AdminOnly,
 }
 
 impl std::fmt::Display for ApiResponseError {
@@ -256,6 +266,8 @@ pub enum TunnelCreateUseAllocation {
 	DedicatedIp(UseAllocDedicatedIp),
 	#[serde(rename = "port-allocation")]
 	PortAllocation(UseAllocPortAlloc),
+	#[serde(rename = "region")]
+	Region(UseRegion),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -267,6 +279,29 @@ pub struct UseAllocDedicatedIp {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct UseAllocPortAlloc {
 	pub alloc_id: uuid::Uuid,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct UseRegion {
+	pub region: AllocationRegion,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum AllocationRegion {
+	#[serde(rename = "smart-global")]
+	SmartGlobal,
+	#[serde(rename = "global")]
+	Global,
+	#[serde(rename = "north-america")]
+	NorthAmerica,
+	#[serde(rename = "europe")]
+	Europe,
+	#[serde(rename = "asia")]
+	Asia,
+	#[serde(rename = "india")]
+	India,
+	#[serde(rename = "south-america")]
+	SouthAmerica,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -341,6 +376,7 @@ pub struct AccountTunnel {
 	pub firewall_id: Option<uuid::Uuid>,
 	pub ratelimit: Ratelimit,
 	pub active: bool,
+	pub region: Option<AllocationRegion>,
 }
 
 
@@ -350,15 +386,27 @@ pub enum AccountTunnelAllocation {
 	#[serde(rename = "pending")]
 	Pending,
 	#[serde(rename = "disabled")]
-	Disabled,
+	Disabled(TunnelDisabled),
 	#[serde(rename = "allocated")]
 	Allocated(TunnelAllocated),
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct TunnelDisabled {
+	pub reason: TunnelDisabledReason,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum TunnelDisabledReason {
+	OverPortLimit,
+	RegionRequiresPremium,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct TunnelAllocated {
 	pub id: uuid::Uuid,
 	pub ip_hostname: String,
+	pub static_ip4: Option<std::net::Ipv4Addr>,
 	pub assigned_domain: String,
 	pub assigned_srv: Option<String>,
 	pub tunnel_ip: std::net::IpAddr,
@@ -368,6 +416,7 @@ pub struct TunnelAllocated {
 	pub ip_type: IpType,
 	pub region: AllocationRegion,
 }
+
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "subscription")]
@@ -393,24 +442,6 @@ pub enum IpType {
 	Ip4,
 	#[serde(rename = "ip6")]
 	Ip6,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum AllocationRegion {
-	#[serde(rename = "smart-global")]
-	SmartGlobal,
-	#[serde(rename = "global")]
-	Global,
-	#[serde(rename = "north-america")]
-	NorthAmerica,
-	#[serde(rename = "europe")]
-	Europe,
-	#[serde(rename = "asia")]
-	Asia,
-	#[serde(rename = "india")]
-	India,
-	#[serde(rename = "south-america")]
-	SouthAmerica,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -882,8 +913,11 @@ pub struct ReqClaimReject {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub enum ClaimRejectError {
-	InvalidCode,
-	ClaimCodeNotFound,
+	CodeNotFound,
+	ClaimAccepted,
+	ClaimAlreadyRejected,
+	CodeExpired,
+	AgentNotReady,
 }
 
 impl std::fmt::Display for ClaimRejectError {
@@ -954,6 +988,7 @@ pub struct WebAuth {
 	pub timestamp: u64,
 	pub account_status: AccountStatus,
 	pub totp_status: TotpStatus,
+	pub admin_id: Option<u64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
@@ -986,3 +1021,5 @@ pub struct SignedEpoch {
 pub enum LoginCreateGuestError {
 	Blocked,
 }
+
+

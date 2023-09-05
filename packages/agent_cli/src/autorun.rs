@@ -13,7 +13,7 @@ use playit_agent_core::{
 };
 use playit_agent_core::api::api::AgentType;
 
-use crate::{match_ip::MatchIp, playit_secret::PlayitSecret, ui::UI, CliError};
+use crate::{match_ip::MatchIp, playit_secret::PlayitSecret, ui::UI, CliError, API_BASE};
 
 pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliError> {
     let secret_code = secret
@@ -49,7 +49,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
     ui.write_screen("starting up tunnel connection");
 
     let runner = loop {
-        match TunnelRunner::new(secret_code.clone(), lookup.clone()).await {
+        match TunnelRunner::new(API_BASE.to_string(), secret_code.clone(), lookup.clone()).await {
             Ok(res) => break res,
             Err(error) => {
                 error_count += 1;
@@ -113,7 +113,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
 
                 let src = match &tunnel.alloc {
                     AccountTunnelAllocation::Pending => "pending".to_string(),
-                    AccountTunnelAllocation::Disabled => format!("action required https://playit.gg/account/tunnel/{}", tunnel.id),
+                    AccountTunnelAllocation::Disabled(_) => format!("action required https://playit.gg/account/tunnel/{}", tunnel.id),
                     AccountTunnelAllocation::Allocated(alloc) => {
                         alloc_port = Some(alloc.port_start);
                         alloc.assigned_srv.clone().unwrap_or_else(|| format!("{}:{}", alloc.assigned_domain, alloc.port_start))

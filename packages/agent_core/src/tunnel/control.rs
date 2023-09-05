@@ -67,7 +67,11 @@ impl AuthenticatedControl {
             pong: self.last_pong.clone(),
         };
 
-        let res = conn.authenticate(self.secret_key.clone()).await?;
+        let res = conn.authenticate(
+            self.api_client.get_client().api_base().to_string(),
+            self.secret_key.clone()
+        ).await?;
+
         *self = res;
         Ok(())
     }

@@ -19,12 +19,12 @@ pub struct SimpleTunnel {
 }
 
 impl SimpleTunnel {
-    pub async fn setup(secret_key: String) -> Result<Self, SetupError> {
+    pub async fn setup(api_url: String, secret_key: String) -> Result<Self, SetupError> {
         let udp_tunnel = UdpTunnel::new().await?;
 
         let addresses = address_lookup("control.playit.gg", 5525).await;
         let setup = SetupFindSuitableChannel::new(addresses).setup().await?;
-        let control_channel = setup.authenticate(secret_key.clone()).await?;
+        let control_channel = setup.authenticate(api_url, secret_key.clone()).await?;
 
         Ok(SimpleTunnel {
             control_channel,

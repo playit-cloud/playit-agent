@@ -149,8 +149,8 @@ pub struct ConnectedControl {
 }
 
 impl ConnectedControl {
-    pub async fn authenticate(self, secret_key: String) -> Result<AuthenticatedControl, SetupError> {
-        let api = PlayitApi::create("https://api.playit.gg".to_string(), Some(secret_key.clone()));
+    pub async fn authenticate(self, api_url: String, secret_key: String) -> Result<AuthenticatedControl, SetupError> {
+        let api = PlayitApi::create(api_url, Some(secret_key.clone()));
 
         let res = api.proto_register(ReqProtoRegister {
             agent_version: PlayitAgentVersion {

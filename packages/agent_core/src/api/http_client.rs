@@ -38,6 +38,10 @@ impl HttpClient {
             client: hyper::Client::builder().build(connector),
         }
     }
+
+    pub fn api_base(&self) -> &str {
+        &self.api_base
+    }
 }
 
 #[async_trait]
