@@ -151,12 +151,13 @@ jobs:
           # you're curious
 
           echo "Notarize app"
-          xcrun notarytool submit "notarization.zip" --keychain-profile "notarytool-profile" --wait
+          xcrun notarytool submit "notarization.zip" --keychain-profile "notarytool-profile"
 
           # Finally, we need to "attach the staple" to our executable, which will allow our app to be
           # validated by macOS even when an internet connection is not available.
-          echo "Attach staple"
-          xcrun stapler staple "target/${{ matrix.platform.arch }}/release/playit-cli"
+          # REMOVED: don't wait for notarization, takes too long
+          # echo "Attach staple"
+          # xcrun stapler staple "target/${{ matrix.platform.arch }}/release/playit-cli"
 
       - name: Upload Binary
         if: matrix.platform.os != 'windows-latest'
