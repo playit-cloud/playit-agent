@@ -1,24 +1,23 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::net::UdpSocket;
 
+use tokio::net::UdpSocket;
 
 use playit_agent_proto::control_feed::ControlFeed;
 use playit_agent_proto::control_messages::{ControlRequest, ControlResponse, Ping, Pong};
 use playit_agent_proto::encoding::MessageEncoding;
 use playit_agent_proto::raw_slice::RawSlice;
 use playit_agent_proto::rpc::ControlRpcMessage;
+
 use crate::api::api::{AgentVersion, ApiError, ApiErrorNoFail, ApiResponseError, Platform, PlayitAgentVersion, ReqProtoRegister};
 use crate::api::http_client::HttpClientError;
 use crate::api::PlayitApi;
-
-use crate::utils::now_milli;
 use crate::tunnel::control::AuthenticatedControl;
 use crate::utils::error_helper::ErrorHelper;
+use crate::utils::now_milli;
 
 pub struct SetupFindSuitableChannel {
     options: Vec<SocketAddr>,
@@ -54,7 +53,7 @@ impl SetupFindSuitableChannel {
                     content: ControlRequest::Ping(Ping {
                         now: now_milli(),
                         current_ping: None,
-                        session_id: None
+                        session_id: None,
                     }),
                 }.write_to(&mut buffer)?;
 
@@ -128,6 +127,9 @@ fn get_platform() -> Platform {
     #[cfg(target_os = "linux")]
     return Platform::Linux;
 
+    #[cfg(target_os = "freebsd")]
+    return Platform::Freebsd;
+
     #[cfg(target_os = "macos")]
     return Platform::Macos;
 
@@ -177,7 +179,7 @@ impl ConnectedControl {
 
             ControlRpcMessage {
                 request_id: 10,
-                content: RawSlice(&bytes)
+                content: RawSlice(&bytes),
             }.write_to(&mut buffer)?;
 
             self.udp.send_to(&buffer, self.control_addr).await?;
@@ -217,14 +219,14 @@ impl ConnectedControl {
                                             buffer,
                                             current_ping: None,
                                         })
-                                    },
+                                    }
                                     ControlResponse::InvalidSignature => Err(SetupError::RegisterInvalidSignature),
                                     ControlResponse::Unauthorized => Err(SetupError::RegisterUnauthorized),
                                     other => {
                                         tracing::error!(?other, "expected AgentRegistered but got something else");
                                         continue;
                                     }
-                                }
+                                };
                             }
                             Ok(other) => {
                                 tracing::error!(?other, "got unexpected response from register request");
@@ -290,8 +292,7 @@ impl Display for SetupError {
     }
 }
 
-impl Error for SetupError {
-}
+impl Error for SetupError {}
 
 impl From<std::io::Error> for SetupError {
     fn from(e: std::io::Error) -> Self {

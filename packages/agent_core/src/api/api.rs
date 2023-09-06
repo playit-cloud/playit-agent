@@ -594,7 +594,7 @@ pub struct AgentConnectedDetails {
 	pub tunnel_server_id: u64,
 	pub data_center_id: u32,
 	pub data_center_name: String,
-	pub agent_version: u64,
+	pub agent_version: AgentVersion,
 	pub client_addr: std::net::SocketAddr,
 	pub tunnel_addr: std::net::SocketAddr,
 	pub activity_latest_epoch_ms: u64,
@@ -603,6 +603,31 @@ pub struct AgentConnectedDetails {
 }
 
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AgentVersion {
+	pub platform: Platform,
+	pub version: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum Platform {
+	#[serde(rename = "linux")]
+	Linux,
+	#[serde(rename = "freebsd")]
+	Freebsd,
+	#[serde(rename = "windows")]
+	Windows,
+	#[serde(rename = "macos")]
+	Macos,
+	#[serde(rename = "android")]
+	Android,
+	#[serde(rename = "ios")]
+	Ios,
+	#[serde(rename = "minecraft-plugin")]
+	MinecraftPlugin,
+	#[serde(rename = "unknown")]
+	Unknown,
+}
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqAgentsDelete {
@@ -940,30 +965,6 @@ pub struct PlayitAgentVersion {
 	pub version: AgentVersion,
 	pub official: bool,
 	pub details_website: Option<String>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct AgentVersion {
-	pub platform: Platform,
-	pub version: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum Platform {
-	#[serde(rename = "linux")]
-	Linux,
-	#[serde(rename = "windows")]
-	Windows,
-	#[serde(rename = "macos")]
-	Macos,
-	#[serde(rename = "android")]
-	Android,
-	#[serde(rename = "ios")]
-	Ios,
-	#[serde(rename = "minecraft-plugin")]
-	MinecraftPlugin,
-	#[serde(rename = "unknown")]
-	Unknown,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
