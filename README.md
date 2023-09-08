@@ -11,7 +11,7 @@ We're working on a new version of the playit agent, playit-cli has been released
 Installing on ubuntu or debian
 
 ```
-curl -SsL https://playit-cloud.github.io/ppa/key.gpg | sudo apt-key add -
+curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg
 sudo curl -SsL -o /etc/apt/sources.list.d/playit-cloud.list https://playit-cloud.github.io/ppa/playit-cloud.list
 sudo apt update
 sudo apt install playit
