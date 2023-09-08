@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -19,9 +20,14 @@ pub struct UdpTunnel {
 struct Inner {
     udp4: UdpSocket,
     udp6: Option<UdpSocket>,
-    details: RwLock<Option<UdpChannelDetails>>,
+    details: RwLock<ChannelDetails>,
     last_confirm: AtomicU64,
     last_send: AtomicU64,
+}
+
+struct ChannelDetails {
+    udp: Option<UdpChannelDetails>,
+    addr_history: VecDeque<SocketAddr>,
 }
 
 impl UdpTunnel {
@@ -30,7 +36,10 @@ impl UdpTunnel {
             inner: Arc::new(Inner {
                 udp4: UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)).await?,
                 udp6: UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0)).await.ok(),
-                details: RwLock::new(None),
+                details: RwLock::new(ChannelDetails {
+                    udp: None,
+                    addr_history: VecDeque::new(),
+                }),
                 last_confirm: AtomicU64::new(0),
                 last_send: AtomicU64::new(0),
             })
@@ -38,7 +47,12 @@ impl UdpTunnel {
     }
 
     pub async fn is_setup(&self) -> bool {
-        self.inner.details.read().await.is_some()
+        self.inner.details.read().await.udp.is_some()
+    }
+
+    pub fn invalidate_session(&self) {
+        self.inner.last_confirm.store(0, Ordering::SeqCst);
+        self.inner.last_send.store(0, Ordering::SeqCst);
     }
 
     pub fn requires_resend(&self) -> bool {
@@ -62,16 +76,27 @@ impl UdpTunnel {
 
     pub async fn set_udp_tunnel(&self, details: UdpChannelDetails) -> std::io::Result<()> {
         {
-            let mut details_lock = self.inner.details.write().await;
+            let mut lock = self.inner.details.write().await;
 
             /* if details haven't changed, exit */
-            if let Some(current) = &*details_lock {
+            if let Some(current) = &lock.udp {
                 if details.eq(current) {
                     return Ok(());
                 }
+
+                if !details.tunnel_addr.eq(&current.tunnel_addr) {
+                    tracing::info!(old = %current.tunnel_addr, new = %details.tunnel_addr, "change udp tunnel addr");
+
+                    let old_addr = current.tunnel_addr;
+                    lock.addr_history.push_front(old_addr);
+
+                    if lock.addr_history.len() > 5 {
+                        lock.addr_history.pop_back();
+                    }
+                }
             }
 
-            details_lock.replace(details.clone());
+            lock.udp = Some(details.clone());
         }
 
         self.send_token(&details).await
@@ -79,8 +104,8 @@ impl UdpTunnel {
 
     pub async fn resend_token(&self) -> std::io::Result<bool> {
         let token = {
-            let lock = self.inner.details.read();
-            match &*lock.await {
+            let lock = self.inner.details.read().await;
+            match &lock.udp {
                 Some(v) => v.clone(),
                 None => return Ok(false),
             }
@@ -105,6 +130,8 @@ impl UdpTunnel {
             }
         }
 
+
+        tracing::info!(token_len = details.token.len(), tunnel_addr = %details.tunnel_addr, "send udp session token");
         self.inner.last_send.store(now_milli(), Ordering::SeqCst);
         Ok(())
     }
@@ -122,7 +149,7 @@ impl UdpTunnel {
     async fn get_sock(&self) -> std::io::Result<(&UdpSocket, SocketAddr, Arc<Vec<u8>>)> {
         let lock = self.inner.details.read().await;
 
-        let details = match &*lock {
+        let details = match &lock.udp {
             Some(v) => v,
             None => return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "udp tunnel not connected")),
         };
@@ -139,10 +166,22 @@ impl UdpTunnel {
         let (bytes, remote) = udp.recv_from(buffer).await?;
 
         if tunnel_addr != remote {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "got data from other source"));
+            let lock = self.inner.details.read().await;
+            let mut found = false;
+            for addr in &lock.addr_history {
+                if remote.eq(addr) {
+                    found = true;
+                    break;
+                }
+            }
+
+            if !found {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "got data from other source"));
+            }
         }
 
         if buffer[..bytes].eq(&token[..]) {
+            tracing::info!(token_len = bytes, tunnel_addr = %remote, "udp session confirmed");
             self.inner.last_confirm.store(now_milli(), Ordering::SeqCst);
             return Ok(UdpTunnelRx::ConfirmedConnection);
         }

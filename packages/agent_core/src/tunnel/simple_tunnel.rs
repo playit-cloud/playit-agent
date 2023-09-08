@@ -1,16 +1,21 @@
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use playit_agent_proto::control_feed::{ControlFeed, NewClient};
 use playit_agent_proto::control_messages::ControlResponse;
 
+use crate::api::api::ReqAgentsRoutingGet;
+use crate::api::PlayitApi;
 use crate::tunnel::control::AuthenticatedControl;
-use crate::tunnel::setup::{SetupError, SetupFindSuitableChannel};
+use crate::tunnel::setup::{ConnectedControl, SetupError, SetupFindSuitableChannel};
 use crate::tunnel::udp_tunnel::UdpTunnel;
 use crate::utils::error_helper::ErrorHelper;
-use crate::utils::name_lookup::address_lookup;
 use crate::utils::now_milli;
 
 pub struct SimpleTunnel {
+    api_url: String,
+    secret_key: String,
+    control_addr: SocketAddr,
     control_channel: AuthenticatedControl,
     udp_tunnel: UdpTunnel,
     last_keep_alive: u64,
@@ -22,17 +27,44 @@ impl SimpleTunnel {
     pub async fn setup(api_url: String, secret_key: String) -> Result<Self, SetupError> {
         let udp_tunnel = UdpTunnel::new().await?;
 
-        let addresses = address_lookup("control.playit.gg", 5525).await;
-        let setup = SetupFindSuitableChannel::new(addresses).setup().await?;
-        let control_channel = setup.authenticate(api_url, secret_key.clone()).await?;
+        let setup = tunnel_connect(api_url.clone(), secret_key.clone()).await?;
+        let control_addr = setup.control_addr;
+        let control_channel = setup.authenticate(api_url.clone(), secret_key.clone()).await?;
 
         Ok(SimpleTunnel {
+            api_url,
+            secret_key,
+            control_addr,
             control_channel,
             udp_tunnel,
             last_keep_alive: 0,
             last_ping: 0,
             last_udp_auth: 0,
         })
+    }
+
+    pub async fn reload_control_addr(&mut self) -> Result<bool, SetupError> {
+        let setup = tunnel_connect(self.api_url.clone(), self.secret_key.clone()).await?;
+        self.update_control_addr(setup).await
+    }
+
+    pub async fn update_control_addr(&mut self, connected: ConnectedControl) -> Result<bool, SetupError> {
+        let new_control_addr = connected.control_addr;
+        if self.control_addr == new_control_addr {
+            return Ok(false);
+        }
+
+        let control_channel = connected.authenticate(self.api_url.clone(), self.secret_key.clone()).await?;
+
+        tracing::info!(old = %self.control_addr, new = %new_control_addr, "update control address");
+        self.control_channel = control_channel;
+        self.control_addr = new_control_addr;
+        self.last_ping = 0;
+        self.last_keep_alive = 0;
+        self.last_udp_auth = 0;
+
+        self.udp_tunnel.invalidate_session();
+        Ok(true)
     }
 
     pub fn udp_tunnel(&self) -> UdpTunnel {
@@ -65,8 +97,7 @@ impl SimpleTunnel {
                     tracing::error!(?error, "failed to send udp setup request to control");
                 }
             }
-        }
-        else if self.udp_tunnel.requires_resend() {
+        } else if self.udp_tunnel.requires_resend() {
             if 1_000 < now - self.last_udp_auth {
                 self.last_udp_auth = now;
 
@@ -100,6 +131,7 @@ impl SimpleTunnel {
             Ok(Ok(ControlFeed::NewClient(new_client))) => return Some(new_client),
             Ok(Ok(ControlFeed::Response(msg))) => match msg.content {
                 ControlResponse::UdpChannelDetails(details) => {
+                    tracing::info!(?details, "update udp channel details");
                     self.udp_tunnel.set_udp_tunnel(details).await.unwrap();
                 }
                 msg => {
@@ -116,4 +148,20 @@ impl SimpleTunnel {
 
         None
     }
+}
+
+async fn tunnel_connect(api_url: String, secret_key: String) -> Result<ConnectedControl, SetupError> {
+    let api = PlayitApi::create(api_url, Some(secret_key));
+    let routing = api.agents_routing_get(ReqAgentsRoutingGet { agent_id: None }).await?;
+
+    let mut addresses = vec![];
+    for ip6 in routing.targets6 {
+        addresses.push(SocketAddr::new(ip6.into(), 5525));
+    }
+    for ip4 in routing.targets4 {
+        addresses.push(SocketAddr::new(ip4.into(), 5525));
+    }
+
+    let setup = SetupFindSuitableChannel::new(addresses).setup().await?;
+    Ok(setup)
 }

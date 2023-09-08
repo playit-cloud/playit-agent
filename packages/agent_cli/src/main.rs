@@ -22,7 +22,7 @@ use playit_agent_core::utils::now_milli;
 use playit_secret::PlayitSecret;
 
 // use crate::launch::{launch, LaunchConfig};
-use crate::ui::UI;
+use crate::ui::{UI, UISettings};
 
 pub const API_BASE: &'static str = "https://api.playit.gg";
 
@@ -39,9 +39,10 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     let matches = cli().get_matches();
     let secret = PlayitSecret::from_args(&matches).await;
 
-    let mut ui = UI {
+    let mut ui = UI::new(UISettings {
         auto_answer: None,
-    };
+        log_only: matches.get_flag("stdout"),
+    });
 
     match matches.subcommand() {
         None => {
@@ -477,6 +478,7 @@ fn cli() -> Command {
     Command::new("playit-cli")
         .arg(arg!(--secret <SECRET> "secret code for the agent").required(false))
         .arg(arg!(--secret_path <PATH> "path to file containing secret").required(false))
+        .arg(arg!(-s --stdout "prints logs to stdout").required(false))
         .subcommand_required(false)
         .subcommand(Command::new("version"))
         .subcommand(

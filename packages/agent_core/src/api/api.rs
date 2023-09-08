@@ -81,6 +81,9 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 	pub async fn login_create_guest(&self) -> Result<WebSession, ApiError<LoginCreateGuestError, C::Error>> {
 		Self::unwrap(self.client.call("/login/create/guest", ReqLoginCreateGuest {}).await)
 	}
+	pub async fn agents_routing_get(&self, req: ReqAgentsRoutingGet) -> Result<AgentRouting, ApiError<AgentRoutingGetError, C::Error>> {
+		Self::unwrap(self.client.call("/agents/routing/get", req).await)
+	}
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -599,7 +602,7 @@ pub struct AgentConnectedDetails {
 	pub tunnel_addr: std::net::SocketAddr,
 	pub activity_latest_epoch_ms: u64,
 	pub activity_start_epoch_ms: u64,
-	pub tunnel_latency_ms: u64,
+	pub tunnel_latency_ms: u32,
 }
 
 
@@ -628,6 +631,7 @@ pub enum Platform {
 	#[serde(rename = "unknown")]
 	Unknown,
 }
+
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqAgentsDelete {
@@ -1023,4 +1027,32 @@ pub enum LoginCreateGuestError {
 	Blocked,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqAgentsRoutingGet {
+	pub agent_id: Option<uuid::Uuid>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AgentRouting {
+	pub agent_id: uuid::Uuid,
+	pub targets4: Vec<std::net::Ipv4Addr>,
+	pub targets6: Vec<std::net::Ipv6Addr>,
+}
+
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum AgentRoutingGetError {
+	MissingAgentId,
+	AgentIdNotSupported,
+	InvalidAgentId,
+}
+
+impl std::fmt::Display for AgentRoutingGetError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for AgentRoutingGetError {
+}
 

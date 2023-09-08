@@ -14,9 +14,10 @@ use crate::network::address_lookup::AddressLookup;
 use crate::network::tcp_clients::TcpClients;
 use crate::network::tcp_pipe::pipe;
 use crate::network::udp_clients::UdpClients;
-use crate::tunnel::setup::SetupError;
+use crate::tunnel::setup::{ConnectedControl, SetupError, SetupFindSuitableChannel};
 use crate::tunnel::simple_tunnel::SimpleTunnel;
 use crate::tunnel::udp_tunnel::UdpTunnelRx;
+use crate::utils::now_milli;
 
 pub struct TunnelRunner<L: AddressLookup> {
     lookup: Arc<L>,
@@ -54,8 +55,23 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<Socket
         let udp = tunnel.udp_tunnel();
 
         let tunnel_run = self.keep_running.clone();
+
         let tunnel_task = tokio::spawn(async move {
+            let mut last_control_update = now_milli();
+
             while tunnel_run.load(Ordering::SeqCst) {
+                /* refresh control address every minute */
+                {
+                    let now = now_milli();
+                    if 60_000 < now_milli() - last_control_update {
+                        last_control_update = now;
+
+                        if let Err(error) = tunnel.reload_control_addr().await {
+                            tracing::error!(?error, "failed to reload_control_addr");
+                        }
+                    }
+                }
+
                 if let Some(new_client) = tunnel.update().await {
                     let clients = self.tcp_clients.clone();
                     let span = tracing::info_span!("tcp client", ?new_client);

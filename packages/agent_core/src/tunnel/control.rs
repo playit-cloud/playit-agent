@@ -97,11 +97,13 @@ impl AuthenticatedControl {
         if let ControlFeed::Response(res) = &feed {
             match &res.content {
                 ControlResponse::AgentRegistered(registered) => {
+                    tracing::info!(details = ?registered, "agent registered");
                     self.registered = registered.clone();
                 }
                 ControlResponse::Pong(pong) => {
                     self.current_ping = Some((now_milli() - pong.request_now) as u32);
                     self.last_pong = pong.clone();
+
                     if let Some(expires_at) = pong.session_expire_at {
                         self.registered.expires_at = expires_at;
                     }
