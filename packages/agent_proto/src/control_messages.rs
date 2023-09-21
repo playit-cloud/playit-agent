@@ -434,6 +434,11 @@ mod test {
         match rng.next_u32() % 5 {
             0 => ControlRequest::Ping(Ping {
                 now: rng.next_u64(),
+                current_ping: if rng.next_u32() % 2 == 0 {
+                    Some(rng.next_u32())
+                } else {
+                    None
+                },
                 session_id: if rng.next_u32() % 2 == 0 {
                     Some(AgentSessionId {
                         session_id: rng.next_u64(),
@@ -580,5 +585,15 @@ mod test {
             },
             rng.next_u32() as u16,
         )
+    }
+
+    #[test]
+    fn parse_msg() {
+        let hex_str = "00000000000000010000000400000000000005860000000000000001000000000029c2b9";
+        let bytes = hex::decode(hex_str).unwrap();
+        let mut reader = &bytes[..];
+        let msg: ControlRequest = ControlRequest::read_from(&mut reader).unwrap();
+
+        println!("{:?}", msg);
     }
 }

@@ -218,6 +218,7 @@ impl ConnectedControl {
                                             registered,
                                             buffer,
                                             current_ping: None,
+                                            force_expired: false,
                                         })
                                     }
                                     ControlResponse::InvalidSignature => Err(SetupError::RegisterInvalidSignature),

@@ -134,6 +134,10 @@ impl SimpleTunnel {
                     tracing::info!(?details, "update udp channel details");
                     self.udp_tunnel.set_udp_tunnel(details).await.unwrap();
                 }
+                ControlResponse::Unauthorized => {
+                    tracing::info!(?details, "session no longer authorized");
+                    self.control_channel.set_expired();
+                }
                 msg => {
                     tracing::debug!(?msg, "got response");
                 }

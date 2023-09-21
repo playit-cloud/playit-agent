@@ -17,6 +17,8 @@ pub struct AuthenticatedControl {
     pub(crate) registered: AgentRegistered,
     pub(crate) buffer: Vec<u8>,
     pub(crate) current_ping: Option<u32>,
+
+    pub(crate) force_expired: bool,
 }
 
 impl AuthenticatedControl {
@@ -46,7 +48,11 @@ impl AuthenticatedControl {
     }
 
     pub fn is_expired(&self) -> bool {
-        self.last_pong.session_expire_at.is_none() || self.flow_changed()
+        self.force_expired || self.last_pong.session_expire_at.is_none() || self.flow_changed()
+    }
+
+    pub fn set_expired(&mut self) {
+        self.force_expired = true;
     }
 
     fn flow_changed(&self) -> bool {
@@ -73,6 +79,7 @@ impl AuthenticatedControl {
         ).await?;
 
         *self = res;
+
         Ok(())
     }
 
