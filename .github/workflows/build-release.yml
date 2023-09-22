@@ -177,11 +177,11 @@ jobs:
         platform:
           - name: windows 32bit
             os: windows-latest
-            arch: i686-pc-windows-msvc
+            arch: i686-pc-windows-gnu
             artifact: playit-windows-x86
           - name: windows 64bit
             os: windows-latest
-            arch: x86_64-pc-windows-msvc
+            arch: x86_64-pc-windows-gnu
             artifact: playit-windows-x86_64
     runs-on: ${{ matrix.platform.os }}
     steps:
