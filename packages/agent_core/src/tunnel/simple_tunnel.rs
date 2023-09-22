@@ -21,13 +21,15 @@ pub struct SimpleTunnel {
     last_keep_alive: u64,
     last_ping: u64,
     last_udp_auth: u64,
+    last_control_targets: Vec<SocketAddr>,
 }
 
 impl SimpleTunnel {
     pub async fn setup(api_url: String, secret_key: String) -> Result<Self, SetupError> {
         let udp_tunnel = UdpTunnel::new().await?;
 
-        let setup = tunnel_connect(api_url.clone(), secret_key.clone()).await?;
+        let addresses = get_control_addresses(api_url.clone(), secret_key.clone()).await?;
+        let setup = SetupFindSuitableChannel::new(addresses.clone()).setup().await?;
         let control_addr = setup.control_addr;
         let control_channel = setup.authenticate(api_url.clone(), secret_key.clone()).await?;
 
@@ -40,12 +42,22 @@ impl SimpleTunnel {
             last_keep_alive: 0,
             last_ping: 0,
             last_udp_auth: 0,
+            last_control_targets: addresses,
         })
     }
 
     pub async fn reload_control_addr(&mut self) -> Result<bool, SetupError> {
-        let setup = tunnel_connect(self.api_url.clone(), self.secret_key.clone()).await?;
-        self.update_control_addr(setup).await
+        let addresses = get_control_addresses(self.api_url.clone(), self.secret_key.clone()).await?;
+
+        if self.last_control_targets == addresses {
+            return Ok(false);
+        }
+
+        let setup = SetupFindSuitableChannel::new(addresses.clone()).setup().await?;
+        let updated = self.update_control_addr(setup).await?;
+        self.last_control_targets = addresses;
+
+        Ok(updated)
     }
 
     pub async fn update_control_addr(&mut self, connected: ConnectedControl) -> Result<bool, SetupError> {
@@ -135,7 +147,7 @@ impl SimpleTunnel {
                     self.udp_tunnel.set_udp_tunnel(details).await.unwrap();
                 }
                 ControlResponse::Unauthorized => {
-                    tracing::info!(?details, "session no longer authorized");
+                    tracing::info!("session no longer authorized");
                     self.control_channel.set_expired();
                 }
                 msg => {
@@ -154,7 +166,7 @@ impl SimpleTunnel {
     }
 }
 
-async fn tunnel_connect(api_url: String, secret_key: String) -> Result<ConnectedControl, SetupError> {
+async fn get_control_addresses(api_url: String, secret_key: String) -> Result<Vec<SocketAddr>, SetupError> {
     let api = PlayitApi::create(api_url, Some(secret_key));
     let routing = api.agents_routing_get(ReqAgentsRoutingGet { agent_id: None }).await?;
 
@@ -166,6 +178,7 @@ async fn tunnel_connect(api_url: String, secret_key: String) -> Result<Connected
         addresses.push(SocketAddr::new(ip4.into(), 5525));
     }
 
-    let setup = SetupFindSuitableChannel::new(addresses).setup().await?;
-    Ok(setup)
+    tracing::info!("control address {:?}", addresses);
+
+    Ok(addresses)
 }

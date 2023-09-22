@@ -605,7 +605,6 @@ pub struct AgentConnectedDetails {
 	pub tunnel_latency_ms: u32,
 }
 
-
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct AgentVersion {
 	pub platform: Platform,

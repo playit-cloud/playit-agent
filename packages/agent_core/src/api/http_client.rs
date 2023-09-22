@@ -60,23 +60,34 @@ impl PlayitHttpClient for HttpClient {
             );
         }
 
-        let request_str = serde_json::to_string(&req)
-            .map_err(|e| HttpClientError::SerializeError(e))?;
+        let res = async move {
+            let request_str = serde_json::to_string(&req)
+                .map_err(|e| HttpClientError::SerializeError(e))?;
 
-        let request = builder
-            .body(Body::from(request_str))
-            .unwrap();
+            let request = builder
+                .body(Body::from(request_str))
+                .unwrap();
 
-        let response = self.client.request(request).await
-            .map_err(|e| HttpClientError::RequestError(e))?;
-        let bytes = hyper::body::aggregate(response.into_body()).await
-            .map_err(|e| HttpClientError::RequestError(e))?;
-        let response_txt = String::from_utf8_lossy(bytes.chunk());
+            let response = self.client.request(request).await
+                .map_err(|e| HttpClientError::RequestError(e))?;
+            let bytes = hyper::body::aggregate(response.into_body()).await
+                .map_err(|e| HttpClientError::RequestError(e))?;
+            let response_txt = String::from_utf8_lossy(bytes.chunk());
 
-        let result: ApiResult<Res, Err> = serde_json::from_str(&response_txt)
-            .map_err(|e| HttpClientError::ParseError(e))?;
+            let result: ApiResult<Res, Err> = serde_json::from_str(&response_txt)
+                .map_err(|e| {
+                    tracing::error!("failed to parse json:\n{}", response_txt);
+                    HttpClientError::ParseError(e)
+                })?;
 
-        Ok(result)
+            Ok::<_, Self::Error>(result)
+        }.await;
+
+        if let Err(error) = &res {
+            tracing::error!(?error, request = %std::any::type_name::<Req>(), "API call failed");
+        }
+
+        res
     }
 }
 

@@ -60,10 +60,10 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<Socket
             let mut last_control_update = now_milli();
 
             while tunnel_run.load(Ordering::SeqCst) {
-                /* refresh control address every minute */
+                /* refresh control address every half minute */
                 {
                     let now = now_milli();
-                    if 60_000 < now_milli() - last_control_update {
+                    if 30_000 < now_milli() - last_control_update {
                         last_control_update = now;
 
                         if let Err(error) = tunnel.reload_control_addr().await {

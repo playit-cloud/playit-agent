@@ -21,7 +21,6 @@ use playit_agent_core::tunnel_runner::TunnelRunner;
 use playit_agent_core::utils::now_milli;
 use playit_secret::PlayitSecret;
 
-// use crate::launch::{launch, LaunchConfig};
 use crate::ui::{UI, UISettings};
 
 pub const API_BASE: &'static str = "https://api.playit.gg";

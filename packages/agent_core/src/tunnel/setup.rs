@@ -64,7 +64,7 @@ impl SetupFindSuitableChannel {
 
                 buffer.resize(2048, 0);
 
-                for _ in 0..3 {
+                for i in 0..5 {
                     let res = tokio::time::timeout(
                         Duration::from_millis(500),
                         socket.recv_from(&mut buffer),
@@ -86,11 +86,15 @@ impl SetupFindSuitableChannel {
                                     }
 
                                     match msg.content {
-                                        ControlResponse::Pong(pong) => return Ok(ConnectedControl {
-                                            control_addr: addr,
-                                            udp: Arc::new(socket),
-                                            pong,
-                                        }),
+                                        ControlResponse::Pong(pong) => {
+                                            tracing::info!(?pong, "got initial pong from tunnel server");
+
+                                            return Ok(ConnectedControl {
+                                                control_addr: addr,
+                                                udp: Arc::new(socket),
+                                                pong,
+                                            })
+                                        },
                                         other => {
                                             tracing::error!(?other, "expected pong got other response");
                                         }
@@ -108,12 +112,15 @@ impl SetupFindSuitableChannel {
                             tracing::error!(?error, "failed to receive UDP packet");
                         }
                         Err(_) => {
-                            tracing::error!("timeout waiting for Pong");
-                            break;
+                            tracing::warn!(%addr, "waited {}ms for pong", (i + 1) * 500);
                         }
                     }
                 }
+
+                tracing::error!("timeout waiting for pong");
             }
+
+            tracing::error!("failed to ping tunnel server");
         }
 
         Err(SetupError::FailedToConnect)
