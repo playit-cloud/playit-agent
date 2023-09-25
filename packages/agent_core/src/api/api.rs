@@ -27,39 +27,6 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 	pub async fn tunnels_delete(&self, req: ReqTunnelsDelete) -> Result<(), ApiError<DeleteError, C::Error>> {
 		Self::unwrap(self.client.call("/tunnels/delete", req).await)
 	}
-	pub async fn tunnels_list(&self, req: ReqTunnelsList) -> Result<AccountTunnels, ApiErrorNoFail<C::Error>> {
-		Self::unwrap_no_fail(self.client.call("/tunnels/list", req).await)
-	}
-	pub async fn tunnels_update(&self, req: ReqTunnelsUpdate) -> Result<(), ApiError<UpdateError, C::Error>> {
-		Self::unwrap(self.client.call("/tunnels/update", req).await)
-	}
-	pub async fn tunnels_firewall_assign(&self, req: ReqTunnelsFirewallAssign) -> Result<(), ApiError<TunnelsFirewallAssignError, C::Error>> {
-		Self::unwrap(self.client.call("/tunnels/firewall/assign", req).await)
-	}
-	pub async fn agents_list(&self) -> Result<Agents, ApiErrorNoFail<C::Error>> {
-		Self::unwrap_no_fail(self.client.call("/agents/list", ReqAgentsList {}).await)
-	}
-	pub async fn agents_delete(&self, req: ReqAgentsDelete) -> Result<(), ApiError<AgentsDeleteError, C::Error>> {
-		Self::unwrap(self.client.call("/agents/delete", req).await)
-	}
-	pub async fn agents_rename(&self, req: ReqAgentsRename) -> Result<(), ApiError<AgentRenameError, C::Error>> {
-		Self::unwrap(self.client.call("/agents/rename", req).await)
-	}
-	pub async fn allocations_list(&self, req: ReqAllocationsList) -> Result<AccountAllocations, ApiErrorNoFail<C::Error>> {
-		Self::unwrap_no_fail(self.client.call("/allocations/list", req).await)
-	}
-	pub async fn tunnels_rename(&self, req: ReqTunnelsRename) -> Result<(), ApiError<TunnelRenameError, C::Error>> {
-		Self::unwrap(self.client.call("/tunnels/rename", req).await)
-	}
-	pub async fn firewalls_list(&self) -> Result<Firewalls, ApiErrorNoFail<C::Error>> {
-		Self::unwrap_no_fail(self.client.call("/firewalls/list", ReqFirewallsList {}).await)
-	}
-	pub async fn firewalls_create(&self, req: ReqFirewallsCreate) -> Result<ObjectId, ApiError<FirewallsCreateError, C::Error>> {
-		Self::unwrap(self.client.call("/firewalls/create", req).await)
-	}
-	pub async fn firewalls_update(&self, req: ReqFirewallsUpdate) -> Result<(), ApiError<FirewallsUpdateError, C::Error>> {
-		Self::unwrap(self.client.call("/firewalls/update", req).await)
-	}
 	pub async fn claim_details(&self, req: ReqClaimDetails) -> Result<AgentClaimDetails, ApiError<ClaimDetailsError, C::Error>> {
 		Self::unwrap(self.client.call("/claim/details", req).await)
 	}
@@ -78,11 +45,17 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 	pub async fn proto_register(&self, req: ReqProtoRegister) -> Result<SignedAgentKey, ApiErrorNoFail<C::Error>> {
 		Self::unwrap_no_fail(self.client.call("/proto/register", req).await)
 	}
-	pub async fn login_create_guest(&self) -> Result<WebSession, ApiError<LoginCreateGuestError, C::Error>> {
-		Self::unwrap(self.client.call("/login/create/guest", ReqLoginCreateGuest {}).await)
+	pub async fn login_guest(&self) -> Result<WebSession, ApiError<GuestLoginError, C::Error>> {
+		Self::unwrap(self.client.call("/login/guest", ReqLoginGuest {}).await)
 	}
 	pub async fn agents_routing_get(&self, req: ReqAgentsRoutingGet) -> Result<AgentRouting, ApiError<AgentRoutingGetError, C::Error>> {
 		Self::unwrap(self.client.call("/agents/routing/get", req).await)
+	}
+	pub async fn agents_rundata(&self) -> Result<AgentRunData, ApiErrorNoFail<C::Error>> {
+		Self::unwrap_no_fail(self.client.call("/agents/rundata", ReqAgentsRundata {}).await)
+	}
+	pub async fn tunnels_list_json(&self, req: ReqTunnelsList) -> Result<serde_json::Value, ApiErrorNoFail<C::Error>> {
+		Self::unwrap_no_fail(self.client.call("/tunnels/list", req).await)
 	}
 }
 
@@ -345,476 +318,6 @@ pub enum DeleteError {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqTunnelsList {
-	pub tunnel_id: Option<uuid::Uuid>,
-	pub agent_id: Option<uuid::Uuid>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct AccountTunnels {
-	pub tcp_alloc: AllocatedPorts,
-	pub udp_alloc: AllocatedPorts,
-	pub tunnels: Vec<AccountTunnel>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct AllocatedPorts {
-	pub allowed: u32,
-	pub claimed: u32,
-	pub desired: u32,
-}
-
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct AccountTunnel {
-	pub id: uuid::Uuid,
-	pub tunnel_type: Option<TunnelType>,
-	pub created_at: chrono::DateTime<chrono::Utc>,
-	pub name: Option<String>,
-	pub port_type: PortType,
-	pub port_count: u16,
-	pub alloc: AccountTunnelAllocation,
-	pub origin: TunnelOrigin,
-	pub domain: Option<TunnelDomain>,
-	pub firewall_id: Option<uuid::Uuid>,
-	pub ratelimit: Ratelimit,
-	pub active: bool,
-	pub region: Option<AllocationRegion>,
-}
-
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-#[serde(tag = "status", content = "data")]
-pub enum AccountTunnelAllocation {
-	#[serde(rename = "pending")]
-	Pending,
-	#[serde(rename = "disabled")]
-	Disabled(TunnelDisabled),
-	#[serde(rename = "allocated")]
-	Allocated(TunnelAllocated),
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct TunnelDisabled {
-	pub reason: TunnelDisabledReason,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum TunnelDisabledReason {
-	OverPortLimit,
-	RegionRequiresPremium,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct TunnelAllocated {
-	pub id: uuid::Uuid,
-	pub ip_hostname: String,
-	pub static_ip4: Option<std::net::Ipv4Addr>,
-	pub assigned_domain: String,
-	pub assigned_srv: Option<String>,
-	pub tunnel_ip: std::net::IpAddr,
-	pub port_start: u16,
-	pub port_end: u16,
-	pub assignment: TunnelAssignment,
-	pub ip_type: IpType,
-	pub region: AllocationRegion,
-}
-
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-#[serde(tag = "type", content = "subscription")]
-pub enum TunnelAssignment {
-	#[serde(rename = "dedicated-ip")]
-	DedicatedIp(SubscriptionId),
-	#[serde(rename = "shared-ip")]
-	SharedIp,
-	#[serde(rename = "dedicated-port")]
-	DedicatedPort(SubscriptionId),
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct SubscriptionId {
-	pub sub_id: uuid::Uuid,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum IpType {
-	#[serde(rename = "both")]
-	Both,
-	#[serde(rename = "ip4")]
-	Ip4,
-	#[serde(rename = "ip6")]
-	Ip6,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-#[serde(tag = "type", content = "data")]
-pub enum TunnelOrigin {
-	#[serde(rename = "default")]
-	Default(AssignedDefault),
-	#[serde(rename = "agent")]
-	Agent(AssignedAgent),
-	#[serde(rename = "managed")]
-	Managed(AssignedManaged),
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct AssignedDefault {
-	pub local_ip: std::net::IpAddr,
-	pub local_port: Option<u16>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct AssignedAgent {
-	pub agent_id: uuid::Uuid,
-	pub agent_name: String,
-	pub local_ip: std::net::IpAddr,
-	pub local_port: Option<u16>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct AssignedManaged {
-	pub agent_id: uuid::Uuid,
-	pub agent_name: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct TunnelDomain {
-	pub id: uuid::Uuid,
-	pub name: String,
-	pub is_external: bool,
-	pub parent: Option<uuid::Uuid>,
-	pub source: TunnelDomainSource,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum TunnelDomainSource {
-	#[serde(rename = "from-ip")]
-	FromIp,
-	#[serde(rename = "from-tunnel")]
-	FromTunnel,
-	#[serde(rename = "from-agent-ip")]
-	FromAgentIp,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct Ratelimit {
-	pub bytes_per_second: Option<u32>,
-	pub packets_per_second: Option<u32>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqTunnelsUpdate {
-	pub tunnel_id: uuid::Uuid,
-	pub local_ip: std::net::IpAddr,
-	pub local_port: Option<u16>,
-	pub agent_id: Option<uuid::Uuid>,
-	pub enabled: bool,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum UpdateError {
-	ChangingAgentIdNotAllowed,
-	TunnelNotFound,
-}
-
-impl std::fmt::Display for UpdateError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:?}", self)
-	}
-}
-
-impl std::error::Error for UpdateError {
-}
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqTunnelsFirewallAssign {
-	pub tunnel_id: uuid::Uuid,
-	pub firewall_id: Option<uuid::Uuid>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum TunnelsFirewallAssignError {
-	TunnelNotFound,
-	InvalidFirewallId,
-}
-
-impl std::fmt::Display for TunnelsFirewallAssignError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:?}", self)
-	}
-}
-
-impl std::error::Error for TunnelsFirewallAssignError {
-}
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqAgentsList {
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct Agents {
-	pub agents: Vec<Agent>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct Agent {
-	pub id: uuid::Uuid,
-	pub name: String,
-	pub created_at: chrono::DateTime<chrono::Utc>,
-	pub version: Option<String>,
-	pub agent_type: AgentType,
-	pub details: AgentStatus,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum AgentType {
-	#[serde(rename = "default")]
-	Default,
-	#[serde(rename = "assignable")]
-	Assignable,
-	#[serde(rename = "self-managed")]
-	SelfManaged,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-#[serde(tag = "state", content = "data")]
-pub enum AgentStatus {
-	#[serde(rename = "disabled-above-limit")]
-	DisabledAboveLimit,
-	#[serde(rename = "disabled-by-user")]
-	DisabledByUser,
-	#[serde(rename = "approval-needed")]
-	ApprovalNeeded,
-	#[serde(rename = "connected")]
-	Connected(AgentConnectedDetails),
-	#[serde(rename = "offline")]
-	Offline,
-	#[serde(rename = "unknown")]
-	Unknown,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct AgentConnectedDetails {
-	pub tunnel_server_id: u64,
-	pub data_center_id: u32,
-	pub data_center_name: String,
-	pub agent_version: AgentVersion,
-	pub client_addr: std::net::SocketAddr,
-	pub tunnel_addr: std::net::SocketAddr,
-	pub activity_latest_epoch_ms: u64,
-	pub activity_start_epoch_ms: u64,
-	pub tunnel_latency_ms: u32,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct AgentVersion {
-	pub platform: Platform,
-	pub version: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum Platform {
-	#[serde(rename = "linux")]
-	Linux,
-	#[serde(rename = "freebsd")]
-	Freebsd,
-	#[serde(rename = "windows")]
-	Windows,
-	#[serde(rename = "macos")]
-	Macos,
-	#[serde(rename = "android")]
-	Android,
-	#[serde(rename = "ios")]
-	Ios,
-	#[serde(rename = "minecraft-plugin")]
-	MinecraftPlugin,
-	#[serde(rename = "unknown")]
-	Unknown,
-}
-
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqAgentsDelete {
-	pub agent_id: uuid::Uuid,
-	pub tunnels_strategy: DeleteAgentTunnelStrategy,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-#[serde(tag = "type", content = "details")]
-pub enum DeleteAgentTunnelStrategy {
-	#[serde(rename = "require_empty")]
-	RequireEmpty,
-	#[serde(rename = "delete_tunnels")]
-	DeleteTunnels,
-	#[serde(rename = "move_to_agent")]
-	MoveToAgent(TunnelStrategyMoveToAgent),
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct TunnelStrategyMoveToAgent {
-	pub agent_id: Option<uuid::Uuid>,
-	pub disable_tunnels: bool,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum AgentsDeleteError {
-	AgentNotFound,
-	AgentNotAuthorized,
-	TunnelStrategyNotAllowed,
-	MoveToAgentNotFound,
-	AgentHasExistingTunnels,
-}
-
-impl std::fmt::Display for AgentsDeleteError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:?}", self)
-	}
-}
-
-impl std::error::Error for AgentsDeleteError {
-}
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqAgentsRename {
-	pub agent_id: uuid::Uuid,
-	pub name: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum AgentRenameError {
-	AgentNotFound,
-	InvalidName,
-	InvalidAgentId,
-}
-
-impl std::fmt::Display for AgentRenameError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:?}", self)
-	}
-}
-
-impl std::error::Error for AgentRenameError {
-}
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqAllocationsList {
-	pub alloc_id: Option<uuid::Uuid>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct AccountAllocations {
-	pub ports: Vec<DedicatedPortAllocation>,
-	pub ips: Vec<DedicatedIpAllocation>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct DedicatedPortAllocation {
-	pub alloc_id: uuid::Uuid,
-	pub ip_hostname: String,
-	pub port: u16,
-	pub port_count: u16,
-	pub port_type: PortType,
-	pub sub_id: uuid::Uuid,
-	pub region: AllocationRegion,
-	pub tunnel_id: Option<uuid::Uuid>,
-	pub ip_type: IpType,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct DedicatedIpAllocation {
-	pub ip_hostname: String,
-	pub sub_id: Option<uuid::Uuid>,
-	pub region: AllocationRegion,
-	pub ip_type: IpType,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqTunnelsRename {
-	pub tunnel_id: uuid::Uuid,
-	pub name: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum TunnelRenameError {
-	TunnelNotFound,
-	NameTooLong,
-}
-
-impl std::fmt::Display for TunnelRenameError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:?}", self)
-	}
-}
-
-impl std::error::Error for TunnelRenameError {
-}
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqFirewallsList {
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct Firewalls {
-	pub max_firewalls: u32,
-	pub max_rules: u32,
-	pub firewalls: Vec<Firewall>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct Firewall {
-	pub id: uuid::Uuid,
-	pub name: String,
-	pub description: Option<String>,
-	pub created_at: chrono::DateTime<chrono::Utc>,
-	pub updated_at: chrono::DateTime<chrono::Utc>,
-	pub registered_at: Option<chrono::DateTime<chrono::Utc>>,
-	pub rules: String,
-	pub rule_count: u32,
-	pub tunnels_assigned_count: u32,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqFirewallsCreate {
-	pub name: String,
-	pub description: Option<String>,
-	pub rules: String,
-	pub tunnel_id: Option<uuid::Uuid>,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum FirewallsCreateError {
-	TooManyFirewalls,
-	TooManyRules,
-	InvalidRules,
-	InvalidTunnelId,
-}
-
-impl std::fmt::Display for FirewallsCreateError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:?}", self)
-	}
-}
-
-impl std::error::Error for FirewallsCreateError {
-}
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqFirewallsUpdate {
-	pub firewall_id: uuid::Uuid,
-	pub rules: String,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum FirewallsUpdateError {
-	TooManyRules,
-	InvalidRules,
-	FirewallNotFound,
-}
-
-impl std::fmt::Display for FirewallsUpdateError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:?}", self)
-	}
-}
-
-impl std::error::Error for FirewallsUpdateError {
-}
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqClaimDetails {
 	pub code: String,
 }
@@ -825,6 +328,16 @@ pub struct AgentClaimDetails {
 	pub remote_ip: std::net::IpAddr,
 	pub agent_type: AgentType,
 	pub version: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum AgentType {
+	#[serde(rename = "default")]
+	Default,
+	#[serde(rename = "assignable")]
+	Assignable,
+	#[serde(rename = "self-managed")]
+	SelfManaged,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
@@ -971,12 +484,39 @@ pub struct PlayitAgentVersion {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AgentVersion {
+	pub platform: Platform,
+	pub version: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum Platform {
+	#[serde(rename = "linux")]
+	Linux,
+	#[serde(rename = "freebsd")]
+	Freebsd,
+	#[serde(rename = "windows")]
+	Windows,
+	#[serde(rename = "macos")]
+	Macos,
+	#[serde(rename = "android")]
+	Android,
+	#[serde(rename = "ios")]
+	Ios,
+	#[serde(rename = "minecraft-plugin")]
+	MinecraftPlugin,
+	#[serde(rename = "unknown")]
+	Unknown,
+}
+
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SignedAgentKey {
 	pub key: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct ReqLoginCreateGuest {
+pub struct ReqLoginGuest {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -994,6 +534,8 @@ pub struct WebAuth {
 	pub totp_status: TotpStatus,
 	pub admin_id: Option<u64>,
 }
+
+
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub enum AccountStatus {
@@ -1022,8 +564,8 @@ pub struct SignedEpoch {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum LoginCreateGuestError {
-	Blocked,
+pub enum GuestLoginError {
+	AccountIsNotGuest,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -1037,6 +579,7 @@ pub struct AgentRouting {
 	pub targets4: Vec<std::net::Ipv4Addr>,
 	pub targets6: Vec<std::net::Ipv6Addr>,
 }
+
 
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
@@ -1054,4 +597,77 @@ impl std::fmt::Display for AgentRoutingGetError {
 
 impl std::error::Error for AgentRoutingGetError {
 }
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqAgentsRundata {
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AgentRunData {
+	pub agent_id: uuid::Uuid,
+	pub agent_type: AgentType,
+	pub account_status: AgentAccountStatus,
+	pub tunnels: Vec<AgentTunnel>,
+	pub pending: Vec<AgentPendingTunnel>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum AgentAccountStatus {
+	#[serde(rename = "account-delete-scheduled")]
+	AccountDeleteScheduled,
+	#[serde(rename = "banned")]
+	Banned,
+	#[serde(rename = "has-message")]
+	HasMessage,
+	#[serde(rename = "email-not-verified")]
+	EmailNotVerified,
+	#[serde(rename = "guest")]
+	Guest,
+	#[serde(rename = "ready")]
+	Ready,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AgentTunnel {
+	pub id: uuid::Uuid,
+	pub name: Option<String>,
+	pub ip_num: u64,
+	pub region_num: u16,
+	pub port: PortRange,
+	pub proto: PortType,
+	pub local_ip: std::net::IpAddr,
+	pub local_port: u16,
+	pub tunnel_type: Option<String>,
+	pub assigned_domain: String,
+	pub custom_domain: Option<String>,
+	pub disabled: Option<AgentTunnelDisabled>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PortRange {
+	pub from: u16,
+	pub to: u16,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum AgentTunnelDisabled {
+	ByUser,
+	BySystem,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AgentPendingTunnel {
+	pub id: uuid::Uuid,
+	pub name: Option<String>,
+	pub proto: PortType,
+	pub port_count: u16,
+	pub tunnel_type: Option<String>,
+	pub is_disabled: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqTunnelsList {
+	pub tunnel_id: Option<uuid::Uuid>,
+	pub agent_id: Option<uuid::Uuid>,
+}
+
 

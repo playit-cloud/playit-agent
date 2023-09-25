@@ -1,45 +1,36 @@
 use std::{
-    net::{IpAddr, SocketAddr},
-    sync::{atomic::Ordering, Arc, Mutex},
-    time::Duration,
     fmt::Write,
+    net::{IpAddr, SocketAddr},
+    sync::{Arc, atomic::Ordering, Mutex},
+    time::Duration,
 };
 
 use playit_agent_core::{
-    api::api::{AccountTunnelAllocation, AccountTunnels, PortType, ReqTunnelsList, TunnelOrigin},
+    api::api::*,
     network::address_lookup::{AddressLookup, AddressValue},
     tunnel_runner::TunnelRunner,
     utils::now_milli,
 };
 use playit_agent_core::api::api::AgentType;
 
-use crate::{match_ip::MatchIp, playit_secret::PlayitSecret, ui::UI, CliError, API_BASE};
+use crate::{API_BASE, CliError, match_ip::MatchIp, playit_secret::PlayitSecret, ui::UI};
 
 pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliError> {
     let secret_code = secret
-        .with_default_path().await
         .ensure_valid(ui)
         .await?
         .get_or_setup(ui)
         .await?;
 
     let api = secret.create_api().await?;
-    let agents = api.agents_list().await?;
-
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let lookup = {
-        let account_tunnels = api
-            .tunnels_list(ReqTunnelsList {
-                tunnel_id: None,
-                agent_id: None,
-            })
-            .await?;
-
+        let data = api.agents_rundata().await?;
         let lookup = Arc::new(LocalLookup {
             data: Mutex::new(vec![]),
         });
-        lookup.update(account_tunnels).await;
+        lookup.update(data.tunnels).await;
 
         lookup
     };
@@ -70,17 +61,13 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
 
     ui.write_screen("tunnel running");
 
+    let mut guest_login_link: Option<(String, u64)> = None;
+
     loop {
         tokio::time::sleep(Duration::from_secs(3)).await;
 
-        let account_tunnels_res = api
-            .tunnels_list(ReqTunnelsList {
-                tunnel_id: None,
-                agent_id: None,
-            })
-            .await;
-
-        let account_tunnels = match account_tunnels_res {
+        let account_tunnels_res = api.agents_rundata().await;
+        let agent_data = match account_tunnels_res {
             Ok(v) => v,
             Err(error) => {
                 ui.write_error("Failed to load latest tunnels", error);
@@ -90,47 +77,92 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         };
 
         let mut msg = format!(
-            "playit (v{}): {} tunnel running, {} tunnels registered\n\nTUNNELS\n",
+            "playit (v{}): {} tunnel running, {} tunnels registered\n\n",
             env!("CARGO_PKG_VERSION"),
             now_milli(),
-            account_tunnels.tunnels.len()
+            agent_data.tunnels.len()
         );
 
+        match agent_data.account_status {
+            AgentAccountStatus::Guest => {
+                'login_link: {
+                    let now = now_milli();
 
-        if account_tunnels.tunnels.len() == 0 {
-            let agent = &agents.agents[0];
-            let agent_id = match agent.agent_type {
+                    match &guest_login_link {
+                        Some((link, ts)) if now - *ts < 15_000 => {
+                            writeln!(msg, "login: {}", link).unwrap();
+                        }
+                        _ => {
+                            let Ok(session) = api.login_guest().await else {
+                                writeln!(msg, "Failed to create guest login link").unwrap();
+                                break 'login_link;
+                            };
+
+                            let link = format!("https://playit.gg/login/guest-account/{}", session.session_key);
+                            writeln!(msg, "login: {}", link).unwrap();
+
+                            guest_login_link = Some((link, now_milli()));
+                        }
+                    }
+                }
+            }
+            AgentAccountStatus::EmailNotVerified => {
+                writeln!(msg, "Email not verified https://playit.gg/account/settings/account/verify-email").unwrap();
+            }
+            AgentAccountStatus::AccountDeleteScheduled => {
+                writeln!(msg, "Account scheduled for delete: https://playit.gg/account/settings/account/delete-account").unwrap();
+            }
+            AgentAccountStatus::Banned => {
+                writeln!(msg, "Account banned: https://playit.gg/account").unwrap();
+            }
+            AgentAccountStatus::HasMessage => {
+                writeln!(msg, "You have a message: https://playit.gg/account").unwrap();
+            }
+            AgentAccountStatus::Ready => {}
+        }
+
+        writeln!(msg, "\nTUNNELS").unwrap();
+
+        if agent_data.tunnels.len() == 0 && agent_data.pending.len() == 0 {
+            let agent_id = match agent_data.agent_type {
                 AgentType::Default => "default".to_string(),
-                AgentType::Assignable => agent.id.to_string(),
-                AgentType::SelfManaged => agent.id.to_string(),
+                AgentType::Assignable => agent_data.agent_id.to_string(),
+                AgentType::SelfManaged => agent_data.agent_id.to_string(),
             };
 
             writeln!(msg, "Add tunnels here: https://playit.gg/account/agents/{}", agent_id).unwrap();
-        }
-        else {
-            for tunnel in &account_tunnels.tunnels {
-                let mut alloc_port = None;
+        } else {
+            for tunnel in &agent_data.tunnels {
+                let addr = tunnel.custom_domain.as_ref().unwrap_or(&tunnel.assigned_domain);
+                let src = match tunnel.tunnel_type.as_ref().map(|v| v.as_str()) {
+                    Some("minecraft-java") => addr.clone(),
+                    _ => format!("{}:{}", addr, tunnel.port.from),
+                };
 
-                let src = match &tunnel.alloc {
-                    AccountTunnelAllocation::Pending => "pending".to_string(),
-                    AccountTunnelAllocation::Disabled(_) => format!("action required https://playit.gg/account/tunnel/{}", tunnel.id),
-                    AccountTunnelAllocation::Allocated(alloc) => {
-                        alloc_port = Some(alloc.port_start);
-                        alloc.assigned_srv.clone().unwrap_or_else(|| format!("{}:{}", alloc.assigned_domain, alloc.port_start))
+                let dst = format!("{}:{}", tunnel.local_ip, tunnel.local_port);
+
+                if let Some(disabled) = tunnel.disabled {
+                    writeln!(msg, "{} => {} (disabled)", src, dst).unwrap();
+                    if disabled == AgentTunnelDisabled::BySystem {
+                        writeln!(msg, "\tsee: https://playit.gg/account/tunnels/{}", tunnel.id).unwrap();
                     }
-                };
+                } else if let Some(tunnel_type) = &tunnel.tunnel_type {
+                    writeln!(msg, "{} => {} ({})", src, dst, tunnel_type).unwrap();
+                } else {
+                    writeln!(msg, "{} => {} (proto: {:?}, port count: {})", src, dst, tunnel.proto, tunnel.port.to - tunnel.port.from).unwrap();
+                }
+            }
 
-                let dst = match &tunnel.origin {
-                    TunnelOrigin::Agent(agent) => format!("{}:{}", agent.local_ip, agent.local_port.or(alloc_port).map(|v| v.to_string()).unwrap_or("?".to_string())),
-                    TunnelOrigin::Default(agent) => format!("{}:{}", agent.local_ip, agent.local_port.or(alloc_port).map(|v| v.to_string()).unwrap_or("?".to_string())),
-                    TunnelOrigin::Managed(_) => "managed".to_string(),
-                };
-
-                writeln!(msg, "{} => {}", src, dst).unwrap();
+            for tunnel in &agent_data.pending {
+                if tunnel.is_disabled {
+                    writeln!(msg, "tunnel pending (disabled): https://playit.gg/account/tunnels/{}", tunnel.id).unwrap();
+                } else {
+                    writeln!(msg, "tunnel pending: https://playit.gg/account/tunnels/{}", tunnel.id).unwrap();
+                }
             }
         }
 
-        lookup.update(account_tunnels).await;
+        lookup.update(agent_data.tunnels).await;
         ui.write_screen(msg);
     }
 
@@ -173,45 +205,22 @@ impl AddressLookup for LocalLookup {
 }
 
 impl LocalLookup {
-    pub async fn update(&self, data: AccountTunnels) {
+    pub async fn update(&self, tunnels: Vec<AgentTunnel>) {
         let mut entries: Vec<TunnelEntry> = vec![];
 
-        for tunnel in data.tunnels {
-            match tunnel.alloc {
-                AccountTunnelAllocation::Allocated(allocated) => {
-                    let ip = match allocated.tunnel_ip {
-                        IpAddr::V6(ip) => ip,
-                        _ => continue,
-                    };
-
-                    let local_addr = match tunnel.origin {
-                        TunnelOrigin::Default(def) => SocketAddr::new(
-                            def.local_ip,
-                            def.local_port.unwrap_or(allocated.port_start),
-                        ),
-                        TunnelOrigin::Agent(def) => SocketAddr::new(
-                            def.local_ip,
-                            def.local_port.unwrap_or(allocated.port_start),
-                        ),
-                        _ => continue,
-                    };
-
-                    let address = allocated.assigned_srv.unwrap_or(format!(
-                        "{}:{}",
-                        allocated.assigned_domain, allocated.port_start
-                    ));
-
-                    entries.push(TunnelEntry {
-                        pub_address: address,
-                        match_ip: MatchIp::new(ip),
-                        port_type: tunnel.port_type,
-                        from_port: allocated.port_start,
-                        to_port: allocated.port_end,
-                        local_start_address: local_addr,
-                    });
-                }
-                _ => continue,
-            }
+        for tunnel in tunnels {
+            entries.push(TunnelEntry {
+                pub_address: if tunnel.tunnel_type.as_ref().map(|v| v.eq("minecraft-java")).unwrap_or(false) {
+                    tunnel.custom_domain.unwrap_or(tunnel.assigned_domain)
+                } else {
+                    format!("{}:{}", tunnel.custom_domain.unwrap_or(tunnel.assigned_domain), tunnel.port.from)
+                },
+                match_ip: MatchIp { ip_number: tunnel.ip_num, region_id: if tunnel.region_num == 0 { None } else { Some(tunnel.region_num) } },
+                port_type: tunnel.proto,
+                from_port: tunnel.port.from,
+                to_port: tunnel.port.to,
+                local_start_address: SocketAddr::new(tunnel.local_ip, tunnel.local_port),
+            });
         }
 
         let mut value = self.data.lock().unwrap();

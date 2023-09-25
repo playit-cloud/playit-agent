@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use clap::ArgMatches;
 use playit_agent_core::api::{
-    api::{ApiErrorNoFail, ApiResponseError, AuthError, ReqTunnelsList, AgentType},
+    api::*,
     PlayitApi,
 };
 use serde::{Deserialize, Serialize};
@@ -70,17 +70,11 @@ impl PlayitSecret {
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         loop {
-            match api
-                .tunnels_list(ReqTunnelsList {
-                    tunnel_id: None,
-                    agent_id: None,
-                })
-                .await
-            {
-                Ok(tunnels) => {
+            match api.agents_rundata().await {
+                Ok(data) => {
                     ui.write_screen(format!(
                         "secret key valid, agent has {} tunnels",
-                        tunnels.tunnels.len()
+                        data.tunnels.len()
                     ));
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     break;
@@ -89,9 +83,7 @@ impl PlayitSecret {
                     ui.write_error("Failed to load data from api\nretrying in 3 seconds", error);
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
-                Err(ApiErrorNoFail::ApiError(ApiResponseError::Auth(
-                    AuthError::InvalidAgentKey,
-                ))) => {
+                Err(ApiErrorNoFail::ApiError(ApiResponseError::Auth(AuthError::InvalidAgentKey))) => {
                     if !self.path.is_some() {
                         return Err(CliError::InvalidSecret);
                     }
@@ -128,7 +120,7 @@ impl PlayitSecret {
         }
 
         let claim_code = claim_generate();
-        let secret = claim_exchange(ui, &claim_code, AgentType::Assignable ,0).await?;
+        let secret = claim_exchange(ui, &claim_code, AgentType::Assignable, 0).await?;
 
         {
             let mut lock = self.secret.write().await;
@@ -179,6 +171,7 @@ impl PlayitSecret {
         }
 
         let file_path = self.path.as_ref().ok_or(CliError::MissingSecret)?;
+        tracing::info!(%file_path, "loading secret");
 
         let mut lock = self.secret.write().await;
 

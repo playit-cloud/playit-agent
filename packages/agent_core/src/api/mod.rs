@@ -1,5 +1,6 @@
-use crate::api::api::PlayitApiClient;
-use crate::api::http_client::HttpClient;
+use serde::Serialize;
+use crate::api::api::{ApiResult, PlayitApiClient, PlayitHttpClient};
+use crate::api::http_client::{HttpClient, HttpClientError};
 
 pub mod api;
 pub mod http_client;
