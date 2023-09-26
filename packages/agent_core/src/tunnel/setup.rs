@@ -34,6 +34,7 @@ impl SetupFindSuitableChannel {
         for addr in self.options {
             tracing::info!(?addr, "trying to establish tunnel connection");
 
+            let is_ip6 = addr.is_ipv6();
             let socket = match UdpSocket::bind(match addr {
                 SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
                 SocketAddr::V6(_) => SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0)),
@@ -45,7 +46,8 @@ impl SetupFindSuitableChannel {
                 }
             };
 
-            for _ in 0..3 {
+            let attempts = if is_ip6 { 1 } else { 3 };
+            for _ in 0..attempts {
                 buffer.clear();
 
                 ControlRpcMessage {
@@ -64,7 +66,8 @@ impl SetupFindSuitableChannel {
 
                 buffer.resize(2048, 0);
 
-                for i in 0..5 {
+                let waits = if is_ip6 { 3 } else { 5 };
+                for i in 0..waits {
                     let res = tokio::time::timeout(
                         Duration::from_millis(500),
                         socket.recv_from(&mut buffer),
@@ -93,8 +96,8 @@ impl SetupFindSuitableChannel {
                                                 control_addr: addr,
                                                 udp: Arc::new(socket),
                                                 pong,
-                                            })
-                                        },
+                                            });
+                                        }
                                         other => {
                                             tracing::error!(?other, "expected pong got other response");
                                         }

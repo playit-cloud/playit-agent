@@ -36,7 +36,6 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
     };
 
     let mut error_count = 0;
-
     ui.write_screen("starting up tunnel connection");
 
     let runner = loop {

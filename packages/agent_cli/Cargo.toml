@@ -2,6 +2,8 @@
 name = "playit-cli"
 version.workspace = true
 edition = "2021"
+authors = ["Patrick Lorio <patrick@playit.gg>"]
+description = "Making it easy to play games with friends. Makes your server public"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -21,6 +23,7 @@ urlencoding = "2.1"
 serde_yaml = "0.9"
 crossterm = "0.26"
 dirs = "5.0.1"
+tracing-appender = "0.2"
 
 playit-agent-core = { path = "../agent_core" }
 playit-agent-proto = { path = "../agent_proto" }

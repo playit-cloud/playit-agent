@@ -25,14 +25,11 @@ pub struct UISettings {
 
 impl UI {
     pub fn new(settings: UISettings) -> Self {
-        if settings.log_only {
-            tracing_subscriber::fmt().try_init().unwrap();
-        }
         UI { auto_answer: settings.auto_answer, log_only: settings.log_only, last_display: None }
     }
 
     pub fn write_screen<T: std::fmt::Display>(&mut self, content: T) {
-        if self.log_only {
+        {
             let content = content.to_string();
 
             if let Some((ts, last_render)) = &self.last_display {
@@ -43,6 +40,9 @@ impl UI {
 
             tracing::info!("{}", content.lines().next().unwrap());
             self.last_display = Some((now_milli(), content));
+        }
+
+        if self.log_only {
             return;
         }
 

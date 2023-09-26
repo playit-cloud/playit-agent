@@ -33,15 +33,41 @@ pub mod ui;
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, CliError> {
-    // tracing_subscriber::fmt().try_init().unwrap();
-
     let matches = cli().get_matches();
     let mut secret = PlayitSecret::from_args(&matches).await;
     let _ = secret.with_default_path().await;
 
+    let log_only = matches.get_flag("stdout");
+    let log_path = matches.get_one::<String>("log_path");
+
+    /* setup logging */
+    let _guard = match (log_only, log_path) {
+        (true, Some(_)) => panic!("try to use -s and -l at the same time"),
+        (false, Some(path)) => {
+            let write_path = match path.rsplit_once("/") {
+                Some((dir, file)) => tracing_appender::rolling::never(dir, file),
+                None => tracing_appender::rolling::never(".", path),
+            };
+
+            let (non_blocking, guard) = tracing_appender::non_blocking(write_path);
+            tracing_subscriber::fmt()
+                .with_writer(non_blocking)
+                .init();
+            Some(guard)
+        }
+        (true, None) => {
+            let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
+            tracing_subscriber::fmt()
+                .with_writer(non_blocking)
+                .init();
+            Some(guard)
+        }
+        _ => None,
+    };
+
     let mut ui = UI::new(UISettings {
         auto_answer: None,
-        log_only: matches.get_flag("stdout"),
+        log_only,
     });
 
     match matches.subcommand() {
@@ -51,35 +77,27 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             autorun(&mut ui, secret).await?;
         }
         Some(("version", _)) => println!("{}", env!("CARGO_PKG_VERSION")),
+        #[cfg(target_os = "linux")]
+        Some(("setup", _)) => {
+            let mut secret = PlayitSecret::linux_service();
+            let key = secret
+                .ensure_valid(&mut ui).await?
+                .get_or_setup(&mut ui).await?;
+
+            let api = PlayitApi::create(API_BASE.to_string(), Some(key));
+            if let Ok(session) = api.login_guest().await {
+                ui.write_screen(format!("Guest login:\nhttps://playit.gg/login/guest-account/{}", session.session_key));
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+
+            ui.write_screen("Playit setup, secret written to /etc/playit/playit.toml");
+        }
         Some(("account", m)) => match m.subcommand() {
             Some(("login-url", _)) => {
                 let api = secret.create_api().await?;
                 let session = api.login_guest().await?;
                 println!("https://playit.gg/login/guest-account/{}", session.session_key)
             }
-            // Some(("status", _)) => {
-            //     let _api = secret.create_api().await?;
-            //     println!("not implemented");
-
-            //     // let res = api.req(GetSession).await?;
-            //     // println!("ACCOUNT_ID={}", res.account_id);
-            //     // println!("IS_GUEST={}", res.is_guest);
-            //     // println!("EMAIL_VERIFIED={}", res.email_verified);
-            //     // if let Some(agent_id) = res.agent_id {
-            //     //     println!("AGENT_ID={}", agent_id);
-            //     // }
-            //     // println!("HAS_NOTICE={}", res.notice.is_some());
-            // }
-            // Some(("notice", _)) => {
-            //     let _api = secret.create_api().await?;
-            //     println!("not implemented");
-
-            //     // let res = api.req(GetSession).await?;
-            //     // match res.notice {
-            //     //     Some(notice) => println!("{}\n{}", notice.url, notice.message),
-            //     //     None => println!("NONE"),
-            //     // }
-            // }
             _ => return Err(CliError::NotImplemented.into()),
         }
         Some(("claim", m)) => match m.subcommand() {
@@ -189,18 +207,6 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
             tunnel.run().await;
         }
-        // Some(("launch", m)) => {
-        //     let config_file = m.get_one::<String>("CONFIG_FILE").unwrap();
-        //     let config = match load_config::<LaunchConfig>(&config_file).await {
-        //         Some(v) => v,
-        //         None => {
-        //             return Err(CliError::InvalidConfigFile.into());
-        //         }
-        //     };
-
-        //     let _ = tracing_subscriber::fmt().try_init();
-        //     launch(config).await?;
-        // }
         _ => return Err(CliError::NotImplemented.into()),
     }
 
@@ -491,10 +497,12 @@ impl Display for CliError {
 impl Error for CliError {}
 
 fn cli() -> Command {
-    Command::new("playit-cli")
+    let mut cmd = Command::new("playit-cli")
         .arg(arg!(--secret <SECRET> "secret code for the agent").required(false))
         .arg(arg!(--secret_path <PATH> "path to file containing secret").required(false))
+        .arg(arg!(-w --secret_wait "wait for secret_path file to read secret").required(false))
         .arg(arg!(-s --stdout "prints logs to stdout").required(false))
+        .arg(arg!(-l --log_path <PATH> "path to write logs to").required(false))
         .subcommand_required(false)
         .subcommand(Command::new("version"))
         .subcommand(
@@ -503,14 +511,6 @@ fn cli() -> Command {
                 .subcommand(
                     Command::new("login-url")
                         .about("Generates a link to allow user to login")
-                )
-                .subcommand(
-                    Command::new("status")
-                        .about("Print account status")
-                )
-                .subcommand(
-                    Command::new("notice")
-                        .about("Print notice for account")
                 )
         )
         .subcommand(
@@ -560,10 +560,11 @@ fn cli() -> Command {
             Command::new("run")
                 .about("Run the playit agent")
                 .arg(arg!([MAPPING_OVERRIDE] "(format \"<tunnel-id>=[<local-ip>:]<local-port> [, ..]\")").required(false).value_delimiter(','))
-        )
-        .subcommand(
-            Command::new("launch")
-                .about("Launches the playit agent with a configuration file")
-                .arg(arg!(<CONFIG_FILE> "configuration file").required(true))
-        )
+        );
+
+    #[cfg(target_os = "linux")] {
+        cmd = cmd.subcommand(Command::new("setup"));
+    }
+
+    cmd
 }

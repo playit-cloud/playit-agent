@@ -14,6 +14,7 @@ pub struct PlayitSecret {
     secret: RwLock<Option<String>>,
     path: Option<String>,
     allow_path_read: bool,
+    wait_for_path: bool,
 }
 
 impl PlayitSecret {
@@ -34,15 +35,16 @@ impl PlayitSecret {
             return self;
         }
 
-        let config_root = config_path.as_ref().unwrap().to_string_lossy();
-
-        /* old linux versions saved data in playit folder not playit_gg */
-        let old_config_path = format!("{}/playit/playit.toml", config_root);
-        if tokio::fs::try_exists(&old_config_path).await.unwrap_or(false) {
-            self.path = Some(old_config_path);
-            return self;
+        /* old versions for linux used /etc/playit/playit.toml */
+        #[cfg(target_os = "linux")] {
+            let old_path = "/etc/playit/playit.toml";
+            if tokio::fs::try_exists(&old_path).await.unwrap_or(false) {
+                self.path = Some(old_path.to_string());
+                return self;
+            }
         }
 
+        let config_root = config_path.as_ref().unwrap().to_string_lossy();
         let config_folder = format!("{}/playit_gg", config_root);
         if let Err(error) = tokio::fs::create_dir_all(&config_folder).await {
             tracing::error!(?error, "failed to create configuration folder");
@@ -111,8 +113,15 @@ impl PlayitSecret {
     }
 
     pub async fn get_or_setup(&mut self, ui: &mut UI) -> Result<String, CliError> {
-        if let Ok(secret) = self.get().await {
-            return Ok(secret);
+        loop {
+            match self.get().await {
+                Ok(secret) => return Ok(secret),
+                Err(CliError::SecretFileLoadError) if self.wait_for_path => {
+                    tracing::info!(path = ?self.path, "waiting for secret to be populated");
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
+                _ => break,
+            }
         }
 
         if self.path.is_none() {
@@ -215,6 +224,17 @@ impl PlayitSecret {
             secret: RwLock::new(secret),
             path,
             allow_path_read: true,
+            wait_for_path: matches.get_flag("secret_wait"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    pub fn linux_service() -> Self {
+        PlayitSecret {
+            secret: RwLock::new(None),
+            path: Some("/etc/playit/playit.toml".to_string()),
+            allow_path_read: true,
+            wait_for_path: false,
         }
     }
 }
