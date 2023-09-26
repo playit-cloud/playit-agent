@@ -28,6 +28,12 @@ jobs:
             apt_install: gcc-arm-linux-gnueabihf
             artifact: playit-linux-armv7
 
+          - name: linux 32bit
+            os: ubuntu-latest
+            arch: i686-unknown-linux-gnu
+            apt_install: gcc-i686-linux-gnu
+            artifact: playit-linux-i686
+
     runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v3
