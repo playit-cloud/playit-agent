@@ -13,6 +13,6 @@ bash "${SCRIPT_DIR}/package-linux-deb.sh" armv7-unknown-linux-gnueabihf armhf
 ROOT_CARGO_FILE="${SCRIPT_DIR}/../Cargo.toml"
 VERSION=$(toml get "${ROOT_CARGO_FILE}" workspace.package.version | sed "s/\"//g")
 
-cp target/deb/playit_amd64.deb "${SCRIPT_DIR}/../ppa/data/playit_${VERSION}_amd64.deb"
-cp target/deb/playit_arm64.deb "${SCRIPT_DIR}/../ppa/data/playit_${VERSION}_arm64.deb"
-cp target/deb/playit_armhf.deb "${SCRIPT_DIR}/../ppa/data/playit_${VERSION}_armhf.deb"
+cp target/deb/playit_amd64.deb "${SCRIPT_DIR}/../../ppa/data/playit_${VERSION}_amd64.deb"
+cp target/deb/playit_arm64.deb "${SCRIPT_DIR}/../../ppa/data/playit_${VERSION}_arm64.deb"
+cp target/deb/playit_armhf.deb "${SCRIPT_DIR}/../../ppa/data/playit_${VERSION}_armhf.deb"
