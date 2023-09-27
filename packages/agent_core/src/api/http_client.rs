@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use hyper::{Body, header, Method, Request};
 use hyper::body::Buf;
 use hyper::client::HttpConnector;
-use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -11,20 +10,45 @@ use crate::api::api::{ApiResult, PlayitHttpClient};
 pub struct HttpClient {
     api_base: String,
     auth_header: Option<String>,
-    client: hyper::Client<HttpsConnector<HttpConnector>, Body>,
+
+    #[cfg(target_arch = "mips")]
+    client: hyper::Client<hyper_tls::HttpsConnector<HttpConnector>, Body>,
+
+    #[cfg(not(target_arch = "mips"))]
+    client: hyper::Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>,
 }
 
 impl HttpClient {
+    #[cfg(target_arch = "mips")]
     pub fn new(api_base: String, auth_header: Option<String>) -> Self {
         let connector = if api_base.starts_with("http://") {
-            HttpsConnectorBuilder::new()
+            let mut connector = hyper_tls::HttpsConnector::new();
+            connector.https_only(false);
+            connector
+        } else {
+            let mut connector = hyper_tls::HttpsConnector::new();
+            connector.https_only(true);
+            connector
+        };
+
+        HttpClient {
+            api_base,
+            auth_header,
+            client: hyper::Client::builder().build(connector),
+        }
+    }
+
+    #[cfg(not(target_arch = "mips"))]
+    pub fn new(api_base: String, auth_header: Option<String>) -> Self {
+        let connector = if api_base.starts_with("http://") {
+            hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
                 .https_or_http()
                 .enable_http1()
                 .enable_http2()
                 .build()
         } else {
-            HttpsConnectorBuilder::new()
+            hyper_rustls::HttpsConnectorBuilder::new()
                 .with_native_roots()
                 .https_only()
                 .enable_http1()

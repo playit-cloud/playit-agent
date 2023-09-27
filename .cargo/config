@@ -7,3 +7,8 @@ linker = "arm-linux-gnueabihf-gcc"
 [target.i686-unknown-linux-gnu]
 linker = "i686-linux-gnu-gcc"
 
+[target.mipsel-unknown-linux-gnu]
+linker = "mipsel-linux-gnu-gcc"
+
+[target.mips-unknown-linux-gnu]
+linker = "mips-linux-gnu-gcc"

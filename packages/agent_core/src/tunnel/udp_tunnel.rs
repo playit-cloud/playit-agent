@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
@@ -10,7 +10,7 @@ use playit_agent_proto::control_messages::UdpChannelDetails;
 
 
 use crate::tunnel::udp_proto::UdpFlow;
-use crate::utils::now_milli;
+use crate::utils::now_sec;
 
 #[derive(Clone)]
 pub struct UdpTunnel {
@@ -21,8 +21,8 @@ struct Inner {
     udp4: UdpSocket,
     udp6: Option<UdpSocket>,
     details: RwLock<ChannelDetails>,
-    last_confirm: AtomicU64,
-    last_send: AtomicU64,
+    last_confirm: AtomicU32,
+    last_send: AtomicU32,
 }
 
 struct ChannelDetails {
@@ -40,8 +40,8 @@ impl UdpTunnel {
                     udp: None,
                     addr_history: VecDeque::new(),
                 }),
-                last_confirm: AtomicU64::new(0),
-                last_send: AtomicU64::new(0),
+                last_confirm: AtomicU32::new(0),
+                last_send: AtomicU32::new(0),
             })
         })
     }
@@ -58,7 +58,7 @@ impl UdpTunnel {
     pub fn requires_resend(&self) -> bool {
         let last_confirm = self.inner.last_confirm.load(Ordering::SeqCst);
         /* send token every 10 seconds */
-        10_000 < now_milli() - last_confirm
+        10 < now_sec() - last_confirm
     }
 
     pub fn requires_auth(&self) -> bool {
@@ -70,8 +70,8 @@ impl UdpTunnel {
             return false;
         }
 
-        let now = now_milli();
-        5_000 < now - last_send
+        let now = now_sec();
+        5 < now - last_send
     }
 
     pub async fn set_udp_tunnel(&self, details: UdpChannelDetails) -> std::io::Result<()> {
@@ -132,7 +132,7 @@ impl UdpTunnel {
 
 
         tracing::info!(token_len = details.token.len(), tunnel_addr = %details.tunnel_addr, "send udp session token");
-        self.inner.last_send.store(now_milli(), Ordering::SeqCst);
+        self.inner.last_send.store(now_sec(), Ordering::SeqCst);
         Ok(())
     }
 
@@ -182,7 +182,7 @@ impl UdpTunnel {
 
         if buffer[..bytes].eq(&token[..]) {
             tracing::info!(token_len = bytes, tunnel_addr = %remote, "udp session confirmed");
-            self.inner.last_confirm.store(now_milli(), Ordering::SeqCst);
+            self.inner.last_confirm.store(now_sec(), Ordering::SeqCst);
             return Ok(UdpTunnelRx::ConfirmedConnection);
         }
 

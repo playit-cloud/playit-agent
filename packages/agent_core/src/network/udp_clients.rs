@@ -1,21 +1,18 @@
 use std::collections::{hash_map::Entry, HashMap};
 use std::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
-
-
-
 
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
+
 use crate::api::api::PortType;
 use crate::network::address_lookup::AddressLookup;
-
 use crate::network::lan_address::LanAddress;
 use crate::tunnel::udp_proto::UdpFlow;
 use crate::tunnel::udp_tunnel::UdpTunnel;
-use crate::utils::now_milli;
+use crate::utils::now_sec;
 
 pub struct UdpClients<L: AddressLookup> {
     udp_tunnel: UdpTunnel,
@@ -102,7 +99,7 @@ impl<L: AddressLookup> UdpClients<L> where L::Value: Into<SocketAddr> {
                         tunnel_from_port: found.from_port,
                         tunnel_to_port: found.to_port,
                         udp_clients: self.udp_clients.clone(),
-                        last_activity: Default::default()
+                        last_activity: Default::default(),
                     });
 
                     tokio::spawn(HostToTunnelForwarder(client.clone()).run());
@@ -124,7 +121,7 @@ struct UdpClient {
     tunnel_from_port: u16,
     tunnel_to_port: u16,
     udp_clients: Arc<RwLock<HashMap<ClientKey, Arc<UdpClient>>>>,
-    last_activity: AtomicU64,
+    last_activity: AtomicU32,
 }
 
 impl UdpClient {
@@ -140,7 +137,7 @@ impl UdpClient {
             )
         };
 
-        self.last_activity.store(now_milli(), Ordering::Relaxed);
+        self.last_activity.store(now_sec(), Ordering::Relaxed);
         self.local_udp.send_to(data, target_addr).await
     }
 }
@@ -159,7 +156,7 @@ impl HostToTunnelForwarder {
                 Duration::from_secs(30),
                 self.0.local_udp.recv_from(&mut buffer),
             )
-            .await;
+                .await;
 
             let (bytes, source) = match recv_res {
                 Ok(Ok(v)) => v,
@@ -168,7 +165,7 @@ impl HostToTunnelForwarder {
                     break;
                 }
                 Err(_) => {
-                    if now_milli() - self.0.last_activity.load(Ordering::Relaxed) > 120_000 {
+                    if now_sec() - self.0.last_activity.load(Ordering::Relaxed) > 120 {
                         tracing::info!("2 min timeout for not receiving data from host");
                         break;
                     }

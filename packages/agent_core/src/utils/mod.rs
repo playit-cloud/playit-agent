@@ -8,3 +8,7 @@ pub fn now_milli() -> u64 {
         .unwrap()
         .as_millis() as u64
 }
+
+pub fn now_sec() -> u32 {
+    (now_milli() / 1_000) as u32
+}

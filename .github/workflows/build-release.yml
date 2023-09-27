@@ -34,6 +34,18 @@ jobs:
             apt_install: gcc-i686-linux-gnu
             artifact: playit-linux-i686
 
+          - name: linux mipsel
+            os: ubuntu-latest
+            arch: mipsel-unknown-linux-gnu
+            apt_install: gcc-mipsel-linux-gnu
+            artifact: playit-linux-mipsel
+
+          - name: linux mips
+            os: ubuntu-latest
+            arch: mips-unknown-linux-gnu
+            apt_install: gcc-mips-linux-gnu
+            artifact: playit-linux-mips
+
     runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v3
@@ -176,7 +188,7 @@ jobs:
           asset_name: ${{ matrix.platform.artifact }}
           asset_content_type: application/octet-stream
 
-  windows_build:
+  build_windows:
     strategy:
       fail-fast: false
       matrix:
