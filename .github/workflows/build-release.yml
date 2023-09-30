@@ -13,37 +13,31 @@ jobs:
           - name: linux 64bit
             os: ubuntu-latest
             arch: x86_64-unknown-linux-musl
-            apt_install: musl-tools
             artifact: playit-linux-amd64
 
           - name: linux arm64
             os: ubuntu-latest
-            arch: aarch64-unknown-linux-gnu
-            apt_install: gcc-aarch64-linux-gnu
+            arch: aarch64-unknown-linux-musl
             artifact: playit-linux-aarch64
 
           - name: linux arm7
             os: ubuntu-latest
             arch: armv7-unknown-linux-gnueabihf
-            apt_install: gcc-arm-linux-gnueabihf
             artifact: playit-linux-armv7
 
           - name: linux 32bit
             os: ubuntu-latest
             arch: i686-unknown-linux-gnu
-            apt_install: gcc-i686-linux-gnu
             artifact: playit-linux-i686
 
           - name: linux mipsel
             os: ubuntu-latest
-            arch: mipsel-unknown-linux-gnu
-            apt_install: gcc-mipsel-linux-gnu
+            arch: mipsel-unknown-linux-musl
             artifact: playit-linux-mipsel
 
           - name: linux mips
             os: ubuntu-latest
-            arch: mips-unknown-linux-gnu
-            apt_install: gcc-mips-linux-gnu
+            arch: mips-unknown-linux-musl
             artifact: playit-linux-mips
 
     runs-on: ${{ matrix.platform.os }}
@@ -56,22 +50,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.platform.arch }}
-
-      - name: Run optional apt install
-        if: ${{ matrix.platform.apt_install }}
-        run: sudo apt-get update --yes && sudo apt-get install --yes ${{ matrix.platform.apt_install }}
-
       - name: build release
         uses: actions-rs/cargo@v1
         with:
+          use-cross: true
           command: build
           args: --target ${{ matrix.platform.arch }} --release --all
 
       - name: Upload Binary
-        if: matrix.platform.os != 'windows-latest'
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -111,10 +97,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.platform.arch }}
-
-      - name: Run optional apt install
-        if: ${{ matrix.platform.apt_install }}
-        run: sudo apt-get update --yes && sudo apt-get install --yes ${{ matrix.platform.apt_install }}
 
       - name: build release
         uses: actions-rs/cargo@v1
