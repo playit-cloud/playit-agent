@@ -1,6 +1,6 @@
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-BUILD_ARCH="$1"
+SRC_PATH="$1"
 DEB_ARCH="$2"
 
 TEMP_DIR_NAME="temp-build-${DEB_ARCH}"
@@ -28,7 +28,7 @@ WK_DIR=$(pwd)
 # Copy over playit binary
 echo "PREPARE BINARY AND RUN SCRIPT"
 mkdir -p "${WK_DIR}${INSTALL_FOLDER}"
-cp "${SCRIPT_DIR}/../target/${BUILD_ARCH}/release/playit-cli" "${WK_DIR}${INSTALL_FOLDER}/agent"
+cp "${SRC_PATH}" "${WK_DIR}${INSTALL_FOLDER}/agent"
 
 /lib/systemd/system/tailscaled.service
 
@@ -64,7 +64,9 @@ cat <<EOF > "${WK_DIR}/DEBIAN/postinst"
 #!/bin/bash
 ln -s ${INSTALL_FOLDER}/playit /usr/local/bin/playit
 mkdir -p /var/log/playit # make logs folder
-chmod 757 -R /var/log/playit
+chmod 0766 -R /var/log/playit
+mkdir -p /etc/playit
+chmod 0766 /etc/playit
 EOF
 chmod 0555 "${WK_DIR}/DEBIAN/postinst"
 
