@@ -14,31 +14,37 @@ jobs:
             os: ubuntu-latest
             arch: x86_64-unknown-linux-musl
             artifact: playit-linux-amd64
+            dpkg_arch: amd64
 
           - name: linux arm64
             os: ubuntu-latest
             arch: aarch64-unknown-linux-musl
             artifact: playit-linux-aarch64
+            dpkg_arch: arm64
 
           - name: linux arm7
             os: ubuntu-latest
             arch: armv7-unknown-linux-gnueabihf
             artifact: playit-linux-armv7
+            dpkg_arch: armhf
 
           - name: linux 32bit
             os: ubuntu-latest
             arch: i686-unknown-linux-gnu
             artifact: playit-linux-i686
+            dpkg_arch: i386
 
           - name: linux mipsel
             os: ubuntu-latest
             arch: mipsel-unknown-linux-musl
             artifact: playit-linux-mipsel
+            dpkg_arch: mipsel
 
           - name: linux mips
             os: ubuntu-latest
             arch: mips-unknown-linux-musl
             artifact: playit-linux-mips
+            dpkg_arch: mips
 
     runs-on: ${{ matrix.platform.os }}
     steps:
@@ -66,6 +72,21 @@ jobs:
           asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
           asset_name: ${{ matrix.platform.artifact }}
           asset_content_type: application/octet-stream
+
+      - name: Package .deb
+        shell: bash
+        run: 'bash ./build-scripts/package-linux-dep.sh "./target/${{ matrix.platform.arch }}/release/playit-cli" ${{ matrix.platform.dpkg_arch }}'
+
+      - name: Upload .deb
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/deb/playit_${{ matrix.platform.dpkg_arch }}
+          asset_name: ${{ matrix.platform.artifact }}
+          asset_content_type: application/octet-stream
+
 
   build_macos:
     environment: production
