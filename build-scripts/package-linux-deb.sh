@@ -1,3 +1,7 @@
+cargo install toml-cli
+
+START_DIR="$(pwd)"
+
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 SRC_PATH="$1"
@@ -28,9 +32,10 @@ WK_DIR=$(pwd)
 # Copy over playit binary
 echo "PREPARE BINARY AND RUN SCRIPT"
 mkdir -p "${WK_DIR}${INSTALL_FOLDER}"
-cp "${SRC_PATH}" "${WK_DIR}${INSTALL_FOLDER}/agent"
 
-/lib/systemd/system/tailscaled.service
+cd "$START_DIR"
+cp "${SRC_PATH}" "${WK_DIR}${INSTALL_FOLDER}/agent"
+cd "${TEMP_DIR_NAME}"
 
 # Create run script
 echo "#!/bin/bash
