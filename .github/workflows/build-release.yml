@@ -75,7 +75,7 @@ jobs:
 
       - name: Package .deb
         shell: bash
-        run: 'bash ./build-scripts/package-linux-dep.sh "./target/${{ matrix.platform.arch }}/release/playit-cli" ${{ matrix.platform.dpkg_arch }}'
+        run: 'bash ./build-scripts/package-linux-deb.sh "./target/${{ matrix.platform.arch }}/release/playit-cli" ${{ matrix.platform.dpkg_arch }}'
 
       - name: Upload .deb
         uses: actions/upload-release-asset@v1
