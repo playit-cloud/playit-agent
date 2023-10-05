@@ -84,7 +84,7 @@ jobs:
         with:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
           asset_path: ./target/deb/playit_${{ matrix.platform.dpkg_arch }}.deb
-          asset_name: ${{ matrix.platform.artifact }}
+          asset_name: playit_${{ matrix.platform.dpkg_arch }}.deb
           asset_content_type: application/octet-stream
 
 
