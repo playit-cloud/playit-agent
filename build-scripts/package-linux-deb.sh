@@ -33,9 +33,7 @@ WK_DIR=$(pwd)
 echo "PREPARE BINARY AND RUN SCRIPT"
 mkdir -p "${WK_DIR}${INSTALL_FOLDER}"
 
-cd "$START_DIR"
-cp "${SRC_PATH}" "${WK_DIR}${INSTALL_FOLDER}/agent"
-cd "${TEMP_DIR_NAME}"
+cp "${START_DIR}/${SRC_PATH}" "${WK_DIR}${INSTALL_FOLDER}/agent"
 
 # Create run script
 echo "#!/bin/bash
@@ -87,7 +85,7 @@ chmod 0555 "${WK_DIR}/DEBIAN/prerm"
 # build package
 # shellcheck disable=SC2164
 cd "${SCRIPT_DIR}/${TEMP_DIR_NAME}"
-dpkg-deb --build --root-owner-group "${DEB_PACKAGE}"
+dpkg-deb --build -Zgzip --root-owner-group "${DEB_PACKAGE}"
 
 mkdir -p "${SCRIPT_DIR}/../target/deb"
 cp "${DEB_PACKAGE}.deb" "${SCRIPT_DIR}/../target/deb"
