@@ -13,14 +13,23 @@ if [ -z "$PIN" ]; then
   exit 1;
 fi
 
-MSI_DIR="${SCRIPT_DIR}/../target/win-sign"
-rm -r "${MSI_DIR}"; mkdir -p "$MSI_DIR"
+SIGN_DIR="${SCRIPT_DIR}/../target/win-sign"
+rm -r "${SIGN_DIR}"; mkdir -p "$SIGN_DIR"
 
-curl -L -o "${MSI_DIR}/playit-windows-x86.msi" https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}/playit-windows-x86.msi
-curl -L -o "${MSI_DIR}/playit-windows-x86_64.msi" https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}/playit-windows-x86_64.msi
+curl -L -o "${SIGN_DIR}/playit-windows-x86.msi" https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}/playit-windows-x86.msi
+curl -L -o "${SIGN_DIR}/playit-windows-x86_64.msi" https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}/playit-windows-x86_64.msi
 
-jsign --storetype YUBIKEY --tsaurl http://ts.ssl.com --storepass "${PIN}" --tsmode RFC3161 "${MSI_DIR}/playit-windows-x86.msi" \
- && mv "${MSI_DIR}/playit-windows-x86.msi" "${MSI_DIR}/playit-windows-x86-signed.msi"
+curl -L -o "${SIGN_DIR}/playit-windows-x86.exe" https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}/playit-windows-x86.exe
+curl -L -o "${SIGN_DIR}/playit-windows-x86_64.exe" https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}/playit-windows-x86_64.exe
 
-jsign --storetype YUBIKEY --tsaurl http://ts.ssl.com --storepass "${PIN}" --tsmode RFC3161 "${MSI_DIR}/playit-windows-x86_64.msi" \
- && mv "${MSI_DIR}/playit-windows-x86_64.msi" "${MSI_DIR}/playit-windows-x86_64-signed.msi"
+jsign --storetype YUBIKEY --tsaurl http://ts.ssl.com --storepass "${PIN}" --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86.msi" \
+ && mv "${SIGN_DIR}/playit-windows-x86.msi" "${SIGN_DIR}/playit-windows-x86-signed.msi"
+
+jsign --storetype YUBIKEY --tsaurl http://ts.ssl.com --storepass "${PIN}" --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86_64.msi" \
+ && mv "${SIGN_DIR}/playit-windows-x86_64.msi" "${SIGN_DIR}/playit-windows-x86_64-signed.msi"
+
+jsign --storetype YUBIKEY --tsaurl http://ts.ssl.com --storepass "${PIN}" --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86.exe" \
+ && mv "${SIGN_DIR}/playit-windows-x86.exe" "${SIGN_DIR}/playit-windows-x86-signed.exe"
+
+jsign --storetype YUBIKEY --tsaurl http://ts.ssl.com --storepass "${PIN}" --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86_64.exe" \
+ && mv "${SIGN_DIR}/playit-windows-x86_64.exe" "${SIGN_DIR}/playit-windows-x86_64-signed.exe"
