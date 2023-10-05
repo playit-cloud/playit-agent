@@ -69,7 +69,7 @@ ln -s ${INSTALL_FOLDER}/playit /usr/local/bin/playit
 mkdir -p /var/log/playit # make logs folder
 chmod 0766 -R /var/log/playit
 mkdir -p /etc/playit
-chmod 0766 /etc/playit
+chmod 0777 /etc/playit
 EOF
 chmod 0555 "${WK_DIR}/DEBIAN/postinst"
 
