@@ -1,3 +1,7 @@
+cargo install toml-cli
+
+START_DIR="$(pwd)"
+
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
 SRC_PATH="$1"
@@ -28,9 +32,8 @@ WK_DIR=$(pwd)
 # Copy over playit binary
 echo "PREPARE BINARY AND RUN SCRIPT"
 mkdir -p "${WK_DIR}${INSTALL_FOLDER}"
-cp "${SRC_PATH}" "${WK_DIR}${INSTALL_FOLDER}/agent"
 
-/lib/systemd/system/tailscaled.service
+cp "${START_DIR}/${SRC_PATH}" "${WK_DIR}${INSTALL_FOLDER}/agent"
 
 # Create run script
 echo "#!/bin/bash
@@ -82,7 +85,7 @@ chmod 0555 "${WK_DIR}/DEBIAN/prerm"
 # build package
 # shellcheck disable=SC2164
 cd "${SCRIPT_DIR}/${TEMP_DIR_NAME}"
-dpkg-deb --build --root-owner-group "${DEB_PACKAGE}"
+dpkg-deb --build -Zgzip --root-owner-group "${DEB_PACKAGE}"
 
 mkdir -p "${SCRIPT_DIR}/../target/deb"
 cp "${DEB_PACKAGE}.deb" "${SCRIPT_DIR}/../target/deb"
