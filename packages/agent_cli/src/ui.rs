@@ -15,6 +15,7 @@ pub struct UI {
     auto_answer: Option<bool>,
     last_display: Option<(u64, String)>,
     log_only: bool,
+    wrote_content: bool,
 }
 
 #[derive(Default)]
@@ -25,7 +26,7 @@ pub struct UISettings {
 
 impl UI {
     pub fn new(settings: UISettings) -> Self {
-        UI { auto_answer: settings.auto_answer, log_only: settings.log_only, last_display: None }
+        UI { auto_answer: settings.auto_answer, log_only: settings.log_only, last_display: None, wrote_content: false }
     }
 
     pub fn write_screen<T: std::fmt::Display>(&mut self, content: T) {
@@ -48,9 +49,13 @@ impl UI {
 
         let content_ref = &content;
         let res: std::io::Result<()> = (|| {
-            let cleared = stdout()
-                .execute(Clear(crossterm::terminal::ClearType::All))
-                .is_ok();
+            let cleared = if self.wrote_content {
+                stdout()
+                    .execute(Clear(crossterm::terminal::ClearType::All))
+                    .is_ok()
+            } else {
+                true
+            };
 
             if !cleared {
                 stdout()
@@ -69,6 +74,8 @@ impl UI {
             tracing::error!(?error, "failed to write to screen");
             println!("{}", content);
         }
+
+        self.wrote_content = true;
     }
 
     pub fn yn_question<T: std::fmt::Display>(&mut self, question: T, default_yes: Option<bool>) -> Result<bool, CliError> {
