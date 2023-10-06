@@ -9,7 +9,8 @@ pub struct LanAddress;
 
 impl LanAddress {
     pub async fn tcp_socket(special_lan_ip: bool, peer: SocketAddr, host: SocketAddr) -> std::io::Result<TcpStream> {
-        if host.ip().is_loopback() && special_lan_ip {
+        let is_loopback = host.ip().is_loopback();
+        if is_loopback && special_lan_ip {
             let local_ip = map_to_local_ip4(peer.ip());
             let socket = TcpSocket::new_v4()?;
 
@@ -28,6 +29,7 @@ impl LanAddress {
             }
         }
 
+        tracing::warn!(is_loopback, host_ip = %host.ip(), special_lan_ip, "not using special lan address");
         match TcpStream::connect(host).await {
             Err(e) => {
                 tracing::error!("Failed to establish connection for flow {:?} {:?}. Is your server running?", (peer, host), e);

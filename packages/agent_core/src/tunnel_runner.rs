@@ -1,20 +1,17 @@
-use std::net::{SocketAddr};
-
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use tokio::net::TcpStream;
 use tracing::Instrument;
 
-
 use crate::api::api::PortType;
-
 use crate::network::address_lookup::AddressLookup;
+use crate::network::lan_address::LanAddress;
 use crate::network::tcp_clients::TcpClients;
 use crate::network::tcp_pipe::pipe;
 use crate::network::udp_clients::UdpClients;
-use crate::tunnel::setup::{ConnectedControl, SetupError, SetupFindSuitableChannel};
+use crate::tunnel::setup::SetupError;
 use crate::tunnel::simple_tunnel::SimpleTunnel;
 use crate::tunnel::udp_tunnel::UdpTunnelRx;
 use crate::utils::now_milli;
@@ -93,6 +90,8 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<Socket
                     };
 
                     tokio::spawn(async move {
+                        let peer_addr = new_client.peer_addr;
+
                         let tunnel_conn = match clients.connect(new_client.clone()).await {
                             Ok(Some(client)) => client,
                             Ok(None) => return,
@@ -104,7 +103,7 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<Socket
 
                         tracing::info!("connected to TCP tunnel");
 
-                        let local_conn = match TcpStream::connect(local_addr).await {
+                        let local_conn = match LanAddress::tcp_socket(self.tcp_clients.use_special_lan, peer_addr, local_addr).await {
                             Ok(v) => v,
                             Err(error) => {
                                 tracing::error!(?error, "failed to connect to local server");

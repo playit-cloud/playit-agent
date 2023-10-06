@@ -75,18 +75,10 @@ impl TcpClients {
     }
 
     pub async fn connect(&self, new_client: NewClient) -> std::io::Result<Option<TcpClient>> {
-        let peer_addr = new_client.peer_addr;
         let claim_instructions = new_client.claim_instructions.clone();
 
         let Some(dropper) = self.active.add_new(new_client).await else { return Ok(None) };
-
-        let mut tunnel = TcpTunnel::new(
-            claim_instructions,
-            peer_addr
-        );
-        tunnel.use_special_lan = self.use_special_lan;
-
-        let stream = tunnel.connect().await?;
+        let stream = TcpTunnel::new(claim_instructions).connect().await?;
 
         Ok(Some(TcpClient {
             stream,

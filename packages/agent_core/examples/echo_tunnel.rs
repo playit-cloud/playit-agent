@@ -71,8 +71,8 @@ async fn main() {
                 tracing::info!(?new_client, "got new client");
 
                 tokio::spawn(async move {
-                    let mut tcp = TcpTunnel::new(new_client.claim_instructions.clone(), new_client.peer_addr).connect().await
-                        .unwrap();
+                    let mut tcp = TcpTunnel::new(new_client.claim_instructions.clone())
+                        .connect().await.unwrap();
 
                     let mut buffer = vec![0u8; 2048];
                     while let Ok(bytes) = tcp.read(&mut buffer).await {
