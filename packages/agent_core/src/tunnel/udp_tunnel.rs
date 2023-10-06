@@ -9,7 +9,7 @@ use tokio::sync::RwLock;
 use playit_agent_proto::control_messages::UdpChannelDetails;
 
 
-use crate::tunnel::udp_proto::UdpFlow;
+use crate::tunnel::udp_proto::{UDP_CHANNEL_ESTABLISH_ID, UdpFlow};
 use crate::utils::now_sec;
 
 #[derive(Clone)]
@@ -130,7 +130,6 @@ impl UdpTunnel {
             }
         }
 
-
         tracing::info!(token_len = details.token.len(), tunnel_addr = %details.tunnel_addr, "send udp session token");
         self.inner.last_send.store(now_sec(), Ordering::SeqCst);
         Ok(())
@@ -142,11 +141,11 @@ impl UdpTunnel {
         data.resize(flow.len() + og_packet_len, 0);
         flow.write_to(&mut data[og_packet_len..]);
 
-        let (socket, tunnel_addr, _) = self.get_sock().await?;
+        let (socket, tunnel_addr) = self.get_sock().await?;
         socket.send_to(&data, tunnel_addr).await
     }
 
-    async fn get_sock(&self) -> std::io::Result<(&UdpSocket, SocketAddr, Arc<Vec<u8>>)> {
+    async fn get_sock(&self) -> std::io::Result<(&UdpSocket, SocketAddr)> {
         let lock = self.inner.details.read().await;
 
         let details = match &lock.udp {
@@ -155,14 +154,26 @@ impl UdpTunnel {
         };
 
         Ok(if details.tunnel_addr.is_ipv4() {
-            (&self.inner.udp4, details.tunnel_addr, details.token.clone())
+            (&self.inner.udp4, details.tunnel_addr)
         } else {
-            (self.inner.udp6.as_ref().unwrap(), details.tunnel_addr, details.token.clone())
+            let Some(udp) = self.inner.udp6.as_ref() else { return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "IPv6 not setup")) };
+            (udp, details.tunnel_addr)
         })
     }
 
+    async fn get_token(&self) -> std::io::Result<Arc<Vec<u8>>> {
+        let lock = self.inner.details.read().await;
+
+        let details = match &lock.udp {
+            Some(v) => v,
+            None => return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "udp tunnel not connected")),
+        };
+
+        Ok(details.token.clone())
+    }
+
     pub async fn receive_from(&self, buffer: &mut [u8]) -> std::io::Result<UdpTunnelRx> {
-        let (udp, tunnel_addr, token) = self.get_sock().await?;
+        let (udp, tunnel_addr) = self.get_sock().await?;
         let (bytes, remote) = udp.recv_from(buffer).await?;
 
         if tunnel_addr != remote {
@@ -180,6 +191,7 @@ impl UdpTunnel {
             }
         }
 
+        let token = self.get_token().await?;
         if buffer[..bytes].eq(&token[..]) {
             tracing::info!(token_len = bytes, tunnel_addr = %remote, "udp session confirmed");
             self.inner.last_confirm.store(now_sec(), Ordering::SeqCst);
@@ -191,8 +203,20 @@ impl UdpTunnel {
         }
 
         let footer = match UdpFlow::from_tail(&buffer[..bytes]) {
-            Some(v) => v,
-            None => return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "failed to extract udp footer")),
+            Ok(v) => v,
+            Err(Some(footer)) if footer == UDP_CHANNEL_ESTABLISH_ID => {
+                let actual = hex::encode(&buffer[..bytes]);
+                let expected = hex::encode(&token[..]);
+
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("unexpected UDP establish packet, actual: {}, expected: {}", actual, expected)
+                ));
+            },
+            _ => return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("failed to extract udp footer: {}", hex::encode(&buffer[..bytes]))
+            )),
         };
 
         Ok(UdpTunnelRx::ReceivedPacket {

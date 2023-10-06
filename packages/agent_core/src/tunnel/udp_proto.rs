@@ -101,17 +101,17 @@ impl UdpFlow {
         true
     }
 
-    pub fn from_tail(mut slice: &[u8]) -> Option<UdpFlow> {
+    pub fn from_tail(mut slice: &[u8]) -> Result<UdpFlow, Option<u64>> {
         /* not enough space for footer */
         if slice.len() < 8 {
-            return None;
+            return Err(None);
         }
         let footer = BigEndian::read_u64(&slice[slice.len() - 8..]);
 
         match footer {
             REDIRECT_FLOW_4_FOOTER_ID | REDIRECT_FLOW_4_FOOTER_ID_OLD => {
                 if slice.len() < V4_LEN {
-                    return None;
+                    return Err(None);
                 }
 
                 slice = &slice[slice.len() - V4_LEN..];
@@ -121,14 +121,14 @@ impl UdpFlow {
                 let src_port = slice.read_u16::<BigEndian>().unwrap();
                 let dst_port = slice.read_u16::<BigEndian>().unwrap();
 
-                Some(UdpFlow::V4 {
+                Ok(UdpFlow::V4 {
                     src: SocketAddrV4::new(src_ip.into(), src_port),
                     dst: SocketAddrV4::new(dst_ip.into(), dst_port),
                 })
             }
             REDIRECT_FLOW_6_FOOTER_ID => {
                 if slice.len() < V6_LEN {
-                    return None;
+                    return Err(None);
                 }
 
                 slice = &slice[slice.len() - V6_LEN..];
@@ -139,13 +139,13 @@ impl UdpFlow {
                 let dst_port = slice.read_u16::<BigEndian>().unwrap();
                 let flow = slice.read_u32::<BigEndian>().unwrap();
 
-                Some(UdpFlow::V6 {
+                Ok(UdpFlow::V6 {
                     src: (src_ip.into(), src_port),
                     dst: (dst_ip.into(), dst_port),
                     flow,
                 })
             }
-            _ => None,
+            footer => Err(Some(footer)),
         }
     }
 
