@@ -920,7 +920,7 @@ checksum = "26072860ba924cbfa98ea39c8c19b4dd6a4a25423dbdf219c1eca91aa0cf6964"
 
 [[package]]
 name = "playit-agent-core"
-version = "0.15.7"
+version = "0.15.8"
 dependencies = [
  "async-trait",
  "byteorder",
@@ -954,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "playit-cli"
-version = "0.15.7"
+version = "0.15.8"
 dependencies = [
  "clap",
  "crossterm",

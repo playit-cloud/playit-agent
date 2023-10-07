@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -429,7 +429,7 @@ impl AddressLookup for LookupWithOverrides {
         }
 
         Some(AddressValue {
-            value: "127.0.0.1".parse().unwrap(),
+            value: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)),
             from_port: port,
             to_port: port + 1,
         })
