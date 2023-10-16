@@ -117,7 +117,7 @@ impl PlayitSecret {
             match self.get().await {
                 Ok(secret) => return Ok(secret),
                 Err(CliError::SecretFileLoadError) if self.wait_for_path => {
-                    tracing::info!(path = ?self.path, "waiting for secret to be populated");
+                    tracing::info!(path = ?self.path, "waiting for secret to be populated (run `playit setup`)");
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }
                 _ => break,

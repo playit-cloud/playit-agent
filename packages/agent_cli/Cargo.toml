@@ -21,7 +21,7 @@ uuid = { workspace = true }
 clap = { version = "4.4", features = ["derive"] }
 urlencoding = "2.1"
 serde_yaml = "0.9"
-crossterm = "0.26"
+crossterm = "0.27"
 dirs = "5.0.1"
 tracing-appender = "0.2"
 

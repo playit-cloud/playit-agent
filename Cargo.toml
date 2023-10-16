@@ -6,7 +6,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.15.8"
+version = "0.15.9"
 
 [workspace.dependencies]
 tokio = { version = "1.32", features = ["full"] }
@@ -16,7 +16,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.8.5"
 hex = "0.4.3"
-toml = "0.7.6"
+toml = "0.8.2"
 uuid = { version = "1.4", features = ["serde"] }
 byteorder = "1.4.3"
 async-trait = "0.1"

@@ -49,7 +49,7 @@ impl HttpClient {
                 .build()
         } else {
             hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
+                .with_webpki_roots()
                 .https_only()
                 .enable_http1()
                 .enable_http2()
