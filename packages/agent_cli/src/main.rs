@@ -419,7 +419,7 @@ impl AddressLookup for LookupWithOverrides {
 
     fn lookup(&self, ip: IpAddr, port: u16, proto: PortType) -> Option<AddressValue<SocketAddr>> {
         for over in &self.0 {
-            if over.proto == proto && over.match_ip.matches(ip) {
+            if (over.proto == proto || over.proto == PortType::Both) && over.match_ip.matches(ip) {
                 return Some(AddressValue {
                     value: over.local_addr,
                     from_port: over.port.from,
