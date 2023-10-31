@@ -648,6 +648,12 @@ pub struct PortRange {
 	pub to: u16,
 }
 
+impl PortRange {
+	pub fn contains(&self, port: u16) -> bool {
+		return self.from <= port && port <= self.to
+	}
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub enum AgentTunnelDisabled {
 	ByUser,
