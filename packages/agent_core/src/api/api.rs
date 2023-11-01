@@ -202,6 +202,15 @@ pub enum PortType {
 	Both,
 }
 
+impl PortType {
+    pub fn matches(&self, port: PortType) -> bool {
+        match *self {
+            PortType::Both => true,
+            other => other == port
+        }
+    }
+}
+
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "data")]
@@ -650,7 +659,7 @@ pub struct PortRange {
 
 impl PortRange {
 	pub fn contains(&self, port: u16) -> bool {
-		return self.from <= port && port <= self.to
+		self.from <= port && port <= self.to
 	}
 }
 
