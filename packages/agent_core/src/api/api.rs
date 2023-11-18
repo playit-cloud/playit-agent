@@ -202,6 +202,15 @@ pub enum PortType {
 	Both,
 }
 
+impl PortType {
+    pub fn matches(&self, port: PortType) -> bool {
+        match *self {
+            PortType::Both => true,
+            other => other == port
+        }
+    }
+}
+
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "data")]
@@ -646,6 +655,12 @@ pub struct AgentTunnel {
 pub struct PortRange {
 	pub from: u16,
 	pub to: u16,
+}
+
+impl PortRange {
+	pub fn contains(&self, port: u16) -> bool {
+		self.from <= port && port < self.to
+	}
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
