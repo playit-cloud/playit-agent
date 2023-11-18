@@ -659,7 +659,7 @@ pub struct PortRange {
 
 impl PortRange {
 	pub fn contains(&self, port: u16) -> bool {
-		self.from <= port && port <= self.to
+		self.from <= port && port < self.to
 	}
 }
 
