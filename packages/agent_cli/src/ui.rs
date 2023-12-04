@@ -10,6 +10,7 @@ use crossterm::{
 use playit_agent_core::utils::now_milli;
 
 use crate::CliError;
+use crate::signal_handle::get_signal_handle;
 
 pub struct UI {
     auto_answer: Option<bool>,
@@ -29,7 +30,32 @@ impl UI {
         UI { auto_answer: settings.auto_answer, log_only: settings.log_only, last_display: None, wrote_content: false }
     }
 
-    pub fn write_screen<T: std::fmt::Display>(&mut self, content: T) {
+    pub async fn write_screen<T: std::fmt::Display>(&mut self, content: T) {
+        let signal = get_signal_handle();
+        let exit_confirm = signal.is_confirming_close();
+
+        if exit_confirm {
+            match self.yn_question(format!("{}\nClose requested, close program?", content), Some(true)).await {
+                Ok(close) => {
+                    if close {
+                        std::process::exit(0);
+                    } else {
+                        signal.decline_close();
+                    }
+                },
+                Err(error) => {
+                    tracing::error!(%error, "failed to ask close signal question");
+                }
+            }
+
+            return;
+        }
+
+        self.write_screen_inner(content).await
+    }
+
+
+    async fn write_screen_inner<T: std::fmt::Display>(&mut self, content: T) {
         {
             let content = content.to_string();
 
@@ -78,7 +104,7 @@ impl UI {
         self.wrote_content = true;
     }
 
-    pub fn yn_question<T: std::fmt::Display>(&mut self, question: T, default_yes: Option<bool>) -> Result<bool, CliError> {
+    pub async fn yn_question<T: std::fmt::Display + Send + 'static>(&mut self, question: T, default_yes: Option<bool>) -> Result<bool, CliError> {
         let mut line = String::new();
         let mut count = 0;
 
@@ -95,16 +121,16 @@ impl UI {
 
             if let Some(default_yes) = default_yes {
                 if default_yes {
-                    self.write_screen(format!("{}{} (Y/n)? ", pref, question));
+                    self.write_screen_inner(format!("{}{} (Y/n)? ", pref, question)).await;
                 } else {
-                    self.write_screen(format!("{}{} (y/N)? ", pref, question));
+                    self.write_screen_inner(format!("{}{} (y/N)? ", pref, question)).await;
                 }
             } else {
-                self.write_screen(format!("{}{} (y/n)? ", pref, question));
+                self.write_screen_inner(format!("{}{} (y/n)? ", pref, question)).await;
             }
 
             loop {
-                let code = match event::read() {
+                let code = match tokio::task::spawn_blocking(|| event::read()).await.unwrap() {
                     Ok(Event::Key(KeyEvent { code, .. })) => code,
                     _ => break 'ask_loop,
                 };
@@ -147,11 +173,11 @@ impl UI {
         Err(CliError::AnswerNotProvided)
     }
 
-    pub fn write_error<M: std::fmt::Display, E: std::fmt::Debug>(
+    pub async fn write_error<M: std::fmt::Display, E: std::fmt::Debug>(
         &mut self,
         msg: M,
         error: E,
     ) {
-        self.write_screen(format!("Got Error\nMSG: {}\nError: {:?}\n", msg, error))
+        self.write_screen(format!("Got Error\nMSG: {}\nError: {:?}\n", msg, error)).await
     }
 }

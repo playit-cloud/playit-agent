@@ -21,6 +21,7 @@ use playit_agent_core::utils::now_milli;
 use playit_secret::PlayitSecret;
 
 use crate::match_ip::MatchIp;
+use crate::signal_handle::get_signal_handle;
 use crate::ui::{UI, UISettings};
 
 pub const API_BASE: &'static str = "https://api.playit.gg";
@@ -30,6 +31,7 @@ pub mod autorun;
 pub mod playit_secret;
 pub mod match_ip;
 pub mod ui;
+pub mod signal_handle;
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, CliError> {
@@ -72,7 +74,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
     match matches.subcommand() {
         None => {
-            ui.write_screen("no command provided, doing auto run");
+            ui.write_screen("no command provided, doing auto run").await;
             tokio::time::sleep(Duration::from_secs(1)).await;
             autorun(&mut ui, secret).await?;
         }
@@ -86,11 +88,11 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
             let api = PlayitApi::create(API_BASE.to_string(), Some(key));
             if let Ok(session) = api.login_guest().await {
-                ui.write_screen(format!("Guest login:\nhttps://playit.gg/login/guest-account/{}", session.session_key));
+                ui.write_screen(format!("Guest login:\nhttps://playit.gg/login/guest-account/{}", session.session_key)).await;
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
 
-            ui.write_screen("Playit setup, secret written to /etc/playit/playit.toml");
+            ui.write_screen("Playit setup, secret written to /etc/playit/playit.toml").await;
         }
         Some(("account", m)) => match m.subcommand() {
             Some(("login-url", _)) => {
@@ -102,18 +104,18 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         }
         Some(("claim", m)) => match m.subcommand() {
             Some(("generate", _)) => {
-                ui.write_screen(claim_generate());
+                ui.write_screen(claim_generate()).await;
             }
             Some(("url", m)) => {
                 let code = m.get_one::<String>("CLAIM_CODE").expect("required");
-                ui.write_screen(format!("{}", claim_url(code)?));
+                ui.write_screen(format!("{}", claim_url(code)?)).await;
             }
             Some(("exchange", m)) => {
                 let claim_code = m.get_one::<String>("CLAIM_CODE").expect("required");
                 let wait: u32 = m.get_one::<String>("wait").expect("required").parse().expect("invalid wait value");
 
                 let secret_key = claim_exchange(&mut ui, claim_code, AgentType::SelfManaged, wait).await?;
-                ui.write_screen(secret_key);
+                ui.write_screen(secret_key).await;
             }
             _ => return Err(CliError::NotImplemented.into()),
         },
@@ -239,33 +241,48 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
         now_milli() + (wait_sec as u64) * 1000
     };
 
-    loop {
-        let setup = api.claim_setup(ReqClaimSetup {
-            code: claim_code.to_string(),
-            agent_type,
-            version: format!("playit-cli {}", env!("CARGO_PKG_VERSION")),
-        }).await?;
+    {
+        let _close_guard = get_signal_handle().close_guard();
+        let mut last_message = "Preparing Setup".to_string();
 
-        match setup {
-            ClaimSetupResponse::WaitingForUserVisit => {
-                let msg = format!("Visit link to setup {}", claim_url(claim_code)?);
-                ui.write_screen(msg);
-            }
-            ClaimSetupResponse::WaitingForUser => {
-                ui.write_screen(format!("Approve program at {}", claim_url(claim_code)?));
-            }
-            ClaimSetupResponse::UserAccepted => {
-                ui.write_screen("Program approved :). Secret code being setup.");
-                break;
-            }
-            ClaimSetupResponse::UserRejected => {
-                ui.write_screen("Program rejected :(");
-                tokio::time::sleep(Duration::from_secs(3)).await;
-                return Err(CliError::AgentClaimRejected);
-            }
+        loop {
+            let setup_res = api.claim_setup(ReqClaimSetup {
+                code: claim_code.to_string(),
+                agent_type,
+                version: format!("playit-cli {}", env!("CARGO_PKG_VERSION")),
+            }).await;
+
+            let setup = match setup_res {
+                Ok(v) => v,
+                Err(error) => {
+                    tracing::error!(?error, "Failed loading claim setup");
+                    ui.write_screen(format!("{}\n\nError: {:?}", last_message, error)).await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+            };
+
+            last_message = match setup {
+                ClaimSetupResponse::WaitingForUserVisit => {
+                    format!("Visit link to setup {}", claim_url(claim_code)?)
+                }
+                ClaimSetupResponse::WaitingForUser => {
+                    format!("Approve program at {}", claim_url(claim_code)?)
+                }
+                ClaimSetupResponse::UserAccepted => {
+                    ui.write_screen("Program approved :). Secret code being setup.").await;
+                    break;
+                }
+                ClaimSetupResponse::UserRejected => {
+                    ui.write_screen("Program rejected :(").await;
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    return Err(CliError::AgentClaimRejected);
+                }
+            };
+
+            ui.write_screen(&last_message).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
         }
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
     }
 
     let secret_key = loop {
@@ -273,13 +290,13 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
             Ok(res) => break res.secret_key,
             Err(ApiError::Fail(status)) => {
                 let msg = format!("code \"{}\" not ready, {:?}", claim_code, status);
-                ui.write_screen(msg);
+                ui.write_screen(msg).await;
             }
             Err(error) => return Err(error.into()),
         };
 
         if now_milli() > end_at {
-            ui.write_screen("you took too long to approve the program, closing");
+            ui.write_screen("you took too long to approve the program, closing").await;
             tokio::time::sleep(Duration::from_secs(2)).await;
             return Err(CliError::TimedOut);
         }
@@ -463,6 +480,16 @@ pub enum CliError {
     TunnelSetupError(SetupError),
 }
 
+impl Error for CliError {
+
+}
+
+impl Display for CliError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for CliError {
     fn from(e: ApiError<F, HttpClientError>) -> Self {
         match e {
@@ -487,14 +514,6 @@ impl From<SetupError> for CliError {
         CliError::TunnelSetupError(e)
     }
 }
-
-impl Display for CliError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl Error for CliError {}
 
 fn cli() -> Command {
     let mut cmd = Command::new("playit-cli")

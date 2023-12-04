@@ -961,6 +961,7 @@ dependencies = [
  "crossterm",
  "dirs",
  "hex",
+ "lazy_static",
  "playit-agent-core",
  "playit-agent-proto",
  "rand",

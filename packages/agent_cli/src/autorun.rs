@@ -36,7 +36,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
     };
 
     let mut error_count = 0;
-    ui.write_screen("starting up tunnel connection");
+    ui.write_screen("starting up tunnel connection").await;
 
     let runner = loop {
         match TunnelRunner::new(API_BASE.to_string(), secret_code.clone(), lookup.clone()).await {
@@ -44,12 +44,12 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
             Err(error) => {
                 error_count += 1;
                 if error_count > 5 {
-                    ui.write_error("Final attempted failed to setup tunnel", &error);
+                    ui.write_error("Final attempted failed to setup tunnel", &error).await;
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     return Err(CliError::TunnelSetupError(error));
                 };
 
-                ui.write_error("Failed to setup tunnel client", error);
+                ui.write_error("Failed to setup tunnel client", error).await;
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
@@ -58,7 +58,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
     let signal = runner.keep_running();
     let runner = tokio::spawn(runner.run());
 
-    ui.write_screen("tunnel running");
+    ui.write_screen("tunnel running").await;
 
     let mut guest_login_link: Option<(String, u64)> = None;
 
@@ -69,7 +69,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         let agent_data = match account_tunnels_res {
             Ok(v) => v,
             Err(error) => {
-                ui.write_error("Failed to load latest tunnels", error);
+                ui.write_error("Failed to load latest tunnels", error).await;
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 continue;
             }
@@ -162,7 +162,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         }
 
         lookup.update(agent_data.tunnels).await;
-        ui.write_screen(msg);
+        ui.write_screen(msg).await;
     }
 
     let _ = runner.await;

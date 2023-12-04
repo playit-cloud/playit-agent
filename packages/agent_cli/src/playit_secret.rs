@@ -68,7 +68,7 @@ impl PlayitSecret {
             }
         };
 
-        ui.write_screen("checking if secret key is valid");
+        ui.write_screen("checking if secret key is valid").await;
         tokio::time::sleep(Duration::from_secs(1)).await;
 
         loop {
@@ -77,7 +77,8 @@ impl PlayitSecret {
                     ui.write_screen(format!(
                         "secret key valid, agent has {} tunnels",
                         data.tunnels.len()
-                    ));
+                    )).await;
+
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     break;
                 }
@@ -90,8 +91,7 @@ impl PlayitSecret {
                         return Err(CliError::InvalidSecret);
                     }
 
-                    let reset =
-                        ui.yn_question("Invalid secret, do you want to reset", Some(true))?;
+                    let reset = ui.yn_question("Invalid secret, do you want to reset", Some(true)).await?;
 
                     if reset {
                         self.allow_path_read = false;

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use hyper::{Body, header, Method, Request};
+use hyper::{Body, header, Method, Request, StatusCode};
 use hyper::body::Buf;
 use hyper::client::HttpConnector;
 use serde::de::DeserializeOwned;
@@ -94,6 +94,12 @@ impl PlayitHttpClient for HttpClient {
 
             let response = self.client.request(request).await
                 .map_err(|e| HttpClientError::RequestError(e))?;
+
+            let response_status = response.status();
+            if response_status == StatusCode::TOO_MANY_REQUESTS {
+                return Err(HttpClientError::TooManyRequests);
+            }
+
             let bytes = hyper::body::aggregate(response.into_body()).await
                 .map_err(|e| HttpClientError::RequestError(e))?;
             let response_txt = String::from_utf8_lossy(bytes.chunk());
@@ -101,7 +107,7 @@ impl PlayitHttpClient for HttpClient {
             let result: ApiResult<Res, Err> = serde_json::from_str(&response_txt)
                 .map_err(|e| {
                     tracing::error!("failed to parse json:\n{}", response_txt);
-                    HttpClientError::ParseError(e)
+                    HttpClientError::ParseError(e, response_status, response_txt.to_string())
                 })?;
 
             Ok::<_, Self::Error>(result)
@@ -118,6 +124,7 @@ impl PlayitHttpClient for HttpClient {
 #[derive(Debug)]
 pub enum HttpClientError {
     SerializeError(serde_json::Error),
-    ParseError(serde_json::Error),
+    ParseError(serde_json::Error, StatusCode, String),
     RequestError(hyper::Error),
+    TooManyRequests,
 }
