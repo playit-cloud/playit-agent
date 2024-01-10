@@ -56,6 +56,11 @@ impl PlayitSecret {
         self
     }
 
+    pub fn get_path(&self) -> Option<&str> {
+        let path = self.path.as_ref()?;
+        Some(path.as_str())
+    }
+
     pub async fn ensure_valid(&mut self, ui: &mut UI) -> Result<&mut Self, CliError> {
         let api = match self.create_api().await {
             Ok(v) => v,

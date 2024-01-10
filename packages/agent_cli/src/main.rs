@@ -94,6 +94,26 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
             ui.write_screen("Playit setup, secret written to /etc/playit/playit.toml").await;
         }
+        Some(("reset", _)) => {
+            loop {
+                let mut secerts = PlayitSecret::from_args(&matches).await;
+                secerts.with_default_path().await;
+
+                let path = secerts.get_path().unwrap();
+                if !tokio::fs::try_exists(path).await.unwrap_or(false) {
+                    break;
+                }
+
+                tokio::fs::remove_file(path).await.unwrap();
+                println!("deleted secret at: {}", path);
+            }
+        }
+        Some(("secret-path", _)) => {
+            let mut secerts = PlayitSecret::from_args(&matches).await;
+            secerts.with_default_path().await;
+            let path = secerts.get_path().unwrap();
+            println!("{}", path);
+        }
         Some(("account", m)) => match m.subcommand() {
             Some(("login-url", _)) => {
                 let api = secret.create_api().await?;
@@ -579,7 +599,16 @@ fn cli() -> Command {
             Command::new("run")
                 .about("Run the playit agent")
                 .arg(arg!([MAPPING_OVERRIDE] "(format \"<tunnel-id>=[<local-ip>:]<local-port> [, ..]\")").required(false).value_delimiter(','))
-        );
+        )
+        .subcommand(
+            Command::new("reset")
+                .about("removes the secret key on your system so the playit agent can be re-claimed")
+        )
+        .subcommand(
+            Command::new("secret-path")
+                .about("shows the file path where the playit secret can be found")
+        )
+        ;
 
     #[cfg(target_os = "linux")] {
         cmd = cmd.subcommand(Command::new("setup"));
