@@ -56,6 +56,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
+      - name: setup rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.platform.arch }}
+          override: true
+
       - name: build release
         uses: actions-rs/cargo@v1
         with:
@@ -96,12 +103,12 @@ jobs:
       matrix:
         platform:
           - name: macos intel
-            os: macos-latest
+            os: macos-11
             arch: x86_64-apple-darwin
             artifact: playit-darwin-intel
 
           - name: macos arm
-            os: macos-latest
+            os: macos-11
             arch: aarch64-apple-darwin
             artifact: playit-darwin-arm
 
