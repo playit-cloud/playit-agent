@@ -34,17 +34,17 @@ jobs:
             artifact: playit-linux-i686
             dpkg_arch: i386
 
-          - name: linux mipsel
-            os: ubuntu-latest
-            arch: mipsel-unknown-linux-musl
-            artifact: playit-linux-mipsel
-            dpkg_arch: mipsel
-
-          - name: linux mips
-            os: ubuntu-latest
-            arch: mips-unknown-linux-musl
-            artifact: playit-linux-mips
-            dpkg_arch: mips
+ #          - name: linux mipsel
+ #            os: ubuntu-latest
+ #            arch: mipsel-unknown-linux-musl
+ #            artifact: playit-linux-mipsel
+ #            dpkg_arch: mipsel
+ #
+ #          - name: linux mips
+ #            os: ubuntu-latest
+ #            arch: mips-unknown-linux-musl
+ #            artifact: playit-linux-mips
+ #            dpkg_arch: mips
 
     runs-on: ${{ matrix.platform.os }}
     steps:
