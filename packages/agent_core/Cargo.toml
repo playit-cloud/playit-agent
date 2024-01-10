@@ -27,7 +27,3 @@ hyper-tls = { version = "0.5.0", features = ["vendored"] }
 
 [target.'cfg(not(target_arch = "mips"))'.dependencies]
 hyper-rustls = { version = "0.24", features = ["http2", "webpki-roots"] }
-
-[[example]]
-name = "echo_tunnel"
-path = "./examples/echo_tunnel.rs"

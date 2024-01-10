@@ -2,7 +2,7 @@ use std::fmt::{Debug, Formatter};
 use std::io::{Error, ErrorKind, Read, Write};
 use std::net::SocketAddr;
 
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, ReadBytesExt};
 
 use crate::control_messages::ControlResponse;
 use crate::MessageEncoding;

@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{BigEndian, ReadBytesExt};
 use crate::MessageEncoding;
 
 #[derive(Debug, Eq, PartialEq)]
