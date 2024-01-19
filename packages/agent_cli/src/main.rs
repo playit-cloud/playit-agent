@@ -24,6 +24,12 @@ use crate::match_ip::MatchIp;
 use crate::signal_handle::get_signal_handle;
 use crate::ui::{UI, UISettings};
 
+
+//imports (chroma)
+use std::process::Command as ProcessCommand;
+use std::str;
+use crossterm::style::Stylize;
+
 pub const API_BASE: &'static str = "https://api.playit.gg";
 
 pub mod util;
@@ -32,6 +38,70 @@ pub mod playit_secret;
 pub mod match_ip;
 pub mod ui;
 pub mod signal_handle;
+
+
+
+
+
+//ping function !WINDOWS! (chroma)
+async fn ipcheck() -> Result<(), CliError> {
+
+    println!("Testing {}","ply.gg...".yellow());
+    let output = ProcessCommand::new("ping")
+        .arg("-n")
+        .arg("1")
+        .arg("ping.ply.gg")
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            println!("PLY.gg is {}","not blocked!".green());
+            check_ips("ip", &["na", "sa", "eu", "as", "in"]).await;
+        }
+        _ =>{
+            println!("PLY.gg might be {}","blocked!".red());
+            check_ips("209.25.140", &[""]).await;
+            check_ips("209.25.141", &[""]).await;
+            check_ips("209.25.142", &[""]).await;
+            check_ips("209.25.143", &[""]).await;
+            check_ips("23.133.216", &[""]).await;
+        }
+    }
+
+    Ok(())
+}
+
+async fn check_ips(base: &str, domains: &[&str]) {
+    for &domain in domains {
+        for i in 1..=255 {
+            let address = if domain.is_empty() {
+                format!("{}.{}", base, i)
+            } else {
+                format!("{}.ip.{}.ply.gg", i, domain)
+            };
+
+            let output = ProcessCommand::new("ping")
+                .arg("-n")
+                .arg("1")
+                .arg("ping.ply.gg")
+                .output();
+
+            if let Ok(output) = output {
+                if output.status.success() {
+                    println!("Ping to {} {}", address, "succeeded!".green());
+                } else {
+                    println!("Ping to {} was {}", address, "not successful!".red());
+                }
+            }
+        }
+    }
+}
+
+
+
+
+
+
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, CliError> {
@@ -122,6 +192,12 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             }
             _ => return Err(CliError::NotImplemented.into()),
         }
+        //function calling (Chroma)
+        Some(("ipcheck", _sub_m)) => {
+            ipcheck().await?;
+        }
+        _ => return Err(CliError::NotImplemented.into()),
+
         Some(("claim", m)) => match m.subcommand() {
             Some(("generate", _)) => {
                 ui.write_screen(claim_generate()).await;
@@ -604,6 +680,11 @@ fn cli() -> Command {
             Command::new("reset")
                 .about("removes the secret key on your system so the playit agent can be re-claimed")
         )
+       //ipcheck subcommand (chroma)
+       .subcommand(
+            Command::new("ipcheck")
+               .about("Checks for blocked ips")
+       )
         .subcommand(
             Command::new("secret-path")
                 .about("shows the file path where the playit secret can be found")
