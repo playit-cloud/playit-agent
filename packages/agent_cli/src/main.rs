@@ -29,6 +29,9 @@ use crate::ui::{UI, UISettings};
 use std::process::Command as ProcessCommand;
 use std::str;
 use crossterm::style::Stylize;
+use std::fs;
+use std::env;
+use std::path::PathBuf;
 
 pub const API_BASE: &'static str = "https://api.playit.gg";
 
@@ -45,6 +48,13 @@ pub mod signal_handle;
 
 //ping function !WINDOWS! (chroma)
 async fn ipcheck() -> Result<(), CliError> {
+    let local_app_data = env::var("LOCALAPPDATA").map_err(|_| CliError::EnvVarNotFound)?;
+    let mut file_path = PathBuf::from(local_app_data);
+    file_path.push("playit_gg");
+    file_path.push("ips.txt");
+
+    let ips_content = fs::read_to_string(file_path).map_err(|_| CliError::FileReadError)?;
+    let ips = ips_content.lines();
 
     println!("Testing {}","ply.gg...".yellow());
     let output = ProcessCommand::new("ping")
@@ -56,43 +66,30 @@ async fn ipcheck() -> Result<(), CliError> {
     match output {
         Ok(output) if output.status.success() => {
             println!("PLY.gg is {}","not blocked!".green());
-            check_ips("ip", &["na", "sa", "eu", "as", "in"]).await;
+            for ip in ips {
+                check_ip(ip).await;
+            }
         }
-        _ =>{
+        _ => {
             println!("PLY.gg might be {}","blocked!".red());
-            check_ips("209.25.140", &[""]).await;
-            check_ips("209.25.141", &[""]).await;
-            check_ips("209.25.142", &[""]).await;
-            check_ips("209.25.143", &[""]).await;
-            check_ips("23.133.216", &[""]).await;
         }
     }
 
     Ok(())
 }
 
-async fn check_ips(base: &str, domains: &[&str]) {
-    for &domain in domains {
-        for i in 1..=255 {
-            let address = if domain.is_empty() {
-                format!("{}.{}", base, i)
-            } else {
-                format!("{}.ip.{}.ply.gg", i, domain)
-            };
+async fn check_ip(ip: &str) {
+    let output = ProcessCommand::new("ping")
+        .arg("-n")
+        .arg("1")
+        .arg(ip)
+        .output();
 
-            let output = ProcessCommand::new("ping")
-                .arg("-n")
-                .arg("1")
-                .arg("ping.ply.gg")
-                .output();
-
-            if let Ok(output) = output {
-                if output.status.success() {
-                    println!("Ping to {} {}", address, "succeeded!".green());
-                } else {
-                    println!("Ping to {} was {}", address, "not successful!".red());
-                }
-            }
+    if let Ok(output) = output {
+        if output.status.success() {
+            println!("Ping to {} {}", ip, "succeeded!".green());
+        } else {
+            println!("Ping to {} was {}", ip, "not successful!".red());
         }
     }
 }
@@ -561,6 +558,11 @@ pub enum CliError {
     SecretFileWriteError(std::io::Error),
     SecretFilePathMissing,
     InvalidPortType,
+
+    //added those (chroma)
+    EnvVarNotFound,
+    FileReadError,
+
     InvalidPortCount,
     InvalidMappingOverride,
     AgentClaimRejected,
