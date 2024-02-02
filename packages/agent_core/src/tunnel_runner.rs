@@ -101,7 +101,7 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<Socket
                             }
                         };
 
-                        tracing::info!("connected to TCP tunnel");
+                        tracing::info!(%local_addr, "connected to TCP tunnel");
 
                         let local_conn = match LanAddress::tcp_socket(self.tcp_clients.use_special_lan, peer_addr, local_addr).await {
                             Ok(v) => v,

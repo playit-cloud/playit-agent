@@ -14,6 +14,21 @@ impl PlayitApi {
     }
 }
 
+impl api::PortType {
+    pub fn matches(&self, port: api::PortType) -> bool {
+        match *self {
+            api::PortType::Both => true,
+            other => other == port
+        }
+    }
+}
+
+impl api::PortRange {
+	pub fn contains(&self, port: u16) -> bool {
+		self.from <= port && port < self.to
+	}
+}
+
 #[cfg(test)]
 mod test {
     use crate::api::api::{AgentType, ReqClaimSetup};

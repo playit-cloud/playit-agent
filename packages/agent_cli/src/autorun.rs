@@ -117,6 +117,12 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
             AgentAccountStatus::HasMessage => {
                 writeln!(msg, "You have a message: https://playit.gg/account").unwrap();
             }
+            AgentAccountStatus::AgentOverLimit => {
+                writeln!(msg, "Too many agents: https://playit.gg/account/agents").unwrap();
+            }
+            AgentAccountStatus::AgentDisabled => {
+                writeln!(msg, "Account disabled: https://playit.gg/account/agents/{}", agent_data.agent_id).unwrap();
+            }
             AgentAccountStatus::Ready => {}
         }
 

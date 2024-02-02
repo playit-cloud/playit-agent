@@ -62,25 +62,25 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
 #[serde(tag = "status", content = "data")]
 pub enum ApiResult<S, F> {
-	#[serde(rename = "success")]
-	Success(S),
-	#[serde(rename = "fail")]
-	Fail(F),
-	#[serde(rename = "error")]
-	Error(ApiResponseError),
+    #[serde(rename = "success")]
+    Success(S),
+    #[serde(rename = "fail")]
+    Fail(F),
+    #[serde(rename = "error")]
+    Error(ApiResponseError),
 }
 
 #[derive(Debug)]
 pub enum ApiError<F, C> {
-	Fail(F),
-	ApiError(ApiResponseError),
-	ClientError(C),
+    Fail(F),
+    ApiError(ApiResponseError),
+    ClientError(C),
 }
 
 impl<F: std::fmt::Debug, C: std::fmt::Debug> std::fmt::Display for ApiError<F, C> {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:?}", self)
-	}
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl<F: std::fmt::Debug, C: std::fmt::Debug> std::error::Error for ApiError<F, C> {
@@ -89,14 +89,14 @@ impl<F: std::fmt::Debug, C: std::fmt::Debug> std::error::Error for ApiError<F, C
 
 #[derive(Debug)]
 pub enum ApiErrorNoFail<C> {
-	ApiError(ApiResponseError),
-	ClientError(C),
+    ApiError(ApiResponseError),
+    ClientError(C),
 }
 
 impl<C: std::fmt::Debug> std::fmt::Display for ApiErrorNoFail<C> {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:?}", self)
-	}
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
 }
 
 impl<C: std::fmt::Debug> std::error::Error for ApiErrorNoFail<C> {
@@ -106,13 +106,14 @@ impl<C: std::fmt::Debug> std::error::Error for ApiErrorNoFail<C> {
 
 #[async_trait::async_trait]
 pub trait PlayitHttpClient {
-	type Error;
+    type Error;
 
-	async fn call<Req: serde::Serialize + std::marker::Send, Res: serde::de::DeserializeOwned, Err: serde::de::DeserializeOwned>(&self, path: &str, req: Req) -> Result<ApiResult<Res, Err>, Self::Error>;
+    async fn call<Req: serde::Serialize + std::marker::Send, Res: serde::de::DeserializeOwned, Err: serde::de::DeserializeOwned>(&self, path: &str, req: Req) -> Result<ApiResult<Res, Err>, Self::Error>;
 }
 
+#[derive(Clone)]
 pub struct PlayitApiClient<C: PlayitHttpClient> {
-	client: C,
+    client: C,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -150,6 +151,8 @@ pub enum AuthError {
 	EmailMustBeVerified,
 	AccountDoesNotExist,
 	AdminOnly,
+	InvalidToken,
+	TotpRequred,
 }
 
 impl std::fmt::Display for ApiResponseError {
@@ -200,15 +203,6 @@ pub enum PortType {
 	Udp,
 	#[serde(rename = "both")]
 	Both,
-}
-
-impl PortType {
-    pub fn matches(&self, port: PortType) -> bool {
-        match *self {
-            PortType::Both => true,
-            other => other == port
-        }
-    }
 }
 
 
@@ -463,11 +457,10 @@ pub struct ReqClaimReject {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub enum ClaimRejectError {
+	InvalidCode,
 	CodeNotFound,
 	ClaimAccepted,
 	ClaimAlreadyRejected,
-	CodeExpired,
-	AgentNotReady,
 }
 
 impl std::fmt::Display for ClaimRejectError {
@@ -633,6 +626,10 @@ pub enum AgentAccountStatus {
 	Guest,
 	#[serde(rename = "ready")]
 	Ready,
+	#[serde(rename = "agent-over-limit")]
+	AgentOverLimit,
+	#[serde(rename = "agent-disabled")]
+	AgentDisabled,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -657,12 +654,6 @@ pub struct PortRange {
 	pub to: u16,
 }
 
-impl PortRange {
-	pub fn contains(&self, port: u16) -> bool {
-		self.from <= port && port < self.to
-	}
-}
-
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub enum AgentTunnelDisabled {
 	ByUser,
@@ -684,5 +675,4 @@ pub struct ReqTunnelsList {
 	pub tunnel_id: Option<uuid::Uuid>,
 	pub agent_id: Option<uuid::Uuid>,
 }
-
 
