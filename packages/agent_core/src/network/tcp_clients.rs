@@ -1,4 +1,4 @@
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::io::Error;
 use std::net::SocketAddr;
@@ -11,8 +11,10 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 
-use playit_agent_proto::control_feed::{NewClient};
+use playit_agent_proto::control_feed::NewClient;
 
+use crate::api::api::AgentTunnel;
+use crate::match_ip::MatchIp;
 use crate::tunnel::tcp_tunnel::TcpTunnel;
 
 #[derive(Clone)]
@@ -51,6 +53,16 @@ impl ActiveClients {
     pub async fn get_clients(&self) -> Vec<NewClient> {
         let lock = self.active.read().await;
         lock.values().map(|v| v.clone()).collect()
+    }
+
+    pub async fn client_count_by_agent_tunnel(&self, tunnel: &AgentTunnel) -> usize {
+        let tunnel_ip = tunnel.to_tunnel_ip();
+        let ip = MatchIp::new(tunnel_ip);
+
+        let lock = self.active.read().await;
+        lock.values().filter(|v| {
+            ip.matches(v.connect_addr.ip()) && tunnel.port.contains(v.connect_addr.port())
+        }).count()
     }
 }
 
