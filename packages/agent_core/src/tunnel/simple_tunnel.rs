@@ -20,6 +20,7 @@ pub struct SimpleTunnel {
     udp_tunnel: UdpTunnel,
     last_keep_alive: u64,
     last_ping: u64,
+    last_pong: u64,
     last_udp_auth: u64,
     last_control_targets: Vec<SocketAddr>,
 }
@@ -41,6 +42,7 @@ impl SimpleTunnel {
             udp_tunnel,
             last_keep_alive: 0,
             last_ping: 0,
+            last_pong: 0,
             last_udp_auth: 0,
             last_control_targets: addresses,
         })
@@ -93,7 +95,7 @@ impl SimpleTunnel {
         }
 
         let now = now_milli();
-        if now - self.last_ping > 5_000 {
+        if now - self.last_ping > 1_000 {
             self.last_ping = now;
 
             if let Err(error) = self.control_channel.send_ping(200, now).await {
@@ -126,7 +128,7 @@ impl SimpleTunnel {
         if 10_000 < now - self.last_keep_alive && time_till_expire < 30_000 {
             self.last_keep_alive = now;
 
-            tracing::debug!("sent KeepAlive");
+            tracing::info!(time_till_expire, "send KeepAlive");
             if let Err(error) = self.control_channel.send_keep_alive(100).await {
                 tracing::error!(?error, "failed to send KeepAlive");
             }
@@ -139,27 +141,54 @@ impl SimpleTunnel {
                 });
         }
 
-        match tokio::time::timeout(Duration::from_secs(1), self.control_channel.recv_feed_msg()).await {
-            Ok(Ok(ControlFeed::NewClient(new_client))) => return Some(new_client),
-            Ok(Ok(ControlFeed::Response(msg))) => match msg.content {
-                ControlResponse::UdpChannelDetails(details) => {
-                    tracing::info!(?details, "update udp channel details");
-                    self.udp_tunnel.set_udp_tunnel(details).await.unwrap();
+        let mut timeouts = 0;
+
+        for _ in 0..30 {
+            match tokio::time::timeout(Duration::from_millis(100), self.control_channel.recv_feed_msg()).await {
+                Ok(Ok(ControlFeed::NewClient(new_client))) => return Some(new_client),
+                Ok(Ok(ControlFeed::Response(msg))) => match msg.content {
+                    ControlResponse::UdpChannelDetails(details) => {
+                        tracing::info!(?details, "update udp channel details");
+                        self.udp_tunnel.set_udp_tunnel(details).await.unwrap();
+                    }
+                    ControlResponse::Unauthorized => {
+                        tracing::info!("session no longer authorized");
+                        self.control_channel.set_expired();
+                    }
+                    ControlResponse::Pong(pong) => {
+                        self.last_pong = now_milli();
+
+                        if pong.client_addr != self.control_channel.conn.pong.client_addr {
+                            tracing::info!(
+                                new_client = %pong.client_addr,
+                                old_client = %self.control_channel.conn.pong.client_addr,
+                                "client ip changed"
+                            );
+                        }
+                    }
+                    msg => {
+                        tracing::debug!(?msg, "got response");
+                    }
+                },
+                Ok(Err(error)) => {
+                    tracing::error!(?error, "failed to parse response");
                 }
-                ControlResponse::Unauthorized => {
-                    tracing::info!("session no longer authorized");
-                    self.control_channel.set_expired();
+                Err(_) => {
+                    timeouts += 1;
+
+                    if timeouts >= 10 {
+                        tracing::trace!("feed recv timeout");
+                        break;
+                    }
                 }
-                msg => {
-                    tracing::debug!(?msg, "got response");
-                }
-            },
-            Ok(Err(error)) => {
-                tracing::error!(?error, "failed to parse response");
             }
-            Err(_) => {
-                tracing::trace!("feed recv timeout");
-            }
+        }
+
+        if self.last_pong != 0 && now_milli() - self.last_pong > 6_000 {
+            tracing::info!("timeout waiting for pong");
+
+            self.last_pong = 0;
+            self.control_channel.set_expired();
         }
 
         None

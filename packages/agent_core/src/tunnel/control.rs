@@ -73,6 +73,11 @@ impl AuthenticatedControl {
             pong: self.last_pong.clone(),
         };
 
+        tracing::info!(
+            last_pong = ?self.last_pong,
+            "authenticate control"
+        );
+
         let res = conn.authenticate(
             self.api_client.get_client().api_base().to_string(),
             self.secret_key.clone()
@@ -93,6 +98,7 @@ impl AuthenticatedControl {
 
     pub async fn recv_feed_msg(&mut self) -> Result<ControlFeed, ControlError> {
         self.buffer.resize(1024, 0);
+
         let (bytes, remote) = self.conn.udp.recv_from(&mut self.buffer).await?;
         if remote != self.conn.control_addr {
             return Err(ControlError::InvalidRemote { expected: self.conn.control_addr, got: remote });
