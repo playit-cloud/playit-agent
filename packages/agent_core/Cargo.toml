@@ -26,9 +26,4 @@ hyper-util = { version = "0.1.3", features = ["client", "client-legacy", "http1"
 http-body-util = "0.1.0"
 
 playit-agent-proto = { path = "../agent_proto" }
-
-[target.'cfg(target_arch = "mips")'.dependencies]
-hyper-tls = { version = "0.6.0", features = ["vendored"] }
-
-[target.'cfg(not(target_arch = "mips"))'.dependencies]
 hyper-rustls = { version = "0.26", features = ["http2", "webpki-roots"] }
