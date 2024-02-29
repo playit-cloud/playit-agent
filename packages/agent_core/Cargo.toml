@@ -18,12 +18,17 @@ uuid = { workspace = true }
 byteorder = { workspace = true }
 async-trait = { workspace = true }
 chrono = { workspace = true }
+futures-util = { workspace = true }
 
-hyper = { version = "0.14", features = ["client", "http2", "http1"] }
+hyper = { version = "1.2", features = ["client", "http2", "http1"] }
+bytes = "1.5.0"
+hyper-util = { version = "0.1.3", features = ["client", "client-legacy", "http1", "http2"] }
+http-body-util = "0.1.0"
+
 playit-agent-proto = { path = "../agent_proto" }
 
 [target.'cfg(target_arch = "mips")'.dependencies]
-hyper-tls = { version = "0.5.0", features = ["vendored"] }
+hyper-tls = { version = "0.6.0", features = ["vendored"] }
 
 [target.'cfg(not(target_arch = "mips"))'.dependencies]
-hyper-rustls = { version = "0.24", features = ["http2", "webpki-roots"] }
+hyper-rustls = { version = "0.26", features = ["http2", "webpki-roots"] }

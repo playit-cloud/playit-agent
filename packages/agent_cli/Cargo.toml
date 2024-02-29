@@ -18,7 +18,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 
-clap = { version = "4.4", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
 urlencoding = "2.1"
 serde_yaml = "0.9"
 crossterm = "0.27"

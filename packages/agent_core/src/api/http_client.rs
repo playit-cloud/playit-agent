@@ -1,7 +1,10 @@
+use std::convert::Infallible;
+
 use async_trait::async_trait;
-use hyper::{Body, header, Method, Request, StatusCode};
-use hyper::body::Buf;
-use hyper::client::HttpConnector;
+use bytes::{Buf, Bytes};
+use http_body_util::{combinators::BoxBody, BodyExt, Full};
+use hyper::{header, Method, Request, StatusCode};
+use hyper_util::{client::legacy::{connect::HttpConnector, Client}, rt::TokioExecutor};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
@@ -11,38 +14,14 @@ pub struct HttpClient {
     api_base: String,
     auth_header: Option<String>,
 
-    #[cfg(target_arch = "mips")]
-    client: hyper::Client<hyper_tls::HttpsConnector<HttpConnector>, Body>,
-
-    #[cfg(not(target_arch = "mips"))]
-    client: hyper::Client<hyper_rustls::HttpsConnector<HttpConnector>, Body>,
+    client: Client<hyper_rustls::HttpsConnector<HttpConnector>, BoxBody<Bytes, Infallible>>,
 }
 
 impl HttpClient {
-    #[cfg(target_arch = "mips")]
-    pub fn new(api_base: String, auth_header: Option<String>) -> Self {
-        let connector = if api_base.starts_with("http://") {
-            let mut connector = hyper_tls::HttpsConnector::new();
-            connector.https_only(false);
-            connector
-        } else {
-            let mut connector = hyper_tls::HttpsConnector::new();
-            connector.https_only(true);
-            connector
-        };
-
-        HttpClient {
-            api_base,
-            auth_header,
-            client: hyper::Client::builder().build(connector),
-        }
-    }
-
-    #[cfg(not(target_arch = "mips"))]
     pub fn new(api_base: String, auth_header: Option<String>) -> Self {
         let connector = if api_base.starts_with("http://") {
             hyper_rustls::HttpsConnectorBuilder::new()
-                .with_native_roots()
+                .with_webpki_roots()
                 .https_or_http()
                 .enable_http1()
                 .enable_http2()
@@ -59,7 +38,7 @@ impl HttpClient {
         HttpClient {
             api_base,
             auth_header,
-            client: hyper::Client::builder().build(connector),
+            client: Client::builder(TokioExecutor::new()).build(connector),
         }
     }
 
@@ -89,7 +68,7 @@ impl PlayitHttpClient for HttpClient {
                 .map_err(|e| HttpClientError::SerializeError(e))?;
 
             let request = builder
-                .body(Body::from(request_str))
+                .body(BoxBody::new(Full::new(Bytes::from(request_str))))
                 .unwrap();
 
             let response = self.client.request(request).await
@@ -100,8 +79,10 @@ impl PlayitHttpClient for HttpClient {
                 return Err(HttpClientError::TooManyRequests);
             }
 
-            let bytes = hyper::body::aggregate(response.into_body()).await
-                .map_err(|e| HttpClientError::RequestError(e))?;
+            let bytes = response.into_body().collect().await
+                .map_err(|e| HttpClientError::BodyReadError(e))?
+                .aggregate();
+
             let response_txt = String::from_utf8_lossy(bytes.chunk());
 
             let result: ApiResult<Res, Err> = serde_json::from_str(&response_txt)
@@ -125,6 +106,7 @@ impl PlayitHttpClient for HttpClient {
 pub enum HttpClientError {
     SerializeError(serde_json::Error),
     ParseError(serde_json::Error, StatusCode, String),
-    RequestError(hyper::Error),
+    RequestError(hyper_util::client::legacy::Error),
+    BodyReadError(hyper::Error),
     TooManyRequests,
 }
