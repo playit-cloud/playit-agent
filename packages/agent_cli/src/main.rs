@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{arg, Command};
+use playit_agent_core::match_ip::MatchIp;
 use rand::Rng;
 use uuid::Uuid;
 
@@ -20,7 +21,6 @@ use playit_agent_core::tunnel_runner::TunnelRunner;
 use playit_agent_core::utils::now_milli;
 use playit_secret::PlayitSecret;
 
-use crate::match_ip::MatchIp;
 use crate::signal_handle::get_signal_handle;
 use crate::ui::{UI, UISettings};
 
@@ -29,7 +29,6 @@ pub const API_BASE: &'static str = "https://api.playit.gg";
 pub mod util;
 pub mod autorun;
 pub mod playit_secret;
-pub mod match_ip;
 pub mod ui;
 pub mod signal_handle;
 

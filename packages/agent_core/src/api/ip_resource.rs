@@ -96,4 +96,17 @@ impl PlayitRegion {
         BigEndian::write_u64(&mut octs[8..], ip_number);
         octs.into()
     }
+
+    pub fn from_id(id: u16) -> Option<Self> {
+        match id {
+            0 => Some(PlayitRegion::Anycast),
+            1 => Some(PlayitRegion::Global),
+            2 => Some(PlayitRegion::NorthAmerica),
+            3 => Some(PlayitRegion::Europe),
+            4 => Some(PlayitRegion::Asia),
+            5 => Some(PlayitRegion::India),
+            6 => Some(PlayitRegion::SouthAmerica),
+            _ => None,
+        }
+    }
 }

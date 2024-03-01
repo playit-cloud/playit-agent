@@ -47,6 +47,14 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<Socket
         self.keep_running.clone()
     }
 
+    pub fn tcp_clients(&self) -> TcpClients {
+        self.tcp_clients.clone()
+    }
+
+    pub fn udp_clients(&self) -> UdpClients<Arc<L>> {
+        self.udp_clients.clone()
+    }
+
     pub async fn run(self) {
         let mut tunnel = self.tunnel;
         let udp = tunnel.udp_tunnel();

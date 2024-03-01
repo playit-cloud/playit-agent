@@ -1,3 +1,6 @@
+use std::net::Ipv6Addr;
+use super::ip_resource::{IpResource, PlayitRegion};
+
 impl<C: PlayitHttpClient> PlayitApiClient<C> {
 	pub fn new(client: C) -> Self {
 		PlayitApiClient { client }
@@ -646,6 +649,17 @@ pub struct AgentTunnel {
 	pub assigned_domain: String,
 	pub custom_domain: Option<String>,
 	pub disabled: Option<AgentTunnelDisabled>,
+}
+
+impl AgentTunnel {
+	pub fn to_tunnel_ip(&self) -> Ipv6Addr {
+		let ip_resource = IpResource {
+			ip_num: self.ip_num,
+			region: PlayitRegion::from_id(self.region_num).unwrap(),
+		};
+
+		ip_resource.to_tunnel_ip()
+	}
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]

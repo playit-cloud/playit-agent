@@ -6,14 +6,11 @@ use std::{
 };
 
 use playit_agent_core::{
-    api::api::*,
-    network::address_lookup::{AddressLookup, AddressValue},
-    tunnel_runner::TunnelRunner,
-    utils::now_milli,
+    api::api::*, match_ip::MatchIp, network::address_lookup::{AddressLookup, AddressValue}, tunnel_runner::TunnelRunner, utils::now_milli
 };
 use playit_agent_core::api::api::AgentType;
 
-use crate::{API_BASE, CliError, match_ip::MatchIp, playit_secret::PlayitSecret, ui::UI};
+use crate::{API_BASE, CliError, playit_secret::PlayitSecret, ui::UI};
 
 pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliError> {
     let secret_code = secret
@@ -56,6 +53,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
     };
 
     let signal = runner.keep_running();
+    let (tcp_clients, udp_clients) = (runner.tcp_clients(), runner.udp_clients());
     let runner = tokio::spawn(runner.run());
 
     ui.write_screen("tunnel running").await;
@@ -144,17 +142,27 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
                     _ => format!("{}:{}", addr, tunnel.port.from),
                 };
 
-                let dst = format!("{}:{}", tunnel.local_ip, tunnel.local_port);
-
+                let dst = SocketAddr::new(tunnel.local_ip, tunnel.local_port);
+                
+                let connection_count = match tunnel.proto {
+                    PortType::Both => {
+                        let tcp = tcp_clients.active_clients().client_count_by_agent_tunnel(&tunnel).await;
+                        let udp = udp_clients.client_count_by_agent_tunnel(&tunnel).await;
+                        tcp + udp
+                    },
+                    PortType::Tcp => tcp_clients.active_clients().client_count_by_agent_tunnel(&tunnel).await,
+                    PortType::Udp => udp_clients.client_count_by_agent_tunnel(&tunnel).await,
+                };
+                
                 if let Some(disabled) = tunnel.disabled {
                     writeln!(msg, "{} => {} (disabled)", src, dst).unwrap();
                     if disabled == AgentTunnelDisabled::BySystem {
                         writeln!(msg, "\tsee: https://playit.gg/account/tunnels/{}", tunnel.id).unwrap();
                     }
                 } else if let Some(tunnel_type) = &tunnel.tunnel_type {
-                    writeln!(msg, "{} => {} ({})", src, dst, tunnel_type).unwrap();
+                    writeln!(msg, "{} => {} ({}, connections: {})", src, dst, tunnel_type, connection_count).unwrap();
                 } else {
-                    writeln!(msg, "{} => {} (proto: {:?}, port count: {})", src, dst, tunnel.proto, tunnel.port.to - tunnel.port.from).unwrap();
+                    writeln!(msg, "{} => {} (proto: {:?}, port count: {}, connections: {})", src, dst, tunnel.proto, tunnel.port.to - tunnel.port.from, connection_count).unwrap();
                 }
             }
 

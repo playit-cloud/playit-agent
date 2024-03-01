@@ -7,13 +7,15 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 
-use crate::api::api::PortType;
+use crate::api::api::{AgentTunnel, PortType};
+use crate::match_ip::MatchIp;
 use crate::network::address_lookup::AddressLookup;
 use crate::network::lan_address::LanAddress;
 use crate::tunnel::udp_proto::UdpFlow;
 use crate::tunnel::udp_tunnel::UdpTunnel;
 use crate::utils::now_sec;
 
+#[derive(Clone)]
 pub struct UdpClients<L: AddressLookup> {
     udp_tunnel: UdpTunnel,
     lookup: L,
@@ -40,6 +42,16 @@ impl<L: AddressLookup> UdpClients<L> where L::Value: Into<SocketAddr> {
     pub async fn client_count(&self) -> usize {
         let clients_lock = self.udp_clients.read().await;
         clients_lock.len()
+    }
+
+    pub async fn client_count_by_agent_tunnel(&self, tunnel: &AgentTunnel) -> usize {
+        let tunnel_ip = tunnel.to_tunnel_ip();
+        let ip = MatchIp::new(tunnel_ip);
+
+        let lock = self.udp_clients.read().await;
+        lock.values().filter(|v| {
+            ip.matches(v.client_key.tunnel_addr.ip()) && tunnel.port.contains(v.client_key.tunnel_addr.port())
+        }).count()
     }
 
     pub async fn forward_packet(&self, flow: &UdpFlow, data: &[u8]) -> std::io::Result<usize> {
