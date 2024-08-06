@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 
+use message_encoding::MessageEncoding;
 use playit_agent_proto::control_feed::ControlFeed;
 use playit_agent_proto::control_messages::{AgentRegistered, ControlRequest, ControlResponse, Ping, Pong};
-use playit_agent_proto::encoding::MessageEncoding;
 use playit_agent_proto::rpc::ControlRpcMessage;
 
 use crate::api::PlayitApi;

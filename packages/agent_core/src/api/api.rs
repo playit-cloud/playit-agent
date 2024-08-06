@@ -102,9 +102,6 @@ impl<C: std::fmt::Debug> std::fmt::Display for ApiErrorNoFail<C> {
 impl<C: std::fmt::Debug> std::error::Error for ApiErrorNoFail<C> {
 }
 
-
-
-#[async_trait::async_trait]
 pub trait PlayitHttpClient {
     type Error;
 

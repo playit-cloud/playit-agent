@@ -4,6 +4,7 @@ version.workspace = true
 edition = "2021"
 authors = ["Patrick Lorio <patrick@playit.gg>"]
 description = "Making it easy to play games with friends. Makes your server public"
+repository = "https://github.com/playit-cloud/playit-agent"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

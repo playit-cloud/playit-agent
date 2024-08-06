@@ -4,11 +4,11 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
 
+use message_encoding::MessageEncoding;
 use tokio::net::UdpSocket;
 
 use playit_agent_proto::control_feed::ControlFeed;
 use playit_agent_proto::control_messages::{ControlRequest, ControlResponse, Ping, Pong};
-use playit_agent_proto::encoding::MessageEncoding;
 use playit_agent_proto::raw_slice::RawSlice;
 use playit_agent_proto::rpc::ControlRpcMessage;
 

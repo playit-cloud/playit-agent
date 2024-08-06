@@ -3,9 +3,9 @@ use std::io::{Error, ErrorKind, Read, Write};
 use std::net::SocketAddr;
 
 use byteorder::{BigEndian, ReadBytesExt};
+use message_encoding::MessageEncoding;
 
 use crate::control_messages::ControlResponse;
-use crate::MessageEncoding;
 use crate::rpc::ControlRpcMessage;
 
 #[derive(Debug, Eq, PartialEq)]

@@ -4,6 +4,7 @@ version.workspace = true
 edition = "2021"
 description = "Contains the protocol messages for a playit.gg agent"
 license = "BSD-2-Clause"
+repository = "https://github.com/playit-cloud/playit-agent"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -11,6 +12,7 @@ license = "BSD-2-Clause"
 serde = { workspace = true }
 hex = { workspace = true }
 byteorder = { workspace = true }
+message-encoding = { workspace = true }
 
 sha2 = "0.10"
 hmac = "0.12"

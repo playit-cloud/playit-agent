@@ -2,13 +2,11 @@ use std::io::{Error, ErrorKind, Read, Write};
 use std::net::IpAddr;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use message_encoding::MessageEncoding;
 use serde::{Deserialize, Serialize};
-
-use crate::encoding::MessageEncoding;
 
 pub mod control_messages;
 pub mod control_feed;
-pub mod encoding;
 pub mod rpc;
 pub mod hmac;
 pub mod raw_slice;

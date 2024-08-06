@@ -3,9 +3,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use message_encoding::MessageEncoding;
 
 use crate::{AgentSessionId, PortRange};
-use crate::encoding::MessageEncoding;
 use crate::hmac::HmacSha256;
 
 #[derive(Debug, Eq, PartialEq, Clone)]

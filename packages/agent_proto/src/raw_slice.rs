@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
-use crate::MessageEncoding;
+
+use message_encoding::MessageEncoding;
 
 pub struct RawSlice<'a>(pub &'a [u8]);
 

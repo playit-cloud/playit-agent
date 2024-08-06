@@ -1,6 +1,5 @@
 use std::convert::Infallible;
 
-use async_trait::async_trait;
 use bytes::{Buf, Bytes};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::{header, Method, Request, StatusCode};
@@ -47,7 +46,6 @@ impl HttpClient {
     }
 }
 
-#[async_trait]
 impl PlayitHttpClient for HttpClient {
     type Error = HttpClientError;
 
