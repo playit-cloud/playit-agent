@@ -1,7 +1,9 @@
 [package]
 name = "playit-agent-proto"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
+description = "Contains the protocol messages for a playit.gg agent"
+license = "BSD-2-Clause"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
