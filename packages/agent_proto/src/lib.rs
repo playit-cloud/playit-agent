@@ -11,14 +11,14 @@ pub mod rpc;
 pub mod hmac;
 pub mod raw_slice;
 
-#[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug, Hash)]
 pub struct AgentSessionId {
     pub session_id: u64,
     pub account_id: u64,
     pub agent_id: u64,
 }
 
-#[derive(Eq, PartialEq, Ord, PartialOrd, Debug, Serialize, Deserialize, Clone)]
+#[derive(Eq, PartialEq, Ord, PartialOrd, Debug, Serialize, Deserialize, Hash, Clone)]
 pub struct PortRange {
     pub ip: IpAddr,
     pub port_start: u16,
@@ -26,7 +26,7 @@ pub struct PortRange {
     pub port_proto: PortProto,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Serialize, Deserialize)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Debug, Serialize, Hash, Deserialize)]
 pub enum PortProto {
     #[serde(rename = "both")]
     Both,

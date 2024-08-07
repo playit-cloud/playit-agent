@@ -1,6 +1,6 @@
 [package]
 name = "playit-agent-core"
-version.workspace = true
+version = "0.16.0"
 edition = "2021"
 description = "Contains the logic to create a playit.gg agent"
 license = "BSD-2-Clause"
@@ -30,4 +30,4 @@ hyper-util = { version = "0.1.7", features = ["client", "client-legacy", "http1"
 http-body-util = "0.1.2"
 hyper-rustls = { version = "0.27", features = ["http2", "webpki-roots"] }
 
-playit-agent-proto = { path = "../agent_proto", version = "0.15.14" }
+playit-agent-proto = { path = "../agent_proto", version = "1.0.0" }

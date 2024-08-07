@@ -8,7 +8,7 @@ use message_encoding::MessageEncoding;
 use crate::control_messages::ControlResponse;
 use crate::rpc::ControlRpcMessage;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum ControlFeed {
     Response(ControlRpcMessage<ControlResponse>),
     NewClient(NewClient),

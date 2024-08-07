@@ -1,5 +1,6 @@
 use std::error::Error;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Debug, Display, Formatter};
+use std::future::Future;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,12 +13,56 @@ use playit_agent_proto::control_messages::{ControlRequest, ControlResponse, Ping
 use playit_agent_proto::raw_slice::RawSlice;
 use playit_agent_proto::rpc::ControlRpcMessage;
 
-use crate::api::api::{AgentVersion, ApiError, ApiErrorNoFail, ApiResponseError, Platform, PlayitAgentVersion, ReqProtoRegister};
+use crate::api::api::{AgentVersion, ApiError, ApiErrorNoFail, ApiResponseError, Platform, PlayitAgentVersion, PlayitApiClient, ReqProtoRegister, SignedAgentKey};
 use crate::api::http_client::HttpClientError;
 use crate::api::PlayitApi;
 use crate::tunnel::control::AuthenticatedControl;
 use crate::utils::error_helper::ErrorHelper;
 use crate::utils::now_milli;
+
+
+pub trait PacketIO {
+    fn send_to(&self, buf: &[u8], target: SocketAddr) -> impl Future<Output = std::io::Result<usize>> + Sync;
+
+    fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync;
+}
+
+pub trait AuthenticationProvider: Clone {
+    fn authenticate(&self, pong: &Pong) -> impl Future<Output = Result<SignedAgentKey, SetupError>> + Sync;
+}
+
+#[derive(Clone)]
+pub struct AuthApi {
+    pub api_url: String,
+    pub secret_key: String,
+}
+
+impl AuthApi {
+    pub fn api_client(&self) -> PlayitApi {
+        PlayitApi::create(self.api_url.clone(), Some(self.secret_key.clone()))
+    }
+}
+
+impl AuthenticationProvider for AuthApi {
+    async fn authenticate(&self, pong: &Pong) -> Result<SignedAgentKey, SetupError> {
+        let api = self.api_client();
+
+        let res = api.proto_register(ReqProtoRegister {
+            agent_version: PlayitAgentVersion {
+                version: AgentVersion {
+                    platform: get_platform(),
+                    version: env!("CARGO_PKG_VERSION").to_string(),
+                },
+                official: true,
+                details_website: None,
+            },
+            client_addr: pong.client_addr,
+            tunnel_addr: pong.tunnel_addr,
+        }).await.with_error(|error| tracing::error!(?error, "failed to sign and register"))?;
+
+        Ok(res)
+    }
+}
 
 pub struct SetupFindSuitableChannel {
     options: Vec<SocketAddr>,
@@ -28,7 +73,7 @@ impl SetupFindSuitableChannel {
         SetupFindSuitableChannel { options }
     }
 
-    pub async fn setup(self) -> Result<ConnectedControl, SetupError> {
+    pub async fn setup(self) -> Result<ConnectedControl<UdpSocket>, SetupError> {
         let mut buffer: Vec<u8> = Vec::new();
 
         for addr in self.options {
@@ -153,29 +198,26 @@ fn get_platform() -> Platform {
     Platform::Unknown
 }
 
+impl PacketIO for UdpSocket {
+    fn send_to(&self, buf: &[u8], target: SocketAddr) -> impl Future<Output = std::io::Result<usize>> + Sync {
+        UdpSocket::send_to(self, buf, target)
+    }
+
+    fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync {
+        UdpSocket::recv_from(self, buf)
+    }
+}
+
 #[derive(Debug)]
-pub struct ConnectedControl {
+pub struct ConnectedControl<IO: PacketIO> {
     pub(crate) control_addr: SocketAddr,
-    pub(crate) udp: Arc<UdpSocket>,
+    pub(crate) udp: Arc<IO>,
     pub(crate) pong: Pong,
 }
 
-impl ConnectedControl {
-    pub async fn authenticate(self, api_url: String, secret_key: String) -> Result<AuthenticatedControl, SetupError> {
-        let api = PlayitApi::create(api_url, Some(secret_key.clone()));
-
-        let res = api.proto_register(ReqProtoRegister {
-            agent_version: PlayitAgentVersion {
-                version: AgentVersion {
-                    platform: get_platform(),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
-                },
-                official: true,
-                details_website: None,
-            },
-            client_addr: self.pong.client_addr,
-            tunnel_addr: self.pong.tunnel_addr,
-        }).await.with_error(|error| tracing::error!(?error, "failed to sign and register"))?;
+impl<IO: PacketIO> ConnectedControl<IO> {
+    pub async fn authenticate<A: AuthenticationProvider>(self, auth: A) -> Result<AuthenticatedControl<A, IO>, SetupError> {
+        let res = auth.authenticate(&self.pong).await?;
 
         let bytes = match hex::decode(&res.key) {
             Ok(data) => data,
@@ -221,8 +263,7 @@ impl ConnectedControl {
                                         let pong = self.pong.clone();
 
                                         Ok(AuthenticatedControl {
-                                            secret_key,
-                                            api_client: api,
+                                            auth,
                                             conn: self,
                                             last_pong: pong,
                                             registered,

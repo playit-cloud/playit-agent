@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use playit_agent_proto::control_feed::{ControlFeed, NewClient};
 use playit_agent_proto::control_messages::ControlResponse;
+use tokio::net::UdpSocket;
 
 use crate::api::api::ReqAgentsRoutingGet;
 use crate::api::PlayitApi;
@@ -12,11 +13,13 @@ use crate::tunnel::udp_tunnel::UdpTunnel;
 use crate::utils::error_helper::ErrorHelper;
 use crate::utils::now_milli;
 
+use super::setup::AuthApi;
+
 pub struct SimpleTunnel {
     api_url: String,
-    secret_key: String,
+    auth: AuthApi,
     control_addr: SocketAddr,
-    control_channel: AuthenticatedControl,
+    control_channel: AuthenticatedControl<AuthApi, UdpSocket>,
     udp_tunnel: UdpTunnel,
     last_keep_alive: u64,
     last_ping: u64,
@@ -29,14 +32,20 @@ impl SimpleTunnel {
     pub async fn setup(api_url: String, secret_key: String) -> Result<Self, SetupError> {
         let udp_tunnel = UdpTunnel::new().await?;
 
-        let addresses = get_control_addresses(api_url.clone(), secret_key.clone()).await?;
+        let auth = AuthApi {
+            api_url: api_url.clone(),
+            secret_key: secret_key.clone(),
+        };
+
+        let addresses = get_control_addresses(&auth).await?;
         let setup = SetupFindSuitableChannel::new(addresses.clone()).setup().await?;
         let control_addr = setup.control_addr;
-        let control_channel = setup.authenticate(api_url.clone(), secret_key.clone()).await?;
+
+        let control_channel = setup.authenticate(auth.clone()).await?;
 
         Ok(SimpleTunnel {
             api_url,
-            secret_key,
+            auth,
             control_addr,
             control_channel,
             udp_tunnel,
@@ -49,7 +58,7 @@ impl SimpleTunnel {
     }
 
     pub async fn reload_control_addr(&mut self) -> Result<bool, SetupError> {
-        let addresses = get_control_addresses(self.api_url.clone(), self.secret_key.clone()).await?;
+        let addresses = get_control_addresses(&self.auth).await?;
 
         if self.last_control_targets == addresses {
             return Ok(false);
@@ -62,13 +71,13 @@ impl SimpleTunnel {
         Ok(updated)
     }
 
-    pub async fn update_control_addr(&mut self, connected: ConnectedControl) -> Result<bool, SetupError> {
+    pub async fn update_control_addr(&mut self, connected: ConnectedControl<UdpSocket>) -> Result<bool, SetupError> {
         let new_control_addr = connected.control_addr;
         if self.control_addr == new_control_addr {
             return Ok(false);
         }
 
-        let control_channel = connected.authenticate(self.api_url.clone(), self.secret_key.clone()).await?;
+        let control_channel = connected.authenticate(self.auth.clone()).await?;
 
         tracing::info!(old = %self.control_addr, new = %new_control_addr, "update control address");
         self.control_channel = control_channel;
@@ -195,8 +204,8 @@ impl SimpleTunnel {
     }
 }
 
-async fn get_control_addresses(api_url: String, secret_key: String) -> Result<Vec<SocketAddr>, SetupError> {
-    let api = PlayitApi::create(api_url, Some(secret_key));
+async fn get_control_addresses(auth: &AuthApi) -> Result<Vec<SocketAddr>, SetupError> {
+    let api = auth.api_client();
     let routing = api.agents_routing_get(ReqAgentsRoutingGet { agent_id: None }).await?;
 
     let mut addresses = vec![];

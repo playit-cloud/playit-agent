@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use byteorder::{BigEndian, ReadBytesExt};
 use crate::MessageEncoding;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct ControlRpcMessage<T: MessageEncoding> {
     pub request_id: u64,
     pub content: T,

@@ -1,6 +1,6 @@
 [package]
 name = "playit-agent-proto"
-version.workspace = true
+version = "1.0.0"
 edition = "2021"
 description = "Contains the protocol messages for a playit.gg agent"
 license = "BSD-2-Clause"

@@ -5,14 +5,14 @@ use playit_agent_proto::control_feed::ControlFeed;
 use playit_agent_proto::control_messages::{AgentRegistered, ControlRequest, ControlResponse, Ping, Pong};
 use playit_agent_proto::rpc::ControlRpcMessage;
 
-use crate::api::PlayitApi;
 use crate::tunnel::setup::{ConnectedControl, SetupError};
 use crate::utils::now_milli;
 
-pub struct AuthenticatedControl {
-    pub(crate) secret_key: String,
-    pub(crate) api_client: PlayitApi,
-    pub(crate) conn: ConnectedControl,
+use super::setup::{AuthenticationProvider, PacketIO};
+
+pub struct AuthenticatedControl<A: AuthenticationProvider, IO: PacketIO> {
+    pub(crate) auth: A,
+    pub(crate) conn: ConnectedControl<IO>,
     pub(crate) last_pong: Pong,
     pub(crate) registered: AgentRegistered,
     pub(crate) buffer: Vec<u8>,
@@ -21,7 +21,7 @@ pub struct AuthenticatedControl {
     pub(crate) force_expired: bool,
 }
 
-impl AuthenticatedControl {
+impl<A: AuthenticationProvider, IO: PacketIO> AuthenticatedControl<A, IO> {
     pub async fn send_keep_alive(&mut self, request_id: u64) -> Result<(), ControlError> {
         self.send(ControlRpcMessage {
             request_id,
@@ -78,17 +78,14 @@ impl AuthenticatedControl {
             "authenticate control"
         );
 
-        let res = conn.authenticate(
-            self.api_client.get_client().api_base().to_string(),
-            self.secret_key.clone()
-        ).await?;
+        let res = conn.authenticate(self.auth.clone()).await?;
 
         *self = res;
 
         Ok(())
     }
 
-    pub fn into_requires_auth(self) -> ConnectedControl {
+    pub fn into_requires_auth(self) -> ConnectedControl<IO> {
         ConnectedControl {
             control_addr: self.conn.control_addr,
             udp: self.conn.udp,
