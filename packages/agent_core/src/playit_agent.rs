@@ -5,33 +5,40 @@ use std::time::Duration;
 
 use tracing::Instrument;
 
+use crate::agent_control::{AuthApi, DualStackUdpSocket};
 use crate::api::api::PortType;
 use crate::network::address_lookup::AddressLookup;
 use crate::network::lan_address::LanAddress;
 use crate::network::tcp_clients::TcpClients;
 use crate::network::tcp_pipe::pipe;
 use crate::network::udp_clients::UdpClients;
-use crate::tunnel::setup::SetupError;
-use crate::tunnel::simple_tunnel::SimpleTunnel;
-use crate::tunnel::udp_tunnel::UdpTunnelRx;
+use crate::agent_control::errors::SetupError;
+use crate::agent_control::maintained_control::MaintainedControl;
+use crate::agent_control::udp_channel::UdpTunnelRx;
 use crate::utils::now_milli;
 
-pub struct TunnelRunner<L: AddressLookup> {
+pub struct PlayitAgent<L: AddressLookup> {
     lookup: Arc<L>,
-    tunnel: SimpleTunnel,
+    control: MaintainedControl<DualStackUdpSocket, AuthApi>,
     udp_clients: UdpClients<Arc<L>>,
     tcp_clients: TcpClients,
     keep_running: Arc<AtomicBool>,
 }
 
-impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<SocketAddr> {
+impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketAddr> {
     pub async fn new(api_url: String, secret_key: String, lookup: Arc<L>) -> Result<Self, SetupError> {
-        let tunnel = SimpleTunnel::setup(api_url, secret_key).await?;
+        let io = DualStackUdpSocket::new().await?;
+        let auth = AuthApi {
+            api_url,
+            secret_key,
+        };
+
+        let tunnel = MaintainedControl::setup(io, auth).await?;
         let udp_clients = UdpClients::new(tunnel.udp_tunnel(), lookup.clone());
 
-        Ok(TunnelRunner {
+        Ok(PlayitAgent {
             lookup,
-            tunnel,
+            control: tunnel,
             udp_clients,
             tcp_clients: TcpClients::new(),
             keep_running: Arc::new(AtomicBool::new(true)),
@@ -48,7 +55,7 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<Socket
     }
 
     pub async fn run(self) {
-        let mut tunnel = self.tunnel;
+        let mut tunnel = self.control;
         let udp = tunnel.udp_tunnel();
 
         let tunnel_run = self.keep_running.clone();
@@ -63,7 +70,7 @@ impl<L: AddressLookup + Sync + Send> TunnelRunner<L> where L::Value: Into<Socket
                     if 30_000 < now_milli() - last_control_update {
                         last_control_update = now;
 
-                        if let Err(error) = tunnel.reload_control_addr().await {
+                        if let Err(error) = tunnel.reload_control_addr(async { DualStackUdpSocket::new().await }).await {
                             tracing::error!(?error, "failed to reload_control_addr");
                         }
                     }

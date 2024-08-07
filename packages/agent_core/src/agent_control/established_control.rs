@@ -5,23 +5,22 @@ use playit_agent_proto::control_feed::ControlFeed;
 use playit_agent_proto::control_messages::{AgentRegistered, ControlRequest, ControlResponse, Ping, Pong};
 use playit_agent_proto::rpc::ControlRpcMessage;
 
-use crate::tunnel::setup::{ConnectedControl, SetupError};
 use crate::utils::now_milli;
 
-use super::setup::{AuthenticationProvider, PacketIO};
+use super::connected_control::ConnectedControl;
+use super::errors::{ControlError, SetupError};
+use super::{AuthResource, PacketIO};
 
-pub struct AuthenticatedControl<A: AuthenticationProvider, IO: PacketIO> {
-    pub(crate) auth: A,
-    pub(crate) conn: ConnectedControl<IO>,
-    pub(crate) last_pong: Pong,
-    pub(crate) registered: AgentRegistered,
-    pub(crate) buffer: Vec<u8>,
-    pub(crate) current_ping: Option<u32>,
-
-    pub(crate) force_expired: bool,
+pub struct EstablishedControl<A: AuthResource, IO: PacketIO> {
+    pub(super) auth: A,
+    pub(super) conn: ConnectedControl<IO>,
+    pub(super) auth_pong: Pong,
+    pub(super) registered: AgentRegistered,
+    pub(super) current_ping: Option<u32>,
+    pub(super) force_expired: bool,
 }
 
-impl<A: AuthenticationProvider, IO: PacketIO> AuthenticatedControl<A, IO> {
+impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
     pub async fn send_keep_alive(&mut self, request_id: u64) -> Result<(), ControlError> {
         self.send(ControlRpcMessage {
             request_id,
@@ -48,7 +47,7 @@ impl<A: AuthenticationProvider, IO: PacketIO> AuthenticatedControl<A, IO> {
     }
 
     pub fn is_expired(&self) -> bool {
-        self.force_expired || self.last_pong.session_expire_at.is_none() || self.flow_changed()
+        self.force_expired || self.auth_pong.session_expire_at.is_none() || self.flow_changed()
     }
 
     pub fn set_expired(&mut self) {
@@ -56,54 +55,35 @@ impl<A: AuthenticationProvider, IO: PacketIO> AuthenticatedControl<A, IO> {
     }
 
     fn flow_changed(&self) -> bool {
-        self.conn.pong.client_addr != self.last_pong.client_addr
+        self.conn.pong.client_addr != self.auth_pong.client_addr
     }
 
     async fn send(&mut self, req: ControlRpcMessage<ControlRequest>) -> Result<(), ControlError> {
-        self.buffer.clear();
-        req.write_to(&mut self.buffer)?;
-        self.conn.udp.send_to(&self.buffer, self.conn.control_addr).await?;
+        self.conn.send(&req).await?;
         Ok(())
     }
 
     pub async fn authenticate(&mut self) -> Result<(), SetupError> {
-        let conn = ConnectedControl {
-            control_addr: self.conn.control_addr,
-            udp: self.conn.udp.clone(),
-            pong: self.last_pong.clone(),
-        };
+        let registered = self.conn.authenticate(&self.auth).await?;
+
+        self.registered = registered;
+        self.auth_pong = self.conn.pong.clone();
 
         tracing::info!(
-            last_pong = ?self.last_pong,
+            last_pong = ?self.auth_pong,
             "authenticate control"
         );
-
-        let res = conn.authenticate(self.auth.clone()).await?;
-
-        *self = res;
 
         Ok(())
     }
 
-    pub fn into_requires_auth(self) -> ConnectedControl<IO> {
-        ConnectedControl {
-            control_addr: self.conn.control_addr,
-            udp: self.conn.udp,
-            pong: self.last_pong,
-        }
+    pub fn into_connected(self) -> ConnectedControl<IO> {
+        self.conn
     }
 
     pub async fn recv_feed_msg(&mut self) -> Result<ControlFeed, ControlError> {
-        self.buffer.resize(1024, 0);
-
-        let (bytes, remote) = self.conn.udp.recv_from(&mut self.buffer).await?;
-        if remote != self.conn.control_addr {
-            return Err(ControlError::InvalidRemote { expected: self.conn.control_addr, got: remote });
-        }
-
-        let mut reader = &self.buffer[..bytes];
-        let feed = ControlFeed::read_from(&mut reader).map_err(|e| ControlError::FailedToReadControlFeed(e))?;
-
+        let feed = self.conn.recv().await?;
+        
         if let ControlFeed::Response(res) = &feed {
             match &res.content {
                 ControlResponse::AgentRegistered(registered) => {
@@ -112,7 +92,7 @@ impl<A: AuthenticationProvider, IO: PacketIO> AuthenticatedControl<A, IO> {
                 }
                 ControlResponse::Pong(pong) => {
                     self.current_ping = Some((now_milli() - pong.request_now) as u32);
-                    self.last_pong = pong.clone();
+                    self.auth_pong = pong.clone();
 
                     if let Some(expires_at) = pong.session_expire_at {
                         self.registered.expires_at = expires_at;
@@ -123,18 +103,5 @@ impl<A: AuthenticationProvider, IO: PacketIO> AuthenticatedControl<A, IO> {
         }
 
         Ok(feed)
-    }
-}
-
-#[derive(Debug)]
-pub enum ControlError {
-    IoError(std::io::Error),
-    InvalidRemote { expected: SocketAddr, got: SocketAddr },
-    FailedToReadControlFeed(std::io::Error),
-}
-
-impl From<std::io::Error> for ControlError {
-    fn from(e: std::io::Error) -> Self {
-        ControlError::IoError(e)
     }
 }
