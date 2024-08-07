@@ -14,13 +14,13 @@ use crate::network::tcp_pipe::pipe;
 use crate::network::udp_clients::UdpClients;
 use crate::agent_control::errors::SetupError;
 use crate::agent_control::maintained_control::MaintainedControl;
-use crate::agent_control::udp_channel::UdpTunnelRx;
+use crate::agent_control::udp_channel::{UdpChannel, UdpTunnelRx};
 use crate::utils::now_milli;
 
 pub struct PlayitAgent<L: AddressLookup> {
     lookup: Arc<L>,
     control: MaintainedControl<DualStackUdpSocket, AuthApi>,
-    udp_clients: UdpClients<Arc<L>>,
+    udp_clients: UdpClients<Arc<L>, DualStackUdpSocket>,
     tcp_clients: TcpClients,
     keep_running: Arc<AtomicBool>,
 }
@@ -33,8 +33,9 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
             secret_key,
         };
 
-        let tunnel = MaintainedControl::setup(io, auth).await?;
-        let udp_clients = UdpClients::new(tunnel.udp_tunnel(), lookup.clone());
+        let udp = UdpChannel::new(DualStackUdpSocket::new().await?);
+        let tunnel = MaintainedControl::setup(io, auth, Some(udp)).await?;
+        let udp_clients = UdpClients::new(tunnel.udp_channel().unwrap(), lookup.clone());
 
         Ok(PlayitAgent {
             lookup,
@@ -56,7 +57,7 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
 
     pub async fn run(self) {
         let mut tunnel = self.control;
-        let udp = tunnel.udp_tunnel();
+        let udp = tunnel.udp_channel().unwrap();
 
         let tunnel_run = self.keep_running.clone();
 

@@ -18,7 +18,7 @@ use super::{AuthResource, PacketIO};
 
 pub struct MaintainedControl<I: PacketIO, A: AuthResource> {
     control: EstablishedControl<A, I>,
-    udp_tunnel: UdpChannel,
+    udp: Option<UdpChannel<I>>,
     last_keep_alive: u64,
     last_ping: u64,
     last_pong: u64,
@@ -27,16 +27,14 @@ pub struct MaintainedControl<I: PacketIO, A: AuthResource> {
 }
 
 impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
-    pub async fn setup(io: I, auth: A) -> Result<Self, SetupError> {
-        let udp_tunnel = UdpChannel::new().await?;
-
+    pub async fn setup(io: I, auth: A, udp: Option<UdpChannel<I>>) -> Result<Self, SetupError> {
         let addresses = auth.get_control_addresses().await?;
         let setup = AddressSelector::new(addresses.clone(), io).connect_to_first().await?;
         let control_channel = setup.auth_into_established(auth).await?;
 
         Ok(MaintainedControl {
             control: control_channel,
-            udp_tunnel,
+            udp,
             last_keep_alive: 0,
             last_ping: 0,
             last_pong: 0,
@@ -76,12 +74,15 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         tracing::info!(old = %self.control.conn.pong.tunnel_addr, new = %connected.pong.tunnel_addr, "update control address");
         connected.reset_established(&mut self.control, registered);
 
-        self.udp_tunnel.invalidate_session();
+        if let Some(udp) = &self.udp {
+            udp.invalidate_session();
+        }
+
         Ok(true)
     }
 
-    pub fn udp_tunnel(&self) -> UdpChannel {
-        self.udp_tunnel.clone()
+    pub fn udp_channel(&self) -> Option<UdpChannel<I>> {
+        self.udp.clone()
     }
 
     pub async fn update(&mut self) -> Option<NewClient> {
@@ -102,23 +103,26 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             }
         }
 
-        if self.udp_tunnel.requires_auth() {
-            if 5_000 < now - self.last_udp_auth {
-                self.last_udp_auth = now;
-
-                if let Err(error) = self.control.send_setup_udp_channel(9000).await {
-                    tracing::error!(?error, "failed to send udp setup request to control");
+        if let Some(udp) = &self.udp {
+            if udp.requires_auth() {
+                if 5_000 < now - self.last_udp_auth {
+                    self.last_udp_auth = now;
+    
+                    if let Err(error) = self.control.send_setup_udp_channel(9000).await {
+                        tracing::error!(?error, "failed to send udp setup request to control");
+                    }
                 }
-            }
-        } else if self.udp_tunnel.requires_resend() {
-            if 1_000 < now - self.last_udp_auth {
-                self.last_udp_auth = now;
-
-                if let Err(error) = self.udp_tunnel.resend_token().await {
-                    tracing::error!(?error, "failed to send udp auth request");
+            } else if udp.requires_resend() {
+                if 1_000 < now - self.last_udp_auth {
+                    self.last_udp_auth = now;
+    
+                    if let Err(error) = udp.resend_token().await {
+                        tracing::error!(?error, "failed to send udp auth request");
+                    }
                 }
             }
         }
+
 
         let time_till_expire = self.control.get_expire_at().max(now) - now;
         tracing::trace!(time_till_expire, "time till expire");
@@ -148,7 +152,9 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                 Ok(Ok(ControlFeed::Response(msg))) => match msg.content {
                     ControlResponse::UdpChannelDetails(details) => {
                         tracing::info!(?details, "update udp channel details");
-                        self.udp_tunnel.set_udp_tunnel(details).await.unwrap();
+                        if let Some(udp) = &self.udp {
+                            udp.set_udp_tunnel(details).await.unwrap();
+                        }
                     }
                     ControlResponse::Unauthorized => {
                         tracing::info!("session no longer authorized");
