@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 
+use crate::agent_control::PacketIO;
 use crate::api::api::PortType;
 use crate::network::address_lookup::AddressLookup;
 use crate::network::lan_address::LanAddress;
@@ -14,10 +15,10 @@ use crate::agent_control::udp_proto::UdpFlow;
 use crate::agent_control::udp_channel::UdpChannel;
 use crate::utils::now_sec;
 
-pub struct UdpClients<L: AddressLookup> {
-    udp_tunnel: UdpChannel,
+pub struct UdpClients<L: AddressLookup, I: PacketIO> {
+    udp_tunnel: UdpChannel<I>,
     lookup: L,
-    udp_clients: Arc<RwLock<HashMap<ClientKey, Arc<UdpClient>>>>,
+    udp_clients: Arc<RwLock<HashMap<ClientKey, Arc<UdpClient<I>>>>>,
     pub use_special_lan: bool,
 }
 
@@ -27,8 +28,8 @@ struct ClientKey {
     tunnel_addr: SocketAddr,
 }
 
-impl<L: AddressLookup> UdpClients<L> where L::Value: Into<SocketAddr> {
-    pub fn new(tunnel: UdpChannel, lookup: L) -> Self {
+impl<L: AddressLookup, I: PacketIO> UdpClients<L, I> where L::Value: Into<SocketAddr> {
+    pub fn new(tunnel: UdpChannel<I>, lookup: L) -> Self {
         UdpClients {
             udp_tunnel: tunnel,
             lookup,
@@ -112,19 +113,19 @@ impl<L: AddressLookup> UdpClients<L> where L::Value: Into<SocketAddr> {
     }
 }
 
-struct UdpClient {
+struct UdpClient<I: PacketIO> {
     client_key: ClientKey,
     send_flow: UdpFlow,
     local_udp: UdpSocket,
-    udp_tunnel: UdpChannel,
+    udp_tunnel: UdpChannel<I>,
     local_start_addr: SocketAddr,
     tunnel_from_port: u16,
     tunnel_to_port: u16,
-    udp_clients: Arc<RwLock<HashMap<ClientKey, Arc<UdpClient>>>>,
+    udp_clients: Arc<RwLock<HashMap<ClientKey, Arc<UdpClient<I>>>>>,
     last_activity: AtomicU32,
 }
 
-impl UdpClient {
+impl<I: PacketIO> UdpClient<I> {
     pub async fn send_local(&self, dst_port: u16, data: &[u8]) -> std::io::Result<usize> {
         let port_offset = dst_port - self.tunnel_from_port;
 
@@ -142,9 +143,9 @@ impl UdpClient {
     }
 }
 
-struct HostToTunnelForwarder(Arc<UdpClient>);
+struct HostToTunnelForwarder<I: PacketIO>(Arc<UdpClient<I>>);
 
-impl HostToTunnelForwarder {
+impl<I: PacketIO> HostToTunnelForwarder<I> {
     pub async fn run(self) {
         let mut buffer = vec![0u8; 2048];
 

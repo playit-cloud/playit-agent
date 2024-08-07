@@ -18,10 +18,10 @@ pub mod udp_channel;
 pub mod udp_proto;
 mod platform;
 
-pub trait PacketIO {
-    fn send_to(&self, buf: &[u8], target: SocketAddr) -> impl Future<Output = std::io::Result<usize>> + Sync;
+pub trait PacketIO: Send + Sync + 'static {
+    fn send_to(&self, buf: &[u8], target: SocketAddr) -> impl Future<Output = std::io::Result<usize>> + Sync + Send;
 
-    fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync;
+    fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send;
 }
 
 pub struct DualStackUdpSocket {

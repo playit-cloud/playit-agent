@@ -17,6 +17,7 @@ pub struct EstablishedControl<A: AuthResource, IO: PacketIO> {
     pub(super) auth_pong: Pong,
     pub(super) registered: AgentRegistered,
     pub(super) current_ping: Option<u32>,
+    pub(super) clock_offset: i64,
     pub(super) force_expired: bool,
 }
 
@@ -91,11 +92,22 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
                     self.registered = registered.clone();
                 }
                 ControlResponse::Pong(pong) => {
-                    self.current_ping = Some((now_milli() - pong.request_now) as u32);
+                    let now = now_milli();
+                    let rtt = (now.max(pong.request_now) - pong.request_now) as u32;
+
+                    let server_ts = pong.server_now - (rtt / 2) as u64;
+                    let local_ts = pong.request_now;
+                    self.clock_offset = local_ts as i64 - server_ts as i64;
+
+                    if 10_000 < self.clock_offset.abs() {
+                        tracing::warn!("local timestamp if over 10 seconds off");
+                    }
+
+                    self.current_ping = Some(rtt);
                     self.auth_pong = pong.clone();
 
                     if let Some(expires_at) = pong.session_expire_at {
-                        self.registered.expires_at = expires_at;
+                        self.registered.expires_at = self.server_ts_to_local(expires_at);
                     }
                 }
                 _ => {}
@@ -103,5 +115,9 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
         }
 
         Ok(feed)
+    }
+
+    pub fn server_ts_to_local(&self, ts: u64) -> u64 {
+        (ts as i64 + self.clock_offset) as u64
     }
 }

@@ -34,6 +34,7 @@ impl<IO: PacketIO> ConnectedControl<IO> {
             auth_pong: pong,
             registered,
             current_ping: None,
+            clock_offset: 0,
             force_expired: false,
         }
     }
