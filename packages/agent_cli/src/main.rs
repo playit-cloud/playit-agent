@@ -24,6 +24,15 @@ use crate::match_ip::MatchIp;
 use crate::signal_handle::get_signal_handle;
 use crate::ui::{UI, UISettings};
 
+
+//imports (chroma)
+use std::process::Command as ProcessCommand;
+use std::str;
+use crossterm::style::Stylize;
+use std::fs;
+use std::env;
+use std::path::PathBuf;
+
 pub const API_BASE: &'static str = "https://api.playit.gg";
 
 pub mod util;
@@ -32,6 +41,64 @@ pub mod playit_secret;
 pub mod match_ip;
 pub mod ui;
 pub mod signal_handle;
+
+
+
+
+
+//ping function !WINDOWS! (chroma)
+async fn ipcheck() -> Result<(), CliError> {
+    let local_app_data = env::var("LOCALAPPDATA").map_err(|_| CliError::EnvVarNotFound)?;
+    let mut file_path = PathBuf::from(local_app_data);
+    file_path.push("playit_gg");
+    file_path.push("ips.txt");
+
+    let ips_content = fs::read_to_string(file_path).map_err(|_| CliError::FileReadError)?;
+    let ips = ips_content.lines();
+
+    println!("Testing {}","ply.gg...".yellow());
+    let output = ProcessCommand::new("ping")
+        .arg("-n")
+        .arg("1")
+        .arg("ping.ply.gg")
+        .output();
+
+    match output {
+        Ok(output) if output.status.success() => {
+            println!("PLY.gg is {}","not blocked!".green());
+            for ip in ips {
+                check_ip(ip).await;
+            }
+        }
+        _ => {
+            println!("PLY.gg might be {}","blocked!".red());
+        }
+    }
+
+    Ok(())
+}
+
+async fn check_ip(ip: &str) {
+    let output = ProcessCommand::new("ping")
+        .arg("-n")
+        .arg("1")
+        .arg(ip)
+        .output();
+
+    if let Ok(output) = output {
+        if output.status.success() {
+            println!("Ping to {} {}", ip, "succeeded!".green());
+        } else {
+            println!("Ping to {} was {}", ip, "not successful!".red());
+        }
+    }
+}
+
+
+
+
+
+
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, CliError> {
@@ -122,6 +189,12 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             }
             _ => return Err(CliError::NotImplemented.into()),
         }
+        //function calling (Chroma)
+        Some(("ipcheck", _sub_m)) => {
+            ipcheck().await?;
+        }
+        _ => return Err(CliError::NotImplemented.into()),
+
         Some(("claim", m)) => match m.subcommand() {
             Some(("generate", _)) => {
                 ui.write_screen(claim_generate()).await;
@@ -485,6 +558,11 @@ pub enum CliError {
     SecretFileWriteError(std::io::Error),
     SecretFilePathMissing,
     InvalidPortType,
+
+    //added those (chroma)
+    EnvVarNotFound,
+    FileReadError,
+
     InvalidPortCount,
     InvalidMappingOverride,
     AgentClaimRejected,
@@ -604,6 +682,11 @@ fn cli() -> Command {
             Command::new("reset")
                 .about("removes the secret key on your system so the playit agent can be re-claimed")
         )
+       //ipcheck subcommand (chroma)
+       .subcommand(
+            Command::new("ipcheck")
+               .about("Checks for blocked ips")
+       )
         .subcommand(
             Command::new("secret-path")
                 .about("shows the file path where the playit secret can be found")
