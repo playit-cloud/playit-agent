@@ -10,12 +10,12 @@ use tokio::sync::RwLock;
 use crate::api::api::PortType;
 use crate::network::address_lookup::AddressLookup;
 use crate::network::lan_address::LanAddress;
-use crate::tunnel::udp_proto::UdpFlow;
-use crate::tunnel::udp_tunnel::UdpTunnel;
+use crate::agent_control::udp_proto::UdpFlow;
+use crate::agent_control::udp_channel::UdpChannel;
 use crate::utils::now_sec;
 
 pub struct UdpClients<L: AddressLookup> {
-    udp_tunnel: UdpTunnel,
+    udp_tunnel: UdpChannel,
     lookup: L,
     udp_clients: Arc<RwLock<HashMap<ClientKey, Arc<UdpClient>>>>,
     pub use_special_lan: bool,
@@ -28,7 +28,7 @@ struct ClientKey {
 }
 
 impl<L: AddressLookup> UdpClients<L> where L::Value: Into<SocketAddr> {
-    pub fn new(tunnel: UdpTunnel, lookup: L) -> Self {
+    pub fn new(tunnel: UdpChannel, lookup: L) -> Self {
         UdpClients {
             udp_tunnel: tunnel,
             lookup,
@@ -116,7 +116,7 @@ struct UdpClient {
     client_key: ClientKey,
     send_flow: UdpFlow,
     local_udp: UdpSocket,
-    udp_tunnel: UdpTunnel,
+    udp_tunnel: UdpChannel,
     local_start_addr: SocketAddr,
     tunnel_from_port: u16,
     tunnel_to_port: u16,

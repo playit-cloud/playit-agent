@@ -2,10 +2,10 @@ extern crate core;
 
 // pub mod api;
 pub mod api;
-pub mod tunnel;
+pub mod agent_control;
 pub mod network;
 pub mod utils;
-pub mod tunnel_runner;
+pub mod playit_agent;
 
 #[cfg(test)]
 mod test {

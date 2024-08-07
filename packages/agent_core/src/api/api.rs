@@ -105,7 +105,7 @@ impl<C: std::fmt::Debug> std::error::Error for ApiErrorNoFail<C> {
 pub trait PlayitHttpClient {
     type Error;
 
-    async fn call<Req: serde::Serialize + std::marker::Send, Res: serde::de::DeserializeOwned, Err: serde::de::DeserializeOwned>(&self, path: &str, req: Req) -> Result<ApiResult<Res, Err>, Self::Error>;
+    fn call<Req: serde::Serialize + std::marker::Send, Res: serde::de::DeserializeOwned, Err: serde::de::DeserializeOwned>(&self, path: &str, req: Req) -> impl std::future::Future<Output = Result<ApiResult<Res, Err>, Self::Error>>;
 }
 
 #[derive(Clone)]

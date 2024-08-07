@@ -15,8 +15,8 @@ use playit_agent_core::api::api::*;
 use playit_agent_core::api::http_client::HttpClientError;
 use playit_agent_core::api::PlayitApi;
 use playit_agent_core::network::address_lookup::{AddressLookup, AddressValue};
-use playit_agent_core::tunnel::setup::SetupError;
-use playit_agent_core::tunnel_runner::TunnelRunner;
+use playit_agent_core::agent_control::errors::SetupError;
+use playit_agent_core::playit_agent::PlayitAgent;
 use playit_agent_core::utils::now_milli;
 use playit_secret::PlayitSecret;
 
@@ -221,7 +221,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 }
             }
 
-            let tunnel = TunnelRunner::new(
+            let tunnel = PlayitAgent::new(
                 API_BASE.to_string(),
                 secret_key,
                 Arc::new(LookupWithOverrides(mapping_overrides)),

@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 
 use playit_agent_proto::control_feed::{NewClient};
 
-use crate::tunnel::tcp_tunnel::TcpTunnel;
+use super::tcp_tunnel::TcpTunnel;
 
 #[derive(Clone)]
 pub struct TcpClients {

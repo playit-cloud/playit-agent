@@ -8,7 +8,7 @@ use std::{
 use playit_agent_core::{
     api::api::*,
     network::address_lookup::{AddressLookup, AddressValue},
-    tunnel_runner::TunnelRunner,
+    playit_agent::PlayitAgent,
     utils::now_milli,
 };
 use playit_agent_core::api::api::AgentType;
@@ -39,7 +39,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
     ui.write_screen("starting up tunnel connection").await;
 
     let runner = loop {
-        match TunnelRunner::new(API_BASE.to_string(), secret_code.clone(), lookup.clone()).await {
+        match PlayitAgent::new(API_BASE.to_string(), secret_code.clone(), lookup.clone()).await {
             Ok(res) => break res,
             Err(error) => {
                 error_count += 1;

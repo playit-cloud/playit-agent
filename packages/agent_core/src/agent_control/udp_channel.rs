@@ -9,11 +9,11 @@ use tokio::sync::RwLock;
 use playit_agent_proto::control_messages::UdpChannelDetails;
 
 
-use crate::tunnel::udp_proto::{UDP_CHANNEL_ESTABLISH_ID, UdpFlow};
+use crate::agent_control::udp_proto::{UDP_CHANNEL_ESTABLISH_ID, UdpFlow};
 use crate::utils::now_sec;
 
 #[derive(Clone)]
-pub struct UdpTunnel {
+pub struct UdpChannel {
     inner: Arc<Inner>,
 }
 
@@ -30,9 +30,9 @@ struct ChannelDetails {
     addr_history: VecDeque<SocketAddr>,
 }
 
-impl UdpTunnel {
+impl UdpChannel {
     pub async fn new() -> std::io::Result<Self> {
-        Ok(UdpTunnel {
+        Ok(UdpChannel {
             inner: Arc::new(Inner {
                 udp4: UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)).await?,
                 udp6: UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0)).await.ok(),
