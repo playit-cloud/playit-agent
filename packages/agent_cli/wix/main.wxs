@@ -151,7 +151,7 @@
                         Icon="ProductICO"
                         Target="[APPLICATIONFOLDER]bin\playit.exe"
                     />
-                    <RegistryValue Root="HKCU" ey="Software\DevelopedMethodsLLC\playit_gg" Name="ShortcutAdded" Type="integer" Value="1" eyPath="yes" />
+                    <RegistryValue Root="HKCU" Key="Software\DevelopedMethodsLLC\playit_gg" Name="ShortcutAdded" Type="integer" Value="1" eyPath="yes" />
                 </Component>
             </Directory>
         </Directory>
