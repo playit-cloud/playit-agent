@@ -100,14 +100,15 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
                     self.clock_offset = local_ts as i64 - server_ts as i64;
 
                     if 10_000 < self.clock_offset.abs() {
-                        tracing::warn!("local timestamp if over 10 seconds off");
+                        tracing::warn!(offset = self.clock_offset, "local timestamp if over 10 seconds off");
                     }
 
                     self.current_ping = Some(rtt);
                     self.auth_pong = pong.clone();
 
                     if let Some(expires_at) = pong.session_expire_at {
-                        self.registered.expires_at = self.server_ts_to_local(expires_at);
+                        /* normalize to local timestamp to handle when host clock is wrong */
+                        self.registered.expires_at = pong.request_now + (expires_at - pong.server_now).max(rtt as u64) - rtt as u64;
                     }
                 }
                 _ => {}
@@ -115,9 +116,5 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
         }
 
         Ok(feed)
-    }
-
-    pub fn server_ts_to_local(&self, ts: u64) -> u64 {
-        (ts as i64 + self.clock_offset) as u64
     }
 }
