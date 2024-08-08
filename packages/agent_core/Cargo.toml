@@ -1,6 +1,6 @@
 [package]
 name = "playit-agent-core"
-version = "0.17.0"
+version = "0.17.1"
 edition = "2021"
 description = "Contains the logic to create a playit.gg agent"
 license = "BSD-2-Clause"
@@ -23,11 +23,15 @@ chrono = { workspace = true }
 futures-util = { workspace = true }
 message-encoding = { workspace = true }
 
-hyper = { version = "1.4", features = ["client", "http2", "http1"] }
-bytes = "1.5.0"
-time = "0.3.36"
-hyper-util = { version = "0.1.7", features = ["client", "client-legacy", "http1", "http2"] }
-http-body-util = "0.1.2"
-hyper-rustls = { version = "0.27", features = ["http2", "webpki-roots"] }
-
 playit-agent-proto = { path = "../agent_proto", version = "1.0.0" }
+
+reqwest = { version = "0.12", features = ["json", "native-tls-vendored"] }
+
+# hyper = { version = "1.4", features = ["client", "http2", "http1"] }
+# bytes = "1.7"
+# time = "0.3.36"
+# hyper-util = { version = "0.1.7", features = ["client", "client-legacy", "http1", "http2"] }
+# http-body-util = "0.1.2"
+# hyper-rustls = { version = "0.27", features = ["http2", "webpki-roots"] }
+
+# rustls = { version = "0.23", default-features = false, features = ["ring"] }
