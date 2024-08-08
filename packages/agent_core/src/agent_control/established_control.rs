@@ -1,6 +1,3 @@
-use std::net::SocketAddr;
-
-use message_encoding::MessageEncoding;
 use playit_agent_proto::control_feed::ControlFeed;
 use playit_agent_proto::control_messages::{AgentRegistered, ControlRequest, ControlResponse, Ping, Pong};
 use playit_agent_proto::rpc::ControlRpcMessage;
@@ -14,7 +11,7 @@ use super::{AuthResource, PacketIO};
 pub struct EstablishedControl<A: AuthResource, IO: PacketIO> {
     pub(super) auth: A,
     pub(super) conn: ConnectedControl<IO>,
-    pub(super) auth_pong: Pong,
+    pub(super) pong_at_auth: Pong,
     pub(super) registered: AgentRegistered,
     pub(super) current_ping: Option<u32>,
     pub(super) clock_offset: i64,
@@ -48,7 +45,7 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
     }
 
     pub fn is_expired(&self) -> bool {
-        self.force_expired || self.auth_pong.session_expire_at.is_none() || self.flow_changed()
+        self.force_expired || self.pong_at_auth.session_expire_at.is_none() || self.flow_changed()
     }
 
     pub fn set_expired(&mut self) {
@@ -56,7 +53,8 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
     }
 
     fn flow_changed(&self) -> bool {
-        self.conn.pong.client_addr != self.auth_pong.client_addr
+        self.conn.pong_latest.client_addr != self.pong_at_auth.client_addr 
+            || self.conn.pong_latest.tunnel_addr != self.pong_at_auth.tunnel_addr
     }
 
     async fn send(&mut self, req: ControlRpcMessage<ControlRequest>) -> Result<(), ControlError> {
@@ -68,10 +66,10 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
         let registered = self.conn.authenticate(&self.auth).await?;
 
         self.registered = registered;
-        self.auth_pong = self.conn.pong.clone();
+        self.pong_at_auth = self.conn.pong_latest.clone();
 
         tracing::info!(
-            last_pong = ?self.auth_pong,
+            last_pong = ?self.pong_at_auth,
             "authenticate control"
         );
 
@@ -104,7 +102,6 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
                     }
 
                     self.current_ping = Some(rtt);
-                    self.auth_pong = pong.clone();
 
                     if let Some(expires_at) = pong.session_expire_at {
                         /* normalize to local timestamp to handle when host clock is wrong */

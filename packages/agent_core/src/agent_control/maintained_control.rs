@@ -64,14 +64,14 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
 
     pub async fn replace_connection(&mut self, mut connected: ConnectedControl<I>, force: bool) -> Result<bool, SetupError> {
         if !force
-            && self.control.conn.pong.client_addr.ip() == connected.pong.client_addr.ip() 
-            && self.control.conn.pong.tunnel_addr == connected.pong.tunnel_addr {
+            && self.control.conn.pong_latest.client_addr.ip() == connected.pong_latest.client_addr.ip()
+            && self.control.conn.pong_latest.tunnel_addr == connected.pong_latest.tunnel_addr {
             return Ok(false);
         }
 
         let registered = connected.authenticate(&self.control.auth).await?;
 
-        tracing::info!(old = %self.control.conn.pong.tunnel_addr, new = %connected.pong.tunnel_addr, "update control address");
+        tracing::info!(old = %self.control.conn.pong_latest.tunnel_addr, new = %connected.pong_latest.tunnel_addr, "update control address");
         connected.reset_established(&mut self.control, registered);
 
         if let Some(udp) = &self.udp {
@@ -169,10 +169,10 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                     ControlResponse::Pong(pong) => {
                         self.last_pong = now_milli();
 
-                        if pong.client_addr != self.control.conn.pong.client_addr {
+                        if pong.client_addr != self.control.pong_at_auth.client_addr {
                             tracing::info!(
                                 new_client = %pong.client_addr,
-                                old_client = %self.control.conn.pong.client_addr,
+                                old_client = %self.control.pong_at_auth.client_addr,
                                 "client ip changed"
                             );
                         }
