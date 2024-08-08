@@ -127,8 +127,14 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         let time_till_expire = self.control.get_expire_at().max(now) - now;
         tracing::trace!(time_till_expire, "time till expire");
 
-        /* 30 seconds till expiry and haven't sent in last 10 sec */
-        if 10_000 < now - self.last_keep_alive && time_till_expire < 30_000 {
+        /* keep alive every 60s or every 10s if expiring soon */
+        let interval = if time_till_expire < 30_000 {
+            10_000
+        } else {
+            60_000
+        };
+
+        if interval < now - self.last_keep_alive {
             self.last_keep_alive = now;
 
             tracing::info!(time_till_expire, "send KeepAlive");
