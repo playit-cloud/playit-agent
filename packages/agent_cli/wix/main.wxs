@@ -145,13 +145,13 @@
 
             <Directory Id="DesktopFolder" Name="Desktop">
                 <Component Id="ApplicationShortcutDesktop" Guid="6382d8dc-b9b0-4578-92b9-bad1cb41b9d8">
-                    <Shortcut Id="ApplicationStartMenuShortcut"
+                    <Shortcut Id="ApplicationDesktopShortcut"
                         Name="Playit.gg"
                         Description="Makes local ports public. Put your game servers online."
                         Icon="ProductICO"
                         Target="[APPLICATIONFOLDER]bin\playit.exe"
                     />
-                    <RegistryValue Root="HKCU" Key="Software\DevelopedMethodsLLC\playit_gg" Name="ShortcutAdded" Type="integer" Value="1" eyPath="yes" />
+                    <RegistryValue Root="HKCU" Key="Software\DevelopedMethodsLLC\playit_gg" Name="ShortcutAdded" Type="integer" Value="1" KeyPath="yes" />
                 </Component>
             </Directory>
         </Directory>
