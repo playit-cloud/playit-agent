@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, time::Duration};
 
 use message_encoding::MessageEncoding;
-use playit_agent_proto::{control_feed::ControlFeed, control_messages::{AgentRegistered, ControlResponse, Pong}, raw_slice::RawSlice, rpc::ControlRpcMessage};
+use playit_agent_proto::{control_feed::ControlFeed, control_messages::{AgentRegistered, ControlRequest, ControlResponse, Ping, Pong}, raw_slice::RawSlice, rpc::ControlRpcMessage};
 
 use crate::utils::now_milli;
 
@@ -11,13 +11,13 @@ use super::{errors::{ControlError, SetupError}, established_control::Established
 pub struct ConnectedControl<IO: PacketIO> {
     pub(super) control_addr: SocketAddr,
     pub(super) packet_io: IO,
-    pub(super) pong: Pong,
+    pub(super) pong_latest: Pong,
     pub(super) buffer: Vec<u8>,
 }
 
 impl<IO: PacketIO> ConnectedControl<IO> {
     pub fn new(control_addr: SocketAddr, udp: IO, pong: Pong) -> Self {
-        ConnectedControl { control_addr, packet_io: udp, pong, buffer: Vec::with_capacity(1024) }
+        ConnectedControl { control_addr, packet_io: udp, pong_latest: pong, buffer: Vec::with_capacity(1024) }
     }
 
     pub async fn auth_into_established<A: AuthResource>(mut self, auth: A) -> Result<EstablishedControl<A, IO>, SetupError> {
@@ -26,12 +26,12 @@ impl<IO: PacketIO> ConnectedControl<IO> {
     }
 
     pub fn into_established<A: AuthResource>(self, auth: A, registered: AgentRegistered) -> EstablishedControl<A, IO> {
-        let pong = self.pong.clone();
+        let pong = self.pong_latest.clone();
 
         EstablishedControl {
             auth,
             conn: self,
-            auth_pong: pong,
+            pong_at_auth: pong,
             registered,
             current_ping: None,
             clock_offset: 0,
@@ -41,14 +41,15 @@ impl<IO: PacketIO> ConnectedControl<IO> {
 
     pub fn reset_established<A: AuthResource>(self, established: &mut EstablishedControl<A, IO>, registered: AgentRegistered) {
         established.registered = registered;
-        established.auth_pong = self.pong.clone();
+        established.pong_at_auth = self.pong_latest.clone();
         established.conn = self;
         established.current_ping = None;
         established.force_expired = false;
     }
 
     pub async fn authenticate<A: AuthResource>(&mut self, auth: &A) -> Result<AgentRegistered, SetupError> {
-        let res = auth.authenticate(&self.pong).await?;
+        let auth_pong = self.pong_latest.clone();
+        let res = auth.authenticate(&auth_pong).await?;
 
         let bytes = match hex::decode(&res.key) {
             Ok(data) => data,
@@ -87,7 +88,26 @@ impl<IO: PacketIO> ConnectedControl<IO> {
                 return match response.content {
                     ControlResponse::AgentRegistered(registered) => Ok(registered),
                     ControlResponse::InvalidSignature => Err(SetupError::RegisterInvalidSignature),
-                    ControlResponse::Unauthorized => Err(SetupError::RegisterUnauthorized),
+                    ControlResponse::Unauthorized => {
+                        /* most likely due to a changed client addr, send pong to refresh value */
+                        let _ = self.send(&ControlRpcMessage {
+                            request_id,
+                            content: ControlRequest::Ping(Ping {
+                                now: now_milli(),
+                                current_ping: None,
+                                session_id: None,
+                            }),
+                        }).await;
+
+                        Err(SetupError::RegisterUnauthorized)
+                    },
+                    ControlResponse::Pong(pong) => {
+                        if pong.client_addr != auth_pong.client_addr || pong.tunnel_addr != auth_pong.tunnel_addr {
+                            Err(SetupError::AttemptingToAuthWithOldFlow)
+                        } else {
+                            continue;
+                        }
+                    }
                     ControlResponse::RequestQueued => {
                         tracing::info!("register queued, waiting 1s");
                         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -121,6 +141,10 @@ impl<IO: PacketIO> ConnectedControl<IO> {
 
         let mut reader = &self.buffer[..bytes];
         let feed = ControlFeed::read_from(&mut reader).map_err(|e| ControlError::FailedToReadControlFeed(e))?;
+
+        if let ControlFeed::Response(ControlRpcMessage { content: ControlResponse::Pong(pong), .. }) = &feed {
+            self.pong_latest = pong.clone();
+        }
 
         Ok(feed)
     }

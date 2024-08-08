@@ -10,6 +10,7 @@ pub enum SetupError {
     ApiFail(String),
     ApiError(ApiResponseError),
     RequestError(HttpClientError),
+    AttemptingToAuthWithOldFlow,
     FailedToDecodeSignedAgentRegisterHex,
     NoResponseFromAuthenticate,
     RegisterInvalidSignature,
