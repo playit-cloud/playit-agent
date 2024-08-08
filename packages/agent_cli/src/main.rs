@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{arg, Command};
+use playit_agent_core::agent_control::platform::get_platform;
+use playit_agent_core::agent_control::version::register_version;
 use rand::Rng;
 use uuid::Uuid;
 
@@ -35,6 +37,15 @@ pub mod signal_handle;
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, CliError> {
+    register_version(PlayitAgentVersion {
+        version: AgentVersion {
+            platform: get_platform(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        },
+        official: true,
+        details_website: None,
+    });
+
     let matches = cli().get_matches();
     let mut secret = PlayitSecret::from_args(&matches).await;
     let _ = secret.with_default_path().await;

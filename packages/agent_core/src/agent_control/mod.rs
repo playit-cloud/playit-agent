@@ -4,6 +4,7 @@ use platform::get_platform;
 use playit_agent_proto::control_messages::Pong;
 use errors::SetupError;
 use tokio::{io::ReadBuf, net::UdpSocket};
+use version::{get_version, register_version};
 
 use crate::{api::{api::{AgentVersion, PlayitAgentVersion, ReqAgentsRoutingGet, ReqProtoRegister, SignedAgentKey}, PlayitApi}, utils::error_helper::ErrorHelper};
 
@@ -13,10 +14,11 @@ pub mod address_selector;
 pub mod connected_control;
 pub mod established_control;
 pub mod maintained_control;
+pub mod version;
 
 pub mod udp_channel;
 pub mod udp_proto;
-mod platform;
+pub mod platform;
 
 pub trait PacketIO: Send + Sync + 'static {
     fn send_to(&self, buf: &[u8], target: SocketAddr) -> impl Future<Output = std::io::Result<usize>> + Sync + Send;
@@ -145,14 +147,7 @@ impl AuthResource for AuthApi {
         let api = self.api_client();
 
         let res = api.proto_register(ReqProtoRegister {
-            agent_version: PlayitAgentVersion {
-                version: AgentVersion {
-                    platform: get_platform(),
-                    version: env!("CARGO_PKG_VERSION").to_string(),
-                },
-                official: true,
-                details_website: None,
-            },
+            agent_version: get_version(),
             client_addr: pong.client_addr,
             tunnel_addr: pong.tunnel_addr,
         }).await.with_error(|error| tracing::error!(?error, "failed to sign and register"))?;

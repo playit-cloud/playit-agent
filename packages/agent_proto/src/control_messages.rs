@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -373,7 +373,7 @@ impl MessageEncoding for AgentRegistered {
 #[cfg(test)]
 mod test {
     use std::fmt::Debug;
-    use std::net::Ipv4Addr;
+    use std::net::{IpAddr, Ipv4Addr};
 
     use rand::{Rng, RngCore, thread_rng};
 
