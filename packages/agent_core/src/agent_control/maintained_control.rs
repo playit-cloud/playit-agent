@@ -1,12 +1,14 @@
+use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use playit_agent_proto::control_feed::{ControlFeed, NewClient};
-use playit_agent_proto::control_messages::ControlResponse;
+use playit_agent_proto::control_messages::{ControlResponse, ExperimentResultEntry, ExperimentResults, MAX_EXPERIMENT_ENTRIES};
 
 use crate::agent_control::established_control::EstablishedControl;
 use crate::agent_control::udp_channel::UdpChannel;
+use crate::api::api::AgentRoutingTarget;
 use crate::utils::error_helper::ErrorHelper;
 use crate::utils::now_milli;
 
@@ -24,13 +26,13 @@ pub struct MaintainedControl<I: PacketIO, A: AuthResource> {
     last_pong: u64,
     last_udp_auth: u64,
     last_control_targets: Vec<SocketAddr>,
+    experiment_results: HashMap<u64, ExperimentResultEntry>,
 }
 
 impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
-    pub async fn setup(io: I, auth: A, udp: Option<UdpChannel<I>>) -> Result<Self, SetupError> {
-        let addresses = auth.get_control_addresses().await?;
+    pub async fn setup(io: I, auth: A, addresses: Vec<SocketAddr>, udp: Option<UdpChannel<I>>) -> Result<Self, SetupError> {
         let setup = AddressSelector::new(addresses.clone(), io).connect_to_first().await?;
-        let control_channel = setup.auth_into_established(auth).await?;
+        let control_channel: EstablishedControl<A, I> = setup.auth_into_established(auth).await?;
 
         Ok(MaintainedControl {
             control: control_channel,
@@ -40,14 +42,15 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             last_pong: 0,
             last_udp_auth: 0,
             last_control_targets: addresses,
+            experiment_results: HashMap::new(),
         })
     }
 
-    pub async fn reload_control_addr<E: Into<SetupError>, C: Future<Output = Result<I, E>>>(&mut self, create_io: C) -> Result<bool, SetupError> {
-        let addresses = self.control.auth.get_control_addresses().await?;
+    pub async fn reload_control_addr<E: Into<SetupError>, C: Future<Output = Result<I, E>>>(&mut self, create_io: C) -> Result<Option<AgentRoutingTarget>, SetupError> {
+        let (target, addresses) = self.control.auth.get_control_addresses().await?;
 
         if self.last_control_targets == addresses {
-            return Ok(false);
+            return Ok(None);
         }
 
         let new_io = match create_io.await {
@@ -59,7 +62,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         let updated = self.replace_connection(connected, false).await?;
 
         self.last_control_targets = addresses;
-        Ok(updated)
+        Ok(updated.then_some(target))
     }
 
     pub async fn replace_connection(&mut self, mut connected: ConnectedControl<I>, force: bool) -> Result<bool, SetupError> {
@@ -85,6 +88,10 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         self.udp.clone()
     }
 
+    pub fn queue_ping_experiment_entry(&mut self, entry: ExperimentResultEntry) {
+        self.experiment_results.insert(entry.id, entry);
+    }
+
     pub async fn update(&mut self) -> Option<NewClient> {
         if self.control.is_expired() {
             if let Err(error) = self.control.authenticate().await {
@@ -100,6 +107,18 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
 
             if let Err(error) = self.control.send_ping(200, now).await {
                 tracing::error!(?error, "failed to send ping");
+            }
+
+            if !self.experiment_results.is_empty() {
+                self.control.send_experiment_results(
+                    now,
+                    ExperimentResults {
+                        results: self.experiment_results.drain()
+                            .map(|(_, value)| value)
+                            .take(MAX_EXPERIMENT_ENTRIES)
+                            .collect(),
+                    }
+                ).await;
             }
         }
 

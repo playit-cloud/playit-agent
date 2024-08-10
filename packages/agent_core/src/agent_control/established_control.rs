@@ -1,5 +1,5 @@
 use playit_agent_proto::control_feed::ControlFeed;
-use playit_agent_proto::control_messages::{AgentRegistered, ControlRequest, ControlResponse, Ping, Pong};
+use playit_agent_proto::control_messages::{AgentRegistered, ControlRequest, ControlResponse, ExperimentResults, Ping, Pong};
 use playit_agent_proto::rpc::ControlRpcMessage;
 
 use crate::utils::now_milli;
@@ -37,6 +37,13 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
         self.send(ControlRpcMessage {
             request_id,
             content: ControlRequest::Ping(Ping { now, current_ping: self.current_ping, session_id: Some(self.registered.id.clone()) }),
+        }).await
+    }
+
+    pub async fn send_experiment_results(&mut self, request_id: u64, results: ExperimentResults) -> Result<(), ControlError> {
+        self.send(ControlRpcMessage {
+            request_id,
+            content: ControlRequest::ExperimentResults(results),
         }).await
     }
 

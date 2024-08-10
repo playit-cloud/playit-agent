@@ -23,7 +23,7 @@ chrono = { workspace = true }
 futures-util = { workspace = true }
 message-encoding = { workspace = true }
 
-playit-agent-proto = { path = "../agent_proto", version = "1.0.0" }
+playit-agent-proto = { path = "../agent_proto", version = "1.1.0" }
 
 reqwest = { version = "0.12", features = ["json", "native-tls-vendored"] }
 

@@ -184,6 +184,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             let secret_key = secret.get().await?;
             let api = PlayitApi::create(API_BASE.to_string(), Some(secret_key.clone()));
             let tunnels = api.agents_rundata().await?;
+
             let mut tunnel_lookup = HashMap::new();
             let mut tunnel_found = HashSet::new();
 

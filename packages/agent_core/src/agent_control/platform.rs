@@ -1,7 +1,7 @@
 use crate::api::api::Platform;
 
 pub fn get_platform() -> Platform {
-    #[cfg(target_os = "window")]
+    #[cfg(target_os = "windows")]
     return Platform::Windows;
 
     #[cfg(target_os = "linux")]

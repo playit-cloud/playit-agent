@@ -102,6 +102,18 @@ impl<C: std::fmt::Debug> std::fmt::Display for ApiErrorNoFail<C> {
 impl<C: std::fmt::Debug> std::error::Error for ApiErrorNoFail<C> {
 }
 
+fn ok_or_default<'a, T, D>(deserializer: D) -> Result<T, D::Error>
+    where T: serde::Deserialize<'a> + Default,
+          D: serde::Deserializer<'a>
+{
+    match T::deserialize(deserializer) {
+        Ok(v) => Ok(v),
+        Err(_) => Ok(T::default())
+    }
+}
+
+
+
 pub trait PlayitHttpClient {
     type Error;
 
@@ -296,6 +308,7 @@ pub enum TunnelCreateError {
 	PortAllocNotFound,
 	InvalidIpHostname,
 	ManagedMissingAgentId,
+	InvalidPortCount,
 }
 
 impl std::fmt::Display for TunnelCreateError {
@@ -575,8 +588,69 @@ pub struct ReqAgentsRoutingGet {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct AgentRouting {
 	pub agent_id: uuid::Uuid,
+	#[serde(deserialize_with = "ok_or_default")]
+	pub routing_target: Option<AgentRoutingTarget>,
 	pub targets4: Vec<std::net::Ipv4Addr>,
 	pub targets6: Vec<std::net::Ipv6Addr>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(tag = "type", content = "details")]
+pub enum AgentRoutingTarget {
+	#[serde(rename = "Automatic")]
+	Automatic,
+	#[serde(rename = "Pop")]
+	Pop(PlayitPop),
+	#[serde(rename = "Region")]
+	Region(PlayitRegion),
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum PlayitPop {
+	Any,
+	#[serde(rename = "USLosAngeles")]
+	UsLosAngeles,
+	#[serde(rename = "USSeattle")]
+	UsSeattle,
+	#[serde(rename = "USDallas")]
+	UsDallas,
+	#[serde(rename = "USMiami")]
+	UsMiami,
+	#[serde(rename = "USChicago")]
+	UsChicago,
+	#[serde(rename = "USNewJersey")]
+	UsNewJersey,
+	CanadaToronto,
+	Mexico,
+	BrazilSaoPaulo,
+	Spain,
+	London,
+	Germany,
+	Poland,
+	Sweden,
+	IndiaDelhi,
+	IndiaMumbai,
+	IndiaBangalore,
+	Singapore,
+	Tokyo,
+	Sydney,
+	SantiagoChile,
+	Israel,
+	Romania,
+	#[serde(rename = "USNewYork")]
+	UsNewYork,
+	#[serde(rename = "USDenver")]
+	UsDenver,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum PlayitRegion {
+	GlobalAnycast,
+	NorthAmerica,
+	Europe,
+	Asia,
+	India,
+	SouthAmerica,
 }
 
 
@@ -607,6 +681,7 @@ pub struct AgentRunData {
 	pub account_status: AgentAccountStatus,
 	pub tunnels: Vec<AgentTunnel>,
 	pub pending: Vec<AgentPendingTunnel>,
+	pub ping_experiments: Vec<PingExperimentRequest>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
@@ -665,6 +740,22 @@ pub struct AgentPendingTunnel {
 	pub port_count: u16,
 	pub tunnel_type: Option<String>,
 	pub is_disabled: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PingExperimentRequest {
+	pub id: u64,
+	pub taret_ip: std::net::IpAddr,
+	pub target_port: u16,
+	pub alt_recv_ip: Option<std::net::IpAddr>,
+	pub frequency_ms: u64,
+	pub run_condition: Option<PingExperimentCondition>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PingExperimentCondition {
+	#[serde(deserialize_with = "ok_or_default")]
+	pub routing_target: Option<AgentRoutingTarget>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]

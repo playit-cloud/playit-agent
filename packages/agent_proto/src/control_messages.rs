@@ -8,6 +8,8 @@ use message_encoding::MessageEncoding;
 use crate::{AgentSessionId, PortRange};
 use crate::hmac::HmacSha256;
 
+pub const MAX_EXPERIMENT_ENTRIES: usize = 64;
+
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub enum ControlRequest {
     Ping(Ping),
@@ -15,6 +17,45 @@ pub enum ControlRequest {
     AgentKeepAlive(AgentSessionId),
     SetupUdpChannel(AgentSessionId),
     AgentCheckPortMapping(AgentCheckPortMapping),
+    ExperimentResults(ExperimentResults),
+}
+
+#[repr(u32)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub enum ControlRequestId {
+    _PingV1 = 1,
+    AgentRegisterV1,
+    AgentKeepAliveV1,
+    SetupUdpChannelV1,
+    AgentCheckPortMappingV1,
+    PingV2,
+    ExperimentResultsV1,
+    END,
+}
+
+impl ControlRequestId {
+    pub fn from_num(num: u32) -> Option<Self> {
+        if (Self::END as u32) <= num || num == 0 {
+            return None;
+        }
+        Some(unsafe { std::mem::transmute(num) })
+    }
+}
+
+impl MessageEncoding for ControlRequestId {
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        (*self as u32).write_to(out)
+    }
+
+    fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
+        let v = u32::read_from(read)?;
+        ControlRequestId::from_num(v)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid request id"))
+    }
+
+    fn static_size() -> Option<usize> {
+        Some(4)
+    }
 }
 
 impl MessageEncoding for ControlRequest {
@@ -23,23 +64,27 @@ impl MessageEncoding for ControlRequest {
 
         match self {
             ControlRequest::Ping(data) => {
-                sum += 6u32.write_to(out)?;
+                sum += ControlRequestId::PingV2.write_to(out)?;
                 sum += data.write_to(out)?;
             }
             ControlRequest::AgentRegister(data) => {
-                sum += 2u32.write_to(out)?;
+                sum += ControlRequestId::AgentRegisterV1.write_to(out)?;
                 sum += data.write_to(out)?;
             }
             ControlRequest::AgentKeepAlive(data) => {
-                sum += 3u32.write_to(out)?;
+                sum += ControlRequestId::AgentKeepAliveV1.write_to(out)?;
                 sum += data.write_to(out)?;
             }
             ControlRequest::SetupUdpChannel(data) => {
-                sum += 4u32.write_to(out)?;
+                sum += ControlRequestId::SetupUdpChannelV1.write_to(out)?;
                 sum += data.write_to(out)?;
             }
             ControlRequest::AgentCheckPortMapping(data) => {
-                sum += 5u32.write_to(out)?;
+                sum += ControlRequestId::AgentCheckPortMappingV1.write_to(out)?;
+                sum += data.write_to(out)?;
+            }
+            ControlRequest::ExperimentResults(data) => {
+                sum += ControlRequestId::ExperimentResultsV1.write_to(out)?;
                 sum += data.write_to(out)?;
             }
         }
@@ -48,13 +93,17 @@ impl MessageEncoding for ControlRequest {
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
-        match read.read_u32::<BigEndian>()? {
-            1 => Ok(ControlRequest::Ping(Ping::read_from(read)?)),
-            2 => Ok(ControlRequest::AgentRegister(AgentRegister::read_from(read)?)),
-            3 => Ok(ControlRequest::AgentKeepAlive(AgentSessionId::read_from(read)?)),
-            4 => Ok(ControlRequest::SetupUdpChannel(AgentSessionId::read_from(read)?)),
-            5 => Ok(ControlRequest::AgentCheckPortMapping(AgentCheckPortMapping::read_from(read)?)),
-            _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "invalid ControlRequest id")),
+        let id = ControlRequestId::read_from(read)?;
+
+        match id {
+            ControlRequestId::PingV2 => Ok(ControlRequest::Ping(Ping::read_from(read)?)),
+            ControlRequestId::AgentRegisterV1 => Ok(ControlRequest::AgentRegister(AgentRegister::read_from(read)?)),
+            ControlRequestId::AgentKeepAliveV1 => Ok(ControlRequest::AgentKeepAlive(AgentSessionId::read_from(read)?)),
+            ControlRequestId::SetupUdpChannelV1 => Ok(ControlRequest::SetupUdpChannel(AgentSessionId::read_from(read)?)),
+            ControlRequestId::AgentCheckPortMappingV1 => Ok(ControlRequest::AgentCheckPortMapping(AgentCheckPortMapping::read_from(read)?)),
+            ControlRequestId::ExperimentResultsV1 => Ok(ControlRequest::ExperimentResults(ExperimentResults::read_from(read)?)),
+            
+            _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "old control request no longer supported")),
         }
     }
 }
@@ -172,6 +221,63 @@ impl MessageEncoding for AgentRegister {
         }
 
         Ok(res)
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct ExperimentResults {
+    pub results: Vec<ExperimentResultEntry>,
+}
+
+impl MessageEncoding for ExperimentResults {
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut bytes = (self.results.len() as u64).write_to(out)?;
+        for item in &self.results {
+            bytes += item.write_to(out)?;
+        }
+        Ok(bytes)
+    }
+
+    fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
+        let count = u64::read_from(read)? as usize;
+        if MAX_EXPERIMENT_ENTRIES < count {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "too many entires in ExperimentResults::results"));
+        }
+
+        let mut results = Vec::with_capacity(count);
+        for _ in 0..count {
+            results.push(MessageEncoding::read_from(read)?);
+        }
+
+        Ok(ExperimentResults { results })
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Clone)]
+pub struct ExperimentResultEntry {
+    pub id: u64,
+    pub latency_ms: u32,
+    pub dc_id: u32,
+}
+
+impl MessageEncoding for ExperimentResultEntry {
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        self.id.write_to(out)?;
+        self.latency_ms.write_to(out)?;
+        self.dc_id.write_to(out)?;
+        Ok(16)
+    }
+
+    fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
+        Ok(ExperimentResultEntry {
+            id: MessageEncoding::read_from(read)?,
+            latency_ms: MessageEncoding::read_from(read)?,
+            dc_id: MessageEncoding::read_from(read)?,
+        })
+    }
+
+    fn static_size() -> Option<usize> {
+        Some(16)
     }
 }
 
@@ -431,7 +537,7 @@ mod test {
     }
 
     pub fn rng_control_request<R: RngCore>(rng: &mut R) -> ControlRequest {
-        match rng.next_u32() % 5 {
+        match rng.next_u32() % 6 {
             0 => ControlRequest::Ping(Ping {
                 now: rng.next_u64(),
                 current_ping: if rng.next_u32() % 2 == 0 {
@@ -498,7 +604,21 @@ mod test {
                     },
                 },
             }),
-            _ => unreachable!(),
+            5 => ControlRequest::ExperimentResults(ExperimentResults {
+                results: {
+                    let count = rng.next_u64() as usize % MAX_EXPERIMENT_ENTRIES;
+                    let mut results = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        results.push(ExperimentResultEntry {
+                            id: rng.next_u64(),
+                            latency_ms: rng.next_u32(),
+                            dc_id: rng.next_u32(),
+                        });
+                    }
+                    results
+                },
+            }),
+            _ => panic!("mod too high"),
         }
     }
 
@@ -585,15 +705,5 @@ mod test {
             },
             rng.next_u32() as u16,
         )
-    }
-
-    #[test]
-    fn parse_msg() {
-        let hex_str = "00000000000000010000000400000000000005860000000000000001000000000029c2b9";
-        let bytes = hex::decode(hex_str).unwrap();
-        let mut reader = &bytes[..];
-        let msg: ControlRequest = ControlRequest::read_from(&mut reader).unwrap();
-
-        println!("{:?}", msg);
     }
 }

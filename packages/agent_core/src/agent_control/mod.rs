@@ -1,12 +1,11 @@
 use std::{future::Future, net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6}, sync::atomic::AtomicUsize, task::Poll};
 
-use platform::get_platform;
 use playit_agent_proto::control_messages::Pong;
 use errors::SetupError;
 use tokio::{io::ReadBuf, net::UdpSocket};
-use version::{get_version, register_version};
+use version::get_version;
 
-use crate::{api::{api::{AgentVersion, PlayitAgentVersion, ReqAgentsRoutingGet, ReqProtoRegister, SignedAgentKey}, PlayitApi}, utils::error_helper::ErrorHelper};
+use crate::{api::{api::{AgentRoutingTarget, ReqAgentsRoutingGet, ReqProtoRegister, SignedAgentKey}, PlayitApi}, utils::error_helper::ErrorHelper};
 
 pub mod errors;
 
@@ -42,6 +41,10 @@ impl DualStackUdpSocket {
             ip6,
             next: AtomicUsize::new(0),
         })
+    }
+
+    pub fn has_ip6(&self) -> bool {
+        self.ip6.is_some()
     }
 }
 
@@ -127,7 +130,7 @@ impl PacketIO for UdpSocket {
 pub trait AuthResource: Clone {
     fn authenticate(&self, pong: &Pong) -> impl Future<Output = Result<SignedAgentKey, SetupError>> + Sync;
 
-    fn get_control_addresses(&self) -> impl Future<Output = Result<Vec<SocketAddr>, SetupError>> + Sync;
+    fn get_control_addresses(&self) -> impl Future<Output = Result<(AgentRoutingTarget, Vec<SocketAddr>), SetupError>> + Sync;
 }
 
 #[derive(Clone)]
@@ -155,7 +158,7 @@ impl AuthResource for AuthApi {
         Ok(res)
     }
 
-    async fn get_control_addresses(&self) -> Result<Vec<SocketAddr>, SetupError> {
+    async fn get_control_addresses(&self) -> Result<(AgentRoutingTarget, Vec<SocketAddr>), SetupError> {
         let api = self.api_client();
         let routing = api.agents_routing_get(ReqAgentsRoutingGet { agent_id: None }).await?;
 
@@ -167,6 +170,6 @@ impl AuthResource for AuthApi {
             addresses.push(SocketAddr::new(ip4.into(), 5525));
         }
 
-        Ok(addresses)
+        Ok((routing.routing_target.unwrap_or(AgentRoutingTarget::Automatic), addresses))
     }
 }
