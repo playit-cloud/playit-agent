@@ -1,0 +1,8 @@
+target
+Dockerfile
+.dockerignore
+.git
+.gitignore
+build-scripts
+linux
+./*.sh

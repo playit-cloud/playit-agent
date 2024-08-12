@@ -225,10 +225,12 @@ impl PlayitSecret {
             }
         }
 
+        let allow_path_read = secret.is_none();
+
         PlayitSecret {
             secret: RwLock::new(secret),
             path,
-            allow_path_read: true,
+            allow_path_read,
             wait_for_path: matches.get_flag("secret_wait"),
         }
     }
