@@ -51,6 +51,10 @@ impl MatchIp {
         else if octs[0] == 23 && octs[1] == 133 && octs[2] == 216 {
             6u16
         }
+        /* 198.22.204.0/24 (6) */
+        else if octs[0] == 198 && octs[1] == 22 && octs[2] == 204 {
+            6u16
+        }
         /* global IP */
         else {
             0

@@ -136,6 +136,8 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
             let mut buffer = vec![0u8; 2048];
             let mut had_success = false;
 
+            let mut invalid_count = 0;
+
             while udp_run.load(Ordering::SeqCst) {
                 let rx = match tokio::time::timeout(Duration::from_secs(1), udp.receive_from(&mut buffer)).await {
                     Ok(Ok(v)) => v,
@@ -157,7 +159,18 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
                         udp_clients.forward_packet(&flow, &buffer[..bytes]).await.unwrap();
                     }
                     UdpTunnelRx::ConfirmedConnection => {}
+                    UdpTunnelRx::InvalidEstablishToken => {
+                        invalid_count += 1;
+
+                        if 5 <= invalid_count && invalid_count < 10 {
+                            tracing::error!("have repeat invalid UDP establish tokens");
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        continue;
+                    }
                 }
+
+                invalid_count = 0;
             }
         });
 

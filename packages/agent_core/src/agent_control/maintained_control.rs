@@ -105,7 +105,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
 
         if let Some(udp) = &self.udp {
             if udp.requires_auth() {
-                if 5_000 < now - self.last_udp_auth {
+                if 13_000 < now - self.last_udp_auth {
                     self.last_udp_auth = now;
     
                     if let Err(error) = self.control.send_setup_udp_channel(9000).await {

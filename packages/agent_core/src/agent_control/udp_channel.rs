@@ -3,6 +3,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use byteorder::{BigEndian, ByteOrder};
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 
@@ -75,6 +76,7 @@ impl<I: PacketIO> UdpChannel<I> {
             return false;
         }
 
+        /* send within the last 5 seconds */
         let now = now_sec();
         5 < now - last_send
     }
@@ -151,8 +153,8 @@ impl<I: PacketIO> UdpChannel<I> {
     }
 
     pub async fn receive_from(&self, buffer: &mut [u8]) -> std::io::Result<UdpTunnelRx> {
-        let details = self.get_details().await?;
         let (bytes, remote) = self.inner.packet_io.recv_from(buffer).await?;
+        let details = self.get_details().await?;
 
         if details.tunnel_addr != remote {
             let lock = self.inner.details.read().await;
@@ -185,10 +187,8 @@ impl<I: PacketIO> UdpChannel<I> {
                 let actual = hex::encode(&buffer[..bytes]);
                 let expected = hex::encode(&details.token[..]);
 
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!("unexpected UDP establish packet, actual: {}, expected: {}", actual, expected)
-                ));
+                tracing::error!(%actual, %expected, "unexpected UDP establish packet");
+                return Ok(UdpTunnelRx::InvalidEstablishToken);
             },
             _ => return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -206,4 +206,5 @@ impl<I: PacketIO> UdpChannel<I> {
 pub enum UdpTunnelRx {
     ReceivedPacket { bytes: usize, flow: UdpFlow },
     ConfirmedConnection,
+    InvalidEstablishToken,
 }
