@@ -36,3 +36,8 @@ Please only use the playit program if you downloaded if from an offical source o
 Requires Rust: https://rustup.rs
 Run using `cargo run --release`
 
+## Docker
+
+```
+docker run --rm --net=host -e SECRET_KEY=<secret key> ghcr.io/playit-cloud/playit-agent:latest
+```
