@@ -5,7 +5,7 @@ Wants=network-pre.target
 After=network-pre.target NetworkManager.service systemd-resolved.service
 
 [Service]
-ExecStart=/opt/playit/playit --secret_wait --secret_path /etc/playit/playit.toml -l /var/log/playit/playit.log
+ExecStart=/opt/playit/playit --secret_wait --secret_path /etc/playit/playit.toml -l /var/log/playit/playit.log start
 Restart=on-failure
 
 [Install]

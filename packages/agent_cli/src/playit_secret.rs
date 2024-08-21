@@ -64,11 +64,17 @@ impl PlayitSecret {
     pub async fn ensure_valid(&mut self, ui: &mut UI) -> Result<&mut Self, CliError> {
         let api = match self.create_api().await {
             Ok(v) => v,
-            Err(_) => {
+            Err(error) => {
+                if !self.allow_path_read {
+                    tracing::warn!("invalid secret, not reading secret from path");
+                    return Err(error);
+                }
+
                 {
                     let mut secret = self.secret.write().await;
                     let _ = secret.take();
                 }
+
                 return Ok(self);
             }
         };
@@ -92,7 +98,7 @@ impl PlayitSecret {
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
                 Err(ApiErrorNoFail::ApiError(ApiResponseError::Auth(AuthError::InvalidAgentKey))) => {
-                    if !self.path.is_some() {
+                    if !self.path.is_some() || !self.allow_path_read {
                         return Err(CliError::InvalidSecret);
                     }
 

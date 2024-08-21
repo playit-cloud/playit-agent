@@ -89,6 +89,9 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             tokio::time::sleep(Duration::from_secs(1)).await;
             autorun(&mut ui, secret).await?;
         }
+        Some(("start", _)) => {
+            autorun(&mut ui, secret).await?;
+        }
         Some(("version", _)) => println!("{}", env!("CARGO_PKG_VERSION")),
         #[cfg(target_os = "linux")]
         Some(("setup", _)) => {
@@ -179,7 +182,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             _ => return Err(CliError::NotImplemented.into())
         }
         Some(("run", m)) => {
-            let _ = tracing_subscriber::fmt().try_init();
+            tracing::error!("run is depreciated and will be removed in a future version of the CLI");
 
             let secret_key = secret.get().await?;
             let api = PlayitApi::create(API_BASE.to_string(), Some(secret_key.clone()));
@@ -588,6 +591,10 @@ fn cli() -> Command {
                 )
         )
         .subcommand(
+            Command::new("start")
+                .about("Start the playit agent")
+        )
+        .subcommand(
             Command::new("tunnels")
                 .subcommand_required(true)
                 .about("Manage tunnels")
@@ -608,7 +615,7 @@ fn cli() -> Command {
         )
         .subcommand(
             Command::new("run")
-                .about("Run the playit agent")
+                .about("(depreciated will be removed) Run the playit agent with manual port mappings")
                 .arg(arg!([MAPPING_OVERRIDE] "(format \"<tunnel-id>=[<local-ip>:]<local-port> [, ..]\")").required(false).value_delimiter(','))
         )
         .subcommand(

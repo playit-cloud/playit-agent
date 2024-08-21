@@ -1,3 +1,4 @@
+use std::fmt::Debug;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -289,10 +290,19 @@ impl MessageEncoding for AgentPortMappingFound {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Eq, PartialEq, Clone)]
 pub struct UdpChannelDetails {
     pub tunnel_addr: SocketAddr,
     pub token: Arc<Vec<u8>>,
+}
+
+impl Debug for UdpChannelDetails {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UdpChannelDetails")
+            .field("tunnel_addr", &self.tunnel_addr)
+            .field("token", &hex::encode(&self.token[..]))
+            .finish()
+    }
 }
 
 impl MessageEncoding for UdpChannelDetails {

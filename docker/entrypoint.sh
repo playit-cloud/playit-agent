@@ -10,4 +10,4 @@ if [ -z "${SECRET_KEY}" ]; then
   fi
 fi
 
-playit --secret "${SECRET_KEY}" run
+playit -s --secret "${SECRET_KEY}" start
