@@ -37,16 +37,26 @@ pub mod signal_handle;
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, CliError> {
-    register_version(PlayitAgentVersion {
-        version: AgentVersion {
-            platform: get_platform(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
-        },
-        official: true,
-        details_website: None,
-    });
-
     let matches = cli().get_matches();
+
+    /* register docker */
+    {
+        let platform = if matches.get_flag("platform_docker") {
+            Platform::Docker
+        } else {
+            get_platform()
+        };
+
+        register_version(PlayitAgentVersion {
+            version: AgentVersion {
+                platform,
+                version: env!("CARGO_PKG_VERSION").to_string(),
+            },
+            official: true,
+            details_website: None,
+        });
+    }
+
     let mut secret = PlayitSecret::from_args(&matches).await;
     let _ = secret.with_default_path().await;
 
@@ -556,6 +566,7 @@ fn cli() -> Command {
         .arg(arg!(-w --secret_wait "wait for secret_path file to read secret").required(false))
         .arg(arg!(-s --stdout "prints logs to stdout").required(false))
         .arg(arg!(-l --log_path <PATH> "path to write logs to").required(false))
+        .arg(arg!(--platform_docker "overrides platform in version to be docker").required(false))
         .subcommand_required(false)
         .subcommand(Command::new("version"))
         .subcommand(

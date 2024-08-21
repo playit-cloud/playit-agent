@@ -102,6 +102,8 @@ impl<C: std::fmt::Debug> std::fmt::Display for ApiErrorNoFail<C> {
 impl<C: std::fmt::Debug> std::error::Error for ApiErrorNoFail<C> {
 }
 
+
+
 pub trait PlayitHttpClient {
     type Error;
 
@@ -296,6 +298,7 @@ pub enum TunnelCreateError {
 	PortAllocNotFound,
 	InvalidIpHostname,
 	ManagedMissingAgentId,
+	InvalidPortCount,
 }
 
 impl std::fmt::Display for TunnelCreateError {
@@ -502,6 +505,8 @@ pub enum Platform {
 	Android,
 	#[serde(rename = "ios")]
 	Ios,
+	#[serde(rename = "docker")]
+	Docker,
 	#[serde(rename = "minecraft-plugin")]
 	MinecraftPlugin,
 	#[serde(rename = "unknown")]
