@@ -39,5 +39,8 @@ Run using `cargo run --release`
 ## Docker
 
 ```
-docker run --rm --net=host -e SECRET_KEY=<secret key> ghcr.io/playit-cloud/playit-agent:latest
+docker run --rm -it --net=host -e SECRET_KEY=<secret key> ghcr.io/playit-cloud/playit-agent:latest
 ```
+
+> [!NOTE]
+> Secret key can be generated [here](https://playit.gg/account/agents/new-docker).
