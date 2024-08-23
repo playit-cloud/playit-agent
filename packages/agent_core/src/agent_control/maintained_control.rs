@@ -23,6 +23,7 @@ pub struct MaintainedControl<I: PacketIO, A: AuthResource> {
     last_ping: u64,
     last_pong: u64,
     last_udp_auth: u64,
+    last_udp_auth_resend: u64,
     last_control_targets: Vec<SocketAddr>,
 }
 
@@ -39,6 +40,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             last_ping: 0,
             last_pong: 0,
             last_udp_auth: 0,
+            last_udp_auth_resend: 0,
             last_control_targets: addresses,
         })
     }
@@ -105,7 +107,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
 
         if let Some(udp) = &self.udp {
             if udp.requires_auth() {
-                if 13_000 < now - self.last_udp_auth {
+                if 3_000 < now - self.last_udp_auth {
                     self.last_udp_auth = now;
     
                     if let Err(error) = self.control.send_setup_udp_channel(9000).await {
@@ -113,8 +115,8 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                     }
                 }
             } else if udp.requires_resend() {
-                if 1_000 < now - self.last_udp_auth {
-                    self.last_udp_auth = now;
+                if 1_000 < now - self.last_udp_auth_resend {
+                    self.last_udp_auth_resend = now;
     
                     if let Err(error) = udp.resend_token().await {
                         tracing::error!(?error, "failed to send udp auth request");

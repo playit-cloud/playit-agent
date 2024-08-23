@@ -65,6 +65,8 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
             let mut last_control_update = now_milli();
 
             while tunnel_run.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+
                 /* refresh control address every half minute */
                 {
                     let now = now_milli();
@@ -139,6 +141,8 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
             let mut invalid_count = 0;
 
             while udp_run.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+
                 let rx = match tokio::time::timeout(Duration::from_secs(1), udp.receive_from(&mut buffer)).await {
                     Ok(Ok(v)) => v,
                     Ok(Err(error)) => {

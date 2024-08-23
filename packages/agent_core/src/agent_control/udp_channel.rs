@@ -1,14 +1,11 @@
 use std::collections::VecDeque;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use byteorder::{BigEndian, ByteOrder};
-use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 
 use playit_agent_proto::control_messages::UdpChannelDetails;
-
 
 use crate::agent_control::udp_proto::{UDP_CHANNEL_ESTABLISH_ID, UdpFlow};
 use crate::utils::now_sec;
@@ -63,22 +60,15 @@ impl<I: PacketIO> UdpChannel<I> {
 
     pub fn requires_resend(&self) -> bool {
         let last_confirm = self.inner.last_confirm.load(Ordering::SeqCst);
-        /* send token every 10 seconds */
-        10 < now_sec() - last_confirm
+        /* if last confirm is 10s old, send keep alive */
+        last_confirm + 10 < now_sec()
     }
 
     pub fn requires_auth(&self) -> bool {
         let last_confirm = self.inner.last_confirm.load(Ordering::SeqCst);
         let last_send = self.inner.last_send.load(Ordering::SeqCst);
-
-        /* send is confirmed */
-        if last_send < last_confirm {
-            return false;
-        }
-
-        /* send within the last 5 seconds */
-        let now = now_sec();
-        5 < now - last_send
+        /* timeout of 8s for receiving confirm */
+        last_confirm + 8 < last_send
     }
 
     pub async fn set_udp_tunnel(&self, details: UdpChannelDetails) -> std::io::Result<()> {
