@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet}, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
 use ping_tool::PlayitPingTool;
-use playit_api_client::{api::{ApiErrorNoFail, PingExperimentDetails, PingExperimentResult, PingSample, PingTarget, ReqPingSubmit}, http_client::{HttpClient, HttpClientError}, PlayitApi};
+use playit_api_client::{api::{ApiErrorNoFail, ApiResponseError, PingExperimentDetails, PingExperimentResult, PingSample, PingTarget, ReqPingSubmit}, http_client::{HttpClient, HttpClientError}, PlayitApi};
 use tokio::sync::Mutex;
 
 pub mod ping_tool;
@@ -25,7 +25,7 @@ impl Drop for PingMonitor {
 }
 
 impl PingMonitor {
-    pub async fn new(secret: Option<String>) -> Result<Self, std::io::Error> {
+    pub async fn new(api_client: PlayitApi) -> Result<Self, std::io::Error> {
         let shared = Arc::new(Shared {
             results: Mutex::new(Vec::new()),
             alive: AtomicBool::new(true),
@@ -39,11 +39,7 @@ impl PingMonitor {
         }.start());
 
         Ok(PingMonitor {
-            api_client: PlayitApi::new(HttpClient::new(
-                // "https://api.playit.gg".to_string(),
-                "http://localhost:8080".to_string(),
-                secret,
-            )),
+            api_client,
             tool,
             senders: HashMap::new(),
             shared,
@@ -58,36 +54,19 @@ impl PingMonitor {
             };
 
             if to_send.len() != 0 {
-                tracing::info!("submit {} ping results", to_send.len());
-
-                to_send.sort_by(cmp_result);
-
-                /* try to group entries */
-                {
-                    let mut write = 0;
-                    let mut read = 1;
-
-                    while read < to_send.len() {
-                        if cmp_result(&to_send[write], &to_send[read]) == std::cmp::Ordering::Equal {
-                            let sample = to_send[read].samples.pop().unwrap();
-                            to_send[write].samples.push(sample);
-
-                            read += 1;
-                        }
-                        else {
-                            write += 1;
-                            let _ = to_send.drain(write..read).count();
-
-                            read = write + 1;
-                        }
-                    }
-                }
+                let og_send_len = to_send.len();
+                combine_experiments(&mut to_send);
+                tracing::info!("submit {} ping results, {} entries", og_send_len, to_send.len());
 
                 for chunk in to_send.chunks(64) {
                     if let Err(error) = self.api_client.ping_submit(ReqPingSubmit {
                         results: chunk.to_vec(),
                     }).await {
                         tracing::error!(?error, "failed to submit ping results");
+                        if let ApiErrorNoFail::ApiError(ApiResponseError::Auth(_)) = error {
+                            tracing::warn!("auth failed, removing auth from API client");
+                            self.api_client.get_client().remove_auth().await;
+                        }
                     };
                 }
             }
@@ -161,6 +140,15 @@ impl PingReceiver {
             let sample_num = (pong.request_id & 0xF) as u16;
 
             let now = epoch_milli();
+            let latency = now.max(pong.content.request_now) - pong.content.request_now;
+
+            tracing::info!(
+                exp_id = experiment_id,
+                sample_count,
+                sample_num,
+                latency,
+                "got pong"
+            );
 
             results.push(PingExperimentResult {
                 id: experiment_id,
@@ -172,12 +160,39 @@ impl PingReceiver {
                     tunnel_server_id: pong.content.server_id,
                     dc_id: pong.content.data_center_id as u64,
                     server_ts: pong.content.server_now,
-                    latency: now.max(pong.content.request_now) - pong.content.request_now,
+                    latency,
                     count: sample_count,
                     num: sample_num,
                 }],
             });
         }
+    }
+}
+
+fn combine_experiments(results: &mut Vec<PingExperimentResult>) {
+    results.sort_by(cmp_result);
+
+    /* try to group entries */
+    {
+        let mut write = 0;
+        let mut read = 1;
+
+        while read < results.len() {
+            if cmp_result(&results[write], &results[read]) == std::cmp::Ordering::Equal {
+                let sample = results[read].samples.pop().unwrap();
+                results[write].samples.push(sample);
+
+                read += 1;
+            }
+            else {
+                write += 1;
+                let _ = results.drain(write..read).count();
+
+                read = write + 1;
+            }
+        }
+
+        results.truncate(write + 1);
     }
 }
 
@@ -224,7 +239,7 @@ impl PingSender {
 
         for i in 0..sample_count {
             for target in self.experiment.targets.iter() {
-                tracing::info!(?target, "send ping");
+                tracing::info!(exp_id = self.experiment.id, ?target, "send ping");
 
                 if let Err(error) = self.tool.send_ping(request_id + i, target).await {
                     tracing::error!(?error, "failed to send ping");
@@ -258,17 +273,41 @@ fn epoch_milli() -> u64 {
 mod test {
     use std::time::Duration;
 
-    use crate::PingMonitor;
+    use playit_api_client::{api::{PingExperimentResult, PingSample, PingTarget}, http_client::HttpClient, PlayitApi};
+
+    use crate::{combine_experiments, PingMonitor};
 
     #[tokio::test]
-    async fn test() {
+    async fn test_send_pings() {
         let _ = tracing_subscriber::fmt::try_init();
 
-        let mut monitor = PingMonitor::new(None).await.unwrap();
+        let mut monitor = PingMonitor::new(PlayitApi::new(HttpClient::new(
+            "https://api.playit.gg".to_string(),
+            None,
+        ))).await.unwrap();
 
         for _ in 0..10 {
             monitor.refresh().await.unwrap();
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
+    }
+
+    #[test]
+    fn test_combine() {
+        let target_1 = PingTarget { ip: "127.0.0.1".parse().unwrap(), port: 1234 };
+        let target_2 = PingTarget { ip: "127.0.0.1".parse().unwrap(), port: 1236 };
+        let sample = PingSample { tunnel_server_id: 1, dc_id: 2, server_ts: 3, latency: 4, count: 5, num: 6 };
+
+        let mut items = vec![
+            PingExperimentResult { id: 32, target: target_1.clone(), samples: vec![sample.clone()] },
+            PingExperimentResult { id: 32, target: target_1.clone(), samples: vec![sample.clone()] },
+            PingExperimentResult { id: 32, target: target_2.clone(), samples: vec![sample.clone()] },
+            PingExperimentResult { id: 32, target: target_1.clone(), samples: vec![sample.clone()] },
+        ];
+
+        combine_experiments(&mut items);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].samples.len(), 3);
+        assert_eq!(items[1].samples.len(), 1);
     }
 }

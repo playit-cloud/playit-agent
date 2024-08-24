@@ -1054,6 +1054,7 @@ dependencies = [
  "playit-agent-core",
  "playit-agent-proto",
  "playit-api-client",
+ "playit-ping-monitor",
  "rand",
  "serde",
  "serde_json",
@@ -1072,12 +1073,17 @@ dependencies = [
 name = "playit-ping-monitor"
 version = "0.1.0"
 dependencies = [
+ "dirs",
+ "hex",
  "message-encoding",
  "playit-agent-proto",
  "playit-api-client",
  "rand",
+ "serde",
  "tokio",
+ "toml 0.8.19",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
 ]
 

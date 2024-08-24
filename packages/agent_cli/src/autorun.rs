@@ -11,6 +11,8 @@ use playit_agent_core::{
     utils::now_milli,
 };
 use playit_api_client::api::*;
+use playit_ping_monitor::PingMonitor;
+use rand::random;
 
 use crate::{API_BASE, CliError, match_ip::MatchIp, playit_secret::PlayitSecret, ui::UI};
 
@@ -22,6 +24,18 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         .await?;
 
     let api = secret.create_api().await?;
+    let mut ping_monitor = PingMonitor::new(api.clone()).await.unwrap();
+
+    /* start ping monitor */
+    tokio::spawn(async move {
+        loop {
+            if let Err(error) = ping_monitor.refresh().await {
+                tracing::error!(?error, "error running ping monitor");
+            }
+            tokio::time::sleep(Duration::from_millis(3_000 + (random::<u64>() % 5_000))).await;
+        }
+    });
+
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let lookup = {
