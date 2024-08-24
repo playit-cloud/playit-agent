@@ -22,4 +22,8 @@ impl<T: MessageEncoding> MessageEncoding for ControlRpcMessage<T> {
             content: T::read_from(read)?,
         })
     }
+
+    fn static_size() -> Option<usize> {
+        Some(8 + T::static_size()?)
+    }
 }

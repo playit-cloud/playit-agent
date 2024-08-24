@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use clap::ArgMatches;
-use playit_agent_core::api::{
+use playit_api_client::{
     api::*,
     PlayitApi,
 };

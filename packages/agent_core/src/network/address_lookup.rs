@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 
-use crate::api::api::PortType;
+use playit_api_client::api::PortType;
 
 #[derive(Debug)]
 pub struct AddressValue<V> {

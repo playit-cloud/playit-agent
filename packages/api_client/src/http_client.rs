@@ -2,7 +2,7 @@ use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use crate::api::api::{ApiResult, PlayitHttpClient};
+use crate::api::{ApiResult, PlayitHttpClient};
 
 pub struct HttpClient {
     api_base: String,

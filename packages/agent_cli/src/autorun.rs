@@ -6,12 +6,11 @@ use std::{
 };
 
 use playit_agent_core::{
-    api::api::*,
     network::address_lookup::{AddressLookup, AddressValue},
     playit_agent::PlayitAgent,
     utils::now_milli,
 };
-use playit_agent_core::api::api::AgentType;
+use playit_api_client::api::*;
 
 use crate::{API_BASE, CliError, match_ip::MatchIp, playit_secret::PlayitSecret, ui::UI};
 

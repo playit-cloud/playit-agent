@@ -13,9 +13,8 @@ use rand::Rng;
 use uuid::Uuid;
 
 use autorun::autorun;
-use playit_agent_core::api::api::*;
-use playit_agent_core::api::http_client::HttpClientError;
-use playit_agent_core::api::PlayitApi;
+use playit_api_client::{api::*, PlayitApi};
+use playit_api_client::http_client::HttpClientError;
 use playit_agent_core::network::address_lookup::{AddressLookup, AddressValue};
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::playit_agent::PlayitAgent;

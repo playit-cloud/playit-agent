@@ -29,6 +29,7 @@ lazy_static = "1.5"
 
 playit-agent-core = { path = "../agent_core" }
 playit-agent-proto = { path = "../agent_proto" }
+playit-api-client = { path = "../api_client", version = "0.1.0" }
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"

@@ -7,7 +7,6 @@ pub struct IpResource {
     pub region: PlayitRegion,
 }
 
-
 impl IpResource {
     pub fn from_ip(ip: IpAddr) -> Self {
         let (region, ip_num) = PlayitRegion::from_ip(ip);
@@ -56,6 +55,7 @@ impl PlayitRegion {
             (209, 25, 142) => Some(PlayitRegion::Asia),
             (209, 25, 143) => Some(PlayitRegion::India),
             (23, 133, 216) => Some(PlayitRegion::SouthAmerica),
+            (198, 22, 204) => Some(PlayitRegion::SouthAmerica),
             (147, 185, 221) => Some(PlayitRegion::Global),
             _ => None,
         };

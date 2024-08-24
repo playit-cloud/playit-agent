@@ -1,5 +1,5 @@
-use crate::api::api::PlayitApiClient;
-use crate::api::http_client::HttpClient;
+use crate::api::PlayitApiClient;
+use crate::http_client::HttpClient;
 
 // mod api is auto generated
 pub mod api;
@@ -31,8 +31,8 @@ impl api::PortRange {
 
 #[cfg(test)]
 mod test {
-    use crate::api::api::{AgentType, ReqClaimSetup};
-    use crate::api::PlayitApi;
+    use crate::api::{AgentType, ReqClaimSetup};
+    use crate::PlayitApi;
 
     #[tokio::test]
     async fn test() {

@@ -1004,8 +1004,8 @@ dependencies = [
  "hex",
  "message-encoding",
  "playit-agent-proto",
+ "playit-api-client",
  "rand",
- "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -1029,6 +1029,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "playit-api-client"
+version = "0.1.0"
+dependencies = [
+ "byteorder",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "playit-cli"
 version = "0.15.21"
 dependencies = [
@@ -1039,6 +1053,7 @@ dependencies = [
  "lazy_static",
  "playit-agent-core",
  "playit-agent-proto",
+ "playit-api-client",
  "rand",
  "serde",
  "serde_json",
@@ -1051,6 +1066,19 @@ dependencies = [
  "urlencoding",
  "uuid",
  "winres",
+]
+
+[[package]]
+name = "playit-ping-monitor"
+version = "0.1.0"
+dependencies = [
+ "message-encoding",
+ "playit-agent-proto",
+ "playit-api-client",
+ "rand",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

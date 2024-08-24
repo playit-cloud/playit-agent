@@ -54,6 +54,12 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 	pub async fn agents_rundata(&self) -> Result<AgentRunData, ApiErrorNoFail<C::Error>> {
 		Self::unwrap_no_fail(self.client.call("/agents/rundata", ReqAgentsRundata {}).await)
 	}
+	pub async fn ping_submit(&self, req: ReqPingSubmit) -> Result<(), ApiErrorNoFail<C::Error>> {
+		Self::unwrap_no_fail(self.client.call("/ping/submit", req).await)
+	}
+	pub async fn ping_get(&self) -> Result<PingExperiments, ApiErrorNoFail<C::Error>> {
+		Self::unwrap_no_fail(self.client.call("/ping/get", ReqPingGet {}).await)
+	}
 	pub async fn tunnels_list_json(&self, req: ReqTunnelsList) -> Result<serde_json::Value, ApiErrorNoFail<C::Error>> {
 		Self::unwrap_no_fail(self.client.call("/tunnels/list", req).await)
 	}
@@ -670,6 +676,52 @@ pub struct AgentPendingTunnel {
 	pub port_count: u16,
 	pub tunnel_type: Option<String>,
 	pub is_disabled: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqPingSubmit {
+	pub results: Vec<PingExperimentResult>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PingExperimentResult {
+	pub id: u64,
+	pub target: PingTarget,
+	pub samples: Vec<PingSample>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PingTarget {
+	pub ip: std::net::IpAddr,
+	pub port: u16,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PingSample {
+	pub tunnel_server_id: u64,
+	pub dc_id: u64,
+	pub server_ts: u64,
+	pub latency: u64,
+	pub count: u16,
+	pub num: u16,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqPingGet {
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PingExperiments {
+	pub experiments: Vec<PingExperimentDetails>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PingExperimentDetails {
+	pub id: u64,
+	pub test_interval: u64,
+	pub ping_interval: u64,
+	pub samples: u64,
+	pub targets: std::borrow::Cow<'static,[PingTarget]>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]

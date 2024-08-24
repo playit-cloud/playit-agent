@@ -1,6 +1,6 @@
 use std::sync::OnceLock;
 
-use crate::api::api::{AgentVersion, PlayitAgentVersion};
+use playit_api_client::api::{AgentVersion, PlayitAgentVersion};
 
 use super::platform::get_platform;
 
