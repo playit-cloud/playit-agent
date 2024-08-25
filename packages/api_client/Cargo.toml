@@ -15,16 +15,10 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 byteorder = { workspace = true }
-reqwest = { version = "0.12", features = ["json", "native-tls-vendored"] }
+
+# use rustls with "ring" and not "aws-lc-rs", having trouble cross compiling "aws-lc-rs"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
-
-# hyper = { version = "1.4", features = ["client", "http2", "http1"] }
-# bytes = "1.7"
-# time = "0.3.36"
-# hyper-util = { version = "0.1.7", features = ["client", "client-legacy", "http1", "http2"] }
-# http-body-util = "0.1.2"
-# hyper-rustls = { version = "0.27", features = ["http2", "webpki-roots"] }
-
-# rustls = { version = "0.23", default-features = false, features = ["ring"] }
