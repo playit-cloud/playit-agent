@@ -1,6 +1,6 @@
 use std::{error::Error, fmt::{Display, Formatter}, net::SocketAddr};
 
-use crate::api::{api::{ApiError, ApiErrorNoFail, ApiResponseError}, http_client::HttpClientError};
+use playit_api_client::{api::{ApiError, ApiErrorNoFail, ApiResponseError}, http_client::HttpClientError};
 
 
 #[derive(Debug)]

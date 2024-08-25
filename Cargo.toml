@@ -3,6 +3,8 @@ members = [
     "packages/agent_cli",
     "packages/agent_core",
     "packages/agent_proto",
+    "packages/api_client",
+    "packages/ping_monitor",
 ]
 
 [workspace.package]
@@ -10,8 +12,11 @@ version = "0.15.21"
 
 [workspace.dependencies]
 tokio = { version = "1.39", features = ["full"] }
+
 tracing = "0.1"
 tracing-subscriber = "0.3"
+tracing-appender = "0.2"
+
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.8.5"
@@ -22,6 +27,7 @@ byteorder = "1.5"
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 message-encoding = "0.1.0"
+dirs = "5.0.1"
 
 [profile.release]
 strip = "debuginfo"

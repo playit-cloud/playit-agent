@@ -1,12 +1,13 @@
 use std::{future::Future, net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6}, sync::atomic::AtomicUsize, task::Poll};
 
-use platform::get_platform;
 use playit_agent_proto::control_messages::Pong;
 use errors::SetupError;
 use tokio::{io::ReadBuf, net::UdpSocket};
-use version::{get_version, register_version};
+use version::get_version;
 
-use crate::{api::{api::{AgentVersion, PlayitAgentVersion, ReqAgentsRoutingGet, ReqProtoRegister, SignedAgentKey}, PlayitApi}, utils::error_helper::ErrorHelper};
+use playit_api_client::{api::{ReqAgentsRoutingGet, ReqProtoRegister, SignedAgentKey}, PlayitApi};
+
+use crate::utils::error_helper::ErrorHelper;
 
 pub mod errors;
 

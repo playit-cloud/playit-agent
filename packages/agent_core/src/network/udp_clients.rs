@@ -8,7 +8,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 
 use crate::agent_control::PacketIO;
-use crate::api::api::PortType;
+use playit_api_client::api::PortType;
 use crate::network::address_lookup::AddressLookup;
 use crate::network::lan_address::LanAddress;
 use crate::agent_control::udp_proto::UdpFlow;

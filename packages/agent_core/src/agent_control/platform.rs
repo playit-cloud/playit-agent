@@ -1,4 +1,4 @@
-use crate::api::api::Platform;
+use playit_api_client::api::Platform;
 
 pub fn get_platform() -> Platform {
     #[cfg(target_os = "windows")]

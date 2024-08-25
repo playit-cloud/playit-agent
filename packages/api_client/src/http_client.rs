@@ -1,26 +1,45 @@
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use tokio::sync::RwLock;
 
-use crate::api::api::{ApiResult, PlayitHttpClient};
+use crate::api::{ApiResult, PlayitHttpClient};
 
 pub struct HttpClient {
     api_base: String,
-    auth_header: Option<String>,
+    auth_header: RwLock<Option<String>>,
     client: reqwest::Client,
+}
+
+impl Clone for HttpClient {
+    fn clone(&self) -> Self {
+        Self {
+            api_base: self.api_base.clone(),
+            auth_header: match self.auth_header.try_read() {
+                Ok(v) => RwLock::new(v.clone()),
+                _ => RwLock::new(None),
+            },
+            client: self.client.clone()
+        }
+    }
 }
 
 impl HttpClient {
     pub fn new(api_base: String, auth_header: Option<String>) -> Self {
         HttpClient {
             api_base,
-            auth_header,
+            auth_header: RwLock::new(auth_header),
             client: reqwest::Client::new(),
         }
     }
 
     pub fn api_base(&self) -> &str {
         &self.api_base
+    }
+
+    pub async fn remove_auth(&self) {
+        let mut lock = self.auth_header.write().await;
+        let _ = lock.take();
     }
 }
 
@@ -30,11 +49,15 @@ impl PlayitHttpClient for HttpClient {
     async fn call<Req: Serialize + Send, Res: DeserializeOwned, Err: DeserializeOwned>(&self, path: &str, req: Req) -> Result<ApiResult<Res, Err>, Self::Error> {
         let mut builder = self.client.post(format!("{}{}", self.api_base, path));
 
-        if let Some(auth_header) = &self.auth_header {
-            builder = builder.header(
-                reqwest::header::AUTHORIZATION,
-                auth_header,
-            );
+        {
+            let lock = self.auth_header.read().await;
+
+            if let Some(auth_header) = &*lock {
+                builder = builder.header(
+                    reqwest::header::AUTHORIZATION,
+                    auth_header,
+                );
+            }
         }
 
         let res = async move {

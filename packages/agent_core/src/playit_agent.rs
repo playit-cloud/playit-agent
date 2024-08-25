@@ -6,7 +6,7 @@ use std::time::Duration;
 use tracing::Instrument;
 
 use crate::agent_control::{AuthApi, DualStackUdpSocket};
-use crate::api::api::PortType;
+use playit_api_client::api::PortType;
 use crate::network::address_lookup::AddressLookup;
 use crate::network::lan_address::LanAddress;
 use crate::network::tcp_clients::TcpClients;
