@@ -10,4 +10,9 @@ if [ -z "${SECRET_KEY}" ]; then
   fi
 fi
 
-playit -s --secret "${SECRET_KEY}" --platform_docker start
+if [ "${RUN_ROOT}" = true ] ; then
+  playit -s --secret "${SECRET_KEY}" --platform_docker start
+else
+  /playit/usersetup.sh
+  su -c 'playit -s --secret "${SECRET_KEY}" --platform_docker start' -s /bin/sh playit
+fi
