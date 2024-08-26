@@ -8,5 +8,5 @@ if ! id "playit" >/dev/null 2>&1; then
     PLAYIT_GUID=1000
   fi
   addgroup -g ${PLAYIT_GUID} playit
-  adduser -Ss /sbin/nologin -u ${PLAYIT_UUID} -G playit -H playit
+  adduser -HSs /sbin/nologin -u ${PLAYIT_UUID} -G playit playit
 fi
