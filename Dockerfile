@@ -40,7 +40,6 @@ RUN apk add --no-cache ca-certificates
 
 COPY --from=build-env /src/playit-agent/target/release/playit-cli /usr/local/bin/playit
 RUN mkdir /playit
-COPY docker/entrypoint.sh docker/usersetup.sh /playit/
-RUN chmod +x /playit/entrypoint.sh /playit/usersetup.sh
+COPY --chmod=1711 docker/entrypoint.sh docker/usersetup.sh /playit/
 
 ENTRYPOINT ["/playit/entrypoint.sh"]
