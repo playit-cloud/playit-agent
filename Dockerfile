@@ -36,11 +36,15 @@ RUN cargo build --release --all
 ########## RUNTIME CONTAINER ##########
 
 FROM alpine:3.18
+ARG PLAYIT_GUID=2000
+ARG PLAYIT_UUID=2000
 RUN apk add --no-cache ca-certificates
 
 COPY --from=build-env /src/playit-agent/target/release/playit-cli /usr/local/bin/playit
 RUN mkdir /playit
-COPY docker/entrypoint.sh /playit/entrypoint.sh
-RUN chmod +x /playit/entrypoint.sh
+COPY --chmod=1755 docker/entrypoint.sh /playit/
+
+RUN addgroup -g ${PLAYIT_GUID} playit && adduser -Sh /playit -u ${PLAYIT_UUID} -G playit playit
+USER playit
 
 ENTRYPOINT ["/playit/entrypoint.sh"]
