@@ -1,15 +1,3 @@
-FROM rust:1.80-alpine AS build-env
-
-WORKDIR /src/playit-agent
-
-RUN apk --no-cache --update add build-base perl
-
-# Setup project structure with blank code so we can download libraries for better docker caching
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p packages/agent_cli/src && mkdir -p packages/agent_core/src && mkdir -p packages/agent_proto/src && mkdir -p packages/ping_monitor/src && mkdir -p packages/api_client/src
-COPY packages/agent_cli/Cargo.toml packages/agent_cli/Cargo.toml
-COPY packages/agent_core/Cargo.toml packages/agent_core/Cargo.toml
-COPY packages/agent_proto/Cargo.toml packages/agent_proto/Cargo.toml
 COPY packages/api_client/Cargo.toml packages/api_client/Cargo.toml
 COPY packages/ping_monitor/Cargo.toml packages/ping_monitor/Cargo.toml
 
@@ -36,11 +24,15 @@ RUN cargo build --release --all
 ########## RUNTIME CONTAINER ##########
 
 FROM alpine:3.18
+ARG PLAYIT_GUID=2000
+ARG PLAYIT_UUID=2000
 RUN apk add --no-cache ca-certificates
 
 COPY --from=build-env /src/playit-agent/target/release/playit-cli /usr/local/bin/playit
 RUN mkdir /playit
-COPY docker/entrypoint.sh /playit/entrypoint.sh
-RUN chmod +x /playit/entrypoint.sh
+COPY --chmod=1755 docker/entrypoint.sh /playit/
+
+RUN addgroup -g ${PLAYIT_GUID} playit && adduser -Sh /playit -u ${PLAYIT_UUID} -G playit playit
+USER playit
 
 ENTRYPOINT ["/playit/entrypoint.sh"]
