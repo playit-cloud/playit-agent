@@ -44,7 +44,7 @@ COPY --from=build-env /src/playit-agent/target/release/playit-cli /usr/local/bin
 RUN mkdir /playit
 COPY --chmod=1755 docker/entrypoint.sh /playit/
 
-RUN addgroup -g ${PLAYIT_GUID} playit && adduser -Sh /playit -u ${PLAYIT_UUID} -G playit playit
+RUN addgroup -g ${PLAYIT_GUID} playit && adduser -S -u ${PLAYIT_UUID} -G playit playit
 USER playit
 
 ENTRYPOINT ["/playit/entrypoint.sh"]
