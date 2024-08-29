@@ -26,7 +26,7 @@ uuid = { version = "1.10", features = ["serde"] }
 byteorder = "1.5"
 chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
-message-encoding = "0.1.0"
+message-encoding = "0.2.2"
 dirs = "5.0.1"
 
 [profile.release]

@@ -9,6 +9,16 @@ pub struct ControlRpcMessage<T: MessageEncoding> {
 }
 
 impl<T: MessageEncoding> MessageEncoding for ControlRpcMessage<T> {
+    const STATIC_SIZE: Option<usize> = match T::STATIC_SIZE {
+        Some(v) => Some(8 + v),
+        None => None,
+    };
+
+    const MAX_SIZE: Option<usize> = match T::MAX_SIZE {
+        Some(v) => Some(8 + v),
+        None => None,
+    };
+
     fn write_to<I: Write>(&self, out: &mut I) -> std::io::Result<usize> {
         let mut sum = 0;
         sum += self.request_id.write_to(out)?;
@@ -21,9 +31,5 @@ impl<T: MessageEncoding> MessageEncoding for ControlRpcMessage<T> {
             request_id: read.read_u64::<BigEndian>()?,
             content: T::read_from(read)?,
         })
-    }
-
-    fn static_size() -> Option<usize> {
-        Some(8 + T::static_size()?)
     }
 }

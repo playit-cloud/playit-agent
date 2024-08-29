@@ -37,6 +37,8 @@ pub enum PortProto {
 }
 
 impl MessageEncoding for AgentSessionId {
+    const STATIC_SIZE: Option<usize> = Some(8 * 3);
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
         sum += self.session_id.write_to(out)?;
@@ -55,6 +57,12 @@ impl MessageEncoding for AgentSessionId {
 }
 
 impl MessageEncoding for PortRange {
+    const MAX_SIZE: Option<usize> = Some(
+        match IpAddr::MAX_SIZE { Some(v) => v, _ => panic!() }
+        + 4
+        + match PortProto::MAX_SIZE { Some(v) => v, _ => panic!() }
+    );
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut len = 4;
         len += self.ip.write_to(out)?;
@@ -75,6 +83,8 @@ impl MessageEncoding for PortRange {
 }
 
 impl MessageEncoding for PortProto {
+    const STATIC_SIZE: Option<usize> = Some(1);
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         match self {
             PortProto::Tcp => out.write_u8(1),

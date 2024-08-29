@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use message_encoding::MessageEncoding;
+use message_encoding::{m_max, m_max_list, m_static, MessageEncoding};
 
 use crate::{AgentSessionId, PortRange};
 use crate::hmac::HmacSha256;
@@ -18,29 +18,71 @@ pub enum ControlRequest {
     AgentCheckPortMapping(AgentCheckPortMapping),
 }
 
+#[repr(u32)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub enum ControlRequestId {
+    _PingV1 = 1,
+    AgentRegisterV1,
+    AgentKeepAliveV1,
+    SetupUdpChannelV1,
+    AgentCheckPortMappingV1,
+    PingV2,
+    END,
+}
+
+impl ControlRequestId {
+    pub fn from_num(num: u32) -> Option<Self> {
+        if (Self::END as u32) <= num || num == 0 {
+            return None;
+        }
+        Some(unsafe { std::mem::transmute(num) })
+    }
+}
+
+impl MessageEncoding for ControlRequestId {
+    const STATIC_SIZE: Option<usize> = Some(4);
+    
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        (*self as u32).write_to(out)
+    }
+
+    fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
+        let v = u32::read_from(read)?;
+        ControlRequestId::from_num(v)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid request id"))
+    }
+}
+
 impl MessageEncoding for ControlRequest {
+    const MAX_SIZE: Option<usize> = Some(m_static::<ControlRequestId>() + m_max_list(&[
+        m_max::<Ping>(),
+        m_max::<AgentRegister>(),
+        m_max::<AgentSessionId>(),
+        m_max::<AgentCheckPortMapping>(),
+    ]));
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
 
         match self {
             ControlRequest::Ping(data) => {
-                sum += 6u32.write_to(out)?;
+                sum += ControlRequestId::PingV2.write_to(out)?;
                 sum += data.write_to(out)?;
             }
             ControlRequest::AgentRegister(data) => {
-                sum += 2u32.write_to(out)?;
+                sum += ControlRequestId::AgentRegisterV1.write_to(out)?;
                 sum += data.write_to(out)?;
             }
             ControlRequest::AgentKeepAlive(data) => {
-                sum += 3u32.write_to(out)?;
+                sum += ControlRequestId::AgentKeepAliveV1.write_to(out)?;
                 sum += data.write_to(out)?;
             }
             ControlRequest::SetupUdpChannel(data) => {
-                sum += 4u32.write_to(out)?;
+                sum += ControlRequestId::SetupUdpChannelV1.write_to(out)?;
                 sum += data.write_to(out)?;
             }
             ControlRequest::AgentCheckPortMapping(data) => {
-                sum += 5u32.write_to(out)?;
+                sum += ControlRequestId::AgentCheckPortMappingV1.write_to(out)?;
                 sum += data.write_to(out)?;
             }
         }
@@ -49,13 +91,15 @@ impl MessageEncoding for ControlRequest {
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
-        match read.read_u32::<BigEndian>()? {
-            1 => Ok(ControlRequest::Ping(Ping::read_from(read)?)),
-            2 => Ok(ControlRequest::AgentRegister(AgentRegister::read_from(read)?)),
-            3 => Ok(ControlRequest::AgentKeepAlive(AgentSessionId::read_from(read)?)),
-            4 => Ok(ControlRequest::SetupUdpChannel(AgentSessionId::read_from(read)?)),
-            5 => Ok(ControlRequest::AgentCheckPortMapping(AgentCheckPortMapping::read_from(read)?)),
-            _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "invalid ControlRequest id")),
+        let id = ControlRequestId::read_from(read)?;
+        
+        match id {
+            ControlRequestId::PingV2 => Ok(ControlRequest::Ping(Ping::read_from(read)?)),
+            ControlRequestId::AgentRegisterV1 => Ok(ControlRequest::AgentRegister(AgentRegister::read_from(read)?)),
+            ControlRequestId::AgentKeepAliveV1 => Ok(ControlRequest::AgentKeepAlive(AgentSessionId::read_from(read)?)),
+            ControlRequestId::SetupUdpChannelV1 => Ok(ControlRequest::SetupUdpChannel(AgentSessionId::read_from(read)?)),
+            ControlRequestId::AgentCheckPortMappingV1 => Ok(ControlRequest::AgentCheckPortMapping(AgentCheckPortMapping::read_from(read)?)),
+            _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "old control request no longer supported")),
         }
     }
 }
@@ -67,6 +111,8 @@ pub struct AgentCheckPortMapping {
 }
 
 impl MessageEncoding for AgentCheckPortMapping {
+    const MAX_SIZE: Option<usize> = Some(m_static::<AgentSessionId>() + m_max::<PortRange>());
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
         sum += self.agent_session_id.write_to(out)?;
@@ -90,6 +136,8 @@ pub struct Ping {
 }
 
 impl MessageEncoding for Ping {
+    const STATIC_SIZE: Option<usize> = Some(8 + m_static::<Option<u32>>() + m_static::<Option<AgentSessionId>>());
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
         sum += self.now.write_to(out)?;
@@ -142,6 +190,8 @@ impl AgentRegister {
 }
 
 impl MessageEncoding for AgentRegister {
+    const MAX_SIZE: Option<usize> = Some(8 * 4 + 32 + 2 * m_max::<SocketAddr>());
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         out.write_u64::<BigEndian>(self.account_id)?;
         out.write_u64::<BigEndian>(self.agent_id)?;
@@ -248,6 +298,11 @@ pub struct AgentPortMapping {
 }
 
 impl MessageEncoding for AgentPortMapping {
+    const MAX_SIZE: Option<usize> = Some(
+        m_max::<PortRange>() +
+        m_max::<Option<AgentPortMappingFound>>()
+    );
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
         sum += self.range.write_to(out)?;
@@ -269,6 +324,10 @@ pub enum AgentPortMappingFound {
 }
 
 impl MessageEncoding for AgentPortMappingFound {
+    const MAX_SIZE: Option<usize> = Some(4 + m_max_list(&[
+        m_max::<AgentSessionId>(),
+    ]));
+    
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
 
@@ -333,6 +392,13 @@ pub struct Pong {
 }
 
 impl MessageEncoding for Pong {
+    const MAX_SIZE: Option<usize> = Some(
+        m_static::<u64>() * 3 +
+        m_static::<u32>() +
+        m_max::<SocketAddr>() * 2 +
+        m_static::<Option<u64>>()
+    );
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
         sum += self.request_now.write_to(out)?;
@@ -365,6 +431,11 @@ pub struct AgentRegistered {
 }
 
 impl MessageEncoding for AgentRegistered {
+    const STATIC_SIZE: Option<usize> = Some(
+        m_static::<AgentSessionId>() +
+        m_static::<u64>()
+    );
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
         sum += self.id.write_to(out)?;
@@ -429,11 +500,22 @@ mod test {
     }
 
     fn test_encoding<T: MessageEncoding + PartialEq + Debug>(msg: T, buffer: &mut [u8]) {
+        assert_eq!(0, T::_ASSERT);
+
         let mut writer = &mut buffer[..];
         msg.write_to(&mut writer).unwrap();
 
         let remaining_len = writer.len();
         let written = buffer.len() - remaining_len;
+
+        if let Some(size) =  T::STATIC_SIZE {
+            assert_eq!(written, size);
+        }
+
+        if let Some(size) = T::MAX_SIZE {
+            assert!(written <= size);
+        }
+
         let mut reader = &buffer[0..written];
         let recovered = T::read_from(&mut reader).unwrap();
 
@@ -595,15 +677,5 @@ mod test {
             },
             rng.next_u32() as u16,
         )
-    }
-
-    #[test]
-    fn parse_msg() {
-        let hex_str = "00000000000000010000000400000000000005860000000000000001000000000029c2b9";
-        let bytes = hex::decode(hex_str).unwrap();
-        let mut reader = &bytes[..];
-        let msg: ControlRequest = ControlRequest::read_from(&mut reader).unwrap();
-
-        println!("{:?}", msg);
     }
 }
