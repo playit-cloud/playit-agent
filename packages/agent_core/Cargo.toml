@@ -1,6 +1,6 @@
 [package]
 name = "playit-agent-core"
-version = "0.17.5"
+version = "0.17.6"
 edition = "2021"
 description = "Contains the logic to create a playit.gg agent"
 license = "BSD-2-Clause"
