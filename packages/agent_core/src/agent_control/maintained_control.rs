@@ -88,7 +88,9 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
     }
 
     pub async fn update(&mut self) -> Option<NewClient> {
-        if self.control.is_expired() {
+        if let Some(reason) = self.control.is_expired() {
+            tracing::warn!(?reason, "session expired");
+
             if let Err(error) = self.control.authenticate().await {
                 tracing::error!(?error, "failed to authenticate");
                 tokio::time::sleep(Duration::from_secs(2)).await;

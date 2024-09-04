@@ -44,8 +44,17 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
         self.registered.expires_at
     }
 
-    pub fn is_expired(&self) -> bool {
-        self.force_expired || self.pong_at_auth.session_expire_at.is_none() || self.flow_changed()
+    pub fn is_expired(&self) -> Option<ExpiredReason> {
+        if self.force_expired {
+            return Some(ExpiredReason::Forced);
+        }
+        if self.pong_at_auth.session_expire_at.is_none() {
+            return Some(ExpiredReason::SessionNotSetup);
+        }
+        if self.flow_changed() {
+            return Some(ExpiredReason::FlowChanged);
+        }
+        None
     }
 
     pub fn set_expired(&mut self) {
@@ -65,6 +74,7 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
     pub async fn authenticate(&mut self) -> Result<(), SetupError> {
         let registered = self.conn.authenticate(&self.auth).await?;
 
+        self.force_expired = false;
         self.registered = registered;
         self.pong_at_auth = self.conn.pong_latest.clone();
 
@@ -114,4 +124,12 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
 
         Ok(feed)
     }
+}
+
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ExpiredReason {
+    Forced,
+    SessionNotSetup,
+    FlowChanged,
 }
