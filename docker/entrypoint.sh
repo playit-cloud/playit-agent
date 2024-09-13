@@ -10,4 +10,18 @@ if [ -z "${SECRET_KEY}" ]; then
   fi
 fi
 
-playit -s --secret "${SECRET_KEY}" --platform_docker start
+term_handler() {
+
+  echo "Shutting down Playit."
+  kill -SIGTERM $PlayitPID
+  wait $PlayitPID
+	exit
+}
+trap 'term_handler' SIGTERM
+
+
+playit -s --secret "${SECRET_KEY}" --platform_docker start &
+
+PlayitPID=$!
+
+wait $PlayitPID
