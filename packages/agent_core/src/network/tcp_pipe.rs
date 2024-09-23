@@ -20,7 +20,10 @@ pub async fn pipe<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 tracing::error!(?error, "failed to read data");
                 return Err(error);
             }
-            Err(_) => break,
+            Err(_) => {
+                tracing::error!("timeout 200s reading from stream");
+                break;
+            },
         };
 
         if received == 0 {

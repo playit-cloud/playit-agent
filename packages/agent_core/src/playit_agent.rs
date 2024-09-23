@@ -80,10 +80,11 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
                 }
 
                 if let Some(new_client) = tunnel.update().await {
-                    let clients = self.tcp_clients.clone();
-                    let span = tracing::info_span!("tcp client", ?new_client);
+                    tracing::info!(?new_client, "New TCP Client");
 
-                    let local_addr = match self.lookup.lookup(
+                    let clients = self.tcp_clients.clone();
+
+                    let host_addr = match self.lookup.lookup(
                         new_client.connect_addr.ip(),
                         new_client.connect_addr.port(),
                         PortType::Tcp
@@ -94,26 +95,43 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
                             SocketAddr::new(addr.ip(), port_offset + addr.port())
                         },
                         None => {
-                            tracing::info!("could not find local address for connection");
+                            tracing::info!(
+                                tunnel_addr = %new_client.connect_addr.ip(),
+                                tunnel_port = new_client.connect_addr.port(),
+                                "could not find local address for connection"
+                            );
+
                             continue;
                         }
                     };
+
+                    let span = tracing::info_span!(
+                        "tcp_tunnel",
+                        peer_addr = %new_client.peer_addr,
+                        tunn_addr = %new_client.connect_addr,
+                        %host_addr,
+                        sid = new_client.tunnel_server_id,
+                        did = new_client.data_center_id,
+                    );
 
                     tokio::spawn(async move {
                         let peer_addr = new_client.peer_addr;
 
                         let tunnel_conn = match clients.connect(new_client.clone()).await {
                             Ok(Some(client)) => client,
-                            Ok(None) => return,
+                            Ok(None) => {
+                                tracing::warn!("got duplciate NewClient message for connection, ignoring");
+                                return;
+                            },
                             Err(error) => {
                                 tracing::error!(?error, "failed to accept new client");
                                 return;
                             }
                         };
 
-                        tracing::info!(%local_addr, "connected to TCP tunnel");
+                        tracing::info!("connected to TCP tunnel");
 
-                        let local_conn = match LanAddress::tcp_socket(self.tcp_clients.use_special_lan, peer_addr, local_addr).await {
+                        let local_conn = match LanAddress::tcp_socket(self.tcp_clients.use_special_lan, peer_addr, host_addr).await {
                             Ok(v) => v,
                             Err(error) => {
                                 tracing::error!(?error, "failed to connect to local server");
@@ -121,11 +139,18 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
                             }
                         };
 
+                        if let Ok(local_addr) = local_conn.local_addr() {
+                            tracing::info!("local TCP connection bound to {}", local_addr);
+                        }
+
                         let (tunnel_read, tunnel_write) = tunnel_conn.into_split();
                         let (local_read, local_write) = local_conn.into_split();
 
-                        tokio::spawn(pipe(tunnel_read, local_write));
-                        tokio::spawn(pipe(local_read, tunnel_write));
+                        let tunn_to_local_span = tracing::info_span!("tunn2local");
+                        let local_to_tunn_span = tracing::info_span!("local2tunn");
+
+                        tokio::spawn(pipe(tunnel_read, local_write).instrument(tunn_to_local_span));
+                        tokio::spawn(pipe(local_read, tunnel_write).instrument(local_to_tunn_span));
                     }.instrument(span));
                 }
             }

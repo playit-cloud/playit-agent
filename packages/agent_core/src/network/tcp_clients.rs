@@ -1,4 +1,4 @@
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::io::Error;
 use std::net::SocketAddr;
@@ -11,7 +11,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 
-use playit_agent_proto::control_feed::{NewClient};
+use playit_agent_proto::control_feed::NewClient;
 
 use super::tcp_tunnel::TcpTunnel;
 
@@ -94,12 +94,12 @@ pub struct TcpClient {
 
 pub struct TcpClientWrite {
     stream: OwnedWriteHalf,
-    dropper: Arc<Dropper>,
+    _dropper: Arc<Dropper>,
 }
 
 pub struct TcpClientRead {
     stream: OwnedReadHalf,
-    dropper: Arc<Dropper>,
+    _dropper: Arc<Dropper>,
 }
 
 struct Dropper {
@@ -115,11 +115,11 @@ impl TcpClient {
         (
             TcpClientRead {
                 stream: read,
-                dropper: dropper.clone(),
+                _dropper: dropper.clone(),
             },
             TcpClientWrite {
                 stream: write,
-                dropper: dropper.clone(),
+                _dropper: dropper.clone(),
             }
         )
     }
