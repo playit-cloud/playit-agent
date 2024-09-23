@@ -6,7 +6,7 @@ use std::{
 };
 
 use playit_agent_core::{
-    network::address_lookup::{AddressLookup, AddressValue},
+    network::address_lookup::{AddressLookup, AddressValue, HostOrigin},
     playit_agent::PlayitAgent,
     utils::now_milli,
 };
@@ -195,9 +195,9 @@ pub struct LocalLookup {
 }
 
 impl AddressLookup for LocalLookup {
-    type Value = SocketAddr;
+    type Value = HostOrigin;
 
-    fn lookup(&self, ip: IpAddr, port: u16, proto: PortType) -> Option<AddressValue<SocketAddr>> {
+    fn lookup(&self, ip: IpAddr, port: u16, proto: PortType) -> Option<AddressValue<HostOrigin>> {
         let values = self.data.lock().unwrap();
 
         for tunnel in &*values {
@@ -211,7 +211,11 @@ impl AddressLookup for LocalLookup {
 
             if tunnel.from_port <= port && port < tunnel.to_port {
                 return Some(AddressValue {
-                    value: tunnel.local_start_address,
+                    value: HostOrigin {
+                        host_addr: tunnel.local_start_address,
+                        use_special_lan: None,
+                        proxy_protocol: tunnel.proxy_protocol,
+                    },
                     from_port: tunnel.from_port,
                     to_port: tunnel.to_port,
                 });
@@ -238,6 +242,7 @@ impl LocalLookup {
                 from_port: tunnel.port.from,
                 to_port: tunnel.port.to,
                 local_start_address: SocketAddr::new(tunnel.local_ip, tunnel.local_port),
+                proxy_protocol: tunnel.proxy_protocol,
             });
         }
 
@@ -253,4 +258,5 @@ pub struct TunnelEntry {
     pub from_port: u16,
     pub to_port: u16,
     pub local_start_address: SocketAddr,
+    pub proxy_protocol: Option<ProxyProtocol>,
 }

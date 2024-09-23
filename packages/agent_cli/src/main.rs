@@ -50,6 +50,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             version: AgentVersion {
                 platform,
                 version: env!("CARGO_PKG_VERSION").to_string(),
+                has_expired: false,
             },
             official: true,
             details_website: None,

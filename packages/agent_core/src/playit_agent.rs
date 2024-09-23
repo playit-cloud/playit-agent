@@ -6,8 +6,9 @@ use std::time::Duration;
 use tracing::Instrument;
 
 use crate::agent_control::{AuthApi, DualStackUdpSocket};
-use playit_api_client::api::PortType;
-use crate::network::address_lookup::AddressLookup;
+use crate::network::proxy_protocol::ProxyProtocolHeader;
+use playit_api_client::api::{PortType, ProxyProtocol};
+use crate::network::address_lookup::{AddressLookup, HostOrigin};
 use crate::network::lan_address::LanAddress;
 use crate::network::tcp_clients::TcpClients;
 use crate::network::tcp_pipe::pipe;
@@ -25,7 +26,7 @@ pub struct PlayitAgent<L: AddressLookup> {
     keep_running: Arc<AtomicBool>,
 }
 
-impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketAddr> {
+impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<HostOrigin> + Into<SocketAddr> {
     pub async fn new(api_url: String, secret_key: String, lookup: Arc<L>) -> Result<Self, SetupError> {
         let io = DualStackUdpSocket::new().await?;
         let auth = AuthApi {
@@ -84,15 +85,16 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
 
                     let clients = self.tcp_clients.clone();
 
-                    let host_addr = match self.lookup.lookup(
+                    let host_origin = match self.lookup.lookup(
                         new_client.connect_addr.ip(),
                         new_client.connect_addr.port(),
                         PortType::Tcp
                     ) {
                         Some(found) => {
-                            let addr = found.value.into();
+                            let mut origin: HostOrigin = found.value.into();
                             let port_offset = new_client.connect_addr.port() - found.from_port;
-                            SocketAddr::new(addr.ip(), port_offset + addr.port())
+                            origin.host_addr = SocketAddr::new(origin.host_addr.ip(), port_offset + origin.host_addr.port());
+                            origin
                         },
                         None => {
                             tracing::info!(
@@ -109,7 +111,7 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
                         "tcp_tunnel",
                         peer_addr = %new_client.peer_addr,
                         tunn_addr = %new_client.connect_addr,
-                        %host_addr,
+                        %host_origin,
                         sid = new_client.tunnel_server_id,
                         did = new_client.data_center_id,
                     );
@@ -131,7 +133,7 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
 
                         tracing::info!("connected to TCP tunnel");
 
-                        let local_conn = match LanAddress::tcp_socket(self.tcp_clients.use_special_lan, peer_addr, host_addr).await {
+                        let local_conn = match LanAddress::tcp_socket(self.tcp_clients.use_special_lan, peer_addr, host_origin.host_addr).await {
                             Ok(v) => v,
                             Err(error) => {
                                 tracing::error!(?error, "failed to connect to local server");
@@ -144,12 +146,48 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<SocketA
                         }
 
                         let (tunnel_read, tunnel_write) = tunnel_conn.into_split();
-                        let (local_read, local_write) = local_conn.into_split();
+                        let (local_read, mut local_write) = local_conn.into_split();
 
                         let tunn_to_local_span = tracing::info_span!("tunn2local");
                         let local_to_tunn_span = tracing::info_span!("local2tunn");
 
-                        tokio::spawn(pipe(tunnel_read, local_write).instrument(tunn_to_local_span));
+                        tokio::spawn(async move {
+                            'write_proxy_header: {
+                                let Some(protocol) = host_origin.proxy_protocol else { break 'write_proxy_header };
+
+                                let header = match (new_client.peer_addr, new_client.connect_addr) {
+                                    (SocketAddr::V4(client_addr), SocketAddr::V4(proxy_addr)) => ProxyProtocolHeader::Tcp4 {
+                                        client_ip: *client_addr.ip(),
+                                        proxy_ip: *proxy_addr.ip(),
+                                        client_port: client_addr.port(),
+                                        proxy_port: proxy_addr.port(),
+                                    },
+                                    (SocketAddr::V6(client_addr), SocketAddr::V6(proxy_addr)) => ProxyProtocolHeader::Tcp6 {
+                                        client_ip: *client_addr.ip(),
+                                        proxy_ip: *proxy_addr.ip(),
+                                        client_port: client_addr.port(),
+                                        proxy_port: proxy_addr.port(),
+                                    },
+                                    _ => {
+                                        tracing::warn!("peer and connect address have different protocol version");
+                                        break 'write_proxy_header;
+                                    }
+                                };
+
+                                let result = match protocol {
+                                    ProxyProtocol::ProxyProtocolV1 => header.write_v1(&mut local_write).await,
+                                    ProxyProtocol::ProxyProtocolV2 => header.write_v2(&mut local_write).await,
+                                };
+
+                                if let Err(error) = result {
+                                    tracing::error!(?error, "failed to write proxy protocol header to location connection");
+                                    return Err(error);
+                                }
+                            }
+
+                            pipe(tunnel_read, local_write).await
+                        }.instrument(tunn_to_local_span));
+
                         tokio::spawn(pipe(local_read, tunnel_write).instrument(local_to_tunn_span));
                     }.instrument(span));
                 }
