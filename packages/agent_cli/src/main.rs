@@ -73,6 +73,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
             let (non_blocking, guard) = tracing_appender::non_blocking(write_path);
             tracing_subscriber::fmt()
+                .with_ansi(false)
                 .with_writer(non_blocking)
                 .init();
             Some(guard)
@@ -80,6 +81,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         (true, None) => {
             let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
             tracing_subscriber::fmt()
+                .with_ansi(get_platform() == Platform::Linux)
                 .with_writer(non_blocking)
                 .init();
             Some(guard)
