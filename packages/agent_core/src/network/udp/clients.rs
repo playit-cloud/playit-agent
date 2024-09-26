@@ -85,7 +85,7 @@ struct ErrorLogs {
     unexpected_origin: MaxErrorInterval,
     session_send_fail: MaxErrorInterval,
     pkt_send: MaxErrorInterval,
-    proxy_invalid_tunnel_addr: MaxErrorInterval,
+    out_of_packets: MaxErrorInterval,
     client_flow_not_found: MaxErrorInterval,
 }
 
@@ -99,7 +99,8 @@ struct Flow {
     target_addr: SocketAddr,
     use_proxy_protocol: bool,
     last_client_packet: Instant,
-    last_host_packet: Instant,
+    last_host_packet: Option<Instant>,
+    last_proxy_packet: Option<Instant>,
 }
 
 struct Socket<I: PacketIO> {
@@ -168,7 +169,7 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                 unexpected_origin: MaxErrorInterval::new(Duration::from_secs(2)),
                 session_send_fail: MaxErrorInterval::new(Duration::from_secs(2)),
                 pkt_send: MaxErrorInterval::new(Duration::from_secs(2)),
-                proxy_invalid_tunnel_addr: MaxErrorInterval::new(Duration::from_secs(2)),
+                out_of_packets: MaxErrorInterval::new(Duration::from_secs(2)),
                 client_flow_not_found: MaxErrorInterval::new(Duration::from_secs(2)),
             },
             conn_info: Default::default(),
@@ -230,7 +231,7 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
             return;
         };
 
-        assert_ne!(socket.socket_type, SocketType::Tunnel);
+        assert_eq!(socket.socket_type, SocketType::Client);
 
         let mut packet_data_len = packet.packet.len();
         let mut packet_data = &mut packet.packet.full_slice_mut()[packet.data_offset..];
@@ -280,56 +281,13 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
         /* validate that flow exists */
         match self.conn_info.flows.get_mut(&client_flow) {
             Some(flow) => {
-                flow.last_host_packet = Instant::now();
+                flow.last_host_packet = Some(Instant::now());
 
                 if flow.socket_id != socket.id {
                     if self.errors.client_flow_not_found.check() {
                         tracing::error!(?client_flow, expected_id = flow.socket_id, actual_id = socket.id, "flow expected on a different socket");
                     }
                     return;
-                }
-
-                /* parse optional proxy header */
-                if flow.use_proxy_protocol {
-                    'parse_proxy_header: {
-                        let mut reader = &packet_data[..packet_data_len];
-                        let Some(header) = ProxyProtocolHeader::parse_v2_udp(&mut reader) else {
-                            break 'parse_proxy_header;
-                        };
-    
-                        /* update packet length to trim header */
-                        {
-                            let header_read_len = packet_data_len - reader.len();
-                            packet_data = &mut packet_data[header_read_len..];
-                            packet_data_len -= header_read_len;
-                        }
-
-                        /* validate header matches flow, otherwise drop packet */
-                        {
-                            let parsed_flow = match header {
-                                ProxyProtocolHeader::AfInet { client_ip, proxy_ip, client_port, proxy_port } => {
-                                    UdpFlow::V4 {
-                                        src: SocketAddrV4::new(client_ip, client_port),
-                                        dst: SocketAddrV4::new(proxy_ip, proxy_port),
-                                    }
-                                }
-                                ProxyProtocolHeader::AfInet6 { client_ip, proxy_ip, client_port, proxy_port } => {
-                                    UdpFlow::V6 {
-                                        src: (client_ip.into(), client_port),
-                                        dst: (proxy_ip.into(), proxy_port),
-                                        flow: 0,
-                                    }
-                                }
-                            };
-
-                            if client_flow != parsed_flow {
-                                if self.errors.proxy_invalid_tunnel_addr.check() {
-                                    tracing::error!(expected = ?client_flow, actual = ?parsed_flow, "proxy header is invalid");
-                                }
-                                return;
-                            }
-                        }
-                    }
                 }
             }
             None => {
@@ -492,7 +450,8 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                     target_addr,
                     use_proxy_protocol: is_proxy_client,
                     last_client_packet: now,
-                    last_host_packet: now,
+                    last_host_packet: None,
+                    last_proxy_packet: None,
                 })
             }
         };
@@ -502,35 +461,51 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
         let socket = self.sockets.get(flow.socket_id)
             .expect("could not load socket from id");
 
-        if flow.use_proxy_protocol {
-            match flow_path {
-                UdpFlow::V4 { src, dst } => {
-                    assert!(UDP_PROXY_PROTOCOL_LEN_V4 <= data_start);
-                    let mut header_buffer = &mut buffer[data_start - UDP_PROXY_PROTOCOL_LEN_V4..];
+        'send_proxy_packet: {
+            if !flow.use_proxy_protocol {
+                break 'send_proxy_packet;
+            }
 
-                    ProxyProtocolHeader::AfInet {
-                        client_ip: *src.ip(),
-                        proxy_ip: *dst.ip(),
-                        client_port: src.port(),
-                        proxy_port: dst.port(),
-                    }.write_v2_udp(&mut header_buffer).unwrap();
-
-                    data_start -= UDP_PROXY_PROTOCOL_LEN_V4;
-                    data_len += UDP_PROXY_PROTOCOL_LEN_V4;
+            /* have recent packets from host, they must be okay with client so need to resend proxy protocol */
+            if let Some(host_ts) = &flow.last_host_packet {
+                if host_ts.elapsed() < Duration::from_secs(15) {
+                    break 'send_proxy_packet;
                 }
-                UdpFlow::V6 { src, dst, .. } => {
-                    assert!(UDP_PROXY_PROTOCOL_LEN_V6 <= data_start);
-                    let mut header_buffer = &mut buffer[data_start - UDP_PROXY_PROTOCOL_LEN_V6..];
+            }
 
-                    ProxyProtocolHeader::AfInet6 {
-                        client_ip: src.0.into(),
-                        proxy_ip: dst.0.into(),
-                        client_port: src.1,
-                        proxy_port: dst.1,
-                    }.write_v2_udp(&mut header_buffer).unwrap();
+            /* don't send proxy protocol packet more than once ever 2s */
+            if let Some(send_ts) = &flow.last_proxy_packet {
+                if send_ts.elapsed() < Duration::from_secs(2) {
+                    break 'send_proxy_packet;
+                }
+            }
 
-                    data_start -= UDP_PROXY_PROTOCOL_LEN_V6;
-                    data_len += UDP_PROXY_PROTOCOL_LEN_V6;
+            /* Send proxy protocol header to establish true origin IP */
+            let header = ProxyProtocolHeader::from_udp_flow(&flow_path);
+            if let Some(mut packet) = self.packets.allocate() {
+                let len = {
+                    let mut writer = packet.full_slice_mut();
+                    let og_len = writer.len();
+                    header.write_v2_udp(&mut writer).expect("should be plenty space for proxy pass header in packet");
+                    og_len - writer.len()
+                };
+
+                packet.set_len(len).expect("len should be within bounds");
+
+                /* send proxy protocol packet */
+                {
+                    if let Err(error) = socket.packet_io.send_to(packet.as_ref(), flow.target_addr).await {
+                        if self.errors.send.check() {
+                            tracing::error!(?error, "failed to send PROXY PROTOCOL V2 packet");
+                        }
+                    }
+                }
+
+                tracing::info!(target = %flow.target_addr, "send proxy protocol v2 header");
+                flow.last_proxy_packet = Some(now);
+            } else {
+                if self.errors.out_of_packets.check() {
+                    tracing::error!("out of free packets, failed to send PROXY PROTOCOL V2 header");
                 }
             }
         }

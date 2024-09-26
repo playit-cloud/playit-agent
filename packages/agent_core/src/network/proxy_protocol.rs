@@ -3,12 +3,14 @@ use std::{io::Write, net::{Ipv4Addr, Ipv6Addr}};
 use byteorder::{BigEndian, ReadBytesExt};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::utils::ip_bytes::ReadIpBytesExt;
+use crate::{agent_control::udp_proto::UdpFlow, utils::ip_bytes::ReadIpBytesExt};
 
 /*
  DOCS: https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
 */
 
+
+#[derive(PartialEq, Eq, Debug)]
 pub enum ProxyProtocolHeader {
     AfInet {
         client_ip: Ipv4Addr,
@@ -22,6 +24,29 @@ pub enum ProxyProtocolHeader {
         client_port: u16,
         proxy_port: u16,
     },
+}
+
+impl ProxyProtocolHeader {
+    pub fn from_udp_flow(flow: &UdpFlow) -> Self {
+        match flow {
+            UdpFlow::V4 { src, dst } => {
+                ProxyProtocolHeader::AfInet {
+                    client_ip: *src.ip(),
+                    proxy_ip: *dst.ip(),
+                    client_port: src.port(),
+                    proxy_port: dst.port(),
+                }
+            }
+            UdpFlow::V6 { src, dst, .. } => {
+                ProxyProtocolHeader::AfInet6 {
+                    client_ip: src.0.into(),
+                    proxy_ip: dst.0.into(),
+                    client_port: src.1,
+                    proxy_port: dst.1,
+                }
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for ProxyProtocolHeader {
@@ -158,5 +183,27 @@ impl ProxyProtocolHeader {
             }
             _ => return None,
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::ProxyProtocolHeader;
+
+    #[test]
+    fn test_parse_header() {
+        let mut buffer = Vec::new();
+        let header = ProxyProtocolHeader::AfInet {
+            client_ip: "123.45.12.34".parse().unwrap(),
+            proxy_ip: "5.6.7.8".parse().unwrap(),
+            client_port: 421,
+            proxy_port: 662
+        };
+
+        header.write_v2_udp(&mut buffer).unwrap();
+
+        let mut reader = &buffer[..];
+        let parsed = ProxyProtocolHeader::parse_v2_udp(&mut reader).unwrap();
+        assert_eq!(header, parsed);
     }
 }
