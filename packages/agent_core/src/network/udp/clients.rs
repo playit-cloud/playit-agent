@@ -85,7 +85,6 @@ struct ErrorLogs {
     unexpected_origin: MaxErrorInterval,
     session_send_fail: MaxErrorInterval,
     pkt_send: MaxErrorInterval,
-    invalid_proxy_header: MaxErrorInterval,
     proxy_invalid_tunnel_addr: MaxErrorInterval,
     client_flow_not_found: MaxErrorInterval,
 }
@@ -114,8 +113,7 @@ struct Socket<I: PacketIO> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum SocketType {
     Tunnel,
-    DirectClient,
-    ProxyClient,
+    Client,
 }
 
 impl<I: PacketIO> Drop for Socket<I> {
@@ -170,7 +168,6 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                 unexpected_origin: MaxErrorInterval::new(Duration::from_secs(2)),
                 session_send_fail: MaxErrorInterval::new(Duration::from_secs(2)),
                 pkt_send: MaxErrorInterval::new(Duration::from_secs(2)),
-                invalid_proxy_header: MaxErrorInterval::new(Duration::from_secs(2)),
                 proxy_invalid_tunnel_addr: MaxErrorInterval::new(Duration::from_secs(2)),
                 client_flow_not_found: MaxErrorInterval::new(Duration::from_secs(2)),
             },
@@ -249,114 +246,27 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
             let origin_to_port = origin_from_port + (tunnel.to_port - tunnel.from_port);
             let packet_port = packet.address.port();
 
-            let found_client_flow = match socket.socket_type {
-                SocketType::DirectClient => {
-                    if packet_port < origin_from_port || origin_to_port <= packet_port {
-                        continue;
-                    }
-
-                    let tunnel_port = tunnel.from_port + (packet_port - origin_from_port);
-
-                    match tunnel.tunnel_flow {
-                        TunnelFlow::V4Client { tunnel_ip, client_ip, client_port } => UdpFlow::V4 {
-                            src: SocketAddrV4::new(client_ip, client_port),
-                            dst: SocketAddrV4::new(tunnel_ip, tunnel_port),
-                        },
-                        TunnelFlow::V6Client { tunnel_ip, client_ip, client_port } => UdpFlow::V6 {
-                            src: (client_ip, client_port),
-                            dst: (tunnel_ip, tunnel_port),
-                            flow: 0,
-                        },
-                        _ => panic!("tunnel flow for DirectClient socket is for a proxy"),
-                    }
+            client_flow = Some({
+                if packet_port < origin_from_port || origin_to_port <= packet_port {
+                    continue;
                 }
-                SocketType::ProxyClient => {
-                    if packet_port != origin_from_port {
-                        continue;
-                    }
 
-                    let mut reader = &packet_data[..packet_data_len];
-                    let Some(header) = ProxyProtocolHeader::parse_v2_udp(&mut reader) else {
-                        if self.errors.invalid_proxy_header.check() {
-                            tracing::error!(source = %packet.address, "failed to parse proxy protocol header from host");
-                        }
-                        return;
-                    };
+                let tunnel_port = tunnel.from_port + (packet_port - origin_from_port);
 
-                    let header_read_len = packet_data_len - reader.len();
-                    packet_data = &mut packet_data[header_read_len..];
-                    packet_data_len -= header_read_len;
-
-                    match header {
-                        ProxyProtocolHeader::AfInet { client_ip, proxy_ip, client_port, proxy_port } => {
-                            /* validate source IP */
-                            match &tunnel.tunnel_flow {
-                                TunnelFlow::V4Proxy { tunnel_ip, .. } if proxy_ip.eq(tunnel_ip) => {}
-                                TunnelFlow::V4Client { .. } | TunnelFlow::V6Client { .. } => panic!("proxy socket has client flow"),
-                                tunnel_flow => {
-                                    if self.errors.proxy_invalid_tunnel_addr.check() {
-                                        tracing::error!(allowed = ?tunnel_flow, source = ?proxy_ip, "origin trying to send from invalid source");
-                                    }
-                                    return;
-                                }
-                            };
-
-                            /* validate port range */
-                            if proxy_port < tunnel.from_port || tunnel.to_port <= proxy_port {
-                                if self.errors.proxy_invalid_tunnel_addr.check() {
-                                    tracing::error!(
-                                        %proxy_ip,
-                                        proxy_port,
-                                        port_range = ?(tunnel.from_port, tunnel.to_port),
-                                        "origin trying to send from invalid source"
-                                    );
-                                }
-                                return;
-                            }
-
-                            UdpFlow::V4 {
-                                src: SocketAddrV4::new(client_ip, client_port),
-                                dst: SocketAddrV4::new(proxy_ip, proxy_port),
-                            }
-                        }
-                        ProxyProtocolHeader::AfInet6 { client_ip, proxy_ip, client_port, proxy_port } => {
-                            /* validate source IP */
-                            match &tunnel.tunnel_flow {
-                                TunnelFlow::V6Proxy { tunnel_ip, .. } if proxy_ip.eq(tunnel_ip) => {}
-                                TunnelFlow::V4Client { .. } | TunnelFlow::V6Client { .. } => panic!("proxy socket has client flow"),
-                                tunnel_flow => {
-                                    if self.errors.proxy_invalid_tunnel_addr.check() {
-                                        tracing::error!(allowed = ?tunnel_flow, source = ?proxy_ip, "origin trying to send from invalid source");
-                                    }
-                                    return;
-                                }
-                            };
-
-                            /* validate port range */
-                            if proxy_port < tunnel.from_port || tunnel.to_port <= proxy_port {
-                                if self.errors.proxy_invalid_tunnel_addr.check() {
-                                    tracing::error!(
-                                        %proxy_ip,
-                                        proxy_port,
-                                        port_range = ?(tunnel.from_port, tunnel.to_port),
-                                        "origin trying to send from invalid source"
-                                    );
-                                }
-                                return;
-                            }
-
-                            UdpFlow::V6 {
-                                src: (client_ip.into(), client_port),
-                                dst: (proxy_ip.into(), proxy_port),
-                                flow: 0,
-                            }
-                        }
-                    }
+                match tunnel.tunnel_flow {
+                    TunnelFlow::V4Client { tunnel_ip, client_ip, client_port } => UdpFlow::V4 {
+                        src: SocketAddrV4::new(client_ip, client_port),
+                        dst: SocketAddrV4::new(tunnel_ip, tunnel_port),
+                    },
+                    TunnelFlow::V6Client { tunnel_ip, client_ip, client_port } => UdpFlow::V6 {
+                        src: (client_ip, client_port),
+                        dst: (tunnel_ip, tunnel_port),
+                        flow: 0,
+                    },
+                    _ => panic!("tunnel flow for DirectClient socket is for a proxy"),
                 }
-                _ => unreachable!()
-            };
+            });
 
-            client_flow = Some(found_client_flow);
             break;
         }
 
@@ -377,6 +287,49 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                         tracing::error!(?client_flow, expected_id = flow.socket_id, actual_id = socket.id, "flow expected on a different socket");
                     }
                     return;
+                }
+
+                /* parse optional proxy header */
+                if flow.use_proxy_protocol {
+                    'parse_proxy_header: {
+                        let mut reader = &packet_data[..packet_data_len];
+                        let Some(header) = ProxyProtocolHeader::parse_v2_udp(&mut reader) else {
+                            break 'parse_proxy_header;
+                        };
+    
+                        /* update packet length to trim header */
+                        {
+                            let header_read_len = packet_data_len - reader.len();
+                            packet_data = &mut packet_data[header_read_len..];
+                            packet_data_len -= header_read_len;
+                        }
+
+                        /* validate header matches flow, otherwise drop packet */
+                        {
+                            let parsed_flow = match header {
+                                ProxyProtocolHeader::AfInet { client_ip, proxy_ip, client_port, proxy_port } => {
+                                    UdpFlow::V4 {
+                                        src: SocketAddrV4::new(client_ip, client_port),
+                                        dst: SocketAddrV4::new(proxy_ip, proxy_port),
+                                    }
+                                }
+                                ProxyProtocolHeader::AfInet6 { client_ip, proxy_ip, client_port, proxy_port } => {
+                                    UdpFlow::V6 {
+                                        src: (client_ip.into(), client_port),
+                                        dst: (proxy_ip.into(), proxy_port),
+                                        flow: 0,
+                                    }
+                                }
+                            };
+
+                            if client_flow != parsed_flow {
+                                if self.errors.proxy_invalid_tunnel_addr.check() {
+                                    tracing::error!(expected = ?client_flow, actual = ?parsed_flow, "proxy header is invalid");
+                                }
+                                return;
+                            }
+                        }
+                    }
                 }
             }
             None => {
@@ -458,22 +411,13 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                 );
 
                 let is_proxy_client = host_origin.proxy_protocol == Some(ProxyProtocol::ProxyProtocolV2);
-                let req_socket_type = if is_proxy_client { SocketType::ProxyClient } else { SocketType::DirectClient };
-
                 tracing::info!(is_proxy_client, tunnel_id = %host_origin.tunnel_id, ?flow_path, "new UDP client");
 
                 let mut exclusive_endpoint = Some(TunnelEndpoint {
                     tunnel_id: host_origin.tunnel_id,
-                    tunnel_flow: if is_proxy_client {
-                        match flow_path {
-                            UdpFlow::V4 { dst, .. } => TunnelFlow::V4Proxy { tunnel_ip: *dst.ip(), client_count: 1, },
-                            UdpFlow::V6 { dst, .. } => TunnelFlow::V6Proxy { tunnel_ip: dst.0, client_count: 1 },
-                        }
-                    } else {
-                        match flow_path {
-                            UdpFlow::V4 { src, dst } => TunnelFlow::V4Client { tunnel_ip: *dst.ip(), client_ip: *src.ip(), client_port: src.port() },
-                            UdpFlow::V6 { src, dst, .. } => TunnelFlow::V6Client { tunnel_ip: dst.0, client_ip: src.0, client_port: src.1 },
-                        }
+                    tunnel_flow: match flow_path {
+                        UdpFlow::V4 { src, dst } => TunnelFlow::V4Client { tunnel_ip: *dst.ip(), client_ip: *src.ip(), client_port: src.port() },
+                        UdpFlow::V6 { src, dst, .. } => TunnelFlow::V6Client { tunnel_ip: dst.0, client_ip: src.0, client_port: src.1 },
                     },
                     host_origin: host_origin.host_addr,
                     from_port: found.from_port,
@@ -488,17 +432,11 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
 
                 for socket in self.sockets.iter_mut() {
                     /* cannot assign to tunnel socket */
-                    if socket.socket_type != req_socket_type {
+                    if socket.socket_type != SocketType::Client {
                         continue;
                     }
 
-                    let add_res = if is_proxy_client {
-                        socket.endpoints.add::<ProxyClientCheck>(exclusive_endpoint.take().unwrap())
-                    } else {
-                        socket.endpoints.add::<DirectClientCheck>(exclusive_endpoint.take().unwrap())
-                    };
-
-                    match add_res {
+                    match socket.endpoints.add::<TunnelEndpoint>(exclusive_endpoint.take().unwrap()) {
                         Ok(_) => {
                             socket_id = Some(socket.id);
                             break;
@@ -532,7 +470,7 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                         packet_io: Arc::new(new_io),
                         run_receiver: Arc::new(AtomicBool::new(true)),
                         endpoints: NonOverlapping::with(exclusive_endpoint.unwrap()),
-                        socket_type: req_socket_type,
+                        socket_type: SocketType::Client,
                     };
 
                     tokio::spawn(UdpReceiverTask {
@@ -626,20 +564,10 @@ pub enum TunnelFlow {
         client_ip: Ipv6Addr,
         client_port: u16,
     },
-    V4Proxy {
-        tunnel_ip: Ipv4Addr,
-        client_count: usize,
-    },
-    V6Proxy {
-        tunnel_ip: Ipv6Addr,
-        client_count: usize,
-    },
 }
 
-struct DirectClientCheck;
-struct ProxyClientCheck;
 
-impl NonOverlappingCheck for DirectClientCheck {
+impl NonOverlappingCheck for TunnelEndpoint {
     type Element = TunnelEndpoint;
 
     fn is_same(a: &Self::Element, b: &Self::Element) -> bool {
@@ -647,32 +575,6 @@ impl NonOverlappingCheck for DirectClientCheck {
     }
 
     fn is_overlapping(a: &Self::Element, b: &Self::Element) -> bool {
-        if !a.host_origin.ip().eq(&b.host_origin.ip()) {
-            return false;
-        }
-
-        let a_start = a.host_origin.port();
-        let a_end = a_start + (a.to_port - a.from_port);
-
-        let b_start = b.host_origin.port();
-        let b_end = b_start + (b.to_port - b.from_port);
-
-        a_start.max(b_start) <= a_end.min(b_end)
-    }
-}
-
-impl NonOverlappingCheck for ProxyClientCheck {
-    type Element = TunnelEndpoint;
-
-    fn is_same(a: &Self::Element, b: &Self::Element) -> bool {
-        a.tunnel_id == b.tunnel_id
-    }
-
-    fn is_overlapping(a: &Self::Element, b: &Self::Element) -> bool {
-        if Self::is_same(a, b) {
-            return false;
-        }
-
         if !a.host_origin.ip().eq(&b.host_origin.ip()) {
             return false;
         }
