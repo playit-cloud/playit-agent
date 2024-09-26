@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::fmt::Display;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -10,20 +11,19 @@ use playit_agent_proto::control_messages::UdpChannelDetails;
 use crate::agent_control::udp_proto::{UDP_CHANNEL_ESTABLISH_ID, UdpFlow};
 use crate::utils::now_sec;
 
-use super::PacketIO;
+use super::PacketTx;
 
-pub struct UdpChannel<I: PacketIO> {
-    inner: Arc<Inner<I>>,
+pub struct UdpChannel {
+    inner: Arc<Inner>,
 }
 
-impl<I: PacketIO> Clone for UdpChannel<I> {
+impl Clone for UdpChannel {
     fn clone(&self) -> Self {
         Self { inner: self.inner.clone() }
     }
 }
 
-struct Inner<I: PacketIO> {
-    packet_io: I,
+struct Inner {
     details: RwLock<ChannelDetails>,
     last_confirm: AtomicU32,
     last_send: AtomicU32,
@@ -34,11 +34,10 @@ struct ChannelDetails {
     addr_history: VecDeque<SocketAddr>,
 }
 
-impl<I: PacketIO> UdpChannel<I> {
-    pub fn new(packet_io: I) -> Self {
+impl UdpChannel {
+    pub fn new() -> Self {
         UdpChannel {
             inner: Arc::new(Inner {
-                packet_io,
                 details: RwLock::new(ChannelDetails {
                     udp: None,
                     addr_history: VecDeque::new(),
@@ -58,48 +57,30 @@ impl<I: PacketIO> UdpChannel<I> {
         self.inner.last_send.store(0, Ordering::SeqCst);
     }
 
-    pub fn requires_resend(&self) -> bool {
+    pub fn check_resend(&self, now_sec: u32) -> bool {
         let last_confirm = self.inner.last_confirm.load(Ordering::SeqCst);
+        let last_send = self.inner.last_send.load(Ordering::SeqCst);
+
         /* if last confirm is 10s old, send keep alive */
-        last_confirm + 10 < now_sec()
+        let resend = (last_confirm + 10).max(last_send + 5) < now_sec;
+
+        if resend {
+            self.inner.last_send.store(now_sec, Ordering::Release);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn requires_auth(&self) -> bool {
         let last_confirm = self.inner.last_confirm.load(Ordering::SeqCst);
         let last_send = self.inner.last_send.load(Ordering::SeqCst);
+        
         /* timeout of 8s for receiving confirm */
         last_confirm + 8 < last_send
     }
 
-    pub async fn set_udp_tunnel(&self, details: UdpChannelDetails) -> std::io::Result<()> {
-        {
-            let mut lock = self.inner.details.write().await;
-
-            /* if details haven't changed, exit */
-            if let Some(current) = &lock.udp {
-                if details.eq(current) {
-                    return Ok(());
-                }
-
-                if !details.tunnel_addr.eq(&current.tunnel_addr) {
-                    tracing::info!(old = %current.tunnel_addr, new = %details.tunnel_addr, "change udp tunnel addr");
-
-                    let old_addr = current.tunnel_addr;
-                    lock.addr_history.push_front(old_addr);
-
-                    if lock.addr_history.len() > 5 {
-                        lock.addr_history.pop_back();
-                    }
-                }
-            }
-
-            lock.udp = Some(details.clone());
-        }
-
-        self.send_token(&details).await
-    }
-
-    pub async fn resend_token(&self) -> std::io::Result<bool> {
+    pub async fn resend_token<I: PacketTx>(&self, io: &I) -> std::io::Result<bool> {
         let token = {
             let lock = self.inner.details.read().await;
             match &lock.udp {
@@ -108,93 +89,151 @@ impl<I: PacketIO> UdpChannel<I> {
             }
         };
 
-        self.send_token(&token).await?;
+        self.send_token(&token, io).await?;
         Ok(true)
     }
 
-    async fn send_token(&self, details: &UdpChannelDetails) -> std::io::Result<()> {
-        self.inner.packet_io.send_to(&details.token, details.tunnel_addr).await?;
+    pub async fn send_token<I: PacketTx>(&self, details: &UdpChannelDetails, io: &I) -> std::io::Result<()> {
+        /* add new tunnel address to history so we accept replies */
+        {
+            let mut lock = self.inner.details.write().await;
+            let same_tunnel_addr = lock.udp.as_ref()
+                .map(|v| v.tunnel_addr.eq(&details.tunnel_addr))
+                .unwrap_or(false);
+
+            if !same_tunnel_addr && !lock.addr_history.contains(&details.tunnel_addr) {
+                tracing::info!(tunnel_addr = %details.tunnel_addr, "add tunnel address to history");
+
+                lock.addr_history.push_front(details.tunnel_addr);
+                if 8 < lock.addr_history.len() {
+                    let _ = lock.addr_history.pop_back();
+                }
+            }
+        }
+
+        io.send_to(&details.token, details.tunnel_addr).await?;
 
         tracing::info!(token_len = details.token.len(), tunnel_addr = %details.tunnel_addr, "send udp session token");
         self.inner.last_send.store(now_sec(), Ordering::SeqCst);
+
         Ok(())
     }
 
-    pub async fn send(&self, data: &mut Vec<u8>, flow: UdpFlow) -> std::io::Result<usize> {
+    pub async fn send_host_pkt<I: PacketTx>(&self, data: &mut [u8], data_len: usize, flow: UdpFlow, io: &I) -> std::io::Result<usize> {
+        assert!(data_len <= data.len());
+
         let details = self.get_details().await?;
 
-        /* append flow to udp packet */
-        let og_packet_len = data.len();
-        data.resize(flow.len() + og_packet_len, 0);
-        flow.write_to(&mut data[og_packet_len..]);
+        let flow_len = flow.len();
+        let updated_len = data_len + flow_len;
 
-        self.inner.packet_io.send_to(&data, details.tunnel_addr).await
+        if !flow.write_to(&mut data[data_len..]) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "data buffer not large enough for flow footer"));
+        }
+
+        io.send_to(&data[..updated_len], details.tunnel_addr).await
     }
 
-    async fn get_details(&self) -> std::io::Result<UdpChannelDetails> {
+    async fn get_details(&self) -> Result<UdpChannelDetails, UdpChannelError> {
         let lock = self.inner.details.read().await;
 
         let details = match &lock.udp {
             Some(v) => v,
-            None => return Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "udp tunnel not connected")),
+            None => return Err(UdpChannelError::UdpTunnelNotConnected),
         };
 
         Ok(details.clone())
     }
 
-    pub async fn receive_from(&self, buffer: &mut [u8]) -> std::io::Result<UdpTunnelRx> {
-        let (bytes, remote) = self.inner.packet_io.recv_from(buffer).await?;
-        let details = self.get_details().await?;
-
-        if details.tunnel_addr != remote {
+    pub async fn parse_packet(&self, buffer: &[u8], bytes: usize, remote: SocketAddr) -> Result<UdpTunnelRx, UdpChannelError> {
+        'check_origin: {
             let lock = self.inner.details.read().await;
-            let mut found = false;
-            for addr in &lock.addr_history {
-                if remote.eq(addr) {
-                    found = true;
-                    break;
+
+            if let Some(udp) = &lock.udp {
+                if udp.tunnel_addr == remote {
+                    break 'check_origin;
                 }
             }
 
-            if !found {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "got data from other source"));
+            if !lock.addr_history.contains(&remote) {
+                return Err(UdpChannelError::InvalidSource(remote));
             }
         }
 
-        if buffer[..bytes].eq(&details.token[..]) {
-            tracing::info!(token_len = bytes, tunnel_addr = %remote, "udp session confirmed");
-            self.inner.last_confirm.store(now_sec(), Ordering::SeqCst);
-            return Ok(UdpTunnelRx::ConfirmedConnection);
+        match UdpFlow::from_tail(&buffer[..bytes]) {
+            Ok(flow) => return Ok(UdpTunnelRx::ReceivedPacket {
+                bytes: bytes - flow.len(),
+                flow,
+            }),
+            Err(Some(footer)) if footer != UDP_CHANNEL_ESTABLISH_ID => return Err(UdpChannelError::InvalidFooter),
+            Err(None) => return Err(UdpChannelError::InvalidFooter),
+            _ => {}
         }
 
-        if buffer.len() + UdpFlow::len_v4().max(UdpFlow::len_v6()) < bytes {
-            return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "receive buffer too small"));
+        self.inner.last_confirm.store(now_sec(), Ordering::SeqCst);
+
+        let mut lock = self.inner.details.write().await;
+        match &lock.udp {
+            Some(current) if buffer[..bytes].eq(&current.token[..]) => {
+                tracing::info!(token_len = bytes, tunnel_addr = %remote, "udp session confirmed");
+                Ok(UdpTunnelRx::ConfirmedConnection)
+            }
+            _ => {
+                tracing::info!(token_len = bytes, tunnel_addr = %remote, "udp session updated");
+                let old = lock.udp.replace(UdpChannelDetails {
+                    tunnel_addr: remote,
+                    token: Arc::new(buffer[..bytes].to_vec()),
+                });
+
+                if let Some(old) = old {
+                    if old.tunnel_addr != remote {
+                        tracing::info!(tunnel_addr = %old.tunnel_addr, "saving old tunnel address");
+
+                        lock.addr_history.push_front(old.tunnel_addr);
+                        if 8 < lock.addr_history.len() {
+                            let _ = lock.addr_history.pop_back();
+                        }
+                    }
+                }
+
+                Ok(UdpTunnelRx::UpdatedConnection)
+            }
         }
+    }
+}
 
-        let footer = match UdpFlow::from_tail(&buffer[..bytes]) {
-            Ok(v) => v,
-            Err(Some(footer)) if footer == UDP_CHANNEL_ESTABLISH_ID => {
-                let actual = hex::encode(&buffer[..bytes]);
-                let expected = hex::encode(&details.token[..]);
+#[derive(Debug)]
+pub enum UdpChannelError {
+    InvalidSource(SocketAddr),
+    ReceiveBufferTooSmall,
+    InvalidFooter,
+    UdpTunnelNotConnected,
+}
 
-                tracing::error!(%actual, %expected, "unexpected UDP establish packet");
-                return Ok(UdpTunnelRx::InvalidEstablishToken);
-            },
-            _ => return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("failed to extract udp footer: {}", hex::encode(&buffer[..bytes]))
-            )),
+impl Display for UdpChannelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for UdpChannelError {
+}
+
+impl From<UdpChannelError> for std::io::Error {
+    fn from(value: UdpChannelError) -> Self {
+        let kind = match &value {
+            UdpChannelError::InvalidSource(_) => std::io::ErrorKind::InvalidInput,
+            UdpChannelError::ReceiveBufferTooSmall => std::io::ErrorKind::UnexpectedEof,
+            UdpChannelError::InvalidFooter => std::io::ErrorKind::InvalidData,
+            UdpChannelError::UdpTunnelNotConnected => std::io::ErrorKind::NotConnected,
         };
 
-        Ok(UdpTunnelRx::ReceivedPacket {
-            bytes: bytes - footer.len(),
-            flow: footer,
-        })
+        std::io::Error::new(kind, value)
     }
 }
 
 pub enum UdpTunnelRx {
     ReceivedPacket { bytes: usize, flow: UdpFlow },
     ConfirmedConnection,
-    InvalidEstablishToken,
+    UpdatedConnection,
 }

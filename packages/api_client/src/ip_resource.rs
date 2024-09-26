@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use byteorder::{BigEndian, ByteOrder};
 
-#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub struct IpResource {
     pub ip_num: u64,
     pub region: PlayitRegion,
@@ -25,7 +25,7 @@ impl IpResource {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord, Hash)]
 #[repr(u16)]
 pub enum PlayitRegion {
     Anycast = 0,

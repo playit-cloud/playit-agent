@@ -106,6 +106,7 @@ impl UdpFlow {
         if slice.len() < 8 {
             return Err(None);
         }
+
         let footer = BigEndian::read_u64(&slice[slice.len() - 8..]);
 
         match footer {
