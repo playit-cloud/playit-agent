@@ -5,7 +5,7 @@ use playit_api_client::api::{PortType, ProxyProtocol};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use uuid::Uuid;
 
-use crate::{agent_control::{udp_channel::{UdpChannel, UdpTunnelRx}, udp_proto::UdpFlow, DualStackUdpSocket, PacketIO}, network::{address_lookup::{AddressLookup, HostOrigin}, proxy_protocol::{ProxyProtocolHeader, UDP_PROXY_PROTOCOL_MAX_LEN}, udp::receive_task::UdpReceiverTask}, utils::{error_helper::MaxErrorInterval, id_slab::IdSlab, non_overlapping::{NonOverlapping, NonOverlappingCheck}, now_sec}};
+use crate::{agent_control::{udp_channel::{UdpChannel, UdpTunnelRx}, udp_proto::UdpFlow, DualStackUdpSocket, PacketIO}, network::{address_lookup::{AddressLookup, HostOrigin}, proxy_protocol::{ProxyProtocolHeader, UDP_PROXY_PROTOCOL_LEN_V4, UDP_PROXY_PROTOCOL_LEN_V6, UDP_PROXY_PROTOCOL_MAX_LEN}, udp::receive_task::UdpReceiverTask}, utils::{error_helper::MaxErrorInterval, id_slab::IdSlab, non_overlapping::{NonOverlapping, NonOverlappingCheck}, now_sec}};
 
 use super::{packets::Packets, receive_task::SocketPacket};
 
@@ -434,7 +434,7 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
         }
     }
 
-    async fn forward_packet_to_origin(&mut self, flow_path: UdpFlow, buffer: &mut [u8], data_start: usize, data_len: usize) {
+    async fn forward_packet_to_origin(&mut self, flow_path: UdpFlow, buffer: &mut [u8], mut data_start: usize, mut data_len: usize) {
         let mut now = Instant::now();
 
         let flow = match self.conn_info.flows.entry(flow_path) {
@@ -493,9 +493,9 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                     }
 
                     let add_res = if is_proxy_client {
-                        socket.endpoints.add::<DirectClientCheck>(exclusive_endpoint.take().unwrap())
-                    } else {
                         socket.endpoints.add::<ProxyClientCheck>(exclusive_endpoint.take().unwrap())
+                    } else {
+                        socket.endpoints.add::<DirectClientCheck>(exclusive_endpoint.take().unwrap())
                     };
 
                     match add_res {
@@ -552,7 +552,7 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                 v.insert(Flow {
                     socket_id,
                     target_addr,
-                    use_proxy_protocol: false,
+                    use_proxy_protocol: is_proxy_client,
                     last_client_packet: now,
                     last_host_packet: now,
                 })
@@ -565,7 +565,36 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
             .expect("could not load socket from id");
 
         if flow.use_proxy_protocol {
-            unimplemented!()
+            match flow_path {
+                UdpFlow::V4 { src, dst } => {
+                    assert!(UDP_PROXY_PROTOCOL_LEN_V4 <= data_start);
+                    let mut header_buffer = &mut buffer[data_start - UDP_PROXY_PROTOCOL_LEN_V4..];
+
+                    ProxyProtocolHeader::AfInet {
+                        client_ip: *src.ip(),
+                        proxy_ip: *dst.ip(),
+                        client_port: src.port(),
+                        proxy_port: dst.port(),
+                    }.write_v2_udp(&mut header_buffer).unwrap();
+
+                    data_start -= UDP_PROXY_PROTOCOL_LEN_V4;
+                    data_len += UDP_PROXY_PROTOCOL_LEN_V4;
+                }
+                UdpFlow::V6 { src, dst, .. } => {
+                    assert!(UDP_PROXY_PROTOCOL_LEN_V6 <= data_start);
+                    let mut header_buffer = &mut buffer[data_start - UDP_PROXY_PROTOCOL_LEN_V6..];
+
+                    ProxyProtocolHeader::AfInet6 {
+                        client_ip: src.0.into(),
+                        proxy_ip: dst.0.into(),
+                        client_port: src.1,
+                        proxy_port: dst.1,
+                    }.write_v2_udp(&mut header_buffer).unwrap();
+
+                    data_start -= UDP_PROXY_PROTOCOL_LEN_V6;
+                    data_len += UDP_PROXY_PROTOCOL_LEN_V6;
+                }
+            }
         }
 
         if let Err(error) = socket.packet_io.send_to(&buffer[data_start..(data_start + data_len)], flow.target_addr).await {
