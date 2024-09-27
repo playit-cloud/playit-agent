@@ -5,7 +5,7 @@ use playit_api_client::api::{PortType, ProxyProtocol};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use uuid::Uuid;
 
-use crate::{agent_control::{udp_channel::{UdpChannel, UdpTunnelRx}, udp_proto::UdpFlow, DualStackUdpSocket, PacketIO}, network::{address_lookup::{AddressLookup, HostOrigin}, proxy_protocol::{ProxyProtocolHeader, UDP_PROXY_PROTOCOL_LEN_V4, UDP_PROXY_PROTOCOL_LEN_V6, UDP_PROXY_PROTOCOL_MAX_LEN}, udp::receive_task::UdpReceiverTask}, utils::{error_helper::MaxErrorInterval, id_slab::IdSlab, non_overlapping::{NonOverlapping, NonOverlappingCheck}, now_sec}};
+use crate::{agent_control::{udp_channel::{UdpChannel, UdpTunnelRx}, udp_proto::UdpFlow, DualStackUdpSocket, PacketIO}, network::{address_lookup::{AddressLookup, HostOrigin}, proxy_protocol::ProxyProtocolHeader, udp::receive_task::UdpReceiverTask}, utils::{error_helper::MaxErrorInterval, id_slab::IdSlab, now_sec}};
 
 use super::{packets::Packets, receive_task::SocketPacket};
 
@@ -18,7 +18,7 @@ pub struct UdpClients<I: UdpTunnelProvider> {
     rx_packets_sender: Sender<SocketPacket>,
     udp_channel: UdpChannel,
     errors: ErrorLogs,
-    conn_info: ConnectionInfo,
+    flow_to_socket_id: HashMap<UdpFlow, u64>,
     udp_details: UdpDetailsSenderInner,
 }
 
@@ -86,28 +86,13 @@ struct ErrorLogs {
     session_send_fail: MaxErrorInterval,
     pkt_send: MaxErrorInterval,
     out_of_packets: MaxErrorInterval,
-    client_flow_not_found: MaxErrorInterval,
-}
-
-#[derive(Default)]
-struct ConnectionInfo {
-    flows: HashMap<UdpFlow, Flow>,
-}
-
-struct Flow {
-    socket_id: u64,
-    target_addr: SocketAddr,
-    use_proxy_protocol: bool,
-    last_client_packet: Instant,
-    last_host_packet: Option<Instant>,
-    last_proxy_packet: Option<Instant>,
 }
 
 struct Socket<I: PacketIO> {
     id: u64,
     packet_io: Arc<I>,
     run_receiver: Arc<AtomicBool>,
-    endpoints: NonOverlapping<TunnelEndpoint>,
+    clients: SocketClients,
     socket_type: SocketType,
 }
 
@@ -138,7 +123,7 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
             id: tunnel_socket_id,
             packet_io: tunnel_socket,
             run_receiver: Arc::new(AtomicBool::new(true)),
-            endpoints: NonOverlapping::new(),
+            clients: SocketClients::default(),
             socket_type: SocketType::Tunnel,
         };
 
@@ -148,7 +133,7 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
             run: tunnel_socket.run_receiver.clone(),
             packets: packets.clone(),
             tx: rx_packets_sender.clone(),
-            rx_offset: UDP_PROXY_PROTOCOL_MAX_LEN,
+            rx_offset: 0,
         }.start());
 
         entry.insert(tunnel_socket);
@@ -170,9 +155,8 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                 session_send_fail: MaxErrorInterval::new(Duration::from_secs(2)),
                 pkt_send: MaxErrorInterval::new(Duration::from_secs(2)),
                 out_of_packets: MaxErrorInterval::new(Duration::from_secs(2)),
-                client_flow_not_found: MaxErrorInterval::new(Duration::from_secs(2)),
             },
-            conn_info: Default::default(),
+            flow_to_socket_id: Default::default(),
             udp_details: UdpDetailsSenderInner {
                 value: Arc::new(Mutex::new(None)),
             }
@@ -227,76 +211,45 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
             return self.handle_tunnel_packet(packet).await;
         }
 
-        let Some(socket) = self.sockets.get(packet.socket_id) else {
+        let Some(socket) = self.sockets.get_mut(packet.socket_id) else {
             return;
         };
 
         assert_eq!(socket.socket_type, SocketType::Client);
 
-        let mut packet_data_len = packet.packet.len();
-        let mut packet_data = &mut packet.packet.full_slice_mut()[packet.data_offset..];
+        let packet_data_len = packet.packet.len();
+        let packet_data = &mut packet.packet.full_slice_mut()[packet.data_offset..];
 
-        let mut client_flow = None;
-
-        for tunnel in socket.endpoints.iter() {
-            if tunnel.host_origin.ip() != packet.address.ip() {
-                continue;
-            }
-
-            let origin_from_port = tunnel.host_origin.port();
-            let origin_to_port = origin_from_port + (tunnel.to_port - tunnel.from_port);
-            let packet_port = packet.address.port();
-
-            client_flow = Some({
-                if packet_port < origin_from_port || origin_to_port <= packet_port {
-                    continue;
-                }
-
-                let tunnel_port = tunnel.from_port + (packet_port - origin_from_port);
-
-                match tunnel.tunnel_flow {
-                    TunnelFlow::V4Client { tunnel_ip, client_ip, client_port } => UdpFlow::V4 {
-                        src: SocketAddrV4::new(client_ip, client_port),
-                        dst: SocketAddrV4::new(tunnel_ip, tunnel_port),
-                    },
-                    TunnelFlow::V6Client { tunnel_ip, client_ip, client_port } => UdpFlow::V6 {
-                        src: (client_ip, client_port),
-                        dst: (tunnel_ip, tunnel_port),
-                        flow: 0,
-                    },
-                    _ => panic!("tunnel flow for DirectClient socket is for a proxy"),
-                }
-            });
-
-            break;
-        }
-
-        let Some(client_flow) = client_flow else {
+        let Some(client) = socket.clients.clients
+            .iter_mut()
+            .find(|client| client.resource.contains_addr(&packet.address))
+        else {
             if self.errors.unexpected_origin.check() {
                 tracing::error!(source = %packet.address, "unexpected tunnel origin");
             }
             return;
         };
 
-        /* validate that flow exists */
-        match self.conn_info.flows.get_mut(&client_flow) {
-            Some(flow) => {
-                flow.last_host_packet = Some(Instant::now());
+        client.last_host_activity = Some(Instant::now());
 
-                if flow.socket_id != socket.id {
-                    if self.errors.client_flow_not_found.check() {
-                        tracing::error!(?client_flow, expected_id = flow.socket_id, actual_id = socket.id, "flow expected on a different socket");
-                    }
-                    return;
-                }
+        let client_flow = {
+            let port_offset = packet.address.port() - client.resource.host_origin.port();
+            let tunnel_port = client.resource.tunn_from_port + port_offset;
+
+            match client.tunnel_flow {
+                TunnelFlow::V4Client { tunnel_ip, client_ip, client_port } => UdpFlow::V4 {
+                    src: SocketAddrV4::new(client_ip, client_port),
+                    dst: SocketAddrV4::new(tunnel_ip, tunnel_port),
+                },
+                TunnelFlow::V6Client { tunnel_ip, client_ip, client_port } => UdpFlow::V6 {
+                    src: (client_ip, client_port),
+                    dst: (tunnel_ip, tunnel_port),
+                    flow: 0,
+                },
             }
-            None => {
-                if self.errors.client_flow_not_found.check() {
-                    tracing::error!(?client_flow, "origin trying to send to client that doesn't have flow");
-                }
-                return;
-            }
-        }
+        };
+
+        assert_eq!(self.flow_to_socket_id.get(&client_flow).cloned(), Some(packet.socket_id));
 
         let tunnel_socket = self.sockets.get(self.tunnel_socket_id).expect("missing tunnel socket");
         assert_eq!(tunnel_socket.socket_type, SocketType::Tunnel);
@@ -345,11 +298,11 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
         }
     }
 
-    async fn forward_packet_to_origin(&mut self, flow_path: UdpFlow, buffer: &mut [u8], mut data_start: usize, mut data_len: usize) {
+    async fn forward_packet_to_origin(&mut self, flow_path: UdpFlow, buffer: &mut [u8], data_start: usize, mut data_len: usize) {
         let mut now = Instant::now();
 
-        let flow = match self.conn_info.flows.entry(flow_path) {
-            hash_map::Entry::Occupied(o) => o.into_mut(),
+        let socket_id = match self.flow_to_socket_id.entry(flow_path) {
+            hash_map::Entry::Occupied(o) => *o.into_mut(),
             hash_map::Entry::Vacant(v) => {
                 let path = v.key();
                 let Some(found) = self.provider.lookup(path.dst().ip(), path.dst().port(), PortType::Udp) else {
@@ -363,118 +316,102 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                 assert!(found.from_port <= flow_path.dst().port());
                 assert!(flow_path.dst().port() < found.to_port);
 
-                let target_addr = SocketAddr::new(
-                    host_origin.host_addr.ip(),
-                    host_origin.host_addr.port() + flow_path.dst().port() - found.from_port
-                );
+                let uses_proxy_protocol = host_origin.proxy_protocol == Some(ProxyProtocol::ProxyProtocolV2);
+                tracing::info!(uses_proxy_protocol, tunnel_id = %host_origin.tunnel_id, ?flow_path, "new UDP client");
 
-                let is_proxy_client = host_origin.proxy_protocol == Some(ProxyProtocol::ProxyProtocolV2);
-                tracing::info!(is_proxy_client, tunnel_id = %host_origin.tunnel_id, ?flow_path, "new UDP client");
-
-                let mut exclusive_endpoint = Some(TunnelEndpoint {
+                let socket_client = SocketClient {
                     tunnel_id: host_origin.tunnel_id,
+                    resource: HostResource {
+                        host_origin: host_origin.host_addr,
+                        tunn_from_port: found.from_port,
+                        tunn_to_port: found.to_port,
+                    },
                     tunnel_flow: match flow_path {
                         UdpFlow::V4 { src, dst } => TunnelFlow::V4Client { tunnel_ip: *dst.ip(), client_ip: *src.ip(), client_port: src.port() },
                         UdpFlow::V6 { src, dst, .. } => TunnelFlow::V6Client { tunnel_ip: dst.0, client_ip: src.0, client_port: src.1 },
                     },
-                    host_origin: host_origin.host_addr,
-                    from_port: found.from_port,
-                    to_port: found.to_port,
+                    last_tunnel_activity: now,
+                    last_host_activity: None,
+                    uses_proxy_protocol,
+                    last_proxy_packet: None,
+                };
+
+                let socket = self.sockets.iter_mut().find(|socket| {
+                    socket.clients.can_add(&socket_client.resource)
                 });
 
-                /*
-                 * Search through sockets to see which is viable for client.
-                 */
-
-                let mut socket_id = None;
-
-                for socket in self.sockets.iter_mut() {
-                    /* cannot assign to tunnel socket */
-                    if socket.socket_type != SocketType::Client {
-                        continue;
+                let socket_id = match socket {
+                    Some(socket) => {
+                        socket.clients.clients.push(socket_client);
+                        socket.id
                     }
-
-                    match socket.endpoints.add::<TunnelEndpoint>(exclusive_endpoint.take().unwrap()) {
-                        Ok(_) => {
-                            socket_id = Some(socket.id);
-                            break;
-                        }
-                        Err(v) => {
-                            exclusive_endpoint = Some(v);
-                        }
-                    }
-                }
-
-                let socket_id = if let Some(id) = socket_id {
-                    id
-                } else {
-                    let Some(socket_entry) = self.sockets.vacant_entry() else {
-                        if self.errors.max_sockets.check() {
-                            tracing::error!("no viable socket found for new client, reached socket limit");
-                        }
-                        return;
-                    };
-
-                    let new_io = match self.provider.alloc_socket().await {
-                        Ok(v) => v,
-                        Err(error) => {
-                            tracing::error!(?error, "failed to setup new socket");
+                    None => {
+                        let Some(socket_entry) = self.sockets.vacant_entry() else {
+                            if self.errors.max_sockets.check() {
+                                tracing::error!("no viable socket found for new client, reached socket limit");
+                            }
                             return;
-                        }
-                    };
+                        };
 
-                    let socket = Socket {
-                        id: socket_entry.id(),
-                        packet_io: Arc::new(new_io),
-                        run_receiver: Arc::new(AtomicBool::new(true)),
-                        endpoints: NonOverlapping::with(exclusive_endpoint.unwrap()),
-                        socket_type: SocketType::Client,
-                    };
+                        let new_io = match self.provider.alloc_socket().await {
+                            Ok(v) => v,
+                            Err(error) => {
+                                tracing::error!(?error, "failed to setup new socket");
+                                return;
+                            }
+                        };
 
-                    tokio::spawn(UdpReceiverTask {
-                        id: socket.id,
-                        rx: socket.packet_io.clone(),
-                        run: socket.run_receiver.clone(),
-                        packets: self.packets.clone(),
-                        tx: self.rx_packets_sender.clone(),
-                        rx_offset: UDP_PROXY_PROTOCOL_MAX_LEN,
-                    }.start());
+                        let socket = Socket {
+                            id: socket_entry.id(),
+                            packet_io: Arc::new(new_io),
+                            run_receiver: Arc::new(AtomicBool::new(true)),
+                            clients: SocketClients { clients: vec![socket_client] },
+                            socket_type: SocketType::Client,
+                        };
 
-                    socket_entry.insert(socket)
+                        tokio::spawn(UdpReceiverTask {
+                            id: socket.id,
+                            rx: socket.packet_io.clone(),
+                            run: socket.run_receiver.clone(),
+                            packets: self.packets.clone(),
+                            tx: self.rx_packets_sender.clone(),
+                            rx_offset: 0,
+                        }.start());
+
+                        socket_entry.insert(socket)
+                    }
                 };
 
                 now = Instant::now();
-                
-                v.insert(Flow {
-                    socket_id,
-                    target_addr,
-                    use_proxy_protocol: is_proxy_client,
-                    last_client_packet: now,
-                    last_host_packet: None,
-                    last_proxy_packet: None,
-                })
+                *v.insert(socket_id)
             }
         };
 
-        flow.last_client_packet = now;
-
-        let socket = self.sockets.get(flow.socket_id)
+        let socket = self.sockets.get_mut(socket_id)
             .expect("could not load socket from id");
 
+        let client = socket.clients.get_client_mut(&flow_path).expect("could not find client");
+        client.last_tunnel_activity = now;
+
+        let target_addr = SocketAddr::new(
+            client.resource.host_origin.ip(),
+            client.resource.host_origin.port() + flow_path.dst().port() - client.resource.tunn_from_port
+        );
+
         'send_proxy_packet: {
-            if !flow.use_proxy_protocol {
+            if !client.uses_proxy_protocol {
                 break 'send_proxy_packet;
             }
 
             /* have recent packets from host, they must be okay with client so need to resend proxy protocol */
-            if let Some(host_ts) = &flow.last_host_packet {
+            if let Some(host_ts) = &client.last_host_activity {
                 if host_ts.elapsed() < Duration::from_secs(15) {
                     break 'send_proxy_packet;
                 }
             }
 
             /* don't send proxy protocol packet more than once ever 2s */
-            if let Some(send_ts) = &flow.last_proxy_packet {
+            if let Some(send_ts) = &client.last_proxy_packet {
                 if send_ts.elapsed() < Duration::from_secs(2) {
                     break 'send_proxy_packet;
                 }
@@ -494,15 +431,15 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
 
                 /* send proxy protocol packet */
                 {
-                    if let Err(error) = socket.packet_io.send_to(packet.as_ref(), flow.target_addr).await {
+                    if let Err(error) = socket.packet_io.send_to(packet.as_ref(), target_addr).await {
                         if self.errors.send.check() {
                             tracing::error!(?error, "failed to send PROXY PROTOCOL V2 packet");
                         }
                     }
                 }
 
-                tracing::info!(target = %flow.target_addr, "send proxy protocol v2 header");
-                flow.last_proxy_packet = Some(now);
+                tracing::info!(target = %target_addr, "send proxy protocol v2 header");
+                client.last_proxy_packet = Some(now);
             } else {
                 if self.errors.out_of_packets.check() {
                     tracing::error!("out of free packets, failed to send PROXY PROTOCOL V2 header");
@@ -510,7 +447,7 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
             }
         }
 
-        if let Err(error) = socket.packet_io.send_to(&buffer[data_start..(data_start + data_len)], flow.target_addr).await {
+        if let Err(error) = socket.packet_io.send_to(&buffer[data_start..(data_start + data_len)], target_addr).await {
             if self.errors.send.check() {
                 tracing::error!(?error, "failed to send packet");
             }
@@ -518,13 +455,54 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
     }
 }
 
+#[derive(Default)]
+pub struct SocketClients {
+    clients: Vec<SocketClient>,
+}
+
+impl SocketClients {
+    fn can_add(&self, resource: &HostResource) -> bool {
+        self.clients.iter()
+            .find(|c| !c.resource.is_overlapping(resource))
+            .is_some()
+    }
+    
+    fn get_client_mut(&mut self, flow: &UdpFlow) -> Option<&mut SocketClient> {
+        self.clients.iter_mut().find(|client| {
+            let (same_tunnel_ip, dst_port) = match (&client.tunnel_flow, flow) {
+                (TunnelFlow::V4Client { tunnel_ip, .. }, UdpFlow::V4 { dst, .. }) => (tunnel_ip.eq(dst.ip()), dst.port()),
+                (TunnelFlow::V6Client { tunnel_ip, .. }, UdpFlow::V6 { dst, .. }) => (tunnel_ip.eq(&dst.0), dst.1),
+                _ => (false, 0),
+            };
+
+            if !same_tunnel_ip {
+                return false;
+            }
+
+            client.resource.tunn_from_port <= dst_port && dst_port < client.resource.tunn_to_port
+        })
+    }
+}
+
+
 #[derive(Debug)]
-pub struct TunnelEndpoint {
+pub struct SocketClient {
     pub tunnel_id: Uuid,
+    pub resource: HostResource,
     pub tunnel_flow: TunnelFlow,
+
+    pub last_tunnel_activity: Instant,
+    pub last_host_activity: Option<Instant>,
+
+    pub uses_proxy_protocol: bool,
+    pub last_proxy_packet: Option<Instant>,
+}
+
+#[derive(Debug)]
+pub struct HostResource {
     pub host_origin: SocketAddr,
-    pub from_port: u16,
-    pub to_port: u16,
+    pub tunn_from_port: u16,
+    pub tunn_to_port: u16,
 }
 
 #[derive(Debug)]
@@ -541,25 +519,31 @@ pub enum TunnelFlow {
     },
 }
 
-
-impl NonOverlappingCheck for TunnelEndpoint {
-    type Element = TunnelEndpoint;
-
-    fn is_same(a: &Self::Element, b: &Self::Element) -> bool {
-        a.tunnel_id == b.tunnel_id
-    }
-
-    fn is_overlapping(a: &Self::Element, b: &Self::Element) -> bool {
-        if !a.host_origin.ip().eq(&b.host_origin.ip()) {
+impl HostResource {
+    fn contains_addr(&self, addr: &SocketAddr) -> bool {
+        if self.host_origin.ip() != addr.ip() {
             return false;
         }
 
-        let a_start = a.host_origin.port();
-        let a_end = a_start + (a.to_port - a.from_port);
+        let port_count = self.tunn_to_port - self.tunn_from_port;
+        let port = self.host_origin.port();
+        let addr_port = addr.port();
 
-        let b_start = b.host_origin.port();
-        let b_end = b_start + (b.to_port - b.from_port);
+        port <= addr_port && addr_port < (port + port_count)
+    }
+
+    fn is_overlapping(&self, other: &Self) -> bool {
+        if !self.host_origin.ip().eq(&other.host_origin.ip()) {
+            return false;
+        }
+
+        let a_start = self.host_origin.port();
+        let a_end = a_start + (self.tunn_to_port - self.tunn_from_port);
+
+        let b_start = other.host_origin.port();
+        let b_end = b_start + (other.tunn_to_port - other.tunn_from_port);
 
         a_start.max(b_start) <= a_end.min(b_end)
     }
 }
+
