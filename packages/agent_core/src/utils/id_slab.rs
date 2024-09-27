@@ -156,7 +156,7 @@ impl<'a, T> IdSlabVacantEntry<'a, T> {
         entry.id = id;
         entry.value.write(value);
 
-        ManuallyDrop::new(self);
+        let _ = ManuallyDrop::new(self);
         id
     }
 }
@@ -218,5 +218,46 @@ impl<'a, T> Iterator for IdSlabIterMut<'a, T> {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use std::collections::HashSet;
+
+    use rand::{seq::SliceRandom, thread_rng};
+
+    use super::IdSlab;
+
+    #[test]
+    fn test() {
+        let mut slab = IdSlab::<String>::with_capacity(16);
+        let world_id = slab.insert("hello world".to_string()).unwrap();
+
+        let mut old_ids = HashSet::new();
+        let mut ids = Vec::new();
+
+        for i in 0..100 {
+            for j in 0..8 {
+                let entry = slab.vacant_entry().unwrap();
+                assert!(old_ids.insert(entry.id()));
+
+                ids.push(entry.insert(format!("{} - {}", i, j)));
+                assert_eq!(slab.len(), ids.len() + 1);
+            }
+
+            ids.shuffle(&mut thread_rng());
+            while 7 < ids.len() {
+                let id = ids.pop().unwrap();
+
+                slab.remove(id).unwrap();
+                assert_eq!(slab.len(), ids.len() + 1);
+            }
+        }
+
+        assert_eq!(slab.get(world_id).unwrap(), "hello world");
+        for id in ids {
+            slab.remove(id).unwrap();
+        }
     }
 }

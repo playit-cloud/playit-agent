@@ -1,4 +1,4 @@
-use std::net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::{cmp::Ordering, net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6}};
 
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt, WriteBytesExt};
 
@@ -10,7 +10,7 @@ pub const UDP_CHANNEL_ESTABLISH_ID: u64 = 0xd01fe6830ddce781;
 const V4_LEN: usize = 20;
 const V6_LEN: usize = 48;
 
-#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Debug, Hash)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
 pub enum UdpFlow {
     V4 {
         src: SocketAddrV4,
@@ -19,18 +19,58 @@ pub enum UdpFlow {
     V6 {
         src: (Ipv6Addr, u16),
         dst: (Ipv6Addr, u16),
-        flow: u32,
     },
+}
+
+impl Ord for UdpFlow {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+/* IMPORTANT: Compare by dst port last so we can easily get flows that target a port range */
+impl PartialOrd<Self> for UdpFlow {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (UdpFlow::V4 { src: a_src, dst: a_dst }, UdpFlow::V4 { src: b_src, dst: b_dst }) => {
+                match a_src.cmp(b_src) {
+                    Ordering::Equal => {}
+                    other => return Some(other),
+                }
+
+                match a_dst.ip().cmp(b_dst.ip()) {
+                    Ordering::Equal => {}
+                    other => return Some(other),
+                }
+
+                Some(a_dst.port().cmp(&b_dst.port()))
+            }
+            (UdpFlow::V6 { src: a_src, dst: a_dst }, UdpFlow::V6 { src: b_src, dst: b_dst }) => {
+                match a_src.cmp(b_src) {
+                    Ordering::Equal => {}
+                    other => return Some(other),
+                }
+
+                match a_dst.0.cmp(&b_dst.0) {
+                    Ordering::Equal => {}
+                    other => return Some(other),
+                }
+
+                Some(a_dst.1.cmp(&b_dst.1))
+            }
+            (UdpFlow::V4 { .. }, UdpFlow::V6 { .. }) => Some(std::cmp::Ordering::Less),
+            (UdpFlow::V6 { .. }, UdpFlow::V4 { .. }) => Some(std::cmp::Ordering::Greater),
+        }
+    }
 }
 
 impl UdpFlow {
     pub fn flip(self) -> Self {
         match self {
             UdpFlow::V4 { src, dst } => UdpFlow::V4 { src: dst, dst: src },
-            UdpFlow::V6 { src, dst, flow } => UdpFlow::V6 {
+            UdpFlow::V6 { src, dst } => UdpFlow::V6 {
                 src: dst,
                 dst: src,
-                flow,
             },
         }
     }
@@ -40,9 +80,8 @@ impl UdpFlow {
             UdpFlow::V4 { src, .. } => SocketAddr::V4(*src),
             UdpFlow::V6 {
                 src: (ip, port),
-                flow,
                 ..
-            } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
+            } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, 0, 0)),
         }
     }
 
@@ -51,9 +90,8 @@ impl UdpFlow {
             UdpFlow::V4 { dst, .. } => SocketAddr::V4(*dst),
             UdpFlow::V6 {
                 dst: (ip, port),
-                flow,
                 ..
-            } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, *flow, 0)),
+            } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, 0, 0)),
         }
     }
 
@@ -63,10 +101,9 @@ impl UdpFlow {
                 src: SocketAddrV4::new(*src.ip(), port),
                 dst: *dst,
             },
-            UdpFlow::V6 { src, dst, flow } => UdpFlow::V6 {
+            UdpFlow::V6 { src, dst } => UdpFlow::V6 {
                 src: (src.0, port),
                 dst: *dst,
-                flow: *flow,
             },
         }
     }
@@ -86,12 +123,13 @@ impl UdpFlow {
                     .write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_OLD)
                     .unwrap();
             }
-            UdpFlow::V6 { src, dst, flow } => {
+            UdpFlow::V6 { src, dst } => {
                 slice.write_u128::<BigEndian>(src.0.into()).unwrap();
                 slice.write_u128::<BigEndian>(dst.0.into()).unwrap();
                 slice.write_u16::<BigEndian>(src.1).unwrap();
                 slice.write_u16::<BigEndian>(dst.1).unwrap();
-                slice.write_u32::<BigEndian>(*flow).unwrap();
+                /* FLOW */
+                slice.write_u32::<BigEndian>(0).unwrap();
                 slice
                     .write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID)
                     .unwrap();
@@ -138,12 +176,11 @@ impl UdpFlow {
                 let dst_ip = slice.read_u128::<BigEndian>().unwrap();
                 let src_port = slice.read_u16::<BigEndian>().unwrap();
                 let dst_port = slice.read_u16::<BigEndian>().unwrap();
-                let flow = slice.read_u32::<BigEndian>().unwrap();
+                let _flow = slice.read_u32::<BigEndian>().unwrap();
 
                 Ok(UdpFlow::V6 {
                     src: (src_ip.into(), src_port),
                     dst: (dst_ip.into(), dst_port),
-                    flow,
                 })
             }
             footer => Err(Some(footer)),
@@ -189,7 +226,6 @@ mod test {
         let flow = UdpFlow::V6 {
             src: ("2602:fbaf::100".parse().unwrap(), 142),
             dst: ("2602:fbaf::200".parse().unwrap(), 142),
-            flow: 1234,
         };
         flow.write_to(&mut buf[100 - V6_LEN..]);
 

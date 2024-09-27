@@ -1,8 +1,9 @@
-use std::{collections::{hash_map, HashMap}, future::Future, net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4}, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}, time::{Duration, Instant}};
+use std::{collections::{btree_map, hash_map, BTreeMap, HashMap}, future::Future, net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4}, sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex}, time::{Duration, Instant}};
 
 use playit_agent_proto::control_messages::UdpChannelDetails;
 use playit_api_client::api::{PortType, ProxyProtocol};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tracing::Instrument;
 use uuid::Uuid;
 
 use crate::{agent_control::{udp_channel::{UdpChannel, UdpTunnelRx}, udp_proto::UdpFlow, DualStackUdpSocket, PacketIO}, network::{address_lookup::{AddressLookup, HostOrigin}, proxy_protocol::ProxyProtocolHeader, udp::receive_task::UdpReceiverTask}, utils::{error_helper::MaxErrorInterval, id_slab::IdSlab, now_sec}};
@@ -18,8 +19,9 @@ pub struct UdpClients<I: UdpTunnelProvider> {
     rx_packets_sender: Sender<SocketPacket>,
     udp_channel: UdpChannel,
     errors: ErrorLogs,
-    flow_to_socket_id: HashMap<UdpFlow, u64>,
+    flow_to_socket_id: BTreeMap<UdpFlow, u64>,
     udp_details: UdpDetailsSenderInner,
+    last_clear_old: Instant,
 }
 
 pub struct UdpDetailsSender {
@@ -94,6 +96,7 @@ struct Socket<I: PacketIO> {
     run_receiver: Arc<AtomicBool>,
     clients: SocketClients,
     socket_type: SocketType,
+    empty_at: Instant,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -125,6 +128,7 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
             run_receiver: Arc::new(AtomicBool::new(true)),
             clients: SocketClients::default(),
             socket_type: SocketType::Tunnel,
+            empty_at: Instant::now(),
         };
 
         tokio::spawn(UdpReceiverTask {
@@ -159,7 +163,8 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
             flow_to_socket_id: Default::default(),
             udp_details: UdpDetailsSenderInner {
                 value: Arc::new(Mutex::new(None)),
-            }
+            },
+            last_clear_old: Instant::now(),
         }
     }
 
@@ -173,7 +178,111 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
         }
     }
 
+    fn clear_old(&mut self) {
+        let mut sockets_to_remove = Vec::<u64>::new();
+        let mut flows_to_remove = Vec::<UdpFlow>::new();
+
+        for socket in self.sockets.iter_mut() {
+            if socket.socket_type == SocketType::Tunnel {
+                continue;
+            }
+
+            if socket.clients.clients.len() == 0 {
+                if Duration::from_secs(60) < socket.empty_at.elapsed() {
+                    tracing::info!(socket_id = socket.id, "removing empty socket with no recent activity");
+                    sockets_to_remove.push(socket.id);
+                }
+                continue;
+            }
+
+            socket.clients.clients.retain(|client| {
+                let keep = 'keep: {
+                    let since_tunnel_activity = client.last_tunnel_activity.elapsed();
+
+                    /* no data from host and 15s since tunnel data */
+                    if client.last_host_activity.is_none() {
+                        break 'keep since_tunnel_activity < Duration::from_secs(15);
+                    }
+
+                    let since_host_activity = client.last_host_activity.unwrap().elapsed();
+
+                    /* most recent acitivty was within that last minute */
+                    if Duration::from_secs(60) < since_host_activity.min(since_tunnel_activity) {
+                        break 'keep false;
+                    }
+
+                    /* one side of the connection has no activity in last 5m */
+                    if Duration::from_secs(300) < since_host_activity.max(since_tunnel_activity) {
+                        break 'keep false;
+                    }
+
+                    true
+                };
+
+                if keep {
+                    return true;
+                }
+
+                let (from_flow, to_flow) = match client.tunnel_flow {
+                    TunnelFlow::V4Client { tunnel_ip, client_ip, client_port } => (
+                        UdpFlow::V4 {
+                            src: SocketAddrV4::new(client_ip, client_port),
+                            dst: SocketAddrV4::new(tunnel_ip, client.resource.tunn_from_port),
+                        },
+                        UdpFlow::V4 {
+                            src: SocketAddrV4::new(client_ip, client_port),
+                            dst: SocketAddrV4::new(tunnel_ip, client.resource.tunn_to_port),
+                        },
+                    ),
+                    TunnelFlow::V6Client { tunnel_ip, client_ip, client_port } => (
+                        UdpFlow::V6 {
+                            src: (client_ip, client_port),
+                            dst: (tunnel_ip, client.resource.tunn_from_port),
+                        },
+                        UdpFlow::V6 {
+                            src: (client_ip, client_port),
+                            dst: (tunnel_ip, client.resource.tunn_to_port),
+                        }
+                    ),
+                };
+
+                let flow_rm_count = {
+                    let count = flows_to_remove.len();
+                    flows_to_remove.extend(self.flow_to_socket_id.range(from_flow..to_flow).map(|pair| pair.0));
+                    flows_to_remove.len() - count
+                };
+
+                assert!(flow_rm_count != 0, "client should have at least 1 flow");
+
+                tracing::info!(socket_id = socket.id, ?client, flow_rm_count, "removing old client from socket");
+                false
+            });
+
+            if socket.clients.clients.len() == 0 {
+                socket.empty_at = Instant::now();
+            }
+        }
+
+        for flow in flows_to_remove {
+            self.flow_to_socket_id.remove(&flow).expect("missing flow queued for remove");
+        }
+
+        for socket_id in sockets_to_remove {
+            let socket = self.sockets.remove(socket_id).unwrap();
+            assert_eq!(socket.clients.clients.len(), 0);
+            assert_eq!(socket.socket_type, SocketType::Client);
+        }
+    }
+
     pub async fn recv_next(&mut self, timeout: Duration) {
+        /* clear old connections */
+        if Duration::from_secs(10) < self.last_clear_old.elapsed() {
+            self.last_clear_old = Instant::now();
+            
+            let _span = tracing::info_span!("clear_old").entered();
+            self.clear_old();
+        }
+
         /* send UDP session details */
         {
             if let Some(udp_details) = self.udp_details.take() {
@@ -244,7 +353,6 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                 TunnelFlow::V6Client { tunnel_ip, client_ip, client_port } => UdpFlow::V6 {
                     src: (client_ip, client_port),
                     dst: (tunnel_ip, tunnel_port),
-                    flow: 0,
                 },
             }
         };
@@ -298,12 +406,12 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
         }
     }
 
-    async fn forward_packet_to_origin(&mut self, flow_path: UdpFlow, buffer: &mut [u8], data_start: usize, mut data_len: usize) {
+    async fn forward_packet_to_origin(&mut self, flow_path: UdpFlow, buffer: &mut [u8], data_start: usize, data_len: usize) {
         let mut now = Instant::now();
 
         let socket_id = match self.flow_to_socket_id.entry(flow_path) {
-            hash_map::Entry::Occupied(o) => *o.into_mut(),
-            hash_map::Entry::Vacant(v) => {
+            btree_map::Entry::Occupied(o) => *o.into_mut(),
+            btree_map::Entry::Vacant(v) => {
                 let path = v.key();
                 let Some(found) = self.provider.lookup(path.dst().ip(), path.dst().port(), PortType::Udp) else {
                     if self.errors.tunnel_missing.check() {
@@ -367,6 +475,7 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                             run_receiver: Arc::new(AtomicBool::new(true)),
                             clients: SocketClients { clients: vec![socket_client] },
                             socket_type: SocketType::Client,
+                            empty_at: Instant::now(),
                         };
 
                         tokio::spawn(UdpReceiverTask {
