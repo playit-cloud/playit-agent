@@ -2,8 +2,9 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 
 use playit_api_client::api::{PortType, ProxyProtocol};
+use uuid::Uuid;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct AddressValue<V> {
     pub value: V,
     pub from_port: u16,
@@ -26,6 +27,7 @@ impl<T: AddressLookup> AddressLookup for Arc<T> {
 
 #[derive(Clone, Debug)]
 pub struct HostOrigin {
+    pub tunnel_id: Uuid,
     pub host_addr: SocketAddr,
     pub use_special_lan: Option<bool>,
     pub proxy_protocol: Option<ProxyProtocol>,
@@ -46,6 +48,7 @@ impl Into<SocketAddr> for HostOrigin {
 impl From<SocketAddr> for HostOrigin {
     fn from(value: SocketAddr) -> Self {
         HostOrigin {
+            tunnel_id: Uuid::default(),
             host_addr: value,
             use_special_lan: None,
             proxy_protocol: None,

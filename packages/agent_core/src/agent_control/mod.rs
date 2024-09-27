@@ -1,4 +1,4 @@
-use std::{future::Future, net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6}, sync::atomic::AtomicUsize, task::Poll};
+use std::{future::Future, net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6}, sync::{atomic::AtomicUsize, Arc}, task::Poll};
 
 use playit_agent_proto::control_messages::Pong;
 use errors::SetupError;
@@ -25,6 +25,38 @@ pub trait PacketIO: Send + Sync + 'static {
     fn send_to(&self, buf: &[u8], target: SocketAddr) -> impl Future<Output = std::io::Result<usize>> + Sync + Send;
 
     fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send;
+}
+
+pub trait PacketRx {
+    fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send;
+}
+
+impl<T: PacketIO> PacketRx for T {
+    fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send {
+        T::recv_from(self, buf)
+    }
+}
+
+impl<T: PacketIO> PacketRx for Arc<T> {
+    fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send {
+        T::recv_from(self, buf)
+    }
+}
+
+pub trait PacketTx {
+    fn send_to(&self, buf: &[u8], target: SocketAddr) -> impl Future<Output = std::io::Result<usize>> + Sync + Send;
+}
+
+impl<T: PacketIO> PacketTx for T {
+    fn send_to(&self, buf: &[u8], target: SocketAddr) -> impl Future<Output = std::io::Result<usize>> + Sync + Send {
+        T::send_to(self, buf, target)
+    }
+}
+
+impl<T: PacketIO> PacketTx for Arc<T> {
+    fn send_to(&self, buf: &[u8], target: SocketAddr) -> impl Future<Output = std::io::Result<usize>> + Sync + Send {
+        T::send_to(self, buf, target)
+    }
 }
 
 pub struct DualStackUdpSocket {
@@ -133,21 +165,22 @@ pub trait AuthResource: Clone {
 
 #[derive(Clone)]
 pub struct AuthApi {
-    pub api_url: String,
-    pub secret_key: String,
+    client: PlayitApi,
 }
 
 impl AuthApi {
-    pub fn api_client(&self) -> PlayitApi {
-        PlayitApi::create(self.api_url.clone(), Some(self.secret_key.clone()))
+    pub fn new(api_url: String, secret_key: String) -> Self {
+        let client = PlayitApi::create(
+            api_url,
+            Some(secret_key)
+        );
+        AuthApi { client }
     }
 }
 
 impl AuthResource for AuthApi {
     async fn authenticate(&self, pong: &Pong) -> Result<SignedAgentKey, SetupError> {
-        let api = self.api_client();
-
-        let res = api.proto_register(ReqProtoRegister {
+        let res = self.client.proto_register(ReqProtoRegister {
             agent_version: get_version(),
             client_addr: pong.client_addr,
             tunnel_addr: pong.tunnel_addr,
@@ -157,8 +190,7 @@ impl AuthResource for AuthApi {
     }
 
     async fn get_control_addresses(&self) -> Result<Vec<SocketAddr>, SetupError> {
-        let api = self.api_client();
-        let routing = api.agents_routing_get(ReqAgentsRoutingGet { agent_id: None }).await?;
+        let routing = self.client.agents_routing_get(ReqAgentsRoutingGet { agent_id: None }).await?;
 
         let mut addresses = vec![];
         for ip6 in routing.targets6 {
