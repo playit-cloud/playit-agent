@@ -2,11 +2,13 @@ use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::process::ExitCode;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use clap::{arg, Command};
+use args::CliArgs;
+use clap::{arg, Command, Parser, Subcommand};
 use playit_agent_core::agent_control::platform::get_platform;
 use playit_agent_core::agent_control::version::register_version;
 use rand::Rng;
@@ -33,9 +35,15 @@ pub mod playit_secret;
 pub mod match_ip;
 pub mod ui;
 pub mod signal_handle;
+pub mod args;
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, CliError> {
+    let args = CliArgs::parse();
+    println!("Got args: {:?}", args);
+
+    return Ok(ExitCode::SUCCESS);
+
     let matches = cli().get_matches();
 
     /* register docker */
@@ -192,68 +200,6 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 println!("{}", serde_json::to_string_pretty(&response).unwrap());
             }
             _ => return Err(CliError::NotImplemented.into())
-        }
-        Some(("run", m)) => {
-            tracing::error!("run is depreciated and will be removed in a future version of the CLI");
-
-            let secret_key = secret.get().await?;
-            let api = PlayitApi::create(API_BASE.to_string(), Some(secret_key.clone()));
-            let tunnels = api.agents_rundata().await?;
-            let mut tunnel_lookup = HashMap::new();
-            let mut tunnel_found = HashSet::new();
-
-            for tunnel in tunnels.tunnels {
-                tunnel_found.insert(tunnel.id);
-                tunnel_lookup.insert(tunnel.id, tunnel);
-            }
-
-            let mapping_override_strings: Vec<String> = match m.get_many::<String>("MAPPING_OVERRIDE") {
-                Some(v) => v.into_iter().map(|v| v.to_string()).collect(),
-                None => vec![],
-            };
-
-            let mut mapping_overrides = Vec::new();
-            for override_str in mapping_override_strings {
-                let mut parts = override_str.split("=");
-
-                let tunnel_id: Uuid = parts.next().ok_or(CliError::InvalidMappingOverride)?
-                    .parse().map_err(|_| CliError::InvalidMappingOverride)?;
-
-                let local_addr_str = parts.next().ok_or(CliError::InvalidMappingOverride)?;
-                let local_addr = match SocketAddr::from_str(local_addr_str) {
-                    Ok(addr) => addr,
-                    _ => match u16::from_str(local_addr_str) {
-                        Ok(port) => SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
-                        _ => return Err(CliError::InvalidMappingOverride.into()),
-                    }
-                };
-
-                match tunnel_lookup.remove(&tunnel_id) {
-                    Some(tunnel) => {
-                        mapping_overrides.push(MappingOverride {
-                            match_ip: MatchIp { ip_number: tunnel.ip_num, region_id: if tunnel.region_num == 0 { None } else { Some(tunnel.region_num) } },
-                            port: tunnel.port,
-                            proto: tunnel.proto,
-                            local_addr,
-                        });
-                    }
-                    None => {
-                        return if tunnel_found.contains(&tunnel_id) {
-                            Err(CliError::TunnelOverwrittenAlready(tunnel_id).into())
-                        } else {
-                            Err(CliError::TunnelNotFound(tunnel_id).into())
-                        };
-                    }
-                }
-            }
-
-            let tunnel = PlayitAgent::new(
-                API_BASE.to_string(),
-                secret_key,
-                Arc::new(LookupWithOverrides(mapping_overrides)),
-            ).await?;
-
-            tunnel.run().await;
         }
         _ => return Err(CliError::NotImplemented.into()),
     }
@@ -561,6 +507,8 @@ impl From<SetupError> for CliError {
     }
 }
 
+
+
 fn cli() -> Command {
     let mut cmd = Command::new("playit-cli")
         .arg(arg!(--secret <SECRET> "secret code for the agent").required(false))
@@ -625,11 +573,6 @@ fn cli() -> Command {
                     Command::new("list")
                         .about("List tunnels (format \"[tunnel-id] [port-type] [port-count] [public-address]\")")
                 )
-        )
-        .subcommand(
-            Command::new("run")
-                .about("(depreciated will be removed) Run the playit agent with manual port mappings")
-                .arg(arg!([MAPPING_OVERRIDE] "(format \"<tunnel-id>=[<local-ip>:]<local-port> [, ..]\")").required(false).value_delimiter(','))
         )
         .subcommand(
             Command::new("reset")
