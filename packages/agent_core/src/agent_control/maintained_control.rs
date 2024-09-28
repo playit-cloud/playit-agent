@@ -3,11 +3,9 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use playit_agent_proto::control_feed::{ControlFeed, NewClient};
-use playit_agent_proto::control_messages::ControlResponse;
+use playit_agent_proto::control_messages::{ControlResponse, UdpChannelDetails};
 
 use crate::agent_control::established_control::EstablishedControl;
-use crate::agent_control::udp_channel::UdpChannel;
-use crate::utils::error_helper::ErrorHelper;
 use crate::utils::now_milli;
 
 use super::address_selector::AddressSelector;
@@ -18,29 +16,25 @@ use super::{AuthResource, PacketIO};
 
 pub struct MaintainedControl<I: PacketIO, A: AuthResource> {
     control: EstablishedControl<A, I>,
-    udp: Option<UdpChannel<I>>,
     last_keep_alive: u64,
     last_ping: u64,
     last_pong: u64,
     last_udp_auth: u64,
-    last_udp_auth_resend: u64,
     last_control_targets: Vec<SocketAddr>,
 }
 
 impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
-    pub async fn setup(io: I, auth: A, udp: Option<UdpChannel<I>>) -> Result<Self, SetupError> {
+    pub async fn setup(io: I, auth: A) -> Result<Self, SetupError> {
         let addresses = auth.get_control_addresses().await?;
         let setup = AddressSelector::new(addresses.clone(), io).connect_to_first().await?;
         let control_channel = setup.auth_into_established(auth).await?;
 
         Ok(MaintainedControl {
             control: control_channel,
-            udp,
             last_keep_alive: 0,
             last_ping: 0,
             last_pong: 0,
             last_udp_auth: 0,
-            last_udp_auth_resend: 0,
             last_control_targets: addresses,
         })
     }
@@ -76,18 +70,23 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         tracing::info!(old = %self.control.conn.pong_latest.tunnel_addr, new = %connected.pong_latest.tunnel_addr, "update control address");
         connected.reset_established(&mut self.control, registered);
 
-        if let Some(udp) = &self.udp {
-            udp.invalidate_session();
-        }
-
         Ok(true)
     }
 
-    pub fn udp_channel(&self) -> Option<UdpChannel<I>> {
-        self.udp.clone()
+    pub async fn send_udp_session_auth(&mut self, now_ms: u64, min_wait_ms: u64) -> bool {
+        if now_ms < self.last_udp_auth + min_wait_ms {
+            return false;
+        }
+        
+        self.last_udp_auth = now_ms;
+        if let Err(error) = self.control.send_setup_udp_channel(1).await {
+            tracing::error!(?error, "failed to send setup udp channel request");
+        }
+
+        true
     }
 
-    pub async fn update(&mut self) -> Option<NewClient> {
+    pub async fn update(&mut self) -> Option<TunnelControlEvent> {
         if let Some(reason) = self.control.is_expired() {
             tracing::warn!(?reason, "session expired");
 
@@ -107,27 +106,6 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             }
         }
 
-        if let Some(udp) = &self.udp {
-            if udp.requires_auth() {
-                if 3_000 < now - self.last_udp_auth {
-                    self.last_udp_auth = now;
-    
-                    if let Err(error) = self.control.send_setup_udp_channel(9000).await {
-                        tracing::error!(?error, "failed to send udp setup request to control");
-                    }
-                }
-            } else if udp.requires_resend() {
-                if 1_000 < now - self.last_udp_auth_resend {
-                    self.last_udp_auth_resend = now;
-    
-                    if let Err(error) = udp.resend_token().await {
-                        tracing::error!(?error, "failed to send udp auth request");
-                    }
-                }
-            }
-        }
-
-
         let time_till_expire = self.control.get_expire_at().max(now) - now;
         tracing::trace!(time_till_expire, "time till expire");
 
@@ -145,27 +123,15 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             if let Err(error) = self.control.send_keep_alive(100).await {
                 tracing::error!(?error, "failed to send KeepAlive");
             }
-
-            self.control
-                .send_setup_udp_channel(1)
-                .await
-                .take_error(|error| {
-                    tracing::error!(?error, "failed to send setup udp channel request");
-                });
         }
 
         let mut timeouts = 0;
 
         for _ in 0..30 {
             match tokio::time::timeout(Duration::from_millis(100), self.control.recv_feed_msg()).await {
-                Ok(Ok(ControlFeed::NewClient(new_client))) => return Some(new_client),
+                Ok(Ok(ControlFeed::NewClient(new_client))) => return Some(TunnelControlEvent::NewClient(new_client)),
                 Ok(Ok(ControlFeed::Response(msg))) => match msg.content {
-                    ControlResponse::UdpChannelDetails(details) => {
-                        tracing::info!(?details, "update udp channel details");
-                        if let Some(udp) = &self.udp {
-                            udp.set_udp_tunnel(details).await.unwrap();
-                        }
-                    }
+                    ControlResponse::UdpChannelDetails(details) => return Some(TunnelControlEvent::UdpChannelDetails(details)),
                     ControlResponse::Unauthorized => {
                         tracing::info!("session no longer authorized");
                         self.control.set_expired();
@@ -208,4 +174,9 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
 
         None
     }
+}
+
+pub enum TunnelControlEvent {
+    NewClient(NewClient),
+    UdpChannelDetails(UdpChannelDetails),
 }

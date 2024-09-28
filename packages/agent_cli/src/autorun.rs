@@ -6,13 +6,14 @@ use std::{
 };
 
 use playit_agent_core::{
-    network::address_lookup::{AddressLookup, AddressValue},
+    network::address_lookup::{AddressLookup, AddressValue, HostOrigin},
     playit_agent::PlayitAgent,
     utils::now_milli,
 };
 use playit_api_client::api::*;
 use playit_ping_monitor::PingMonitor;
 use rand::random;
+use uuid::Uuid;
 
 use crate::{API_BASE, CliError, match_ip::MatchIp, playit_secret::PlayitSecret, ui::UI};
 
@@ -195,9 +196,9 @@ pub struct LocalLookup {
 }
 
 impl AddressLookup for LocalLookup {
-    type Value = SocketAddr;
+    type Value = HostOrigin;
 
-    fn lookup(&self, ip: IpAddr, port: u16, proto: PortType) -> Option<AddressValue<SocketAddr>> {
+    fn lookup(&self, ip: IpAddr, port: u16, proto: PortType) -> Option<AddressValue<HostOrigin>> {
         let values = self.data.lock().unwrap();
 
         for tunnel in &*values {
@@ -211,7 +212,12 @@ impl AddressLookup for LocalLookup {
 
             if tunnel.from_port <= port && port < tunnel.to_port {
                 return Some(AddressValue {
-                    value: tunnel.local_start_address,
+                    value: HostOrigin {
+                        tunnel_id: tunnel.tunnel_id,
+                        host_addr: tunnel.local_start_address,
+                        use_special_lan: None,
+                        proxy_protocol: tunnel.proxy_protocol,
+                    },
                     from_port: tunnel.from_port,
                     to_port: tunnel.to_port,
                 });
@@ -228,6 +234,7 @@ impl LocalLookup {
 
         for tunnel in tunnels {
             entries.push(TunnelEntry {
+                tunnel_id: tunnel.id,
                 pub_address: if tunnel.tunnel_type.as_ref().map(|v| v.eq("minecraft-java")).unwrap_or(false) {
                     tunnel.custom_domain.unwrap_or(tunnel.assigned_domain)
                 } else {
@@ -238,6 +245,7 @@ impl LocalLookup {
                 from_port: tunnel.port.from,
                 to_port: tunnel.port.to,
                 local_start_address: SocketAddr::new(tunnel.local_ip, tunnel.local_port),
+                proxy_protocol: tunnel.proxy_protocol,
             });
         }
 
@@ -247,10 +255,12 @@ impl LocalLookup {
 }
 
 pub struct TunnelEntry {
+    pub tunnel_id: Uuid,
     pub pub_address: String,
     pub match_ip: MatchIp,
     pub port_type: PortType,
     pub from_port: u16,
     pub to_port: u16,
     pub local_start_address: SocketAddr,
+    pub proxy_protocol: Option<ProxyProtocol>,
 }

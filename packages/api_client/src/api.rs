@@ -495,6 +495,7 @@ pub struct PlayitAgentVersion {
 pub struct AgentVersion {
 	pub platform: Platform,
 	pub version: String,
+	pub has_expired: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
@@ -654,6 +655,7 @@ pub struct AgentTunnel {
 	pub assigned_domain: String,
 	pub custom_domain: Option<String>,
 	pub disabled: Option<AgentTunnelDisabled>,
+	pub proxy_protocol: Option<ProxyProtocol>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -666,6 +668,14 @@ pub struct PortRange {
 pub enum AgentTunnelDisabled {
 	ByUser,
 	BySystem,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum ProxyProtocol {
+	#[serde(rename = "proxy-protocol-v1")]
+	ProxyProtocolV1,
+	#[serde(rename = "proxy-protocol-v2")]
+	ProxyProtocolV2,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]

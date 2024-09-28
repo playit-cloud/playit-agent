@@ -8,12 +8,15 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 
 use crate::agent_control::PacketIO;
-use playit_api_client::api::PortType;
+use playit_api_client::api::{PortType, ProxyProtocol};
 use crate::network::address_lookup::AddressLookup;
 use crate::network::lan_address::LanAddress;
 use crate::agent_control::udp_proto::UdpFlow;
 use crate::agent_control::udp_channel::UdpChannel;
 use crate::utils::now_sec;
+
+use super::address_lookup::HostOrigin;
+use super::proxy_protocol::{ProxyProtocolHeader, UDP_PROXY_PROTOCOL_LEN_V4, UDP_PROXY_PROTOCOL_LEN_V6};
 
 pub struct UdpClients<L: AddressLookup, I: PacketIO> {
     udp_tunnel: UdpChannel<I>,
@@ -28,8 +31,8 @@ struct ClientKey {
     tunnel_addr: SocketAddr,
 }
 
-impl<L: AddressLookup, I: PacketIO> UdpClients<L, I> where L::Value: Into<SocketAddr> {
-    pub fn new(tunnel: UdpChannel<I>, lookup: L) -> Self {
+impl<L: AddressLookup, I: PacketIO> UdpClients<L, I> where L::Value: Into<HostOrigin> {
+    pub fn new(tunnel: UdpChannel, lookup: L) -> Self {
         UdpClients {
             udp_tunnel: tunnel,
             lookup,
@@ -43,7 +46,7 @@ impl<L: AddressLookup, I: PacketIO> UdpClients<L, I> where L::Value: Into<Socket
         clients_lock.len()
     }
 
-    pub async fn forward_packet(&self, flow: &UdpFlow, data: &[u8]) -> std::io::Result<usize> {
+    pub async fn handle_tunnel_packet(&self, flow: &UdpFlow, data: &mut [u8], data_offset: usize) -> std::io::Result<usize> {
         let flow_dst = flow.dst();
 
         let found = self.lookup.lookup(flow_dst.ip(), flow_dst.port(), PortType::Udp)
@@ -59,16 +62,17 @@ impl<L: AddressLookup, I: PacketIO> UdpClients<L, I> where L::Value: Into<Socket
             let clients = self.udp_clients.read().await;
 
             if let Some(client) = clients.get(&key) {
-                return client.send_local(flow_dst.port(), data).await;
+                return client_send(flow, client, data, data_offset).await;
             }
         }
 
         {
             let mut clients = self.udp_clients.write().await;
+
             let client = match clients.entry(key) {
                 Entry::Occupied(o) => o.into_mut(),
                 Entry::Vacant(v) => {
-                    let local_addr = found.value.into();
+                    let origin: HostOrigin = found.value.into();
 
                     let (send_flow, client_addr) = match flow {
                         UdpFlow::V4 { src, dst } => (
@@ -94,13 +98,14 @@ impl<L: AddressLookup, I: PacketIO> UdpClients<L, I> where L::Value: Into<Socket
                     let client = Arc::new(UdpClient {
                         client_key,
                         send_flow,
-                        local_udp: LanAddress::udp_socket(self.use_special_lan, client_addr, local_addr).await?,
+                        local_udp: LanAddress::udp_socket(self.use_special_lan, client_addr, origin.host_addr).await?,
                         udp_tunnel: self.udp_tunnel.clone(),
-                        local_start_addr: local_addr,
+                        local_start_addr: origin.host_addr,
                         tunnel_from_port: found.from_port,
                         tunnel_to_port: found.to_port,
                         udp_clients: self.udp_clients.clone(),
                         last_activity: Default::default(),
+                        write_proxy_protocol_header: origin.proxy_protocol == Some(ProxyProtocol::ProxyProtocolV2),
                     });
 
                     tokio::spawn(HostToTunnelForwarder(client.clone()).run());
@@ -108,7 +113,7 @@ impl<L: AddressLookup, I: PacketIO> UdpClients<L, I> where L::Value: Into<Socket
                 }
             };
 
-            client.send_local(flow_dst.port(), data).await
+            return client_send(flow, client, data, data_offset).await;
         }
     }
 }
@@ -123,6 +128,7 @@ struct UdpClient<I: PacketIO> {
     tunnel_to_port: u16,
     udp_clients: Arc<RwLock<HashMap<ClientKey, Arc<UdpClient<I>>>>>,
     last_activity: AtomicU32,
+    write_proxy_protocol_header: bool,
 }
 
 impl<I: PacketIO> UdpClient<I> {
@@ -226,4 +232,48 @@ impl<I: PacketIO> HostToTunnelForwarder<I> {
             }
         }
     }
+}
+
+async fn client_send<I: PacketIO>(flow: &UdpFlow, client: &UdpClient<I>, data: &mut [u8], data_offset: usize) -> std::io::Result<usize> {
+    let flow_dst_port = flow.dst().port();
+
+    if !client.write_proxy_protocol_header {
+        return client.send_local(flow_dst_port, &data[data_offset..]).await;
+    }
+
+    let (header, write_offset) = match flow {
+        UdpFlow::V4 { src, dst } => (
+            ProxyProtocolHeader::AfInet {
+                client_ip: *src.ip(),
+                proxy_ip: *dst.ip(),
+                client_port: src.port(),
+                proxy_port: dst.port()
+            },
+            data_offset
+                .checked_sub(UDP_PROXY_PROTOCOL_LEN_V4)
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "data offset not large enough for proxy header"))?
+        ),
+        UdpFlow::V6 { src, dst, .. } => (
+            ProxyProtocolHeader::AfInet6 {
+                client_ip: src.0,
+                proxy_ip: dst.0,
+                client_port: src.1,
+                proxy_port: dst.1,
+            },
+            data_offset
+                .checked_sub(UDP_PROXY_PROTOCOL_LEN_V6)
+                .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "data offset not large enough for proxy header"))?
+        ),
+    };
+
+    let mut writer = &mut data[write_offset..];
+    header.write_v2_udp(&mut writer)?;
+
+    assert_eq!(
+        writer.as_mut_ptr() as usize,
+        data.as_mut_ptr() as usize + data_offset,
+        "wrote unexpected byte count with proxy protocol header"
+    );
+
+    client.send_local(flow_dst_port, &data[write_offset..]).await
 }

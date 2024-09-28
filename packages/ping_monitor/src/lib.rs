@@ -1,7 +1,7 @@
 use std::{collections::{HashMap, HashSet}, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 
 use ping_tool::PlayitPingTool;
-use playit_api_client::{api::{ApiErrorNoFail, ApiResponseError, PingExperimentDetails, PingExperimentResult, PingSample, PingTarget, ReqPingSubmit}, http_client::{HttpClient, HttpClientError}, PlayitApi};
+use playit_api_client::{api::{ApiErrorNoFail, ApiResponseError, PingExperimentDetails, PingExperimentResult, PingSample, PingTarget, ReqPingSubmit}, http_client::HttpClientError, PlayitApi};
 use tokio::sync::Mutex;
 
 pub mod ping_tool;
