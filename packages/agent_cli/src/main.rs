@@ -1,16 +1,13 @@
-use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::process::ExitCode;
-use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
 
-use args::CliArgs;
-use clap::{arg, Command, Parser, Subcommand};
+use args::{CliArgs, CmdAccount, CmdAgentType, CmdClaim, CmdTunnelRegion, CmdTunnelType, CmdTunnels, Commands};
+use clap::Parser;
 use playit_agent_core::agent_control::platform::get_platform;
 use playit_agent_core::agent_control::version::register_version;
+use playit_api_client::ip_resource::PlayitRegion;
 use rand::Rng;
 use uuid::Uuid;
 
@@ -19,7 +16,6 @@ use playit_api_client::{api::*, PlayitApi};
 use playit_api_client::http_client::HttpClientError;
 use playit_agent_core::network::address_lookup::{AddressLookup, AddressValue};
 use playit_agent_core::agent_control::errors::SetupError;
-use playit_agent_core::playit_agent::PlayitAgent;
 use playit_agent_core::utils::now_milli;
 use playit_secret::PlayitSecret;
 
@@ -39,16 +35,11 @@ pub mod args;
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, CliError> {
-    let args = CliArgs::parse();
-    println!("Got args: {:?}", args);
-
-    return Ok(ExitCode::SUCCESS);
-
-    let matches = cli().get_matches();
+    let mut args = CliArgs::parse();
 
     /* register docker */
     {
-        let platform = if matches.get_flag("platform_docker") {
+        let platform = if args.platform_docker {
             Platform::Docker
         } else {
             get_platform()
@@ -65,11 +56,11 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         });
     }
 
-    let mut secret = PlayitSecret::from_args(&matches).await;
+    let mut secret = PlayitSecret::from_args(&mut args).await;
     let _ = secret.with_default_path().await;
 
-    let log_only = matches.get_flag("stdout");
-    let log_path = matches.get_one::<String>("log_path");
+    let log_only = args.stdout;
+    let log_path = args.log_path;
 
     /* setup logging */
     let _guard = match (log_only, log_path) {
@@ -103,18 +94,9 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         log_only,
     });
 
-    match matches.subcommand() {
-        None => {
-            ui.write_screen("no command provided, doing auto run").await;
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            autorun(&mut ui, secret).await?;
-        }
-        Some(("start", _)) => {
-            autorun(&mut ui, secret).await?;
-        }
-        Some(("version", _)) => println!("{}", env!("CARGO_PKG_VERSION")),
+    match args.cmd {
         #[cfg(target_os = "linux")]
-        Some(("setup", _)) => {
+        Commands::Setup => {
             let mut secret = PlayitSecret::linux_service();
             let key = secret
                 .ensure_valid(&mut ui).await?
@@ -128,12 +110,15 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
             ui.write_screen("Playit setup, secret written to /etc/playit/playit.toml").await;
         }
-        Some(("reset", _)) => {
-            loop {
-                let mut secerts = PlayitSecret::from_args(&matches).await;
-                secerts.with_default_path().await;
+        Commands::Start => autorun(&mut ui, secret).await?,
+        Commands::Version => println!("{}", env!("CARGO_PKG_VERSION")),
+        Commands::Reset => {
+            for i in 0..100 {
+                assert!(i < 30);
 
-                let path = secerts.get_path().unwrap();
+                secret.with_default_path().await;
+
+                let path = secret.get_path().unwrap();
                 if !tokio::fs::try_exists(path).await.unwrap_or(false) {
                     break;
                 }
@@ -142,66 +127,137 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 println!("deleted secret at: {}", path);
             }
         }
-        Some(("secret-path", _)) => {
-            let mut secerts = PlayitSecret::from_args(&matches).await;
-            secerts.with_default_path().await;
-            let path = secerts.get_path().unwrap();
+        Commands::SecretPath => {
+            secret.with_default_path().await;
+            let path = secret.get_path().unwrap();
             println!("{}", path);
         }
-        Some(("account", m)) => match m.subcommand() {
-            Some(("login-url", _)) => {
-                let api = secret.create_api().await?;
-                let session = api.login_guest().await?;
-                println!("https://playit.gg/login/guest-account/{}", session.session_key)
-            }
-            _ => return Err(CliError::NotImplemented.into()),
+        Commands::Account(CmdAccount::LoginUrl) => {
+            let api = secret.create_api().await?;
+            let session = api.login_guest().await?;
+            println!("https://playit.gg/login/guest-account/{}", session.session_key)
         }
-        Some(("claim", m)) => match m.subcommand() {
-            Some(("generate", _)) => {
-                ui.write_screen(claim_generate()).await;
-            }
-            Some(("url", m)) => {
-                let code = m.get_one::<String>("CLAIM_CODE").expect("required");
-                ui.write_screen(format!("{}", claim_url(code)?)).await;
-            }
-            Some(("exchange", m)) => {
-                let claim_code = m.get_one::<String>("CLAIM_CODE").expect("required");
-                let wait: u32 = m.get_one::<String>("wait").expect("required").parse().expect("invalid wait value");
-
-                let secret_key = claim_exchange(&mut ui, claim_code, AgentType::SelfManaged, wait).await?;
-                ui.write_screen(secret_key).await;
-            }
-            _ => return Err(CliError::NotImplemented.into()),
-        },
-        Some(("tunnels", m)) => match m.subcommand() {
-            Some(("prepare", m)) => {
-                let api = secret.create_api().await?;
-
-                let name = m.get_one::<String>("NAME").cloned();
-                let tunnel_type: Option<TunnelType> = m.get_one::<String>("TUNNEL_TYPE")
-                    .and_then(|v| serde_json::from_str(&format!("{:?}", v)).ok());
-                let port_type = serde_json::from_str::<PortType>(&format!("{:?}", m.get_one::<String>("PORT_TYPE").expect("required")))
-                    .map_err(|_| CliError::InvalidPortType)?;
-                let port_count = m.get_one::<String>("PORT_COUNT").expect("required")
-                    .parse::<u16>().map_err(|_| CliError::InvalidPortCount)?;
-                let exact = m.get_flag("exact");
-                let ignore_name = m.get_flag("ignore_name");
-
-                let tunnel_id = tunnels_prepare(
-                    &api, name, tunnel_type, port_type,
-                    port_count, exact, ignore_name,
-                ).await?;
-
-                println!("{}", tunnel_id);
-            }
-            Some(("list", _)) => {
-                let api = secret.create_api().await?;
-                let response = api.tunnels_list_json(ReqTunnelsList { tunnel_id: None, agent_id: None }).await?;
-                println!("{}", serde_json::to_string_pretty(&response).unwrap());
-            }
-            _ => return Err(CliError::NotImplemented.into())
+        Commands::Claim(CmdClaim::Generate) => {
+            ui.write_screen(claim_generate()).await;
         }
-        _ => return Err(CliError::NotImplemented.into()),
+        Commands::Claim(CmdClaim::Url(command)) => {
+            /* TODO: add agent type and name to URL */
+            ui.write_screen(format!(
+                "https://playit.gg/claim/{}",
+                command.claim_code,
+            )).await;
+        }
+        Commands::Claim(CmdClaim::Exchange(command)) => {
+            let agent_type = match command.agent_type {
+                CmdAgentType::Asignable => AgentType::Assignable,
+                CmdAgentType::SelfManaged => AgentType::SelfManaged,
+            };
+
+            let secret_key = claim_exchange(&mut ui, &command.claim_code, agent_type, command.wait).await?;
+            ui.write_screen(secret_key).await;
+        }
+        Commands::Tunnels(CmdTunnels::Prepare(command)) => {
+            let api = secret.create_api().await?;
+
+            let (tunnel_type, port_type) = match command.tunnel_type {
+                CmdTunnelType::Both => (None, PortType::Both),
+                CmdTunnelType::Tcp => (None, PortType::Tcp),
+                CmdTunnelType::Udp => (None, PortType::Udp),
+                CmdTunnelType::MinecraftJava => (Some(serde_json::to_string(&TunnelType::MinecraftJava).unwrap()), PortType::Tcp),
+                CmdTunnelType::MinecraftBedrock => (Some(serde_json::to_string(&TunnelType::MinecraftBedrock).unwrap()), PortType::Tcp),
+            };
+
+            let target_region_num = match command.region {
+                CmdTunnelRegion::GlobalAnycast => PlayitRegion::Global,
+                CmdTunnelRegion::Optimal => {
+                    let region = api.query_region(ReqQueryRegion { limit_region: None }).await?;
+                    match region.region {
+                        playit_api_client::api::PlayitRegion::GlobalAnycast => PlayitRegion::Global,
+                        playit_api_client::api::PlayitRegion::Asia => PlayitRegion::Asia,
+                        playit_api_client::api::PlayitRegion::NorthAmerica => PlayitRegion::NorthAmerica,
+                        playit_api_client::api::PlayitRegion::Europe => PlayitRegion::Europe,
+                        playit_api_client::api::PlayitRegion::India => PlayitRegion::India,
+                        playit_api_client::api::PlayitRegion::SouthAmerica => PlayitRegion::SouthAmerica,
+                    }
+                }
+                CmdTunnelRegion::NorthAmerica => PlayitRegion::NorthAmerica,
+                CmdTunnelRegion::Europe => PlayitRegion::Europe,
+                CmdTunnelRegion::Asia => PlayitRegion::Asia,
+                CmdTunnelRegion::India => PlayitRegion::India,
+                CmdTunnelRegion::SouthAmerica => PlayitRegion::SouthAmerica,
+            } as u16;
+
+            let existing = 'find_update: {
+                if command.create_new {
+                    break 'find_update None;
+                }
+
+                let data = api.agents_rundata().await?;
+                if data.account_status != AgentAccountStatus::Ready {
+                    println!("Invalid account status: {:?}", data.account_status);
+                    return Ok(std::process::ExitCode::FAILURE);
+                }
+
+                for tunnel in data.tunnels {
+                    let port_count = tunnel.port.to - tunnel.port.from;
+                    if tunnel.tunnel_type != tunnel_type {
+                        continue;
+                    }
+                    if command.port_count != port_count {
+                        continue;
+                    }
+                    if !command.ignore_name && tunnel.name.as_ref() != Some(&command.name) {
+                        continue;
+                    }
+                    if tunnel.proto != port_type {
+                        continue;
+                    }
+
+                    if !command.ignore_region && tunnel.region_num != target_region_num {
+                        continue;
+                    }
+
+                    break 'find_update Some((tunnel.id, (tunnel.local_ip, tunnel.local_port)));
+                }
+
+                for tunnel in data.pending {
+                    if tunnel.tunnel_type != tunnel_type {
+                        continue;
+                    }
+
+                    if tunnel.proto != port_type {
+                        continue;
+                    }
+
+                    if !command.ignore_name && tunnel.name.as_ref() != Some(&command.name) {
+                        continue;
+                    }
+
+                    if !command.ignore_region && tunnel.region_num != target_region_num {
+                        continue;
+                    }
+                }
+
+                None
+            };
+
+            
+        }
+        Commands::Tunnels(CmdTunnels::Delete(command)) => {
+            todo!()
+        }
+        Commands::Tunnels(CmdTunnels::List) => {
+            todo!()
+        }
+        Commands::Tunnels(CmdTunnels::Find(command)) => {
+            todo!()
+        }
+        Commands::Tunnels(CmdTunnels::WaitFor(command)) => {
+            todo!()
+        }
+        Commands::Tunnels(CmdTunnels::Set(command)) => {
+            todo!()
+        }
     }
 
     Ok(std::process::ExitCode::SUCCESS)
@@ -299,152 +355,6 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
     Ok(secret_key)
 }
 
-struct TunnelOption {
-    id: Uuid,
-    name: Option<String>,
-    proto: PortType,
-    port_count: u16,
-    tunnel_type: Option<String>,
-    public_address: Option<TunnelAlloc>,
-}
-
-struct TunnelAlloc {
-    address: String,
-    port: u16,
-}
-
-pub async fn tunnels_prepare(api: &PlayitApi, name: Option<String>, tunnel_type: Option<TunnelType>, port_type: PortType, port_count: u16, exact: bool, ignore_name: bool) -> Result<Uuid, CliError> {
-    let tunnel_type_str = tunnel_type.clone().map(|v| format!("{:?}", v));
-    let data = api.agents_rundata().await?;
-
-    let options = data.tunnels.into_iter().map(|v| {
-        let is_minecraft = v.tunnel_type.as_ref().map(|v| v.eq("minecraft-java")).unwrap_or(false);
-
-        TunnelOption {
-            id: v.id,
-            name: v.name,
-            proto: v.proto,
-            port_count: v.port.to - v.port.from,
-            tunnel_type: v.tunnel_type,
-            public_address: Some({
-                let name = v.custom_domain.unwrap_or(v.assigned_domain);
-                let address = if is_minecraft {
-                    name
-                } else {
-                    format!("{}:{}", name, v.port.from)
-                };
-
-                TunnelAlloc {
-                    address,
-                    port: v.port.from,
-                }
-            }),
-        }
-    });
-
-    let options = options.chain(data.pending.into_iter().map(|v| {
-        TunnelOption {
-            id: v.id,
-            name: v.name,
-            proto: v.proto,
-            port_count: v.port_count,
-            tunnel_type: v.tunnel_type,
-            public_address: None,
-        }
-    }));
-
-    let mut options = options.filter(|tunnel| {
-        if exact {
-            if (ignore_name || tunnel.name.eq(&name)) && tunnel.proto == port_type && port_count == tunnel.port_count && tunnel.tunnel_type == tunnel_type_str {
-                true
-            } else {
-                false
-            }
-        } else {
-            if (tunnel.proto == PortType::Both || tunnel.proto == port_type) && port_count <= tunnel.port_count && tunnel.tunnel_type == tunnel_type_str {
-                true
-            } else {
-                false
-            }
-        }
-    }).collect::<Vec<_>>();
-
-    /* rank options by how much they match */
-    options.sort_by_key(|option| {
-        let mut points = 0;
-
-        if ignore_name {
-            if name.is_some() && option.name.eq(&name) {
-                points += 1;
-            }
-        } else {
-            if option.name.eq(&name) {
-                points += 10;
-            }
-        }
-
-        if option.proto == port_type {
-            points += 200;
-        }
-
-        if port_count == option.port_count {
-            points += 100;
-        } else {
-            points += ((port_count as i32) - (option.port_count as i32)) * 10;
-        }
-
-        points
-    });
-
-    if let Some(found_tunnel) = options.pop() {
-        return Ok(found_tunnel.id);
-    }
-
-    let created = api.tunnels_create(ReqTunnelsCreate {
-        name,
-        tunnel_type,
-        port_type,
-        port_count,
-        origin: TunnelOriginCreate::Managed(AssignedManagedCreate { agent_id: None }),
-        enabled: true,
-        alloc: None,
-        firewall_id: None,
-    }).await?;
-
-    Ok(created.id)
-}
-
-struct MappingOverride {
-    match_ip: MatchIp,
-    proto: PortType,
-    port: PortRange,
-    local_addr: SocketAddr,
-}
-
-pub struct LookupWithOverrides(Vec<MappingOverride>);
-
-impl AddressLookup for LookupWithOverrides {
-    type Value = SocketAddr;
-
-    fn lookup(&self, ip: IpAddr, port: u16, proto: PortType) -> Option<AddressValue<SocketAddr>> {
-        for over in &self.0 {
-            if over.proto.matches(proto) && over.match_ip.matches(ip) && over.port.contains(port) {
-                return Some(AddressValue {
-                    value: over.local_addr,
-                    from_port: over.port.from,
-                    to_port: over.port.to,
-                });
-            }
-        }
-
-        Some(AddressValue {
-            value: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)),
-            from_port: port,
-            to_port: port + 1,
-        })
-    }
-}
-
 #[derive(Debug)]
 pub enum CliError {
     InvalidClaimCode,
@@ -505,88 +415,4 @@ impl From<SetupError> for CliError {
     fn from(e: SetupError) -> Self {
         CliError::TunnelSetupError(e)
     }
-}
-
-
-
-fn cli() -> Command {
-    let mut cmd = Command::new("playit-cli")
-        .arg(arg!(--secret <SECRET> "secret code for the agent").required(false))
-        .arg(arg!(--secret_path <PATH> "path to file containing secret").required(false))
-        .arg(arg!(-w --secret_wait "wait for secret_path file to read secret").required(false))
-        .arg(arg!(-s --stdout "prints logs to stdout").required(false))
-        .arg(arg!(-l --log_path <PATH> "path to write logs to").required(false))
-        .arg(arg!(--platform_docker "overrides platform in version to be docker").required(false))
-        .subcommand_required(false)
-        .subcommand(Command::new("version"))
-        .subcommand(
-            Command::new("account")
-                .subcommand_required(true)
-                .subcommand(
-                    Command::new("login-url")
-                        .about("Generates a link to allow user to login")
-                )
-        )
-        .subcommand(
-            Command::new("claim")
-                .subcommand_required(true)
-                .arg(arg!(--name <TUNNEL_NAME> "name of the agent").required(false))
-                .about("Setting up a new playit agent")
-                .long_about("Provides a URL that can be visited to claim the agent and generate a secret key")
-                .subcommand(
-                    Command::new("generate")
-                        .about("Generates a random claim code")
-                )
-                .subcommand(
-                    Command::new("url")
-                        .about("Print a claim URL given the code and options")
-                        .arg(arg!(<CLAIM_CODE> "claim code"))
-                        .arg(arg!(--name [NAME] "name for the agent").default_value("from-cli"))
-                        .arg(arg!(--type [TYPE] "the agent type").default_value("self-managed"))
-                )
-                .subcommand(
-                    Command::new("exchange")
-                        .about("Exchanges the claim for the secret key")
-                        .arg(arg!(<CLAIM_CODE> "claim code (see \"claim generate\")"))
-                        .arg(arg!(--wait <WAIT_SEC> "number of seconds to wait 0=infinite").default_value("0"))
-                )
-        )
-        .subcommand(
-            Command::new("start")
-                .about("Start the playit agent")
-        )
-        .subcommand(
-            Command::new("tunnels")
-                .subcommand_required(true)
-                .about("Manage tunnels")
-                .subcommand(
-                    Command::new("prepare")
-                        .about("Create a tunnel if it doesn't exist with the parameters")
-                        .arg(arg!(--type [TUNNEL_TYPE] "the tunnel type"))
-                        .arg(arg!(--name [NAME] "name of the tunnel"))
-                        .arg(arg!(<PORT_TYPE> "either \"tcp\", \"udp\", or \"both\""))
-                        .arg(arg!(<PORT_COUNT> "number of ports in a series to allocate").default_value("1"))
-                        .arg(arg!(--exact))
-                        .arg(arg!(--ignore_name))
-                )
-                .subcommand(
-                    Command::new("list")
-                        .about("List tunnels (format \"[tunnel-id] [port-type] [port-count] [public-address]\")")
-                )
-        )
-        .subcommand(
-            Command::new("reset")
-                .about("removes the secret key on your system so the playit agent can be re-claimed")
-        )
-        .subcommand(
-            Command::new("secret-path")
-                .about("shows the file path where the playit secret can be found")
-        )
-        ;
-
-    #[cfg(target_os = "linux")] {
-        cmd = cmd.subcommand(Command::new("setup"));
-    }
-
-    cmd
 }

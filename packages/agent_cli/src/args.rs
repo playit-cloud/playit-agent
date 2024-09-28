@@ -11,8 +11,8 @@ pub struct CliArgs {
     pub secret: Option<String>,
     #[arg(long("secret-path"), alias = "secret_path")]
     pub secret_path: Option<String>,
-    #[arg(long("secret-wait"), alias = "secret_wait")]
-    pub secret_wait: Option<u32>,
+    #[arg(long("secret-wait"), alias = "secret_wait", default_value = "false")]
+    pub secret_wait: bool,
 
     /* logging */
     #[arg(short, long, default_value = "false")]
@@ -64,9 +64,6 @@ pub struct CmdClaimUrl {
 
     #[arg(long("name"))]
     pub agent_name: Option<String>,
-
-    #[arg(long("type"), default_value = "self-managed")]
-    pub agent_type: CmdAgentType,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,12 +80,15 @@ pub struct CmdClaimExchange {
 
     #[arg(long, default_value = "0")]
     pub wait: u32,
+
+    #[arg(long("type"), default_value = "self-managed")]
+    pub agent_type: CmdAgentType,
 }
 
 #[derive(Subcommand, Debug)]
 #[command(about = "Commands to manage tunnels")]
 pub enum CmdTunnels {
-    Create(CmdTunnelsCreate),
+    Prepare(CmdTunnelsPrepare),
     Delete(CmdTunnelsDelete),
     Find(CmdTunnelsFind),
     List,
@@ -97,7 +97,7 @@ pub enum CmdTunnels {
 }
 
 #[derive(Args, Debug)]
-pub struct CmdTunnelsCreate {
+pub struct CmdTunnelsPrepare {
     #[arg()]
     pub name: String,
     #[arg()]
@@ -107,11 +107,13 @@ pub struct CmdTunnelsCreate {
 
     #[arg(short('r'), long("region"), default_value = "optimal")]
     pub region: CmdTunnelRegion,
-    #[arg(long("ignore-region-on-match"), default_value = "true")]
-    pub ignore_region_on_match: bool,
+    #[arg(long("ignore-region"), default_value = "true")]
+    pub ignore_region: bool,
+    #[arg(long("ignore-name"), default_value = "false")]
+    pub ignore_name: bool,
 
     #[arg(short('c'), long("port-count"), default_value = "1")]
-    pub port_count: u32,
+    pub port_count: u16,
     #[arg(short('u'), long("update-only"), default_value = "false")]
     pub update_only: bool,
     #[arg(short('n'), long("create-new"), default_value = "false")]

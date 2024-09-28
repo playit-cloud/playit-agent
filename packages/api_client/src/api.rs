@@ -63,6 +63,12 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 	pub async fn tunnels_list_json(&self, req: ReqTunnelsList) -> Result<serde_json::Value, ApiErrorNoFail<C::Error>> {
 		Self::unwrap_no_fail(self.client.call("/tunnels/list", req).await)
 	}
+	pub async fn agents_list_json(&self) -> Result<serde_json::Value, ApiErrorNoFail<C::Error>> {
+		Self::unwrap_no_fail(self.client.call("/agents/list", ReqAgentsList {}).await)
+	}
+	pub async fn query_region(&self, req: ReqQueryRegion) -> Result<QueryRegion, ApiError<QueryRegionError, C::Error>> {
+		Self::unwrap(self.client.call("/query/region", req).await)
+	}
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -686,6 +692,7 @@ pub struct AgentPendingTunnel {
 	pub port_count: u16,
 	pub tunnel_type: Option<String>,
 	pub is_disabled: bool,
+	pub region_num: u16,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -738,5 +745,73 @@ pub struct PingExperimentDetails {
 pub struct ReqTunnelsList {
 	pub tunnel_id: Option<uuid::Uuid>,
 	pub agent_id: Option<uuid::Uuid>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqAgentsList {
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqQueryRegion {
+	pub limit_region: Option<PlayitRegion>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum PlayitRegion {
+	GlobalAnycast,
+	NorthAmerica,
+	Europe,
+	Asia,
+	India,
+	SouthAmerica,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct QueryRegion {
+	pub region: PlayitRegion,
+	pub pop: PlayitPop,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum PlayitPop {
+	Any,
+	#[serde(rename = "USLosAngeles")]
+	UsLosAngeles,
+	#[serde(rename = "USSeattle")]
+	UsSeattle,
+	#[serde(rename = "USDallas")]
+	UsDallas,
+	#[serde(rename = "USMiami")]
+	UsMiami,
+	#[serde(rename = "USChicago")]
+	UsChicago,
+	#[serde(rename = "USNewJersey")]
+	UsNewJersey,
+	CanadaToronto,
+	Mexico,
+	BrazilSaoPaulo,
+	Spain,
+	London,
+	Germany,
+	Poland,
+	Sweden,
+	IndiaDelhi,
+	IndiaMumbai,
+	IndiaBangalore,
+	Singapore,
+	Tokyo,
+	Sydney,
+	SantiagoChile,
+	Israel,
+	Romania,
+	#[serde(rename = "USNewYork")]
+	UsNewYork,
+	#[serde(rename = "USDenver")]
+	UsDenver,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum QueryRegionError {
+	FailedToDetermineLocation,
 }
 
