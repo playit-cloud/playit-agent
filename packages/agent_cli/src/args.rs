@@ -123,6 +123,9 @@ pub struct CmdTunnelsPrepare {
     pub public_port: Option<u16>,
     #[arg(short('d'), long("use-dedicated-ip"))]
     pub use_dedicated_ip: Option<String>,
+
+    #[arg(short('f'), long("firewall-id"))]
+    pub firewall_id: Option<Uuid>,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]

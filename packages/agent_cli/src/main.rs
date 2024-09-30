@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::process::ExitCode;
+use std::str::FromStr;
 use std::time::Duration;
 
 use args::{CliArgs, CmdAccount, CmdAgentType, CmdClaim, CmdTunnelRegion, CmdTunnelType, CmdTunnels, Commands};
@@ -19,7 +21,6 @@ use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::utils::now_milli;
 use playit_secret::PlayitSecret;
 
-use crate::match_ip::MatchIp;
 use crate::signal_handle::get_signal_handle;
 use crate::ui::{UI, UISettings};
 
@@ -159,17 +160,24 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         Commands::Tunnels(CmdTunnels::Prepare(command)) => {
             let api = secret.create_api().await?;
 
-            let (tunnel_type, port_type) = match command.tunnel_type {
-                CmdTunnelType::Both => (None, PortType::Both),
-                CmdTunnelType::Tcp => (None, PortType::Tcp),
-                CmdTunnelType::Udp => (None, PortType::Udp),
-                CmdTunnelType::MinecraftJava => (Some(serde_json::to_string(&TunnelType::MinecraftJava).unwrap()), PortType::Tcp),
-                CmdTunnelType::MinecraftBedrock => (Some(serde_json::to_string(&TunnelType::MinecraftBedrock).unwrap()), PortType::Tcp),
+            let local_address = match IpAddr::from_str(&command.local_address) {
+                Ok(ip) => (ip, 0),
+                Err(_) => match SocketAddr::from_str(&command.local_address) {
+                    Ok(addr) => (addr.ip(), addr.port()),
+                    Err(_) => {
+                        eprintln!("failed to parse local address {:?}", command.local_address);
+                        return Ok(ExitCode::FAILURE);
+                    }
+                }
             };
 
-            let target_region_num = match command.region {
+            let agent_data = api.agents_rundata().await?;
+
+            let target_region = match command.region {
                 CmdTunnelRegion::GlobalAnycast => PlayitRegion::Global,
                 CmdTunnelRegion::Optimal => {
+                    /* TODO: check if user has premium to select optimal region based on what's available */
+
                     let region = api.query_region(ReqQueryRegion { limit_region: None }).await?;
                     match region.region {
                         playit_api_client::api::PlayitRegion::GlobalAnycast => PlayitRegion::Global,
@@ -185,24 +193,49 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 CmdTunnelRegion::Asia => PlayitRegion::Asia,
                 CmdTunnelRegion::India => PlayitRegion::India,
                 CmdTunnelRegion::SouthAmerica => PlayitRegion::SouthAmerica,
-            } as u16;
+            };
+
+            let target_region_num = target_region as u16;
+
+            let target_alloc = if let Some(ded_ip) = command.use_dedicated_ip {
+                TunnelCreateUseAllocation::DedicatedIp(UseAllocDedicatedIp {
+                    ip_hostname: ded_ip,
+                    port: command.public_port,
+                })
+            } else {
+                TunnelCreateUseAllocation::Region(UseRegion {
+                    region: match target_region {
+                        PlayitRegion::Anycast => AllocationRegion::Global,
+                        PlayitRegion::Global => AllocationRegion::Global,
+                        PlayitRegion::NorthAmerica => AllocationRegion::NorthAmerica,
+                        PlayitRegion::Europe => AllocationRegion::Europe,
+                        PlayitRegion::Asia => AllocationRegion::Asia,
+                        PlayitRegion::India => AllocationRegion::India,
+                        PlayitRegion::SouthAmerica => AllocationRegion::SouthAmerica,
+                    },
+                })
+            };
+
+            let (tunnel_type, port_type) = match command.tunnel_type {
+                CmdTunnelType::Both => (None, PortType::Both),
+                CmdTunnelType::Tcp => (None, PortType::Tcp),
+                CmdTunnelType::Udp => (None, PortType::Udp),
+                CmdTunnelType::MinecraftJava => (Some(TunnelType::MinecraftJava), PortType::Tcp),
+                CmdTunnelType::MinecraftBedrock => (Some(TunnelType::MinecraftBedrock), PortType::Tcp),
+            };
 
             let existing = 'find_update: {
                 if command.create_new {
                     break 'find_update None;
                 }
 
-                let data = api.agents_rundata().await?;
-                if data.account_status != AgentAccountStatus::Ready {
-                    println!("Invalid account status: {:?}", data.account_status);
+                if agent_data.account_status != AgentAccountStatus::Ready {
+                    println!("Invalid account status: {:?}", agent_data.account_status);
                     return Ok(std::process::ExitCode::FAILURE);
                 }
 
-                for tunnel in data.tunnels {
+                for tunnel in agent_data.tunnels {
                     let port_count = tunnel.port.to - tunnel.port.from;
-                    if tunnel.tunnel_type != tunnel_type {
-                        continue;
-                    }
                     if command.port_count != port_count {
                         continue;
                     }
@@ -212,19 +245,21 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                     if tunnel.proto != port_type {
                         continue;
                     }
-
                     if !command.ignore_region && tunnel.region_num != target_region_num {
+                        continue;
+                    }
+
+                    let actual_type = tunnel.tunnel_type
+                        .and_then(|s| serde_json::from_str::<TunnelType>(&s).ok());
+
+                    if actual_type != tunnel_type {
                         continue;
                     }
 
                     break 'find_update Some((tunnel.id, (tunnel.local_ip, tunnel.local_port)));
                 }
 
-                for tunnel in data.pending {
-                    if tunnel.tunnel_type != tunnel_type {
-                        continue;
-                    }
-
+                for tunnel in agent_data.pending {
                     if tunnel.proto != port_type {
                         continue;
                     }
@@ -236,12 +271,32 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                     if !command.ignore_region && tunnel.region_num != target_region_num {
                         continue;
                     }
+
+                    let actual_type = tunnel.tunnel_type
+                        .and_then(|s| serde_json::from_str::<TunnelType>(&s).ok());
+
+                    if actual_type != tunnel_type {
+                        continue;
+                    }
                 }
 
                 None
             };
 
-            
+            api.tunnels_create(ReqTunnelsCreate {
+                name: Some(command.name),
+                tunnel_type,
+                port_type,
+                port_count: command.port_count,
+                origin: TunnelOriginCreate::Agent(AssignedAgentCreate {
+                    agent_id: agent_data.agent_id,
+                    local_ip: local_address.0,
+                    local_port: if local_address.1 == 0 { None } else { Some(local_address.1) },
+                }),
+                enabled: true,
+                alloc: Some(target_alloc),
+                firewall_id: command.firewall_id
+            }).await?;
         }
         Commands::Tunnels(CmdTunnels::Delete(command)) => {
             todo!()
