@@ -3,20 +3,21 @@ use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::process::ExitCode;
 use std::str::FromStr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use args::{CliArgs, CmdAccount, CmdAgentType, CmdClaim, CmdTunnelRegion, CmdTunnelType, CmdTunnels, Commands};
+use args::{CliArgs, CliInterface, CmdAccount, CmdAgentType, CmdClaim, CmdTunnelRegion, CmdTunnelType, CmdTunnels, Commands};
 use clap::Parser;
+use cli_io::{ClaimSetupStatus, CliUIMessage};
 use playit_agent_core::agent_control::platform::get_platform;
 use playit_agent_core::agent_control::version::register_version;
 use playit_api_client::ip_resource::PlayitRegion;
 use rand::Rng;
+use serde::Serialize;
 use uuid::Uuid;
 
 use autorun::autorun;
 use playit_api_client::{api::*, PlayitApi};
 use playit_api_client::http_client::HttpClientError;
-use playit_agent_core::network::address_lookup::{AddressLookup, AddressValue};
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::utils::now_milli;
 use playit_secret::PlayitSecret;
@@ -33,9 +34,21 @@ pub mod match_ip;
 pub mod ui;
 pub mod signal_handle;
 pub mod args;
+pub mod cli_io;
+
 
 #[tokio::main]
-async fn main() -> Result<std::process::ExitCode, CliError> {
+async fn main() -> std::process::ExitCode {
+    match run_main().await {
+        Ok(res) => res,
+        Err(error) => {
+            tracing::error!(?error, "main failed");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run_main() -> Result<std::process::ExitCode, CliError> {
     let mut args = CliArgs::parse();
 
     /* register docker */
@@ -60,13 +73,16 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     let mut secret = PlayitSecret::from_args(&mut args).await;
     let _ = secret.with_default_path().await;
 
+    let cmd = args.cmd.unwrap_or(Commands::Start);
+
     let log_only = args.stdout;
     let log_path = args.log_path;
 
     /* setup logging */
-    let _guard = match (log_only, log_path) {
-        (true, Some(_)) => panic!("try to use -s and -l at the same time"),
-        (false, Some(path)) => {
+    let _guard = match (log_only, log_path, args.iface) {
+        (true, Some(_), _) => panic!("try to use -s and -l at the same time"),
+        /* append logs to file */
+        (false, Some(path), _) => {
             let write_path = match path.rsplit_once("/") {
                 Some((dir, file)) => tracing_appender::rolling::never(dir, file),
                 None => tracing_appender::rolling::never(".", path),
@@ -77,14 +93,33 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 .with_ansi(false)
                 .with_writer(non_blocking)
                 .init();
+
             Some(guard)
         }
-        (true, None) => {
-            let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
+        /* write to stdout unless we're running as start */
+        (true, None, _) => {
+            let (non_blocking, guard) = if let Commands::Start = &cmd {
+                tracing_appender::non_blocking(std::io::stdout())
+            } else {
+                tracing_appender::non_blocking(std::io::stderr())
+            };
+            
             tracing_subscriber::fmt()
                 .with_ansi(get_platform() == Platform::Linux)
                 .with_writer(non_blocking)
                 .init();
+
+            Some(guard)
+        }
+        /* write logs to stderror so caller can parse stdout */
+        (false, None, CliInterface::Csv | CliInterface::Json) => {
+            let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stderr());
+            
+            tracing_subscriber::fmt()
+                .with_ansi(get_platform() == Platform::Linux)
+                .with_writer(non_blocking)
+                .init();
+
             Some(guard)
         }
         _ => None,
@@ -93,9 +128,10 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     let mut ui = UI::new(UISettings {
         auto_answer: None,
         log_only,
+        cli_interface: args.iface,
     });
 
-    match args.cmd {
+    match cmd {
         #[cfg(target_os = "linux")]
         Commands::Setup => {
             let mut secret = PlayitSecret::linux_service();
@@ -139,39 +175,111 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             println!("https://playit.gg/login/guest-account/{}", session.session_key)
         }
         Commands::Claim(CmdClaim::Generate) => {
-            ui.write_screen(claim_generate()).await;
+            println!("{}", claim_generate());
         }
         Commands::Claim(CmdClaim::Url(command)) => {
-            /* TODO: add agent type and name to URL */
-            ui.write_screen(format!(
-                "https://playit.gg/claim/{}",
-                command.claim_code,
-            )).await;
+            let Ok(code_bytes) = hex::decode(command.claim_code.trim()) else {
+                ui.write_error("invalid claim code", "NotHex");
+                return Ok(ExitCode::FAILURE);
+            };
+
+            if let Some(agent_name) = command.agent_name {
+                println!("https://playit.gg/claim/{}?name={}", hex::encode(&code_bytes), urlencoding::encode(&agent_name));
+            } else {
+                println!("https://playit.gg/claim/{}", hex::encode(&code_bytes));
+            }
         }
-        Commands::Claim(CmdClaim::Exchange(command)) => {
+        Commands::Claim(CmdClaim::Setup(command)) => {
+            if hex::decode(command.claim_code.trim()).is_err() {
+                ui.write_error("invalid claim code", "NotHex");
+                return Ok(ExitCode::FAILURE);
+            };
+
             let agent_type = match command.agent_type {
                 CmdAgentType::Asignable => AgentType::Assignable,
                 CmdAgentType::SelfManaged => AgentType::SelfManaged,
             };
 
-            let secret_key = claim_exchange(&mut ui, &command.claim_code, agent_type, command.wait).await?;
-            ui.write_screen(secret_key).await;
+            claim_exchange(
+                &mut ui,
+                &command.claim_code,
+                agent_type,
+                command.wait
+            ).await?;            
+        }
+        Commands::Claim(CmdClaim::Setup(command)) => {
+            if hex::decode(command.claim_code.trim()).is_err() {
+                ui.write_error("invalid claim code", "NotHex");
+                return Ok(ExitCode::FAILURE);
+            };
+
+            let agent_type = match command.agent_type {
+                CmdAgentType::Asignable => AgentType::Assignable,
+                CmdAgentType::SelfManaged => AgentType::SelfManaged,
+            };
+
+            claim_exchange(
+                &mut ui,
+                &command.claim_code,
+                agent_type,
+                command.wait
+            ).await?;            
+        }
+        Commands::Claim(CmdClaim::Exchange(command)) => {
+            if hex::decode(command.claim_code.trim()).is_err() {
+                ui.write_error("invalid claim code", "NotHex");
+                return Ok(ExitCode::FAILURE);
+            };
+
+            let api = PlayitApi::create(API_BASE.to_string(), None);
+
+            let secret_key = match api.claim_exchange(ReqClaimExchange { code: command.claim_code }).await {
+                Ok(res) => res.secret_key,
+                Err(ApiError::Fail(error)) => {
+                    return Err(CliError::ClaimExchangeError(error));
+                }
+                Err(error) => return Err(error.into()),
+            };
+
+            println!("{}", secret_key);
         }
         Commands::Tunnels(CmdTunnels::Prepare(command)) => {
-            let api = secret.create_api().await?;
+            let api = ui.ok_or_fatal(
+                secret.create_api().await, 
+                "failed to setup api client"
+            );
 
             let local_address = match IpAddr::from_str(&command.local_address) {
                 Ok(ip) => (ip, 0),
                 Err(_) => match SocketAddr::from_str(&command.local_address) {
                     Ok(addr) => (addr.ip(), addr.port()),
                     Err(_) => {
-                        eprintln!("failed to parse local address {:?}", command.local_address);
+                        ui.write_error("failed to parse local address", "InvalidSocketAddr");
                         return Ok(ExitCode::FAILURE);
                     }
                 }
             };
 
-            let agent_data = api.agents_rundata().await?;
+            ui.write_status("loading agent data").await;
+
+            let agent_data = ui.ok_or_fatal(
+                api.agents_rundata().await,
+                "failed to get agent data"
+            );
+
+            tracing::info!(
+                agent_id = %agent_data.agent_id,
+                agent_type = ?agent_data.agent_type,
+                agent_status = ?agent_data.account_status,
+                tunnel_count = agent_data.tunnels.len(),
+                pending_tunnel_count = agent_data.pending.len(),
+                "got agent data"
+            );
+
+            /* TODO: check agent status and error if invalid */
+            // if agent_data.account_status != AgentAccountStatus::Ready {
+            //     return Ok(std::process::ExitCode::FAILURE);
+            // }
 
             let target_region = match command.region {
                 CmdTunnelRegion::GlobalAnycast => PlayitRegion::Global,
@@ -225,14 +333,12 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             };
 
             let existing = 'find_update: {
-                if command.create_new {
+                if command.create_new == Some(true) {
+                    tracing::info!("create new so do not search for existig tunnel");
                     break 'find_update None;
                 }
 
-                if agent_data.account_status != AgentAccountStatus::Ready {
-                    println!("Invalid account status: {:?}", agent_data.account_status);
-                    return Ok(std::process::ExitCode::FAILURE);
-                }
+                tracing::info!("searching for existing tunnel that matches arguments");
 
                 for tunnel in agent_data.tunnels {
                     let port_count = tunnel.port.to - tunnel.port.from;
@@ -249,14 +355,15 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                         continue;
                     }
 
-                    let actual_type = tunnel.tunnel_type
-                        .and_then(|s| serde_json::from_str::<TunnelType>(&s).ok());
+                    let actual_type = tunnel.tunnel_type.as_ref()
+                        .and_then(|s| serde_json::from_str::<TunnelType>(&format!("{:?}", s)).ok());
 
                     if actual_type != tunnel_type {
                         continue;
                     }
 
-                    break 'find_update Some((tunnel.id, (tunnel.local_ip, tunnel.local_port)));
+                    tracing::info!(tunnel_id = %tunnel.id, "Found existing tunnel");
+                    break 'find_update Some(TunnelOrPending::Tunnel(tunnel));
                 }
 
                 for tunnel in agent_data.pending {
@@ -272,37 +379,218 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                         continue;
                     }
 
-                    let actual_type = tunnel.tunnel_type
-                        .and_then(|s| serde_json::from_str::<TunnelType>(&s).ok());
+                    let actual_type = tunnel.tunnel_type.as_ref()
+                        .and_then(|s| serde_json::from_str::<TunnelType>(&format!("{:?}", s)).ok());
 
                     if actual_type != tunnel_type {
                         continue;
                     }
+
+                    tracing::info!(tunnel_id = %tunnel.id, "Found pending tunnel");
+                    break 'find_update Some(TunnelOrPending::Pending(tunnel));
                 }
 
                 None
             };
 
-            api.tunnels_create(ReqTunnelsCreate {
-                name: Some(command.name),
-                tunnel_type,
-                port_type,
-                port_count: command.port_count,
-                origin: TunnelOriginCreate::Agent(AssignedAgentCreate {
-                    agent_id: agent_data.agent_id,
-                    local_ip: local_address.0,
-                    local_port: if local_address.1 == 0 { None } else { Some(local_address.1) },
-                }),
-                enabled: true,
-                alloc: Some(target_alloc),
-                firewall_id: command.firewall_id
-            }).await?;
+            let existing = match existing {
+                None => None,
+                Some(TunnelOrPending::Tunnel(tunn)) => Some(tunn),
+                Some(TunnelOrPending::Pending(pending)) => {
+                    if pending.is_disabled {
+                        tracing::info!("pending is disabled enable");
+    
+                        ui.write_status("enable pending tunnel").await;
+    
+                        let update_res = api.tunnels_update(ReqTunnelsUpdate {
+                            tunnel_id: pending.id,
+                            local_ip: local_address.0,
+                            local_port: if local_address.1 == 0 { None } else { Some(local_address.1) },
+                            agent_id: Some(agent_data.agent_id),
+                            enabled: true,
+                        }).await;
+    
+                        ui.ok_or_fatal(update_res, "failed to enable pending tunnel");
+                    }
+    
+                    tracing::info!("wait for pending tunnel");
+    
+                    let wait_till: Option<Instant> = if command.wait == 0 {
+                        None
+                    } else {
+                        Some(Instant::now() + Duration::from_secs(command.wait as _))
+                    };
+    
+                    loop {
+                        if wait_till.map(|wait_till| wait_till < Instant::now()).unwrap_or(false) {
+                            ui.write_error("timeout waiting for pending tunnel", "PendingTunnelTimeout");
+                            return Ok(ExitCode::FAILURE);
+                        }
+
+                        ui.write_status("waiting 2s before checking tunnel status").await;
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+    
+                        ui.write_status("checking tunnel status").await;
+    
+                        let data = ui.ok_or_fatal(
+                            api.agents_rundata().await, 
+                            "failed to load agent data"
+                        );
+    
+                        if let Some(tunnel) = data.tunnels.into_iter().find(|v| v.id == pending.id) {
+                            ui.write_status("tunnel created").await;
+                            break Some(tunnel);
+                        }
+
+                        if let Some(pending) = data.pending.into_iter().find(|v| v.id == pending.id) {
+                            if pending.is_disabled {
+                                ui.write_error("pending tunnel turned disabled", "PendingTunnelDisabled");
+                                return Ok(ExitCode::FAILURE);
+                            }
+
+                            tracing::info!(tunnel_id = %pending.id, "tunnel still pending");
+                        } else {
+                            ui.write_error("pending tunnel deleted", "PendingTunnelDeleted");
+                            return Ok(ExitCode::FAILURE);
+                        }
+                    }
+                }
+            };
+
+            if let Some(tunnel) = existing {
+                let needs_updated = 'set_needs_update: {
+                    match tunnel.disabled {
+                        Some(AgentTunnelDisabled::ByUser) => {
+                            tracing::info!("tunnel is disabled by user, needs to be enabled");
+                            break 'set_needs_update true;
+                        },
+                        Some(AgentTunnelDisabled::BySystem) => {
+                            ui.write_error("tunnel is disabled", "DisabledBySystem");
+                            return Ok(ExitCode::FAILURE);
+                        }
+                        None => {}
+                    };
+
+                    if tunnel.local_ip != local_address.0 || tunnel.local_port != local_address.1 {
+                        tracing::info!("local address different than desired");
+                        break 'set_needs_update true;
+                    }
+
+                    false
+                };
+
+                if needs_updated {                    
+                    ui.write_status("updating tunnel").await;
+
+                    let update_res = api.tunnels_update(ReqTunnelsUpdate {
+                        tunnel_id: tunnel.id,
+                        local_ip: local_address.0,
+                        local_port: if local_address.1 == 0 { None } else { Some(local_address.1) },
+                        agent_id: Some(agent_data.agent_id),
+                        enabled: true,
+                    }).await;
+
+                    ui.ok_or_fatal(update_res, "failed to update tunnel");
+                    tracing::info!("tunnel updated");
+                }
+
+                /* TODO: check firewall instead of blindly setting */
+
+                println!("{}", tunnel.id);
+            } else {
+                if command.create_new == Some(false) {
+                    println!("None");
+                    return Ok(ExitCode::SUCCESS);
+                }
+
+                tracing::info!("could not find suitable tunnel, creating new tunnel");
+                ui.write_status("creating new tunnel to meet requirements").await;
+
+                let result = api.tunnels_create(ReqTunnelsCreate {
+                    name: Some(command.name),
+                    tunnel_type,
+                    port_type,
+                    port_count: command.port_count,
+                    origin: TunnelOriginCreate::Agent(AssignedAgentCreate {
+                        agent_id: agent_data.agent_id,
+                        local_ip: local_address.0,
+                        local_port: if local_address.1 == 0 { None } else { Some(local_address.1) },
+                    }),
+                    enabled: true,
+                    alloc: Some(target_alloc),
+                    firewall_id: command.firewall_id
+                }).await;
+
+                let tunnel_id = match result {
+                    Ok(id) => id.id,
+                    Err(error) => {
+                        ui.write_error("failed to create tunnel", error);
+                        return Ok(ExitCode::FAILURE)
+                    }
+                };
+
+                loop {
+                    tracing::info!("wait for pending tunnel");
+    
+                    let wait_till: Option<Instant> = if command.wait == 0 {
+                        None
+                    } else {
+                        Some(Instant::now() + Duration::from_secs(command.wait as _))
+                    };
+    
+                    loop {
+                        if wait_till.map(|wait_till| wait_till < Instant::now()).unwrap_or(false) {
+                            ui.write_error("timeout waiting for pending tunnel", "PendingTunnelTimeout");
+                            return Ok(ExitCode::FAILURE);
+                        }
+
+                        ui.write_status("waiting 2s before checking tunnel status").await;
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+    
+                        ui.write_status("checking tunnel status").await;
+    
+                        let data = ui.ok_or_fatal(
+                            api.agents_rundata().await, 
+                            "failed to load agent data"
+                        );
+    
+                        if let Some(tunnel) = data.tunnels.into_iter().find(|v| v.id == tunnel_id) {
+                            ui.write_status("tunnel created").await;
+                            println!("{}", tunnel.id);
+                            return Ok(ExitCode::SUCCESS);
+                        }
+
+                        if let Some(pending) = data.pending.into_iter().find(|v| v.id == tunnel_id) {
+                            if pending.is_disabled {
+                                ui.write_error("pending tunnel turned disabled", "PendingTunnelDisabled");
+                                return Ok(ExitCode::FAILURE);
+                            }
+
+                            tracing::info!(%tunnel_id, "tunnel still pending");
+                        } else {
+                            ui.write_error("pending tunnel deleted", "PendingTunnelDeleted");
+                            return Ok(ExitCode::FAILURE);
+                        }
+                    }
+                }
+            }
         }
         Commands::Tunnels(CmdTunnels::Delete(command)) => {
             todo!()
         }
         Commands::Tunnels(CmdTunnels::List) => {
             todo!()
+            // let api = ui.ok_or_fatal(
+            //     secret.create_api().await, 
+            //     "failed to setup api client"
+            // );
+
+            // ui.write_status("loading agent data").await;
+
+            // let agent_data = ui.ok_or_fatal(
+            //     api.agents_rundata().await,
+            //     "failed to get agent data"
+            // );
         }
         Commands::Tunnels(CmdTunnels::Find(command)) => {
             todo!()
@@ -339,16 +627,15 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
     let api = PlayitApi::create(API_BASE.to_string(), None);
 
     let end_at = if wait_sec == 0 {
-        u64::MAX
+        None
     } else {
-        now_milli() + (wait_sec as u64) * 1000
+        Some(Instant::now() + Duration::from_secs(wait_sec as _))
     };
 
     {
         let _close_guard = get_signal_handle().close_guard();
-        let mut last_message = "Preparing Setup".to_string();
 
-        loop {
+        while end_at.map(|end_at| Instant::now() < end_at).unwrap_or(true) {
             let setup_res = api.claim_setup(ReqClaimSetup {
                 code: claim_code.to_string(),
                 agent_type,
@@ -356,63 +643,53 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
             }).await;
 
             let setup = match setup_res {
-                Ok(v) => v,
+                Ok(response) => response,
                 Err(error) => {
-                    tracing::error!(?error, "Failed loading claim setup");
-                    ui.write_screen(format!("{}\n\nError: {:?}", last_message, error)).await;
+                    ui.write_error("Failed to load claim setup", error);
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
             };
 
-            last_message = match setup {
-                ClaimSetupResponse::WaitingForUserVisit => {
-                    format!("Visit link to setup {}", claim_url(claim_code)?)
-                }
-                ClaimSetupResponse::WaitingForUser => {
-                    format!("Approve program at {}", claim_url(claim_code)?)
-                }
-                ClaimSetupResponse::UserAccepted => {
-                    ui.write_screen("Program approved :). Secret code being setup.").await;
-                    break;
-                }
+            ui.write_message(ClaimSetupStatus {
+                status: setup,
+                claim_url: format!("https://playit.gg/claim/{}", claim_code),
+            }).await;
+
+            match setup {
+                ClaimSetupResponse::UserAccepted => break,
                 ClaimSetupResponse::UserRejected => {
-                    ui.write_screen("Program rejected :(").await;
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     return Err(CliError::AgentClaimRejected);
                 }
+                _ => {}
             };
 
-            ui.write_screen(&last_message).await;
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }
 
-    let secret_key = loop {
-        match api.claim_exchange(ReqClaimExchange { code: claim_code.to_string() }).await {
-            Ok(res) => break res.secret_key,
-            Err(ApiError::Fail(status)) => {
-                let msg = format!("code \"{}\" not ready, {:?}", claim_code, status);
-                ui.write_screen(msg).await;
-            }
-            Err(error) => return Err(error.into()),
-        };
-
-        if now_milli() > end_at {
-            ui.write_screen("you took too long to approve the program, closing").await;
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            return Err(CliError::TimedOut);
+    let secret_key = match api.claim_exchange(ReqClaimExchange { code: claim_code.to_string() }).await {
+        Ok(res) => res.secret_key,
+        Err(ApiError::Fail(error)) => {
+            ui.write_error("exchange failed", error);
+            return Err(CliError::ClaimExchangeError(error));
         }
-
-        tokio::time::sleep(Duration::from_secs(2)).await;
+        Err(error) => return Err(error.into()),
     };
 
     Ok(secret_key)
 }
 
+enum TunnelOrPending {
+    Tunnel(AgentTunnel),
+    Pending(AgentPendingTunnel),
+}
+
 #[derive(Debug)]
 pub enum CliError {
     InvalidClaimCode,
+    ClaimExchangeError(ClaimExchangeError),
     NotImplemented,
     MissingSecret,
     MalformedSecret,
@@ -435,6 +712,12 @@ pub enum CliError {
     ApiError(ApiResponseError),
     ApiFail(String),
     TunnelSetupError(SetupError),
+}
+
+impl Serialize for CliError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+        serializer.serialize_str(&format!("{:?}", self))
+    }
 }
 
 impl Error for CliError {

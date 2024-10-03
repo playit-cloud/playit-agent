@@ -69,6 +69,9 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 	pub async fn query_region(&self, req: ReqQueryRegion) -> Result<QueryRegion, ApiError<QueryRegionError, C::Error>> {
 		Self::unwrap(self.client.call("/query/region", req).await)
 	}
+	pub async fn tunnels_update(&self, req: ReqTunnelsUpdate) -> Result<(), ApiError<UpdateError, C::Error>> {
+		Self::unwrap(self.client.call("/tunnels/update", req).await)
+	}
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -82,7 +85,7 @@ pub enum ApiResult<S, F> {
     Error(ApiResponseError),
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub enum ApiError<F, C> {
     Fail(F),
     ApiError(ApiResponseError),
@@ -99,7 +102,7 @@ impl<F: std::fmt::Debug, C: std::fmt::Debug> std::error::Error for ApiError<F, C
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub enum ApiErrorNoFail<C> {
     ApiError(ApiResponseError),
     ClientError(C),
@@ -815,3 +818,26 @@ pub enum QueryRegionError {
 	FailedToDetermineLocation,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqTunnelsUpdate {
+	pub tunnel_id: uuid::Uuid,
+	pub local_ip: std::net::IpAddr,
+	pub local_port: Option<u16>,
+	pub agent_id: Option<uuid::Uuid>,
+	pub enabled: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum UpdateError {
+	ChangingAgentIdNotAllowed,
+	TunnelNotFound,
+}
+
+impl std::fmt::Display for UpdateError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for UpdateError {
+}

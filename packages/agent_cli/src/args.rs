@@ -4,7 +4,7 @@ use uuid::Uuid;
 #[derive(Parser, Debug)]
 pub struct CliArgs {
     #[command(subcommand)]
-    pub cmd: Commands,
+    pub cmd: Option<Commands>,
 
     /* secrets */
     #[arg(long)]
@@ -15,14 +15,29 @@ pub struct CliArgs {
     pub secret_wait: bool,
 
     /* logging */
-    #[arg(short, long, default_value = "false")]
+    #[arg(short('s'), long, default_value = "false")]
     pub stdout: bool,
-    #[arg(short, long("log-path"))]
+    #[arg(short('l'), long("log-path"))]
     pub log_path: Option<String>,
+    #[arg(short('i'), default_value = "human")]
+    pub iface: CliInterface,
 
     /* other opts */
     #[arg(long("platform-docker"), alias = "platform_docker", default_value = "false")]
     pub platform_docker: bool,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliInterface {
+    Human,
+    Json,
+    Csv,
+}
+
+impl Default for CliInterface {
+    fn default() -> Self {
+        CliInterface::Human
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -36,7 +51,6 @@ pub enum Commands {
     Start,
     #[command(subcommand)]
     Tunnels(CmdTunnels),
-    #[command(subcommand)]
     Reset,
     SecretPath,
     #[cfg(target_os = "linux")]
@@ -53,6 +67,7 @@ pub enum CmdAccount {
 pub enum CmdClaim {
     Generate,
     Url(CmdClaimUrl),
+    Setup(CmdClaimSetup),
     Exchange(CmdClaimExchange),
 }
 
@@ -74,7 +89,7 @@ pub enum CmdAgentType {
 
 #[derive(Args, Debug)]
 #[command(about = "Exchange the claim code for a secret key to operate the agent")]
-pub struct CmdClaimExchange {
+pub struct CmdClaimSetup {
     #[arg()]
     pub claim_code: String,
 
@@ -83,6 +98,13 @@ pub struct CmdClaimExchange {
 
     #[arg(long("type"), default_value = "self-managed")]
     pub agent_type: CmdAgentType,
+}
+
+#[derive(Args, Debug)]
+#[command(about = "Exchange the claim code for a secret key to operate the agent")]
+pub struct CmdClaimExchange {
+    #[arg()]
+    pub claim_code: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -116,8 +138,8 @@ pub struct CmdTunnelsPrepare {
     pub port_count: u16,
     #[arg(short('u'), long("update-only"), default_value = "false")]
     pub update_only: bool,
-    #[arg(short('n'), long("create-new"), default_value = "false")]
-    pub create_new: bool,
+    #[arg(short('n'), long("create-new"))]
+    pub create_new: Option<bool>,
 
     #[arg(short('p'), long("public-port"))]
     pub public_port: Option<u16>,
@@ -126,6 +148,12 @@ pub struct CmdTunnelsPrepare {
 
     #[arg(short('f'), long("firewall-id"))]
     pub firewall_id: Option<Uuid>,
+
+    #[arg(short('x'), long("proxy-protocol"))]
+    pub proxy_protocol: Option<CmdTunnelProxyProtocol>,
+
+    #[arg(long, default_value = "0")]
+    pub wait: u32,
 }
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]

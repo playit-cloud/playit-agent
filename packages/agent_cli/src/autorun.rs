@@ -58,12 +58,12 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
             Err(error) => {
                 error_count += 1;
                 if error_count > 5 {
-                    ui.write_error("Final attempted failed to setup tunnel", &error).await;
+                    ui.write_error("Final attempted failed to setup tunnel", &error);
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     return Err(CliError::TunnelSetupError(error));
                 };
 
-                ui.write_error("Failed to setup tunnel client", error).await;
+                ui.write_error("Failed to setup tunnel client", error);
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
@@ -83,7 +83,14 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         let agent_data = match account_tunnels_res {
             Ok(v) => v,
             Err(error) => {
-                ui.write_error("Failed to load latest tunnels", error).await;
+                match error {
+                    ApiErrorNoFail::ApiError(api_error) => {
+                        ui.write_error("Failed to load latest tunnels", api_error);
+                    }
+                    ApiErrorNoFail::ClientError(client_error) => {
+                        ui.write_error("Failed to load latest tunnels", client_error);
+                    }
+                }
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 continue;
             }

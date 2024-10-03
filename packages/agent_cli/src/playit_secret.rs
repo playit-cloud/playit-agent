@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use clap::ArgMatches;
 use playit_api_client::{
     api::*,
     PlayitApi,
@@ -94,7 +93,7 @@ impl PlayitSecret {
                     break;
                 }
                 Err(ApiErrorNoFail::ClientError(error)) => {
-                    ui.write_error("Failed to load data from api\nretrying in 3 seconds", error).await;
+                    ui.write_error("Failed to load data from api\nretrying in 3 seconds", error);
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
                 Err(ApiErrorNoFail::ApiError(ApiResponseError::Auth(AuthError::InvalidAgentKey))) => {
@@ -113,7 +112,7 @@ impl PlayitSecret {
                     }
                 }
                 Err(ApiErrorNoFail::ApiError(error)) => {
-                    ui.write_error("unexpected error checking if secret is valid", &error).await;
+                    ui.write_error("unexpected error checking if secret is valid", &error);
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     return Err(CliError::ApiError(error));
                 }
@@ -165,7 +164,11 @@ impl PlayitSecret {
         };
 
         if let Err(error) = tokio::fs::write(path, &content).await {
-            ui.write_error(format!("failed to save secret, path: {}", path), &error).await;
+            ui.write_error(
+                format!("failed to save secret, path: {}", path),
+                format!("IOError({:?})", error)
+            );
+
             tokio::time::sleep(Duration::from_secs(5)).await;
             return Err(CliError::SecretFileWriteError(error));
         }

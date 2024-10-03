@@ -1,4 +1,4 @@
-use std::io::stdout;
+use std::{borrow::Cow, fmt::{Debug, Display}, io::{stdout, Write}, process::ExitCode, time::{Duration, Instant}};
 
 use crossterm::{
     cursor::RestorePosition,
@@ -7,34 +7,94 @@ use crossterm::{
     style::{Print, ResetColor},
     terminal::Clear,
 };
-use playit_agent_core::utils::now_milli;
+use serde::Serialize;
 
-use crate::CliError;
+use crate::{args::CliInterface, cli_io::{CliErrorPrint, CliMessage, CliUIMessage}, CliError};
 use crate::signal_handle::get_signal_handle;
 
 pub struct UI {
     auto_answer: Option<bool>,
-    last_display: Option<(u64, String)>,
-    log_only: bool,
-    wrote_content: bool,
+    last_display: Option<(Instant, String)>,
+    cli_interface: CliInterface,
 }
 
 #[derive(Default)]
 pub struct UISettings {
     pub auto_answer: Option<bool>,
     pub log_only: bool,
+    pub cli_interface: CliInterface,
+}
+
+pub trait UIMessage: Display + Serialize {
+    fn is_fullscreen(&self) -> bool;
+    
+    fn write_human(&self) -> String {
+        self.to_string()
+    }
+
+    fn write_json(&self) -> Option<String> {
+        Some(serde_json::to_string(self).unwrap())
+    }
+
+    fn write_csv(&self) -> Option<String> {
+        None
+    }
+}
+
+impl UIMessage for String {
+    fn is_fullscreen(&self) -> bool {
+        false
+    }
+}
+
+impl<'a> UIMessage for &'a str {
+    fn is_fullscreen(&self) -> bool {
+        false
+    }
+}
+
+impl<'a> UIMessage for &'a String {
+    fn is_fullscreen(&self) -> bool {
+        false
+    }
 }
 
 impl UI {
     pub fn new(settings: UISettings) -> Self {
-        UI { auto_answer: settings.auto_answer, log_only: settings.log_only, last_display: None, wrote_content: false }
+        UI {
+            auto_answer: settings.auto_answer,
+            last_display: None,
+            cli_interface: settings.cli_interface,
+        }
     }
 
-    pub async fn write_screen<T: std::fmt::Display>(&mut self, content: T) {
+    fn build_string<T: UIMessage>(&self, value: &T) -> Option<String> {
+        match self.cli_interface {
+            CliInterface::Human => Some(value.write_human()),
+            CliInterface::Csv => value.write_csv(),
+            CliInterface::Json => value.write_json(),
+        }
+    }
+
+    pub async fn write_status<S: Into<StatusMessage>>(&mut self, status: S) {
+        self.write_screen(status.into()).await;
+    }
+
+    pub async fn write_message<T: CliMessage>(&mut self, msg: T) {
+        self.write_screen(CliUIMessage::from(msg)).await
+    }
+
+    pub async fn write_screen<T: UIMessage>(&mut self, content: T) {
         let signal = get_signal_handle();
         let exit_confirm = signal.is_confirming_close();
 
         if exit_confirm {
+            /* only confirm exit with human interface */
+            if self.cli_interface != CliInterface::Human {
+                tracing::info!("received Ctrl+C, closing program");
+                std::process::exit(0);
+            }
+
             match self.yn_question(format!("{}\nClose requested, close program?", content), Some(true)).await {
                 Ok(close) => {
                     if close {
@@ -44,53 +104,47 @@ impl UI {
                     }
                 },
                 Err(error) => {
-                    tracing::error!(%error, "failed to ask close signal question");
+                    tracing::error!(%error, "failed to ask close signal question, closing program");
+                    std::process::exit(0);
                 }
             }
-
-            return;
         }
 
-        self.write_screen_inner(content).await
+        self.write_screen_inner(content)
     }
 
+    fn write_screen_inner<T: UIMessage>(&mut self, content: T) {
+        let Some(content_str) = self.build_string(&content) else { return };
 
-    async fn write_screen_inner<T: std::fmt::Display>(&mut self, content: T) {
         {
-            let content = content.to_string();
-
             if let Some((ts, last_render)) = &self.last_display {
-                if now_milli() - *ts < 10_000 && content.eq(last_render) {
+                if ts.elapsed() < Duration::from_secs(3) && content_str.eq(last_render) {
                     return;
                 }
             }
 
-            tracing::info!("{}", content.lines().next().unwrap());
-            self.last_display = Some((now_milli(), content));
+            self.last_display = Some((Instant::now(), content_str.clone()));
         }
 
-        if self.log_only {
+        if !content.is_fullscreen() || self.cli_interface != CliInterface::Human {
+            println!("{}", content_str);
             return;
         }
 
-        let content_ref = &content;
+        let content_ref = &content_str;
         let res: std::io::Result<()> = (|| {
-            let cleared = if self.wrote_content {
-                stdout()
+            let cleared = stdout()
                     .execute(Clear(crossterm::terminal::ClearType::All))
-                    .is_ok()
-            } else {
-                true
-            };
+                    .is_ok();
 
             if !cleared {
                 stdout()
-                    .execute(Print(format!("\n{}", content_ref)))?;
+                    .execute(Print(format!("\n{}\n", content_ref)))?;
             } else {
                 stdout()
                     .execute(RestorePosition)?
                     .execute(ResetColor)?
-                    .execute(Print(content_ref))?;
+                    .execute(Print(format!("{}\n", content_ref)))?;
             }
 
             Ok(())
@@ -98,10 +152,8 @@ impl UI {
 
         if let Err(error) = res {
             tracing::error!(?error, "failed to write to screen");
-            println!("{}", content);
+            println!("{}", content_str);
         }
-
-        self.wrote_content = true;
     }
 
     pub async fn yn_question<T: std::fmt::Display + Send + 'static>(&mut self, question: T, default_yes: Option<bool>) -> Result<bool, CliError> {
@@ -121,12 +173,12 @@ impl UI {
 
             if let Some(default_yes) = default_yes {
                 if default_yes {
-                    self.write_screen_inner(format!("{}{} (Y/n)? ", pref, question)).await;
+                    self.write_screen_inner(format!("{}{} (Y/n)? ", pref, question));
                 } else {
-                    self.write_screen_inner(format!("{}{} (y/N)? ", pref, question)).await;
+                    self.write_screen_inner(format!("{}{} (y/N)? ", pref, question));
                 }
             } else {
-                self.write_screen_inner(format!("{}{} (y/n)? ", pref, question)).await;
+                self.write_screen_inner(format!("{}{} (y/n)? ", pref, question));
             }
 
             loop {
@@ -173,11 +225,65 @@ impl UI {
         Err(CliError::AnswerNotProvided)
     }
 
-    pub async fn write_error<M: std::fmt::Display, E: std::fmt::Debug>(
-        &mut self,
-        msg: M,
-        error: E,
-    ) {
-        self.write_screen(format!("Got Error\nMSG: {}\nError: {:?}\n", msg, error)).await
+    pub fn ok_or_fatal<O, E: Debug + Serialize>(&mut self, result: Result<O, E>, msg: &str) -> O {
+        match result {
+            Ok(v) => v,
+            Err(error) => {
+                tracing::error!(msg, "fatal error");
+                self.write_error(msg, error);
+                std::process::exit(1);
+            }
+        }
+    }
+
+    pub fn write_error<A: ToString, E: Debug + Serialize>(&mut self, message: A, error: E) {
+        self.write_error2(CliErrorPrint { message: message.to_string(), error });
+    }
+
+    pub fn write_error2<E: Debug + Serialize>(&mut self, error: CliErrorPrint<E>) {
+        tracing::error!(error = ?error.error, "{}", error.message);
+        self.write_screen_inner(CliUIMessage::from(error));
+    }
+}
+
+
+#[derive(Serialize)]
+pub struct StatusMessage(pub Cow<'static, str>);
+
+impl Into<StatusMessage> for &'static str {
+    fn into(self) -> StatusMessage {
+        StatusMessage(Cow::Borrowed(self))
+    }
+}
+
+impl<'a> Into<StatusMessage> for &'a String {
+    fn into(self) -> StatusMessage {
+        StatusMessage(Cow::Owned(self.clone()))
+    }
+}
+
+impl Into<StatusMessage> for String {
+    fn into(self) -> StatusMessage {
+        StatusMessage(Cow::Owned(self))
+    }
+}
+
+impl Display for StatusMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Status: {}", self.0)
+    }
+}
+
+impl UIMessage for StatusMessage {
+    fn is_fullscreen(&self) -> bool {
+        true
+    }
+
+    fn write_json(&self) -> Option<String> {
+        None
+    }
+
+    fn write_csv(&self) -> Option<String> {
+        None
     }
 }

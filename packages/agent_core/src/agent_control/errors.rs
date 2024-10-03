@@ -1,6 +1,7 @@
 use std::{error::Error, fmt::{Display, Formatter}, net::SocketAddr};
 
 use playit_api_client::{api::{ApiError, ApiErrorNoFail, ApiResponseError}, http_client::HttpClientError};
+use serde::Serialize;
 
 
 #[derive(Debug)]
@@ -15,6 +16,12 @@ pub enum SetupError {
     NoResponseFromAuthenticate,
     RegisterInvalidSignature,
     RegisterUnauthorized,
+}
+
+impl Serialize for SetupError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+        serializer.serialize_str(&format!("{:?}", self))
+    }
 }
 
 impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for SetupError {
