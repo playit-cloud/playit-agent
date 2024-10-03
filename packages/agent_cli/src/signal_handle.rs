@@ -1,14 +1,11 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use lazy_static::lazy_static;
 use tokio::signal::ctrl_c;
 
-lazy_static! {
-    static ref SIGNAL: SignalHandle = SignalHandle::setup();
-}
+const SIGNAL: OnceLock<SignalHandle> = OnceLock::new();
 
 pub fn get_signal_handle() -> SignalHandle {
-    SIGNAL.clone()
+    SIGNAL.get_or_init(SignalHandle::setup).clone()
 }
 
 #[derive(Clone)]

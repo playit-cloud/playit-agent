@@ -58,12 +58,12 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
             Err(error) => {
                 error_count += 1;
                 if error_count > 5 {
-                    ui.write_error("Final attempted failed to setup tunnel", &error).await;
+                    ui.write_error("Final attempted failed to setup tunnel", &error);
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     return Err(CliError::TunnelSetupError(error));
                 };
 
-                ui.write_error("Failed to setup tunnel client", error).await;
+                ui.write_error("Failed to setup tunnel client", error);
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
@@ -83,16 +83,23 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         let agent_data = match account_tunnels_res {
             Ok(v) => v,
             Err(error) => {
-                ui.write_error("Failed to load latest tunnels", error).await;
+                match error {
+                    ApiErrorNoFail::ApiError(api_error) => {
+                        ui.write_error("Failed to load latest tunnels", api_error);
+                    }
+                    ApiErrorNoFail::ClientError(client_error) => {
+                        ui.write_error("Failed to load latest tunnels", client_error);
+                    }
+                }
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 continue;
             }
         };
 
         let mut msg = format!(
-            "playit (v{}): {} tunnel running, {} tunnels registered\n\n",
+            "playit (v{}): (time: {}) tunnel running, {} tunnels registered\n\n",
             env!("CARGO_PKG_VERSION"),
-            now_milli(),
+            now_milli() / 1000,
             agent_data.tunnels.len()
         );
 
@@ -182,7 +189,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         }
 
         lookup.update(agent_data.tunnels).await;
-        ui.write_screen(msg).await;
+        ui.write_status(msg).await;
     }
 
     let _ = runner.await;

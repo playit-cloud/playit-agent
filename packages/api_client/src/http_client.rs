@@ -97,6 +97,12 @@ pub enum HttpClientError {
     TooManyRequests,
 }
 
+impl Serialize for HttpClientError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+        serializer.serialize_str(&format!("{:?}", self))
+    }
+}
+
 impl From<reqwest::Error> for HttpClientError {
     fn from(value: reqwest::Error) -> Self {
         HttpClientError::RequestError(value)

@@ -38,6 +38,13 @@ pub enum PlayitRegion {
 }
 
 impl PlayitRegion {
+    pub fn from_num(num: u16) -> Option<Self> {
+        if 6 < num {
+            return None;
+        }
+        Some(unsafe { std::mem::transmute(num) })
+    }
+
     pub fn from_ip(ip: IpAddr) -> (Option<Self>, u64) {
         match ip {
             IpAddr::V4(ip) => Self::from_ip4(ip),

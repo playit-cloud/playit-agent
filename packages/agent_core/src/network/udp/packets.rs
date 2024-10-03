@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crossbeam::queue::ArrayQueue;
+use crossbeam_queue::ArrayQueue;
 
 pub const PACKET_LEN: usize = 2048;
 
