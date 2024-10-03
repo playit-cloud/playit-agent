@@ -27,7 +27,6 @@ use crate::ui::{UI, UISettings};
 
 pub const API_BASE: &'static str = "https://api.playit.gg";
 
-pub mod util;
 pub mod autorun;
 pub mod playit_secret;
 pub mod match_ip;

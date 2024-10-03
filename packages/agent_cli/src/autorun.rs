@@ -97,9 +97,9 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         };
 
         let mut msg = format!(
-            "playit (v{}): {} tunnel running, {} tunnels registered\n\n",
+            "playit (v{}): (time: {}) tunnel running, {} tunnels registered\n\n",
             env!("CARGO_PKG_VERSION"),
-            now_milli(),
+            now_milli() / 1000,
             agent_data.tunnels.len()
         );
 
@@ -189,7 +189,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         }
 
         lookup.update(agent_data.tunnels).await;
-        ui.write_screen(msg).await;
+        ui.write_status(msg).await;
     }
 
     let _ = runner.await;
