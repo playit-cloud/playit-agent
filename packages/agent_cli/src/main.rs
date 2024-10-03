@@ -1,15 +1,16 @@
+use std::cmp::Ordering;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, SocketAddr};
 use std::process::ExitCode;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use args::{CliArgs, CliInterface, CmdAccount, CmdAgentType, CmdClaim, CmdTunnelRegion, CmdTunnelType, CmdTunnels, Commands};
+use args::{CliArgs, CliInterface, CmdAccount, CmdAgentType, CmdClaim, CmdTunnelProxyProtocol, CmdTunnelRegion, CmdTunnelType, CmdTunnels, Commands};
 use clap::Parser;
-use cli_io::{ClaimSetupStatus, CliUIMessage};
+use cli_io::{AttentionNeeded, ClaimSetupStatus, TunnelDetail, TunnelDetails};
 use playit_agent_core::agent_control::platform::get_platform;
-use playit_agent_core::agent_control::version::register_version;
+use playit_agent_core::agent_control::version::{get_version, register_version};
 use playit_api_client::ip_resource::PlayitRegion;
 use rand::Rng;
 use serde::Serialize;
@@ -19,7 +20,6 @@ use autorun::autorun;
 use playit_api_client::{api::*, PlayitApi};
 use playit_api_client::http_client::HttpClientError;
 use playit_agent_core::agent_control::errors::SetupError;
-use playit_agent_core::utils::now_milli;
 use playit_secret::PlayitSecret;
 
 use crate::signal_handle::get_signal_handle;
@@ -35,7 +35,6 @@ pub mod ui;
 pub mod signal_handle;
 pub mod args;
 pub mod cli_io;
-
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
@@ -200,30 +199,26 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
                 CmdAgentType::SelfManaged => AgentType::SelfManaged,
             };
 
-            claim_exchange(
+            let res = claim_exchange(
                 &mut ui,
                 &command.claim_code,
                 agent_type,
                 command.wait
-            ).await?;            
-        }
-        Commands::Claim(CmdClaim::Setup(command)) => {
-            if hex::decode(command.claim_code.trim()).is_err() {
-                ui.write_error("invalid claim code", "NotHex");
-                return Ok(ExitCode::FAILURE);
-            };
+            ).await;
 
-            let agent_type = match command.agent_type {
-                CmdAgentType::Asignable => AgentType::Assignable,
-                CmdAgentType::SelfManaged => AgentType::SelfManaged,
-            };
+            let secret = ui.ok_or_fatal(res, "failed to setup secret");
 
-            claim_exchange(
-                &mut ui,
-                &command.claim_code,
-                agent_type,
-                command.wait
-            ).await?;            
+
+            let api = PlayitApi::create(API_BASE.to_string(), Some(secret.clone()));
+            ui.ok_or_fatal(api.proto_register(ReqProtoRegister {
+                agent_version: get_version(),
+                client_addr: "127.0.0.1:100".parse().unwrap(),
+                tunnel_addr: "127.0.0.1:200".parse().unwrap(),
+            }).await, "failed to register program");
+
+            println!("{}", secret);
+
+            return Ok(ExitCode::SUCCESS);
         }
         Commands::Claim(CmdClaim::Exchange(command)) => {
             if hex::decode(command.claim_code.trim()).is_err() {
@@ -262,7 +257,7 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
 
             ui.write_status("loading agent data").await;
 
-            let agent_data = ui.ok_or_fatal(
+            let mut agent_data = ui.ok_or_fatal(
                 api.agents_rundata().await,
                 "failed to get agent data"
             );
@@ -284,16 +279,23 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
             let target_region = match command.region {
                 CmdTunnelRegion::GlobalAnycast => PlayitRegion::Global,
                 CmdTunnelRegion::Optimal => {
-                    /* TODO: check if user has premium to select optimal region based on what's available */
-
-                    let region = api.query_region(ReqQueryRegion { limit_region: None }).await?;
-                    match region.region {
-                        playit_api_client::api::PlayitRegion::GlobalAnycast => PlayitRegion::Global,
-                        playit_api_client::api::PlayitRegion::Asia => PlayitRegion::Asia,
-                        playit_api_client::api::PlayitRegion::NorthAmerica => PlayitRegion::NorthAmerica,
-                        playit_api_client::api::PlayitRegion::Europe => PlayitRegion::Europe,
-                        playit_api_client::api::PlayitRegion::India => PlayitRegion::India,
-                        playit_api_client::api::PlayitRegion::SouthAmerica => PlayitRegion::SouthAmerica,
+                    if agent_data.account_features.regional_tunnels {
+                        match api.query_region(ReqQueryRegion { limit_region: None }).await {
+                            Ok(data) => match data.region {   
+                                playit_api_client::api::PlayitRegion::GlobalAnycast => PlayitRegion::Global,
+                                playit_api_client::api::PlayitRegion::Asia => PlayitRegion::Asia,
+                                playit_api_client::api::PlayitRegion::NorthAmerica => PlayitRegion::NorthAmerica,
+                                playit_api_client::api::PlayitRegion::Europe => PlayitRegion::Europe,
+                                playit_api_client::api::PlayitRegion::India => PlayitRegion::India,
+                                playit_api_client::api::PlayitRegion::SouthAmerica => PlayitRegion::SouthAmerica,
+                            },
+                            Err(error) => {
+                                ui.write_error("failed to determine optional region, using global", error);
+                                PlayitRegion::Global
+                            }
+                        }
+                    } else {
+                        PlayitRegion::Global
                     }
                 }
                 CmdTunnelRegion::NorthAmerica => PlayitRegion::NorthAmerica,
@@ -302,6 +304,8 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
                 CmdTunnelRegion::India => PlayitRegion::India,
                 CmdTunnelRegion::SouthAmerica => PlayitRegion::SouthAmerica,
             };
+
+            tracing::info!("determined tunnel target region");
 
             let target_region_num = target_region as u16;
 
@@ -332,6 +336,12 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
                 CmdTunnelType::MinecraftBedrock => (Some(TunnelType::MinecraftBedrock), PortType::Tcp),
             };
 
+            let proxy_protocol = command.proxy_protocol.and_then(|proto| match proto {
+                CmdTunnelProxyProtocol::None => None,
+                CmdTunnelProxyProtocol::ProxyProtocolV1 => Some(ProxyProtocol::ProxyProtocolV1),
+                CmdTunnelProxyProtocol::ProxyProtocolV2 => Some(ProxyProtocol::ProxyProtocolV2),
+            });
+
             let existing = 'find_update: {
                 if command.create_new == Some(true) {
                     tracing::info!("create new so do not search for existig tunnel");
@@ -340,18 +350,47 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
 
                 tracing::info!("searching for existing tunnel that matches arguments");
 
+                /* put tunnels with matching name first */
+                {
+                    agent_data.tunnels.sort_by(|a, b| {
+                        let a_name = a.name.as_ref() == Some(&command.name);
+                        let b_name = b.name.as_ref() == Some(&command.name);
+
+                        if a_name == b_name {
+                            Ordering::Equal
+                        } else if a_name {
+                            Ordering::Less
+                        } else {
+                            Ordering::Greater
+                        }
+                    });
+
+                    agent_data.pending.sort_by(|a, b| {
+                        let a_name = a.name.as_ref() == Some(&command.name);
+                        let b_name = b.name.as_ref() == Some(&command.name);
+
+                        if a_name == b_name {
+                            Ordering::Equal
+                        } else if a_name {
+                            Ordering::Less
+                        } else {
+                            Ordering::Greater
+                        }
+                    });
+                }
+
                 for tunnel in agent_data.tunnels {
                     let port_count = tunnel.port.to - tunnel.port.from;
                     if command.port_count != port_count {
                         continue;
                     }
-                    if !command.ignore_name && tunnel.name.as_ref() != Some(&command.name) {
+                    if command.require_name && tunnel.name.as_ref() != Some(&command.name) {
                         continue;
                     }
                     if tunnel.proto != port_type {
                         continue;
                     }
-                    if !command.ignore_region && tunnel.region_num != target_region_num {
+                    if command.require_region && tunnel.region_num != target_region_num {
                         continue;
                     }
 
@@ -371,11 +410,11 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
                         continue;
                     }
 
-                    if !command.ignore_name && tunnel.name.as_ref() != Some(&command.name) {
+                    if !command.require_name && tunnel.name.as_ref() != Some(&command.name) {
                         continue;
                     }
 
-                    if !command.ignore_region && tunnel.region_num != target_region_num {
+                    if command.require_region && tunnel.region_num != target_region_num {
                         continue;
                     }
 
@@ -412,7 +451,7 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
     
                         ui.ok_or_fatal(update_res, "failed to enable pending tunnel");
                     }
-    
+
                     tracing::info!("wait for pending tunnel");
     
                     let wait_till: Option<Instant> = if command.wait == 0 {
@@ -445,6 +484,11 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
                         if let Some(pending) = data.pending.into_iter().find(|v| v.id == pending.id) {
                             if pending.is_disabled {
                                 ui.write_error("pending tunnel turned disabled", "PendingTunnelDisabled");
+                                ui.write_message(AttentionNeeded {
+                                    note: "Pending tunnel is disabled, please visit url:".to_string(),
+                                    url: format!("https://playit.gg/account/tunnels/{}", pending.id),
+                                }).await;
+
                                 return Ok(ExitCode::FAILURE);
                             }
 
@@ -457,7 +501,7 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
                 }
             };
 
-            if let Some(tunnel) = existing {
+            let tunnel = if let Some(tunnel) = existing {
                 let needs_updated = 'set_needs_update: {
                     match tunnel.disabled {
                         Some(AgentTunnelDisabled::ByUser) => {
@@ -494,9 +538,27 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
                     tracing::info!("tunnel updated");
                 }
 
+                if proxy_protocol != tunnel.proxy_protocol {
+                    tracing::info!(
+                        current = ?tunnel.proxy_protocol,
+                        target = ?proxy_protocol,
+                        "proxy protocols needs updating"
+                    );
+
+                    ui.write_status("updating tunnel's proxy protocol").await;
+                    ui.ok_or_fatal(
+                        api.tunnels_proxy_set(ReqTunnelsProxySet {
+                            tunnel_id: tunnel.id,
+                            proxy_protocol,
+                        }).await,
+                        "failed to set proxy protocol"
+                    );
+                }
+
                 /* TODO: check firewall instead of blindly setting */
 
-                println!("{}", tunnel.id);
+                ui.write_status("tunnel ready").await;
+                tunnel
             } else {
                 if command.create_new == Some(false) {
                     println!("None");
@@ -518,7 +580,8 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
                     }),
                     enabled: true,
                     alloc: Some(target_alloc),
-                    firewall_id: command.firewall_id
+                    firewall_id: command.firewall_id,
+                    proxy_protocol,
                 }).await;
 
                 let tunnel_id = match result {
@@ -529,78 +592,100 @@ async fn run_main() -> Result<std::process::ExitCode, CliError> {
                     }
                 };
 
+                tracing::info!("wait for pending tunnel");
+
+                let wait_till: Option<Instant> = if command.wait == 0 {
+                    None
+                } else {
+                    Some(Instant::now() + Duration::from_secs(command.wait as _))
+                };
+
                 loop {
-                    tracing::info!("wait for pending tunnel");
-    
-                    let wait_till: Option<Instant> = if command.wait == 0 {
-                        None
+                    if wait_till.map(|wait_till| wait_till < Instant::now()).unwrap_or(false) {
+                        ui.write_error("timeout waiting for pending tunnel", "PendingTunnelTimeout");
+                        return Ok(ExitCode::FAILURE);
+                    }
+
+                    ui.write_status("waiting 2s before checking tunnel status").await;
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+
+                    ui.write_status("checking tunnel status").await;
+
+                    let data = ui.ok_or_fatal(
+                        api.agents_rundata().await, 
+                        "failed to load agent data"
+                    );
+
+                    if let Some(tunnel) = data.tunnels.into_iter().find(|v| v.id == tunnel_id) {
+                        ui.write_status("tunnel created").await;
+                        break tunnel;
+                    }
+
+                    if let Some(pending) = data.pending.into_iter().find(|v| v.id == tunnel_id) {
+                        if pending.is_disabled {
+                            ui.write_error("pending tunnel turned disabled", "PendingTunnelDisabled");
+                            return Ok(ExitCode::FAILURE);
+                        }
+
+                        tracing::info!(%tunnel_id, "tunnel still pending");
                     } else {
-                        Some(Instant::now() + Duration::from_secs(command.wait as _))
-                    };
-    
-                    loop {
-                        if wait_till.map(|wait_till| wait_till < Instant::now()).unwrap_or(false) {
-                            ui.write_error("timeout waiting for pending tunnel", "PendingTunnelTimeout");
-                            return Ok(ExitCode::FAILURE);
-                        }
-
-                        ui.write_status("waiting 2s before checking tunnel status").await;
-                        tokio::time::sleep(Duration::from_secs(2)).await;
-    
-                        ui.write_status("checking tunnel status").await;
-    
-                        let data = ui.ok_or_fatal(
-                            api.agents_rundata().await, 
-                            "failed to load agent data"
-                        );
-    
-                        if let Some(tunnel) = data.tunnels.into_iter().find(|v| v.id == tunnel_id) {
-                            ui.write_status("tunnel created").await;
-                            println!("{}", tunnel.id);
-                            return Ok(ExitCode::SUCCESS);
-                        }
-
-                        if let Some(pending) = data.pending.into_iter().find(|v| v.id == tunnel_id) {
-                            if pending.is_disabled {
-                                ui.write_error("pending tunnel turned disabled", "PendingTunnelDisabled");
-                                return Ok(ExitCode::FAILURE);
-                            }
-
-                            tracing::info!(%tunnel_id, "tunnel still pending");
-                        } else {
-                            ui.write_error("pending tunnel deleted", "PendingTunnelDeleted");
-                            return Ok(ExitCode::FAILURE);
-                        }
+                        ui.write_error("pending tunnel deleted", "PendingTunnelDeleted");
+                        return Ok(ExitCode::FAILURE);
                     }
                 }
-            }
-        }
-        Commands::Tunnels(CmdTunnels::Delete(command)) => {
-            todo!()
-        }
-        Commands::Tunnels(CmdTunnels::List) => {
-            todo!()
-            // let api = ui.ok_or_fatal(
-            //     secret.create_api().await, 
-            //     "failed to setup api client"
-            // );
+            };
 
-            // ui.write_status("loading agent data").await;
+            ui.write_message(TunnelDetails {
+                detail: TunnelDetail::Id,
+                value: tunnel.id.to_string(),
+            }).await;
 
-            // let agent_data = ui.ok_or_fatal(
-            //     api.agents_rundata().await,
-            //     "failed to get agent data"
-            // );
+            ui.write_message(TunnelDetails {
+                detail: TunnelDetail::ManageUrl,
+                value: format!("https://playit.gg/account/tunnels/{}", tunnel.id),
+            }).await;
+
+            let domain = tunnel.custom_domain.unwrap_or(tunnel.assigned_domain);
+
+            ui.write_message(TunnelDetails {
+                detail: TunnelDetail::Address,
+                value: format!("{}:{}", domain, tunnel.port.from),
+            }).await;
+
+            ui.write_message(TunnelDetails {
+                detail: TunnelDetail::Domain,
+                value: domain,
+            }).await;
+
+            ui.write_message(TunnelDetails {
+                detail: TunnelDetail::PortStart,
+                value: tunnel.port.from.to_string(),
+            }).await;
+
+            ui.write_message(TunnelDetails {
+                detail: TunnelDetail::Region,
+                value: PlayitRegion::from_num(tunnel.region_num)
+                    .map(|v| format!("{:?}", v))
+                    .unwrap_or_else(|| "Unknown".to_string()),
+            }).await;
+
+            println!("{}", tunnel.id);
         }
-        Commands::Tunnels(CmdTunnels::Find(command)) => {
-            todo!()
-        }
-        Commands::Tunnels(CmdTunnels::WaitFor(command)) => {
-            todo!()
-        }
-        Commands::Tunnels(CmdTunnels::Set(command)) => {
-            todo!()
-        }
+        // Commands::Tunnels(CmdTunnels::Delete(command)) => {
+        //     todo!()
+        // }
+        // Commands::Tunnels(CmdTunnels::List) => {
+        //     todo!()
+        // }
+        // Commands::Tunnels(CmdTunnels::Find(command)) => {
+        //     todo!()
+        // }
+        // Commands::Tunnels(CmdTunnels::WaitFor(command)) => {
+        //     todo!()
+        // }
+        // Commands::Tunnels(CmdTunnels::Set(command)) => {
+        //     todo!()
+        // }
     }
 
     Ok(std::process::ExitCode::SUCCESS)
@@ -610,17 +695,6 @@ pub fn claim_generate() -> String {
     let mut buffer = [0u8; 5];
     rand::thread_rng().fill(&mut buffer);
     hex::encode(&buffer)
-}
-
-pub fn claim_url(code: &str) -> Result<String, CliError> {
-    if hex::decode(code).is_err() {
-        return Err(CliError::InvalidClaimCode.into());
-    }
-
-    Ok(format!(
-        "https://playit.gg/claim/{}",
-        code,
-    ))
 }
 
 pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType, wait_sec: u32) -> Result<String, CliError> {

@@ -72,6 +72,12 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 	pub async fn tunnels_update(&self, req: ReqTunnelsUpdate) -> Result<(), ApiError<UpdateError, C::Error>> {
 		Self::unwrap(self.client.call("/tunnels/update", req).await)
 	}
+	pub async fn tunnels_firewall_assign(&self, req: ReqTunnelsFirewallAssign) -> Result<(), ApiError<TunnelsFirewallAssignError, C::Error>> {
+		Self::unwrap(self.client.call("/tunnels/firewall/assign", req).await)
+	}
+	pub async fn tunnels_proxy_set(&self, req: ReqTunnelsProxySet) -> Result<(), ApiError<TunnelProxySetError, C::Error>> {
+		Self::unwrap(self.client.call("/tunnels/proxy/set", req).await)
+	}
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug)]
@@ -187,6 +193,7 @@ pub struct ReqTunnelsCreate {
 	pub enabled: bool,
 	pub alloc: Option<TunnelCreateUseAllocation>,
 	pub firewall_id: Option<uuid::Uuid>,
+	pub proxy_protocol: Option<ProxyProtocol>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
@@ -295,6 +302,14 @@ pub enum AllocationRegion {
 	India,
 	#[serde(rename = "south-america")]
 	SouthAmerica,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum ProxyProtocol {
+	#[serde(rename = "proxy-protocol-v1")]
+	ProxyProtocolV1,
+	#[serde(rename = "proxy-protocol-v2")]
+	ProxyProtocolV2,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -628,6 +643,7 @@ pub struct AgentRunData {
 	pub account_status: AgentAccountStatus,
 	pub tunnels: Vec<AgentTunnel>,
 	pub pending: Vec<AgentPendingTunnel>,
+	pub account_features: AccountFeatures,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
@@ -679,14 +695,6 @@ pub enum AgentTunnelDisabled {
 	BySystem,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum ProxyProtocol {
-	#[serde(rename = "proxy-protocol-v1")]
-	ProxyProtocolV1,
-	#[serde(rename = "proxy-protocol-v2")]
-	ProxyProtocolV2,
-}
-
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct AgentPendingTunnel {
 	pub id: uuid::Uuid,
@@ -696,6 +704,11 @@ pub struct AgentPendingTunnel {
 	pub tunnel_type: Option<String>,
 	pub is_disabled: bool,
 	pub region_num: u16,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AccountFeatures {
+	pub regional_tunnels: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -841,3 +854,34 @@ impl std::fmt::Display for UpdateError {
 
 impl std::error::Error for UpdateError {
 }
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqTunnelsFirewallAssign {
+	pub tunnel_id: uuid::Uuid,
+	pub firewall_id: Option<uuid::Uuid>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum TunnelsFirewallAssignError {
+	TunnelNotFound,
+	InvalidFirewallId,
+}
+
+impl std::fmt::Display for TunnelsFirewallAssignError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for TunnelsFirewallAssignError {
+}
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqTunnelsProxySet {
+	pub tunnel_id: uuid::Uuid,
+	pub proxy_protocol: Option<ProxyProtocol>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum TunnelProxySetError {
+	TunnelNotFound,
+}
+

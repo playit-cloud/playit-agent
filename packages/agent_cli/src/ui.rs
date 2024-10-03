@@ -81,7 +81,14 @@ impl UI {
     }
 
     pub async fn write_message<T: CliMessage>(&mut self, msg: T) {
-        self.write_screen(CliUIMessage::from(msg)).await
+        let wait = msg.human_wait();
+        self.write_screen(CliUIMessage::from(msg)).await;
+
+        if self.cli_interface == CliInterface::Human {
+            if let Some(wait) = wait {
+                tokio::time::sleep(wait).await;
+            }
+        }
     }
 
     pub async fn write_screen<T: UIMessage>(&mut self, content: T) {

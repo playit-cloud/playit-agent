@@ -47,7 +47,6 @@ pub enum Commands {
     Account(CmdAccount),
     #[command(subcommand)]
     Claim(CmdClaim),
-    #[command(subcommand, about = "Start the playit program")]
     Start,
     #[command(subcommand)]
     Tunnels(CmdTunnels),
@@ -111,11 +110,11 @@ pub struct CmdClaimExchange {
 #[command(about = "Commands to manage tunnels")]
 pub enum CmdTunnels {
     Prepare(CmdTunnelsPrepare),
-    Delete(CmdTunnelsDelete),
-    Find(CmdTunnelsFind),
-    List,
-    WaitFor(CmdTunnelsWaitFor),
-    Set(CmdTunnelsSet),
+    // Delete(CmdTunnelsDelete),
+    // Find(CmdTunnelsFind),
+    // List,
+    // WaitFor(CmdTunnelsWaitFor),
+    // Set(CmdTunnelsSet),
 }
 
 #[derive(Args, Debug)]
@@ -129,10 +128,10 @@ pub struct CmdTunnelsPrepare {
 
     #[arg(short('r'), long("region"), default_value = "optimal")]
     pub region: CmdTunnelRegion,
-    #[arg(long("ignore-region"), default_value = "true")]
-    pub ignore_region: bool,
-    #[arg(long("ignore-name"), default_value = "false")]
-    pub ignore_name: bool,
+    #[arg(long("require-region"), default_value = "false")]
+    pub require_region: bool,
+    #[arg(long("require-name"), default_value = "false")]
+    pub require_name: bool,
 
     #[arg(short('c'), long("port-count"), default_value = "1")]
     pub port_count: u16,

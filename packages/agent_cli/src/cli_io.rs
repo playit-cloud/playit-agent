@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fmt::Debug};
+use std::{borrow::Cow, fmt::Debug, time::Duration};
 
 use playit_api_client::api::ClaimSetupResponse;
 use serde::{Deserialize, Serialize};
@@ -10,6 +10,8 @@ pub enum CliMessageType {
     Failed,
     Error,
     ClaimSetupStatus,
+    AttentionNeeded,
+    TunnelDetail,
 }
 
 #[derive(Serialize)]
@@ -26,6 +28,8 @@ impl<T: CliMessage> UIMessage for CliUIMessage<T> {
             CliMessageType::Failed => false,
             CliMessageType::Error => false,
             CliMessageType::ClaimSetupStatus => true,
+            CliMessageType::AttentionNeeded => true,
+            CliMessageType::TunnelDetail => false,
         }
     }
 
@@ -57,6 +61,10 @@ impl<T: CliMessage> From<T> for CliUIMessage<T> {
 pub trait CliMessage: Serialize {
     const TYPE: CliMessageType;
 
+    fn human_wait(&self) -> Option<Duration> {
+        None
+    }
+
     fn human(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result;
 
     fn csv(&self) -> Option<String>;
@@ -70,6 +78,10 @@ pub struct CliErrorPrint<E: Debug> {
 
 impl<E: Debug + Serialize> CliMessage for CliErrorPrint<E> {
     const TYPE: CliMessageType = CliMessageType::Error;
+
+    fn human_wait(&self) -> Option<Duration> {
+        Some(Duration::from_secs(2))
+    }
     
     fn human(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "\n-----ERROR-----\nMessage: {}\nDetails: {:?}\n-----ERROR-----\n", self.message, self.error)
@@ -154,5 +166,55 @@ impl CliMessage for ProgramFail {
 impl Serialize for ProgramFail {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
         serializer.serialize_str(&format!("{:?}", self.error))
+    }
+}
+
+#[derive(Serialize)]
+pub struct AttentionNeeded {
+    pub note: String,
+    pub url: String,
+}
+
+impl CliMessage for AttentionNeeded {
+    const TYPE: CliMessageType = CliMessageType::AttentionNeeded;
+
+    fn human_wait(&self) -> Option<Duration> {
+        Some(Duration::from_secs(5))
+    }
+
+    fn human(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "---- Attention Needed ----\n{}\n{}\n--------------------------", self.note, self.url)
+    }
+
+    fn csv(&self) -> Option<String> {
+        Some(format!("{},{}", self.note, self.url))
+    }
+}
+
+#[derive(Serialize)]
+pub struct TunnelDetails {
+    pub detail: TunnelDetail,
+    pub value: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Serialize)]
+pub enum TunnelDetail {
+    Id,
+    ManageUrl,
+    Domain,
+    PortStart,
+    Address,
+    Region,
+}
+
+impl CliMessage for TunnelDetails {
+    const TYPE: CliMessageType = CliMessageType::TunnelDetail;
+
+    fn human(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Tunnel Detail ({:?}): {}", self.detail, self.value)
+    }
+
+    fn csv(&self) -> Option<String> {
+        Some(format!("{:?},{}", self.detail, self.value))
     }
 }
