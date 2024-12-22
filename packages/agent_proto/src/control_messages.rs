@@ -5,11 +5,12 @@ use std::sync::Arc;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use message_encoding::{m_max, m_max_list, m_static, MessageEncoding};
+use serde::Serialize;
 
 use crate::{AgentSessionId, PortRange};
 use crate::hmac::HmacSha256;
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub enum ControlRequest {
     Ping(Ping),
     AgentRegister(AgentRegister),
@@ -35,7 +36,7 @@ impl ControlRequestId {
         if (Self::END as u32) <= num || num == 0 {
             return None;
         }
-        Some(unsafe { std::mem::transmute(num) })
+        Some(unsafe { std::mem::transmute::<u32, Self>(num) })
     }
 }
 
@@ -104,7 +105,7 @@ impl MessageEncoding for ControlRequest {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub struct AgentCheckPortMapping {
     pub agent_session_id: AgentSessionId,
     pub port_range: PortRange,
@@ -128,7 +129,7 @@ impl MessageEncoding for AgentCheckPortMapping {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub struct Ping {
     pub now: u64,
     pub current_ping: Option<u32>,
@@ -156,7 +157,7 @@ impl MessageEncoding for Ping {
 }
 
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub struct AgentRegister {
     pub account_id: u64,
     pub agent_id: u64,
