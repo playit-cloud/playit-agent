@@ -10,4 +10,4 @@ if [ -z "${SECRET_KEY}" ]; then
   fi
 fi
 
-playit -s --secret "${SECRET_KEY}" --platform_docker start
+exec playit -s --secret "${SECRET_KEY}" --platform_docker start
