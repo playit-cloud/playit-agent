@@ -25,8 +25,7 @@ message-encoding = { workspace = true }
 playit-agent-proto = { path = "../agent_proto", version = "1.2.0" }
 playit-api-client = { path = "../api_client", version = "0.1.0" }
 
-crossbeam = "0.8.4"
-slab = "0.4.9"
+crossbeam-queue = "0.3.11"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

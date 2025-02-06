@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use clap::ArgMatches;
 use playit_api_client::{
     api::*,
     PlayitApi,
@@ -8,7 +7,7 @@ use playit_api_client::{
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::{claim_exchange, claim_generate, ui::UI, CliError, API_BASE};
+use crate::{args::CliArgs, claim_exchange, claim_generate, ui::UI, CliError, API_BASE};
 
 pub struct PlayitSecret {
     secret: RwLock<Option<String>>,
@@ -94,7 +93,7 @@ impl PlayitSecret {
                     break;
                 }
                 Err(ApiErrorNoFail::ClientError(error)) => {
-                    ui.write_error("Failed to load data from api\nretrying in 3 seconds", error).await;
+                    ui.write_error("Failed to load data from api\nretrying in 3 seconds", error);
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
                 Err(ApiErrorNoFail::ApiError(ApiResponseError::Auth(AuthError::InvalidAgentKey))) => {
@@ -113,7 +112,7 @@ impl PlayitSecret {
                     }
                 }
                 Err(ApiErrorNoFail::ApiError(error)) => {
-                    ui.write_error("unexpected error checking if secret is valid", &error).await;
+                    ui.write_error("unexpected error checking if secret is valid", &error);
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     return Err(CliError::ApiError(error));
                 }
@@ -165,7 +164,11 @@ impl PlayitSecret {
         };
 
         if let Err(error) = tokio::fs::write(path, &content).await {
-            ui.write_error(format!("failed to save secret, path: {}", path), &error).await;
+            ui.write_error(
+                format!("failed to save secret, path: {}", path),
+                format!("IOError({:?})", error)
+            );
+
             tokio::time::sleep(Duration::from_secs(5)).await;
             return Err(CliError::SecretFileWriteError(error));
         }
@@ -215,29 +218,26 @@ impl PlayitSecret {
         }
     }
 
-    pub async fn from_args(matches: &ArgMatches) -> Self {
-        let mut secret = matches.get_one::<String>("secret").cloned();
-        let mut path = matches.get_one::<String>("secret_path").cloned();
-
-        if secret.is_none() && path.is_none() {
+    pub async fn from_args(matches: &mut CliArgs) -> Self {
+        if matches.secret.is_none() && matches.secret_path.is_none() {
             if let Some(secret_env) = option_env!("PLAYIT_SECRET") {
-                secret.replace(secret_env.to_string());
+                matches.secret.replace(secret_env.to_string());
             }
         }
 
-        if path.is_none() {
+        if matches.secret_path.is_none() {
             if let Some(path_env) = option_env!("PLAYIT_SECRET_PATH") {
-                path.replace(path_env.to_string());
+                matches.secret_path.replace(path_env.to_string());
             }
         }
 
-        let allow_path_read = secret.is_none();
+        let allow_path_read = matches.secret.is_none();
 
         PlayitSecret {
-            secret: RwLock::new(secret),
-            path,
+            secret: RwLock::new(matches.secret.clone()),
+            path: matches.secret_path.clone(),
             allow_path_read,
-            wait_for_path: matches.get_flag("secret_wait"),
+            wait_for_path: matches.secret_wait,
         }
     }
 
