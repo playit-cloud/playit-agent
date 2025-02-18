@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use clap::{arg, Command};
@@ -25,7 +25,9 @@ use crate::match_ip::MatchIp;
 use crate::signal_handle::get_signal_handle;
 use crate::ui::{UI, UISettings};
 
-pub const API_BASE: &'static str = "https://api.playit.gg";
+pub static API_BASE: LazyLock<String> = LazyLock::new(|| {
+    dotenv::var("API_BASE").unwrap_or("https://api.playit.gg".to_string())
+});
 
 pub mod util;
 pub mod autorun;
@@ -146,7 +148,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 let session = api.login_guest().await?;
                 println!("https://playit.gg/login/guest-account/{}", session.session_key)
             }
-            _ => return Err(CliError::NotImplemented.into()),
+            _ => return Err(CliError::NotImplemented),
         }
         Some(("claim", m)) => match m.subcommand() {
             Some(("generate", _)) => {
@@ -154,7 +156,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             }
             Some(("url", m)) => {
                 let code = m.get_one::<String>("CLAIM_CODE").expect("required");
-                ui.write_screen(format!("{}", claim_url(code)?)).await;
+                ui.write_screen(claim_url(code)?.to_string()).await;
             }
             Some(("exchange", m)) => {
                 let claim_code = m.get_one::<String>("CLAIM_CODE").expect("required");
@@ -163,7 +165,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 let secret_key = claim_exchange(&mut ui, claim_code, AgentType::SelfManaged, wait).await?;
                 ui.write_screen(secret_key).await;
             }
-            _ => return Err(CliError::NotImplemented.into()),
+            _ => return Err(CliError::NotImplemented),
         },
         Some(("tunnels", m)) => match m.subcommand() {
             Some(("prepare", m)) => {
@@ -191,7 +193,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 let response = api.tunnels_list_json(ReqTunnelsList { tunnel_id: None, agent_id: None }).await?;
                 println!("{}", serde_json::to_string_pretty(&response).unwrap());
             }
-            _ => return Err(CliError::NotImplemented.into())
+            _ => return Err(CliError::NotImplemented)
         }
         Some(("run", m)) => {
             tracing::error!("run is depreciated and will be removed in a future version of the CLI");
@@ -224,7 +226,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                     Ok(addr) => addr,
                     _ => match u16::from_str(local_addr_str) {
                         Ok(port) => SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
-                        _ => return Err(CliError::InvalidMappingOverride.into()),
+                        _ => return Err(CliError::InvalidMappingOverride),
                     }
                 };
 
@@ -239,9 +241,9 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                     }
                     None => {
                         return if tunnel_found.contains(&tunnel_id) {
-                            Err(CliError::TunnelOverwrittenAlready(tunnel_id).into())
+                            Err(CliError::TunnelOverwrittenAlready(tunnel_id))
                         } else {
-                            Err(CliError::TunnelNotFound(tunnel_id).into())
+                            Err(CliError::TunnelNotFound(tunnel_id))
                         };
                     }
                 }
@@ -255,7 +257,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
             tunnel.run().await;
         }
-        _ => return Err(CliError::NotImplemented.into()),
+        _ => return Err(CliError::NotImplemented),
     }
 
     Ok(std::process::ExitCode::SUCCESS)
@@ -269,7 +271,7 @@ pub fn claim_generate() -> String {
 
 pub fn claim_url(code: &str) -> Result<String, CliError> {
     if hex::decode(code).is_err() {
-        return Err(CliError::InvalidClaimCode.into());
+        return Err(CliError::InvalidClaimCode);
     }
 
     Ok(format!(
