@@ -227,7 +227,7 @@ impl MessageEncoding for AgentRegister {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub enum ControlResponse {
     Pong(Pong),
     InvalidSignature,
@@ -292,7 +292,7 @@ impl MessageEncoding for ControlResponse {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub struct AgentPortMapping {
     pub range: PortRange,
     pub found: Option<AgentPortMappingFound>,
@@ -319,7 +319,7 @@ impl MessageEncoding for AgentPortMapping {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub enum AgentPortMappingFound {
     ToAgent(AgentSessionId),
 }
@@ -350,7 +350,7 @@ impl MessageEncoding for AgentPortMappingFound {
     }
 }
 
-#[derive(Eq, PartialEq, Clone)]
+#[derive(Eq, PartialEq, Clone, Serialize)]
 pub struct UdpChannelDetails {
     pub tunnel_addr: SocketAddr,
     pub token: Arc<Vec<u8>>,
@@ -381,7 +381,7 @@ impl MessageEncoding for UdpChannelDetails {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub struct Pong {
     pub request_now: u64,
     pub server_now: u64,
@@ -425,7 +425,7 @@ impl MessageEncoding for Pong {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Clone)]
+#[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub struct AgentRegistered {
     pub id: AgentSessionId,
     pub expires_at: u64,

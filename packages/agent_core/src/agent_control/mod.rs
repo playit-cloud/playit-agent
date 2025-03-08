@@ -5,7 +5,8 @@ use errors::SetupError;
 use tokio::{io::ReadBuf, net::UdpSocket};
 use version::get_version;
 
-use playit_api_client::{api::{ReqAgentsRoutingGet, ReqProtoRegister, SignedAgentKey}, PlayitApi};
+use playit_api_client::{api::{ReqAgentsRoutingGet, ReqProtoRegister}, PlayitApi};
+pub use playit_api_client::api::SignedAgentKey;
 
 use crate::utils::error_helper::ErrorHelper;
 
@@ -75,6 +76,14 @@ impl DualStackUdpSocket {
             ip6,
             next: AtomicUsize::new(0),
         })
+    }
+
+    pub fn local_ip4_port(&self) -> Option<u16> {
+        Some(self.ip4.local_addr().ok()?.port())
+    }
+
+    pub fn local_ip6_port(&self) -> Option<u16> {
+        Some(self.ip6.as_ref()?.local_addr().ok()?.port())
     }
 }
 
