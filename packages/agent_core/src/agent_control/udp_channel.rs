@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::fmt::Display;
 use std::net::SocketAddr;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -124,7 +125,7 @@ impl UdpChannel {
 
         let details = self.get_details().await?;
 
-        let flow_len = flow.len();
+        let flow_len = flow.footer_len();
         let updated_len = data_len + flow_len;
 
         if !flow.write_to(&mut data[data_len..]) {
@@ -162,12 +163,12 @@ impl UdpChannel {
 
         match UdpFlow::from_tail(&buffer[..bytes]) {
             Ok(flow) => return Ok(UdpTunnelRx::ReceivedPacket {
-                bytes: bytes - flow.len(),
+                bytes: bytes - flow.footer_len(),
                 flow,
             }),
-            Err(Some(footer)) if footer != UDP_CHANNEL_ESTABLISH_ID => return Err(UdpChannelError::InvalidFooter),
+            Err(Some(footer)) if footer == UDP_CHANNEL_ESTABLISH_ID => {}
+            Err(Some(_)) => return Err(UdpChannelError::InvalidFooter),
             Err(None) => return Err(UdpChannelError::InvalidFooter),
-            _ => {}
         }
 
         self.inner.last_confirm.store(now_sec(), Ordering::SeqCst);
@@ -232,8 +233,19 @@ impl From<UdpChannelError> for std::io::Error {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum UdpTunnelRx {
-    ReceivedPacket { bytes: usize, flow: UdpFlow },
+    ReceivedPacket {
+        bytes: usize,
+        flow: UdpFlow,
+    },
     ConfirmedConnection,
     UpdatedConnection,
 }
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct UdpExtension {
+    pub tunnel_id: u64,
+    pub client_server_id: u64,
+}
+

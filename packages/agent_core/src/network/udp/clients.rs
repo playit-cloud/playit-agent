@@ -228,20 +228,26 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                         UdpFlow::V4 {
                             src: SocketAddrV4::new(client_ip, client_port),
                             dst: SocketAddrV4::new(tunnel_ip, client.resource.tunn_from_port),
+                            frag: None,
+                            extension: None,
                         },
                         UdpFlow::V4 {
                             src: SocketAddrV4::new(client_ip, client_port),
                             dst: SocketAddrV4::new(tunnel_ip, client.resource.tunn_to_port),
+                            frag: None,
+                            extension: None,
                         },
                     ),
                     TunnelFlow::V6Client { tunnel_ip, client_ip, client_port } => (
                         UdpFlow::V6 {
                             src: (client_ip, client_port),
                             dst: (tunnel_ip, client.resource.tunn_from_port),
+                            extension: None,
                         },
                         UdpFlow::V6 {
                             src: (client_ip, client_port),
                             dst: (tunnel_ip, client.resource.tunn_to_port),
+                            extension: None,
                         }
                     ),
                 };
@@ -349,10 +355,13 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                 TunnelFlow::V4Client { tunnel_ip, client_ip, client_port } => UdpFlow::V4 {
                     src: SocketAddrV4::new(client_ip, client_port),
                     dst: SocketAddrV4::new(tunnel_ip, tunnel_port),
+                    frag: None,
+                    extension: None,
                 },
                 TunnelFlow::V6Client { tunnel_ip, client_ip, client_port } => UdpFlow::V6 {
                     src: (client_ip, client_port),
                     dst: (tunnel_ip, tunnel_port),
+                    extension: None,
                 },
             }
         };
@@ -435,7 +444,7 @@ impl<I: UdpTunnelProvider> UdpClients<I> where I::Value: Into<HostOrigin> {
                         tunn_to_port: found.to_port,
                     },
                     tunnel_flow: match flow_path {
-                        UdpFlow::V4 { src, dst } => TunnelFlow::V4Client { tunnel_ip: *dst.ip(), client_ip: *src.ip(), client_port: src.port() },
+                        UdpFlow::V4 { src, dst, .. } => TunnelFlow::V4Client { tunnel_ip: *dst.ip(), client_ip: *src.ip(), client_port: src.port() },
                         UdpFlow::V6 { src, dst, .. } => TunnelFlow::V6Client { tunnel_ip: dst.0, client_ip: src.0, client_port: src.1 },
                     },
                     last_tunnel_activity: now,

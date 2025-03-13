@@ -29,7 +29,7 @@ pub enum ProxyProtocolHeader {
 impl ProxyProtocolHeader {
     pub fn from_udp_flow(flow: &UdpFlow) -> Self {
         match flow {
-            UdpFlow::V4 { src, dst } => {
+            UdpFlow::V4 { src, dst, .. } => {
                 ProxyProtocolHeader::AfInet {
                     client_ip: *src.ip(),
                     proxy_ip: *dst.ip(),

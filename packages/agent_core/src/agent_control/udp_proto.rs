@@ -1,78 +1,70 @@
-use std::{cmp::Ordering, net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6}};
+use std::{net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6}, num::{NonZeroU16, NonZeroU64}};
 
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt, WriteBytesExt};
+use message_encoding::m_max_list;
 
-pub const REDIRECT_FLOW_4_FOOTER_ID_OLD: u64 = 0x5cb867cf788173b2;
-pub const REDIRECT_FLOW_4_FOOTER_ID: u64 = 0x4448474f48414344;
-pub const REDIRECT_FLOW_6_FOOTER_ID: u64 = 0x6668676f68616366;
+pub const REDIRECT_FLOW_4_FOOTER_ID_V1: u64 = 0x5cb867cf788173b2;
+pub const REDIRECT_FLOW_6_FOOTER_ID_V1: u64 = 0x6668676f68616366;
+
+pub const REDIRECT_FLOW_4_FOOTER_ID_V2: u64 = 0x5cb867cf78817399;
+pub const REDIRECT_FLOW_6_FOOTER_ID_V2: u64 = 0x6cb667cf78817369;
+
 pub const UDP_CHANNEL_ESTABLISH_ID: u64 = 0xd01fe6830ddce781;
 
-const V4_LEN: usize = 20;
-const V6_LEN: usize = 48;
+const IP4_LEN_V1: usize = 20;
+const IP4_LEN_V2_WITHOUT_FRAG: usize = 20 + 16 /* extension */ + 2 /* packet id = 0 */;
+const IP4_LEN_V2_WITH_FRAG: usize = IP4_LEN_V2_WITHOUT_FRAG + 3;
 
-#[derive(Copy, Clone, PartialEq, Eq, Debug, Hash)]
+const IP6_LEN_V1: usize = 48;
+const IP6_LEN_V2: usize = IP6_LEN_V1 - 4 /* remove flow */ + 8 /* client_server_id */;
+
+#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Debug)]
 pub enum UdpFlow {
     V4 {
         src: SocketAddrV4,
         dst: SocketAddrV4,
+        frag: Option<FragmentInfo>,
+        extension: Option<UdpFlowExtension>,
     },
     V6 {
         src: (Ipv6Addr, u16),
         dst: (Ipv6Addr, u16),
+        extension: Option<UdpFlowExtension>,
     },
 }
 
-impl Ord for UdpFlow {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.partial_cmp(other).unwrap()
-    }
+#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Debug)]
+pub struct UdpFlowExtension {
+    pub client_server_id: NonZeroU64,
+    pub tunnel_id: NonZeroU64,
 }
 
-/* IMPORTANT: Compare by dst port last so we can easily get flows that target a port range */
-impl PartialOrd<Self> for UdpFlow {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        match (self, other) {
-            (UdpFlow::V4 { src: a_src, dst: a_dst }, UdpFlow::V4 { src: b_src, dst: b_dst }) => {
-                match a_src.cmp(b_src) {
-                    Ordering::Equal => {}
-                    other => return Some(other),
-                }
-
-                match a_dst.ip().cmp(b_dst.ip()) {
-                    Ordering::Equal => {}
-                    other => return Some(other),
-                }
-
-                Some(a_dst.port().cmp(&b_dst.port()))
-            }
-            (UdpFlow::V6 { src: a_src, dst: a_dst }, UdpFlow::V6 { src: b_src, dst: b_dst }) => {
-                match a_src.cmp(b_src) {
-                    Ordering::Equal => {}
-                    other => return Some(other),
-                }
-
-                match a_dst.0.cmp(&b_dst.0) {
-                    Ordering::Equal => {}
-                    other => return Some(other),
-                }
-
-                Some(a_dst.1.cmp(&b_dst.1))
-            }
-            (UdpFlow::V4 { .. }, UdpFlow::V6 { .. }) => Some(std::cmp::Ordering::Less),
-            (UdpFlow::V6 { .. }, UdpFlow::V4 { .. }) => Some(std::cmp::Ordering::Greater),
-        }
-    }
+#[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Debug)]
+pub struct FragmentInfo {
+    pub packet_id: NonZeroU16,
+    pub frag_offset: u16,
+    pub has_more: bool,
 }
 
 impl UdpFlow {
-    pub fn flip(self) -> Self {
+    pub fn client_server_id(&self) -> Option<NonZeroU64> {
         match self {
-            UdpFlow::V4 { src, dst } => UdpFlow::V4 { src: dst, dst: src },
-            UdpFlow::V6 { src, dst } => UdpFlow::V6 {
-                src: dst,
-                dst: src,
+            Self::V4 { extension, .. } => extension.as_ref(),
+            Self::V6 { extension, .. } => extension.as_ref(),
+        }.map(|v| v.client_server_id)
+    }
+
+    pub fn flip(mut self) -> Self {
+        match &mut self {
+            UdpFlow::V4 { src, dst, .. } => {
+                std::mem::swap(src, dst);
             },
-        }
+            UdpFlow::V6 { src, dst, .. } => {
+                std::mem::swap(src, dst);
+            }
+        };
+
+        self
     }
 
     pub fn src(&self) -> SocketAddr {
@@ -95,44 +87,54 @@ impl UdpFlow {
         }
     }
 
-    pub fn with_src_port(&self, port: u16) -> Self {
-        match self {
-            UdpFlow::V4 { src, dst } => UdpFlow::V4 {
-                src: SocketAddrV4::new(*src.ip(), port),
-                dst: *dst,
-            },
-            UdpFlow::V6 { src, dst } => UdpFlow::V6 {
-                src: (src.0, port),
-                dst: *dst,
-            },
-        }
-    }
-
     pub fn write_to(&self, mut slice: &mut [u8]) -> bool {
-        if slice.len() < self.len() {
+        if slice.len() < self.footer_len() {
             return false;
         }
 
         match self {
-            UdpFlow::V4 { src, dst } => {
+            UdpFlow::V4 { src, dst, frag, extension } => {
                 slice.write_u32::<BigEndian>((*src.ip()).into()).unwrap();
                 slice.write_u32::<BigEndian>((*dst.ip()).into()).unwrap();
                 slice.write_u16::<BigEndian>(src.port()).unwrap();
                 slice.write_u16::<BigEndian>(dst.port()).unwrap();
-                slice
-                    .write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_OLD)
-                    .unwrap();
+
+                if let Some(extension) = extension {
+                    slice.write_u64::<BigEndian>(extension.client_server_id.get()).unwrap();
+                    slice.write_u64::<BigEndian>(extension.tunnel_id.get()).unwrap();
+
+                    match frag {
+                        None => {
+                            /* packet id = 0 */
+                            slice.write_u16::<BigEndian>(0).unwrap()
+                        }
+                        Some(frag) => {
+                            slice.write_u8(if frag.has_more { 1 } else { 0 }).unwrap();
+                            slice.write_u16::<BigEndian>(frag.frag_offset).unwrap();
+                            slice.write_u16::<BigEndian>(frag.packet_id.get()).unwrap();
+                        }
+                    }
+
+                    slice.write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_V2).unwrap();
+                } else {
+                    slice.write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_V1).unwrap()
+                }
             }
-            UdpFlow::V6 { src, dst } => {
+            UdpFlow::V6 { src, dst, extension } => {
                 slice.write_u128::<BigEndian>(src.0.into()).unwrap();
                 slice.write_u128::<BigEndian>(dst.0.into()).unwrap();
                 slice.write_u16::<BigEndian>(src.1).unwrap();
                 slice.write_u16::<BigEndian>(dst.1).unwrap();
-                /* FLOW */
-                slice.write_u32::<BigEndian>(0).unwrap();
-                slice
-                    .write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID)
-                    .unwrap();
+
+                if let Some(extension) = extension {
+                    slice.write_u64::<BigEndian>(extension.client_server_id.get()).unwrap();
+                    slice.write_u64::<BigEndian>(extension.tunnel_id.get()).unwrap();
+                    slice.write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID_V2).unwrap();
+                } else {
+                    /* flow label (no longer used) */
+                    slice.write_u32::<BigEndian>(0).unwrap();
+                    slice.write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID_V1) .unwrap();
+                }
             }
         }
 
@@ -145,15 +147,15 @@ impl UdpFlow {
             return Err(None);
         }
 
-        let footer = BigEndian::read_u64(&slice[slice.len() - 8..]);
+        let footer_id = BigEndian::read_u64(&slice[slice.len() - 8..]);
 
-        match footer {
-            REDIRECT_FLOW_4_FOOTER_ID | REDIRECT_FLOW_4_FOOTER_ID_OLD => {
-                if slice.len() < V4_LEN {
+        match footer_id {
+            REDIRECT_FLOW_4_FOOTER_ID_V1 => {
+                if slice.len() < IP4_LEN_V1 {
                     return Err(None);
                 }
 
-                slice = &slice[slice.len() - V4_LEN..];
+                slice = &slice[slice.len() - IP4_LEN_V1..];
 
                 let src_ip = slice.read_u32::<BigEndian>().unwrap();
                 let dst_ip = slice.read_u32::<BigEndian>().unwrap();
@@ -163,14 +165,65 @@ impl UdpFlow {
                 Ok(UdpFlow::V4 {
                     src: SocketAddrV4::new(src_ip.into(), src_port),
                     dst: SocketAddrV4::new(dst_ip.into(), dst_port),
+                    frag: None,
+                    extension: None,
                 })
             }
-            REDIRECT_FLOW_6_FOOTER_ID => {
-                if slice.len() < V6_LEN {
+            REDIRECT_FLOW_4_FOOTER_ID_V2 => {
+                if slice.len() < 10 {
                     return Err(None);
                 }
 
-                slice = &slice[slice.len() - V6_LEN..];
+                let packet_id = BigEndian::read_u16(&slice[slice.len() - 10..]);
+
+                slice = if packet_id == 0 {
+                    if slice.len() < IP4_LEN_V2_WITHOUT_FRAG {
+                        return Err(None);
+                    }
+                    &slice[slice.len() - IP4_LEN_V2_WITHOUT_FRAG..]
+                } else {
+                    if slice.len() < IP4_LEN_V2_WITH_FRAG {
+                        return Err(None);
+                    }
+                    &slice[slice.len() - IP4_LEN_V2_WITH_FRAG..]
+                };
+
+                let src_ip = slice.read_u32::<BigEndian>().unwrap();
+                let dst_ip = slice.read_u32::<BigEndian>().unwrap();
+                let src_port = slice.read_u16::<BigEndian>().unwrap();
+                let dst_port = slice.read_u16::<BigEndian>().unwrap();
+                let client_server_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
+                let tunnel_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
+
+                let frag = if let Some(packet_id) = NonZeroU16::new(packet_id) {
+                    let has_more = slice.read_u8().unwrap() != 0;
+                    let frag_offset = slice.read_u16::<BigEndian>().unwrap();
+
+                    Some(FragmentInfo {
+                        packet_id,
+                        frag_offset,
+                        has_more,
+                    })
+                } else {
+                    None
+                };
+
+                Ok(UdpFlow::V4 {
+                    src: SocketAddrV4::new(src_ip.into(), src_port),
+                    dst: SocketAddrV4::new(dst_ip.into(), dst_port),
+                    frag,
+                    extension: Some(UdpFlowExtension {
+                        client_server_id,
+                        tunnel_id,
+                    }),
+                })
+            }
+            REDIRECT_FLOW_6_FOOTER_ID_V1 => {
+                if slice.len() < IP6_LEN_V1 {
+                    return Err(None);
+                }
+
+                slice = &slice[slice.len() - IP6_LEN_V1..];
 
                 let src_ip = slice.read_u128::<BigEndian>().unwrap();
                 let dst_ip = slice.read_u128::<BigEndian>().unwrap();
@@ -181,62 +234,65 @@ impl UdpFlow {
                 Ok(UdpFlow::V6 {
                     src: (src_ip.into(), src_port),
                     dst: (dst_ip.into(), dst_port),
+                    extension: None,
                 })
             }
-            footer => Err(Some(footer)),
+            REDIRECT_FLOW_6_FOOTER_ID_V2 => {
+                if slice.len() < IP6_LEN_V2 {
+                    return Err(None);
+                }
+
+                slice = &slice[slice.len() - IP6_LEN_V2..];
+
+                let src_ip = slice.read_u128::<BigEndian>().unwrap();
+                let dst_ip = slice.read_u128::<BigEndian>().unwrap();
+                let src_port = slice.read_u16::<BigEndian>().unwrap();
+                let dst_port = slice.read_u16::<BigEndian>().unwrap();
+                let client_server_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
+                let tunnel_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
+
+                Ok(UdpFlow::V6 {
+                    src: (src_ip.into(), src_port),
+                    dst: (dst_ip.into(), dst_port),
+                    extension: Some(UdpFlowExtension {
+                        client_server_id,
+                        tunnel_id,
+                    }),
+                })
+            }
+            _ => Err(Some(footer_id)),
         }
     }
 
-    pub fn len(&self) -> usize {
+    pub fn footer_len(&self) -> usize {
         match self {
-            UdpFlow::V4 { .. } => V4_LEN,
-            UdpFlow::V6 { .. } => V6_LEN,
+            UdpFlow::V4 { extension: None, .. } => IP4_LEN_V1,
+            UdpFlow::V4 { extension: Some(_), frag: Some(_), .. } => IP4_LEN_V2_WITH_FRAG,
+            UdpFlow::V4 { extension: Some(_), frag: None, .. } => IP4_LEN_V2_WITHOUT_FRAG,
+            UdpFlow::V6 { extension: None, .. } => IP6_LEN_V1,
+            UdpFlow::V6 { extension: Some(_), .. } => IP6_LEN_V2,
         }
     }
 
-    pub const fn len_v4() -> usize {
-        V4_LEN
-    }
+    pub const MAX_IP4_LEN: usize = {
+        m_max_list(&[
+            IP4_LEN_V1,
+            IP4_LEN_V2_WITH_FRAG,
+            IP4_LEN_V2_WITHOUT_FRAG,
+        ])
+    };
 
-    pub const fn len_v6() -> usize {
-        V6_LEN
-    }
-}
+    pub const MAX_IP6_LEN: usize = {
+        m_max_list(&[
+            IP6_LEN_V1,
+            IP6_LEN_V2,
+        ])
+    };
 
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_serialize_v4() {
-        let mut buf = [0u8; 100];
-        let flow = UdpFlow::V4 {
-            src: "123.234.13.43:8891".parse().unwrap(),
-            dst: "123.99.13.43:773".parse().unwrap(),
-        };
-        flow.write_to(&mut buf[100 - V4_LEN..]);
-
-        let parsed = UdpFlow::from_tail(&buf).unwrap();
-        assert_eq!(flow, parsed);
-    }
-
-    #[test]
-    fn test_serialize_v6() {
-        let mut buf = [0u8; 100];
-        let flow = UdpFlow::V6 {
-            src: ("2602:fbaf::100".parse().unwrap(), 142),
-            dst: ("2602:fbaf::200".parse().unwrap(), 142),
-        };
-        flow.write_to(&mut buf[100 - V6_LEN..]);
-
-        let parsed = UdpFlow::from_tail(&buf).unwrap();
-        assert_eq!(flow, parsed);
-    }
-
-    #[test]
-    fn test_parse() {
-        let data = hex::decode("746573740a93b9ddc0c0a811b304d2ada35cb867cf788173b2").unwrap();
-        let parsed = UdpFlow::from_tail(&data).unwrap();
-        println!("Data: {:?}", parsed);
-    }
+    pub const MX_LEN: usize = {
+        m_max_list(&[
+            Self::MAX_IP4_LEN,
+            Self::MAX_IP6_LEN,
+        ])
+    };
 }
