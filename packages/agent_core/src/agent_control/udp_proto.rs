@@ -48,10 +48,14 @@ pub struct FragmentInfo {
 
 impl UdpFlow {
     pub fn client_server_id(&self) -> Option<NonZeroU64> {
+        self.extension().map(|v| v.client_server_id)
+    }
+
+    pub fn extension(&self) -> Option<&UdpFlowExtension> {
         match self {
             Self::V4 { extension, .. } => extension.as_ref(),
             Self::V6 { extension, .. } => extension.as_ref(),
-        }.map(|v| v.client_server_id)
+        }
     }
 
     pub fn flip(mut self) -> Self {
