@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt::Debug;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
@@ -5,6 +6,7 @@ use std::sync::Arc;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use message_encoding::{m_max, m_max_list, m_static, MessageEncoding};
+use serde::ser::SerializeStruct;
 use serde::Serialize;
 
 use crate::{AgentSessionId, PortRange};
@@ -350,10 +352,19 @@ impl MessageEncoding for AgentPortMappingFound {
     }
 }
 
-#[derive(Eq, PartialEq, Clone, Serialize)]
+#[derive(Eq, PartialEq, Clone)]
 pub struct UdpChannelDetails {
     pub tunnel_addr: SocketAddr,
     pub token: Arc<Vec<u8>>,
+}
+
+impl Serialize for UdpChannelDetails {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+        let mut s = serializer.serialize_struct("UdpChannelDetails", 2)?;
+        s.serialize_field("tunnel_addr", &self.tunnel_addr)?;
+        s.serialize_field("token", &*self.token)?;
+        s.end()
+    }
 }
 
 impl Debug for UdpChannelDetails {
