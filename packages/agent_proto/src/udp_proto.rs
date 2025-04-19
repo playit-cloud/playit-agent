@@ -11,12 +11,14 @@ pub const REDIRECT_FLOW_6_FOOTER_ID_V2: u64 = 0x6cb667cf78817369;
 
 pub const UDP_CHANNEL_ESTABLISH_ID: u64 = 0xd01fe6830ddce781;
 
+const EXT_LEN: usize = 18;
+
 const IP4_LEN_V1: usize = 20;
-const IP4_LEN_V2_WITHOUT_FRAG: usize = 20 + 16 /* extension */ + 2 /* packet id = 0 */;
+const IP4_LEN_V2_WITHOUT_FRAG: usize = 20 + EXT_LEN /* extension */ + 2 /* packet id = 0 */;
 const IP4_LEN_V2_WITH_FRAG: usize = IP4_LEN_V2_WITHOUT_FRAG + 3;
 
 const IP6_LEN_V1: usize = 48;
-const IP6_LEN_V2: usize = IP6_LEN_V1 - 4 /* remove flow */ + 8 /* client_server_id */;
+const IP6_LEN_V2: usize = IP6_LEN_V1 - 4 /* remove flow */ + EXT_LEN /* client_server_id */;
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Debug)]
 pub enum UdpFlow {
@@ -37,6 +39,7 @@ pub enum UdpFlow {
 pub struct UdpFlowExtension {
     pub client_server_id: NonZeroU64,
     pub tunnel_id: NonZeroU64,
+    pub port_offset: u16,
 }
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Ord, Eq, Debug)]
@@ -106,6 +109,7 @@ impl UdpFlow {
                 if let Some(extension) = extension {
                     slice.write_u64::<BigEndian>(extension.client_server_id.get()).unwrap();
                     slice.write_u64::<BigEndian>(extension.tunnel_id.get()).unwrap();
+                    slice.write_u16::<BigEndian>(extension.port_offset).unwrap();
 
                     match frag {
                         None => {
@@ -133,6 +137,7 @@ impl UdpFlow {
                 if let Some(extension) = extension {
                     slice.write_u64::<BigEndian>(extension.client_server_id.get()).unwrap();
                     slice.write_u64::<BigEndian>(extension.tunnel_id.get()).unwrap();
+                    slice.write_u16::<BigEndian>(extension.port_offset).unwrap();
                     slice.write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID_V2).unwrap();
                 } else {
                     /* flow label (no longer used) */
@@ -152,6 +157,7 @@ impl UdpFlow {
         }
 
         let footer_id = BigEndian::read_u64(&slice[slice.len() - 8..]);
+        println!("Parsed footer: {}", footer_id);
 
         match footer_id {
             REDIRECT_FLOW_4_FOOTER_ID_V1 => {
@@ -198,6 +204,7 @@ impl UdpFlow {
                 let dst_port = slice.read_u16::<BigEndian>().unwrap();
                 let client_server_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
                 let tunnel_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
+                let port_offset = slice.read_u16::<BigEndian>().unwrap();
 
                 let frag = if let Some(packet_id) = NonZeroU16::new(packet_id) {
                     let has_more = slice.read_u8().unwrap() != 0;
@@ -219,6 +226,7 @@ impl UdpFlow {
                     extension: Some(UdpFlowExtension {
                         client_server_id,
                         tunnel_id,
+                        port_offset,
                     }),
                 })
             }
@@ -252,8 +260,10 @@ impl UdpFlow {
                 let dst_ip = slice.read_u128::<BigEndian>().unwrap();
                 let src_port = slice.read_u16::<BigEndian>().unwrap();
                 let dst_port = slice.read_u16::<BigEndian>().unwrap();
+
                 let client_server_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
                 let tunnel_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
+                let port_offset = slice.read_u16::<BigEndian>().unwrap();
 
                 Ok(UdpFlow::V6 {
                     src: (src_ip.into(), src_port),
@@ -261,6 +271,7 @@ impl UdpFlow {
                     extension: Some(UdpFlowExtension {
                         client_server_id,
                         tunnel_id,
+                        port_offset,
                     }),
                 })
             }
@@ -299,4 +310,50 @@ impl UdpFlow {
             Self::MAX_IP6_LEN,
         ])
     };
+}
+
+#[cfg(test)]
+mod test {
+    use std::num::NonZeroU64;
+
+    use super::{UdpFlow, UdpFlowExtension};
+
+    #[test]
+    fn udp_flow_v4_test() {
+        let mut data = vec![0u8; 1024];
+        let flow = UdpFlow::V4 {
+            src: "4.2.1.3:1234".parse().unwrap(),
+            dst: "1.2.3.4:5512".parse().unwrap(),
+            frag: None,
+            extension: Some(UdpFlowExtension {
+                port_offset: 123,
+                tunnel_id: NonZeroU64::new(123).unwrap(),
+                client_server_id: NonZeroU64::new(12).unwrap(),
+            }),
+        };
+
+        flow.write_to(&mut data[100..]);
+
+        let parsed = UdpFlow::from_tail(&data[..100+flow.footer_len()]).unwrap();
+        assert_eq!(flow, parsed);
+    }
+
+    #[test]
+    fn udp_flow_v6_test() {
+        let mut data = vec![0u8; 1024];
+        let flow = UdpFlow::V6 {
+            src: ("2601:1c2:c100:555:20f:53ff:fe4e:e541".parse().unwrap(), 100),
+            dst: ("2601:1c2:c100:555:20f:53ff:fe4e:e541".parse().unwrap(), 999),
+            extension: Some(UdpFlowExtension {
+                port_offset: 999,
+                tunnel_id: NonZeroU64::new(123).unwrap(),
+                client_server_id: NonZeroU64::new(12).unwrap(),
+            }),
+        };
+
+        flow.write_to(&mut data[100..]);
+
+        let parsed = UdpFlow::from_tail(&data[..100+flow.footer_len()]).unwrap();
+        assert_eq!(flow, parsed);
+    }
 }

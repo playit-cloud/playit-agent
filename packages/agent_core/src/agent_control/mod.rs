@@ -17,9 +17,6 @@ pub mod connected_control;
 pub mod established_control;
 pub mod maintained_control;
 pub mod version;
-
-pub mod udp_channel;
-pub mod udp_proto;
 pub mod platform;
 
 pub trait PacketIO: Send + Sync + 'static {
@@ -28,7 +25,7 @@ pub trait PacketIO: Send + Sync + 'static {
     fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send;
 }
 
-pub trait PacketRx {
+pub trait PacketRx: Send + Sync + 'static {
     fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send;
 }
 
@@ -122,7 +119,7 @@ struct PoolBoth<'a> {
     b: Option<&'a UdpSocket>
 }
 
-impl<'a> Future for PoolBoth<'a> {
+impl Future for PoolBoth<'_> {
     type Output = std::io::Result<(usize, SocketAddr)>;
 
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {

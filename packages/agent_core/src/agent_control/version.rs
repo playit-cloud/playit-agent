@@ -23,3 +23,4 @@ pub fn get_version() -> PlayitAgentVersion {
         }
     }).clone()
 }
+

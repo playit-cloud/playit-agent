@@ -39,10 +39,19 @@ impl LanAddress {
         }
     }
 
-    pub async fn udp_socket(special_lan_ip: bool, peer: SocketAddr, host: SocketAddr) -> std::io::Result<UdpSocket> {
-        if host.ip().is_loopback() && special_lan_ip {
-            let local_ip = map_to_local_ip4(peer.ip());
-            let local_port = 40000 + (peer.port() % 24000);
+    pub async fn udp_socket(special_lan_ip: bool, peer: SocketAddr, tunnel_id: u64) -> std::io::Result<UdpSocket> {
+        let ip_shuffle = shuffle_ip_to_u32(peer.ip());
+
+        /* try to have the same client bind to the same local resource */
+        let rand_id = shuffle(peer.port() as u32)
+            ^ shuffle((tunnel_id >> 32) as u32)
+            ^ shuffle(tunnel_id as u32)
+            ^ ip_shuffle;
+
+        let local_port = (2048u32 + rand_id % (u16::MAX as u32 - 2048u32)) as u16;
+
+        if special_lan_ip {
+            let local_ip = Ipv4Addr::from(as_local_masked(ip_shuffle));
 
             match UdpSocket::bind(SocketAddrV4::new(local_ip, local_port)).await {
                 Ok(v) => Ok(v),
@@ -59,7 +68,14 @@ impl LanAddress {
                 }
             }
         } else {
-            UdpSocket::bind(SocketAddrV4::new(0.into(), 0)).await
+            match UdpSocket::bind(SocketAddrV4::new(0.into(), local_port)).await {
+                Ok(v) => Ok(v),
+                Err(bad_port_error) => {
+                    let v = UdpSocket::bind(SocketAddrV4::new(0.into(), 0)).await?;
+                    tracing::warn!("Failed to bind UDP to special port: {:?}", bad_port_error);
+                    Ok(v)
+                }
+            }
         }
     }
 }
@@ -73,7 +89,11 @@ fn as_local_masked(mut ip: u32) -> u32 {
 }
 
 fn map_to_local_ip4(ip: IpAddr) -> Ipv4Addr {
-    Ipv4Addr::from(as_local_masked(match ip {
+    Ipv4Addr::from(as_local_masked(shuffle_ip_to_u32(ip)))
+}
+
+fn shuffle_ip_to_u32(ip: IpAddr) -> u32 {
+    match ip {
         IpAddr::V4(ip) => u32::from(ip),
         IpAddr::V6(ip) => {
             let bytes = ip.octets();
@@ -83,5 +103,5 @@ fn map_to_local_ip4(ip: IpAddr) -> Ipv4Addr {
                 ^ shuffle(BigEndian::read_u32(&bytes[4..8]))
                 ^ shuffle(BigEndian::read_u32(&bytes[4..8]))
         }
-    }))
+    }
 }
