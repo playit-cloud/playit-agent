@@ -157,8 +157,6 @@ impl UdpFlow {
         }
 
         let footer_id = BigEndian::read_u64(&slice[slice.len() - 8..]);
-        println!("Parsed footer: {}", footer_id);
-
         match footer_id {
             REDIRECT_FLOW_4_FOOTER_ID_V1 => {
                 if slice.len() < IP4_LEN_V1 {

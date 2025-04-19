@@ -1,5 +1,4 @@
 use std::{collections::{hash_map, HashMap}, net::{SocketAddr, SocketAddrV4}, num::NonZeroU32, sync::Arc};
-use std::num::NonZeroU32;
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use playit_api_client::api::ProxyProtocol;
@@ -12,9 +11,10 @@ use playit_agent_proto::udp_proto::UdpFlow;
 use super::{packets::{Packet, Packets}, udp_errors::udp_errors, udp_receiver::{UdpReceivedPacket, UdpReceiver, UdpReceiverSetup}};
 
 pub struct UdpClients {
+    pub tunnels: HashMap<u64, UdpTunnelOrigin>,
+
     virtual_client_lookup: HashMap<UdpClientKey, usize>,
     virtual_clients: Slab<Client>,
-    pub tunnels: HashMap<u64, UdpTunnelOrigin>,
     setup: UdpReceiverSetup,
     rx: Receiver<UdpReceivedPacket>,
 
@@ -32,8 +32,10 @@ struct Client {
     id: u64,
     key: UdpClientKey,
     socket: Arc<UdpSocket>,
-    receiver: UdpReceiver,
     flow: UdpFlow,
+
+    /* when dropped, rx task get killed */
+    _receiver: UdpReceiver,
 
     from_tunnel_ts: u64,
     from_origin_ts: u64,
@@ -78,13 +80,11 @@ impl UdpClients {
             let since_tunnel = now_ms - client.from_tunnel_ts;
 
             let remove = {
-                if 60_000 < since_tunnel && 60_000 < since_origin {
-                    true
-                } else if 90_000 < since_tunnel || 90_000 < since_origin {
-                    true
-                } else {
-                    false
-                }
+                /* both haven't seen action in over 1m */
+                60_000 < since_tunnel && 60_000 < since_origin
+                /* either side has no traffic in 1.5m */
+                || 90_000 < since_tunnel
+                || 90_000 < since_origin
             };
 
             if remove {
@@ -103,9 +103,25 @@ impl UdpClients {
     }
 
     pub async fn dispatch_origin_packet(&mut self, now_ms: u64, packet: UdpReceivedPacket) -> Option<(UdpFlow, Packet)> {
-        let client = self.virtual_clients.get_mut(packet.rx_id as usize)?;
-        let tunnel = self.tunnels.get(&client.key.tunnel_id)?;
-        let SocketAddr::V4(source) = packet.from else { return None };
+        let Some(client) = self.virtual_clients.get_mut((packet.rx_id as u32) as usize) else {
+            udp_errors().origin_client_missing.inc();
+            return None;
+        };
+
+        if client.id != packet.rx_id {
+            udp_errors().origin_reject_bad_id.inc();
+            return None;
+        }
+
+        let Some(tunnel) = self.tunnels.get(&client.key.tunnel_id) else {
+            udp_errors().origin_tunnel_not_found.inc();
+            return None;
+        };
+
+        let SocketAddr::V4(source) = packet.from else {
+            udp_errors().origin_source_not_ip4.inc();
+            return None
+        };
 
         if tunnel.local_addr.ip() != source.ip() {
             udp_errors().origin_reject_addr_differ.inc();
@@ -215,7 +231,7 @@ impl UdpClients {
                     id,
                     key,
                     socket,
-                    receiver,
+                    _receiver: receiver,
                     flow: client_flow,
                     from_tunnel_ts: now_ms,
                     from_origin_ts: now_ms,

@@ -18,6 +18,10 @@ pub struct UdpErrors {
     pub establish_no_session: IntCounter,
 
     pub new_client_ratelimit: IntCounter,
+    pub origin_client_missing: IntCounter,
+    pub origin_reject_bad_id: IntCounter,
+    pub origin_tunnel_not_found: IntCounter,
+    pub origin_source_not_ip4: IntCounter,
     pub origin_reject_addr_differ: IntCounter,
     pub origin_reject_port_too_low: IntCounter,
     pub origin_reject_port_too_high: IntCounter,
