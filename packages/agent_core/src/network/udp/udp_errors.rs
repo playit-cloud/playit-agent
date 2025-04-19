@@ -25,6 +25,8 @@ pub struct UdpErrors {
     pub origin_reject_addr_differ: IntCounter,
     pub origin_reject_port_too_low: IntCounter,
     pub origin_reject_port_too_high: IntCounter,
+    pub origin_send_io_error: IntCounter,
+    pub origin_v1_proxy_protocol: IntCounter,
 }
 
 #[derive(Default, Debug)]

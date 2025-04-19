@@ -5,7 +5,7 @@ use playit_api_client::api::ProxyProtocol;
 use slab::Slab;
 use tokio::{net::UdpSocket, sync::mpsc::{channel, Receiver}};
 
-use crate::network::lan_address::LanAddress;
+use crate::network::{lan_address::LanAddress, proxy_protocol::ProxyProtocolHeader};
 use playit_agent_proto::udp_proto::UdpFlow;
 
 use super::{packets::{Packet, Packets}, udp_errors::udp_errors, udp_receiver::{UdpReceivedPacket, UdpReceiver, UdpReceiverSetup}};
@@ -180,7 +180,9 @@ impl UdpClients {
                     .get_mut(slot).unwrap();
 
                 client.from_tunnel_ts = now_ms;
-                client.socket.send_to(packet.as_ref(), target_addr).await;
+                if client.socket.send_to(packet.as_ref(), target_addr).await.is_err() {
+                    udp_errors().origin_send_io_error.inc();
+                }
             }
             hash_map::Entry::Vacant(v) => {
                 if self.new_client_limiter.check().is_err() {
@@ -237,7 +239,24 @@ impl UdpClients {
                     from_origin_ts: now_ms,
                 };
 
-                let _ = client.socket.send_to(packet.as_ref(), target_addr).await;
+                if let Some(proto) = origin.proxy_protocol {
+                    if proto != ProxyProtocol::ProxyProtocolV2 {
+                        udp_errors().origin_v1_proxy_protocol.inc();
+                    } else {
+                        let header = ProxyProtocolHeader::from_udp_flow(&client_flow);
+
+                        let mut buffer = Vec::new();
+                        header.write_v2_udp(&mut buffer).expect("Failed to write proxy proto header to Vec");
+
+                        if client.socket.send_to(&buffer, target_addr).await.is_err() {
+                            udp_errors().origin_send_io_error.inc();
+                        }
+                    }
+                }
+
+                if client.socket.send_to(packet.as_ref(), target_addr).await.is_err() {
+                    udp_errors().origin_send_io_error.inc();
+                }
 
                 v.insert(slot);
                 entry.insert(client);
