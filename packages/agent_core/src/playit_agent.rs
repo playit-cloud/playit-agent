@@ -3,11 +3,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use tokio::sync::mpsc::channel;
+use tokio::time::Instant;
 use tracing::Instrument;
 
 use crate::agent_control::{AuthApi, DualStackUdpSocket};
 use crate::network::proxy_protocol::ProxyProtocolHeader;
-use crate::network::udp::clients::{DualSocketTunnelProvider, UdpClients, UdpDetailsSender};
+use crate::network::udp::packets::Packets;
+use crate::network::udp::udp_channel::UdpChannel;
+use crate::network::udp::udp_clients::{UdpClients, UdpTunnelOrigin};
 use playit_api_client::api::{PortType, ProxyProtocol};
 use crate::network::address_lookup::{AddressLookup, HostOrigin};
 use crate::network::lan_address::LanAddress;
@@ -15,15 +19,15 @@ use crate::network::tcp_clients::TcpClients;
 use crate::network::tcp_pipe::pipe;
 use crate::agent_control::errors::SetupError;
 use crate::agent_control::maintained_control::{MaintainedControl, TunnelControlEvent};
-use crate::agent_control::udp_channel::UdpChannel;
 use crate::utils::now_milli;
 
 pub struct PlayitAgent<L: AddressLookup> {
     lookup: Arc<L>,
     control: MaintainedControl<DualStackUdpSocket, AuthApi>,
-    udp_clients: UdpClients<DualSocketTunnelProvider<Arc<L>>>,
+
+    udp_clients: UdpClients,
     udp_channel: UdpChannel,
-    udp_details_sender: UdpDetailsSender,
+
     tcp_clients: TcpClients,
     keep_running: Arc<AtomicBool>,
 }
@@ -33,24 +37,17 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<HostOri
         let io = DualStackUdpSocket::new().await?;
         let auth = AuthApi::new(api_url, secret_key);
 
-        let udp = DualStackUdpSocket::new().await?;
-
         let tunnel = MaintainedControl::setup(io, auth).await?;
-        let udp_clients = UdpClients::new(
-            DualSocketTunnelProvider::new(lookup.clone()),
-            Arc::new(udp),
-            1024 * 16
-        );
 
-        let udp_channel = udp_clients.udp_channel();
-        let udp_details_sender = udp_clients.udp_details_sender();
+        let packets = Packets::new(1024 * 16);
+        let udp_clients = UdpClients::new(packets.clone());
+        let udp_channel = UdpChannel::new(packets.clone()).await.map_err(SetupError::IoError)?;
 
         Ok(PlayitAgent {
             lookup,
             control: tunnel,
             udp_clients,
             udp_channel,
-            udp_details_sender,
             tcp_clients: TcpClients::new(),
             keep_running: Arc::new(AtomicBool::new(true)),
         })
@@ -66,20 +63,20 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<HostOri
 
     pub async fn run(self) {
         let mut tunnel = self.control;
-
         let tunnel_run = self.keep_running.clone();
-        let mut udp_details_sender = self.udp_details_sender;
 
+        let (udp_session_tx, mut udp_session_rx) = channel(8);
+        let udp_session_should_renew = Arc::new(AtomicBool::new(false));
+
+        let should_renew_udp = udp_session_should_renew.clone();
         let tunnel_task = tokio::spawn(async move {
             let mut last_control_update = now_milli();
 
             while tunnel_run.load(Ordering::SeqCst) {
                 tokio::task::yield_now().await;
 
-                if self.udp_channel.requires_auth() {
-                    if tunnel.send_udp_session_auth(now_milli(), 5_000).await {
-                        tracing::info!("udp channel requires auth, sent auth request");
-                    }
+                if should_renew_udp.load(Ordering::Acquire) && tunnel.send_udp_session_auth(now_milli(), 5_000).await {
+                    tracing::info!("udp channel requires auth, sent auth request");
                 }
 
                 /* refresh control address every half minute */
@@ -208,20 +205,56 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<HostOri
                     }
                     Some(TunnelControlEvent::UdpChannelDetails(udp_details)) => {
                         tracing::info!("udp session details received");
-                        udp_details_sender.send(udp_details);
+                        let _ = udp_session_tx.try_send(udp_details);
                     }
                     None => {}
                 }
             }
         });
 
-        let mut udp_clients = self.udp_clients;
         let udp_run = self.keep_running.clone();
 
+        let mut udp_channel = self.udp_channel;
+        let mut udp_clients = self.udp_clients;
+
+        udp_clients.tunnels.insert(1, UdpTunnelOrigin {
+            id: 1,
+            proxy_protocol: None,
+            local_addr: "127.0.0.1:3201".parse().unwrap(),
+            port_count: 1,
+        });
+
         let udp_task = tokio::spawn(async move {
+            let mut next_clear = Instant::now() + Duration::from_secs(16);
+
             while udp_run.load(Ordering::SeqCst) {
                 tokio::task::yield_now().await;
-                udp_clients.recv_next(Duration::from_millis(100)).await;
+
+                tokio::select! {
+                    recv = udp_clients.recv_origin_packet() => {
+                        let Some((flow, packet)) = udp_clients.dispatch_origin_packet(now_milli(), recv).await else { continue };
+                        udp_channel.send(flow, packet).await;
+                    }
+                    (flow, packet) = udp_channel.recv() => {
+                        udp_clients.handle_tunneled_packet(now_milli(), flow, packet).await;
+                    }
+                    session_opt = udp_session_rx.recv() => {
+                        udp_channel.update_session(session_opt.unwrap()).await;
+                    }
+                    _ = tokio::time::sleep_until(next_clear) => {
+                        next_clear = Instant::now() + Duration::from_secs(16);
+                        udp_clients.clear_old(now_milli());
+                    }
+                    _ = tokio::time::sleep(Duration::from_secs(3)) => {}
+                }
+
+                {
+                    let udp_needs_renew = match udp_channel.time_since_established() {
+                        Some(since) => Duration::from_secs(6) <= since,
+                        None => true,
+                    };
+                    udp_session_should_renew.store(udp_needs_renew, Ordering::Release);
+                }
             }
         }.instrument(tracing::info_span!("udp_session")));
 

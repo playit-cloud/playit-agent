@@ -1,9 +1,10 @@
 use std::{io::Write, net::{Ipv4Addr, Ipv6Addr}};
 
 use byteorder::{BigEndian, ReadBytesExt};
+use playit_agent_proto::udp_proto::UdpFlow;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::{agent_control::udp_proto::UdpFlow, utils::ip_bytes::ReadIpBytesExt};
+use crate::utils::ip_bytes::ReadIpBytesExt;
 
 /*
  DOCS: https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
