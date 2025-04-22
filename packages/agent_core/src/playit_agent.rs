@@ -124,8 +124,9 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<HostOri
                             peer_addr = %new_client.peer_addr,
                             tunn_addr = %new_client.connect_addr,
                             %host_origin,
-                            sid = new_client.tunnel_server_id,
-                            did = new_client.data_center_id,
+                            dc_id = new_client.data_center_id,
+                            tunn_id = new_client.tunnel_id,
+                            port_offset = new_client.port_offset,
                         );
     
                         tokio::spawn(async move {
