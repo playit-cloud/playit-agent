@@ -130,6 +130,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         for _ in 0..30 {
             match tokio::time::timeout(Duration::from_millis(100), self.control.recv_feed_msg()).await {
                 Ok(Ok(ControlFeed::NewClient(new_client))) => return Some(TunnelControlEvent::NewClient(new_client)),
+                Ok(Ok(ControlFeed::NewClientOld(new_client))) => return Some(TunnelControlEvent::NewClient(new_client.into())),
                 Ok(Ok(ControlFeed::Response(msg))) => match msg.content {
                     ControlResponse::UdpChannelDetails(details) => return Some(TunnelControlEvent::UdpChannelDetails(details)),
                     ControlResponse::Unauthorized => {
