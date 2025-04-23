@@ -45,8 +45,19 @@ struct Key {
 pub struct OriginResource {
     pub tunnel_id: u64,
     pub proto: PortProto,
-    pub local_start_addr: SocketAddr,
+    pub local_addr: SocketAddr,
     pub port_count: u16,
-    pub proxy_protocol: ProxyProtocol,
+    pub proxy_protocol: Option<ProxyProtocol>,
 }
 
+impl OriginResource {
+    pub fn resolve_local(&self, port_offset: u16) -> Option<SocketAddr> {
+        if port_offset == 0 {
+            Some(self.local_addr)
+        } else if port_offset < self.port_count {
+            Some(SocketAddr::new(self.local_addr.ip(), self.local_addr.port() + port_offset))
+        } else {
+            None
+        }
+    }
+}

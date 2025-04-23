@@ -8,39 +8,39 @@ use tokio::time::Instant;
 use tracing::Instrument;
 
 use crate::agent_control::{AuthApi, DualStackUdpSocket};
+use crate::network::origin_lookup::OriginLookup;
 use crate::network::proxy_protocol::ProxyProtocolHeader;
+use crate::network::tcp::tcp_clients::TcpClients2;
 use crate::network::udp::packets::Packets;
 use crate::network::udp::udp_channel::UdpChannel;
-use crate::network::udp::udp_clients::{UdpClients, UdpTunnelOrigin};
+use crate::network::udp::udp_clients::UdpClients;
 use playit_api_client::api::{PortType, ProxyProtocol};
-use crate::network::address_lookup::{AddressLookup, HostOrigin};
 use crate::network::lan_address::LanAddress;
 use crate::network::tcp_clients::TcpClients;
-use crate::network::tcp_pipe::pipe;
 use crate::agent_control::errors::SetupError;
 use crate::agent_control::maintained_control::{MaintainedControl, TunnelControlEvent};
 use crate::utils::now_milli;
 
-pub struct PlayitAgent<L: AddressLookup> {
-    lookup: Arc<L>,
+pub struct PlayitAgent {
+    lookup: Arc<OriginLookup>,
     control: MaintainedControl<DualStackUdpSocket, AuthApi>,
 
     udp_clients: UdpClients,
     udp_channel: UdpChannel,
 
-    tcp_clients: TcpClients,
+    tcp_clients: TcpClients2,
     keep_running: Arc<AtomicBool>,
 }
 
-impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<HostOrigin> + Into<SocketAddr> {
-    pub async fn new(api_url: String, secret_key: String, lookup: Arc<L>) -> Result<Self, SetupError> {
+impl PlayitAgent {
+    pub async fn new(api_url: String, secret_key: String, lookup: Arc<OriginLookup>) -> Result<Self, SetupError> {
         let io = DualStackUdpSocket::new().await?;
         let auth = AuthApi::new(api_url, secret_key);
 
         let tunnel = MaintainedControl::setup(io, auth).await?;
 
         let packets = Packets::new(1024 * 16);
-        let udp_clients = UdpClients::new(packets.clone());
+        let udp_clients = UdpClients::new(lookup.clone(), packets.clone());
         let udp_channel = UdpChannel::new(packets.clone()).await.map_err(SetupError::IoError)?;
 
         Ok(PlayitAgent {
@@ -48,14 +48,14 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<HostOri
             control: tunnel,
             udp_clients,
             udp_channel,
-            tcp_clients: TcpClients::new(),
+            tcp_clients: TcpClients2::default(),
             keep_running: Arc::new(AtomicBool::new(true)),
         })
     }
 
-    pub fn set_use_special_lan(&mut self, set_use: bool) {
-        self.tcp_clients.use_special_lan = set_use;
-    }
+    // pub fn set_use_special_lan(&mut self, set_use: bool) {
+    //     self.tcp_clients.use_special_lan = set_use;
+    // }
 
     pub fn keep_running(&self) -> Arc<AtomicBool> {
         self.keep_running.clone()
@@ -95,29 +95,16 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<HostOri
                     Some(TunnelControlEvent::NewClient(new_client)) => {
                         tracing::info!(?new_client, "New TCP Client");
 
-                        let clients = self.tcp_clients.clone();
-    
-                        let host_origin = match self.lookup.lookup(
-                            new_client.connect_addr.ip(),
-                            new_client.connect_addr.port(),
-                            PortType::Tcp
-                        ) {
-                            Some(found) => {
-                                let mut origin: HostOrigin = found.value.into();
-                                let port_offset = new_client.connect_addr.port() - found.from_port;
-                                origin.host_addr = SocketAddr::new(origin.host_addr.ip(), port_offset + origin.host_addr.port());
-                                origin
-                            },
-                            None => {
-                                tracing::info!(
-                                    tunnel_addr = %new_client.connect_addr.ip(),
-                                    tunnel_port = new_client.connect_addr.port(),
-                                    "could not find local address for connection"
-                                );
-    
-                                continue;
-                            }
+                        let Some(origin) = self.lookup.lookup(new_client.tunnel_id, true).await else {
+                            tracing::info!(
+                                tunnel_addr = %new_client.connect_addr.ip(),
+                                tunnel_port = new_client.connect_addr.port(),
+                                "could not find local address for connection"
+                            );
+                            continue
                         };
+
+                        let local_addr = origin.resolve_local(new_client.port_offset);
     
                         let span = tracing::info_span!(
                             "tcp_tunnel",
@@ -217,13 +204,6 @@ impl<L: AddressLookup + Sync + Send> PlayitAgent<L> where L::Value: Into<HostOri
 
         let mut udp_channel = self.udp_channel;
         let mut udp_clients = self.udp_clients;
-
-        udp_clients.tunnels.insert(1, UdpTunnelOrigin {
-            id: 1,
-            proxy_protocol: None,
-            local_addr: "127.0.0.1:3201".parse().unwrap(),
-            port_count: 1,
-        });
 
         let udp_task = tokio::spawn(async move {
             let mut next_clear = Instant::now() + Duration::from_secs(16);

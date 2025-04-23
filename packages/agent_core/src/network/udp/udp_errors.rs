@@ -1,6 +1,8 @@
-use std::sync::{atomic::{AtomicU64, Ordering}, Arc, LazyLock};
+use std::sync::{Arc, LazyLock};
 
 use serde::Serialize;
+
+use crate::network::errors::IntCounter;
 
 static _ERRORS: LazyLock<Arc<UdpErrors>> = LazyLock::new(|| Arc::new(UdpErrors::default()));
 
@@ -27,21 +29,6 @@ pub struct UdpErrors {
     pub origin_reject_port_too_high: IntCounter,
     pub origin_send_io_error: IntCounter,
     pub origin_v1_proxy_protocol: IntCounter,
-}
-
-#[derive(Default, Debug)]
-pub struct IntCounter(AtomicU64);
-
-impl Serialize for IntCounter {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
-        serializer.serialize_u64(self.0.load(Ordering::Acquire))
-    }
-}
-
-impl IntCounter {
-    pub fn inc(&self) {
-        self.0.fetch_add(1, Ordering::AcqRel);
-    }
 }
 
 pub fn udp_errors() -> &'static UdpErrors {

@@ -1,17 +1,17 @@
-use std::{collections::{hash_map, HashMap}, net::{SocketAddr, SocketAddrV4}, num::NonZeroU32, sync::Arc};
+use std::{collections::{hash_map, HashMap}, net::{IpAddr, SocketAddr, SocketAddrV4}, num::NonZeroU32, sync::Arc};
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use playit_api_client::api::ProxyProtocol;
 use slab::Slab;
 use tokio::{net::UdpSocket, sync::mpsc::{channel, Receiver}};
 
-use crate::network::{lan_address::LanAddress, proxy_protocol::ProxyProtocolHeader};
+use crate::network::{lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader};
 use playit_agent_proto::udp_proto::UdpFlow;
 
 use super::{packets::{Packet, Packets}, udp_errors::udp_errors, udp_receiver::{UdpReceivedPacket, UdpReceiver, UdpReceiverSetup}};
 
 pub struct UdpClients {
-    pub tunnels: HashMap<u64, UdpTunnelOrigin>,
+    lookup: Arc<OriginLookup>,
 
     virtual_client_lookup: HashMap<UdpClientKey, usize>,
     virtual_clients: Slab<Client>,
@@ -19,13 +19,6 @@ pub struct UdpClients {
     rx: Receiver<UdpReceivedPacket>,
 
     new_client_limiter: DefaultDirectRateLimiter,
-}
-
-pub struct UdpTunnelOrigin {
-    pub id: u64,
-    pub proxy_protocol: Option<ProxyProtocol>,
-    pub local_addr: SocketAddrV4,
-    pub port_count: u16,
 }
 
 struct Client {
@@ -54,17 +47,18 @@ impl UdpClientKey {
 }
 
 impl UdpClients {
-    pub fn new(packets: Packets) -> Self {
+    pub fn new(lookup: Arc<OriginLookup>, packets: Packets) -> Self {
         let (origin_tx, origin_rx) = channel(2048);
+
         let quota = unsafe {
             Quota::per_second(NonZeroU32::new_unchecked(16))
                 .allow_burst(NonZeroU32::new_unchecked(32))
         };
 
         UdpClients {
+            lookup,
             virtual_client_lookup: HashMap::new(),
             virtual_clients: Slab::with_capacity(2048),
-            tunnels: HashMap::new(),
             setup: UdpReceiverSetup {
                 output: origin_tx,
                 packets,
@@ -113,7 +107,7 @@ impl UdpClients {
             return None;
         }
 
-        let Some(tunnel) = self.tunnels.get(&client.key.tunnel_id) else {
+        let Some(tunnel) = self.lookup.lookup(client.key.tunnel_id, false).await else {
             udp_errors().origin_tunnel_not_found.inc();
             return None;
         };
@@ -123,7 +117,7 @@ impl UdpClients {
             return None
         };
 
-        if tunnel.local_addr.ip() != source.ip() {
+        if tunnel.local_addr.ip() != IpAddr::V4(*source.ip()) {
             udp_errors().origin_reject_addr_differ.inc();
             return None;
         }
@@ -159,7 +153,7 @@ impl UdpClients {
 
     pub async fn handle_tunneled_packet(&mut self, now_ms: u64, flow: UdpFlow, packet: Packet) {
         let Some(extension) = flow.extension() else { return };
-        let Some(origin) = self.tunnels.get(&extension.tunnel_id.get()) else { return };
+        let Some(origin) = self.lookup.lookup(extension.tunnel_id.get(), false).await else { return };
 
         let key = UdpClientKey {
             source_addr: flow.src(),
@@ -167,9 +161,11 @@ impl UdpClients {
         };
 
         let target_addr = if extension.port_offset == 0 {
-            origin.local_addr
+            let SocketAddr::V4(addr) = origin.local_addr else { return };
+            addr
         } else {
-            SocketAddrV4::new(*origin.local_addr.ip(), origin.local_addr.port() + extension.port_offset)
+            let IpAddr::V4(ip) = origin.local_addr.ip() else { return };
+            SocketAddrV4::new(ip, origin.local_addr.port() + extension.port_offset)
         };
 
         match self.virtual_client_lookup.entry(key) {

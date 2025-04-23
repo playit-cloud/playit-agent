@@ -16,7 +16,7 @@ impl TcpPipe {
     }
 
     pub fn new_with_cancel<R: AsyncRead + Unpin + Send + 'static, W: AsyncWrite + Unpin + Send + 'static>(cancel: CancellationToken, from: R, to: W) -> Self {
-        let activity = Arc::new(AtomicU64::new(0));
+        let activity = Arc::new(AtomicU64::new(now_milli()));
 
         let this = TcpPipe {
             cancel,

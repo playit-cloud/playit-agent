@@ -5,6 +5,7 @@ pub mod tcp_tunnel;
 pub mod proxy_protocol;
 pub mod udp;
 pub mod tcp;
+pub mod errors;
 
 
 pub mod origin_lookup;
