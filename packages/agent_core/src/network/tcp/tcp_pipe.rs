@@ -1,4 +1,4 @@
-use std::{sync::{atomic::{AtomicU64, Ordering}, Arc}, u64};
+use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
@@ -7,7 +7,12 @@ use crate::utils::now_milli;
 
 pub struct TcpPipe {
     cancel: CancellationToken,
-    last_activity: Arc<AtomicU64>,
+    shared: Arc<Shared>,
+}
+
+struct Shared {
+    last_activity: AtomicU64,
+    bytes_written: AtomicU64,
 }
 
 impl TcpPipe {
@@ -16,16 +21,19 @@ impl TcpPipe {
     }
 
     pub fn new_with_cancel<R: AsyncRead + Unpin + Send + 'static, W: AsyncWrite + Unpin + Send + 'static>(cancel: CancellationToken, from: R, to: W) -> Self {
-        let activity = Arc::new(AtomicU64::new(now_milli()));
+        let shared = Arc::new(Shared {
+            last_activity: AtomicU64::new(now_milli()),
+            bytes_written: AtomicU64::new(0),
+        });
 
         let this = TcpPipe {
             cancel,
-            last_activity: activity,
+            shared,
         };
 
-        tokio::spawn(Task {
+        tokio::spawn(Worker {
             cancel: this.cancel.clone(),
-            last_activity: this.last_activity.clone(),
+            shared: this.shared.clone(),
             from,
             to,
         }.start());
@@ -33,8 +41,12 @@ impl TcpPipe {
         this
     }
 
+    pub fn bytes_written(&self) -> u64 {
+        self.shared.bytes_written.load(Ordering::Acquire)
+    }
+
     pub fn last_activity(&self) -> u64 {
-        let value = self.last_activity.load(Ordering::Acquire);
+        let value = self.shared.last_activity.load(Ordering::Acquire);
 
         if value == u64::MAX {
             0
@@ -44,7 +56,7 @@ impl TcpPipe {
     }
 
     pub fn is_closed(&self) -> bool {
-        self.last_activity.load(Ordering::Acquire) == u64::MAX
+        self.shared.last_activity.load(Ordering::Acquire) == u64::MAX
     }
 
     pub fn shutdown(&self) {
@@ -58,14 +70,14 @@ impl Drop for TcpPipe {
     }
 }
 
-struct Task<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> {
+struct Worker<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> {
     cancel: CancellationToken,
-    last_activity: Arc<AtomicU64>,
+    shared: Arc<Shared>,
     from: R,
     to: W,
 }
 
-impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Task<R, W> {
+impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
     pub async fn start(mut self) {
         let mut buffer = vec![0u8; 2048];
 
@@ -77,7 +89,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Task<R, W> {
                 break;
             };
 
-            let count = match read_res {
+            let byte_count = match read_res {
                 Ok(count) => count,
                 Err(error) => {
                     tracing::error!(?error, "failed to read data");
@@ -85,20 +97,21 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Task<R, W> {
                 }
             };
 
-            if count == 0 {
+            if byte_count == 0 {
                 tracing::info!("pipe ended due to EOF");
                 break;
             }
 
-            if let Err(error) = self.to.write_all(&buffer[..count]).await {
+            if let Err(error) = self.to.write_all(&buffer[..byte_count]).await {
                 tracing::error!(?error, "failed to write data");
                 break;
             }
 
-            self.last_activity.store(now_milli(), Ordering::Release);
+            self.shared.last_activity.store(now_milli(), Ordering::Release);
+            self.shared.bytes_written.fetch_add(byte_count as u64, Ordering::AcqRel);
         }
 
-        self.last_activity.store(u64::MAX, Ordering::Release);
+        self.shared.last_activity.store(u64::MAX, Ordering::Release);
     }
 }
 

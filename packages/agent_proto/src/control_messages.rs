@@ -1,4 +1,3 @@
-use std::borrow::Cow;
 use std::fmt::Debug;
 use std::io::{Read, Write};
 use std::net::SocketAddr;

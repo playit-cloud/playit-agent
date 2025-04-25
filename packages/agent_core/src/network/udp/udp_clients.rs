@@ -8,7 +8,7 @@ use tokio::{net::UdpSocket, sync::mpsc::{channel, Receiver}};
 use crate::network::{lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader};
 use playit_agent_proto::udp_proto::UdpFlow;
 
-use super::{packets::{Packet, Packets}, udp_errors::udp_errors, udp_receiver::{UdpReceivedPacket, UdpReceiver, UdpReceiverSetup}};
+use super::{packets::{Packet, Packets}, udp_errors::udp_errors, udp_receiver::{UdpReceivedPacket, UdpReceiver, UdpReceiverSetup}, udp_settings::UdpSettings};
 
 pub struct UdpClients {
     lookup: Arc<OriginLookup>,
@@ -47,12 +47,12 @@ impl UdpClientKey {
 }
 
 impl UdpClients {
-    pub fn new(lookup: Arc<OriginLookup>, packets: Packets) -> Self {
+    pub fn new(settings: UdpSettings, lookup: Arc<OriginLookup>, packets: Packets) -> Self {
         let (origin_tx, origin_rx) = channel(2048);
 
         let quota = unsafe {
-            Quota::per_second(NonZeroU32::new_unchecked(16))
-                .allow_burst(NonZeroU32::new_unchecked(32))
+            Quota::per_second(NonZeroU32::new_unchecked(settings.new_client_ratelimit))
+                .allow_burst(NonZeroU32::new_unchecked(settings.new_client_ratelimit_burst))
         };
 
         UdpClients {

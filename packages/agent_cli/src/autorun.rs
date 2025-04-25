@@ -1,21 +1,19 @@
 use std::{
     fmt::Write,
-    net::{IpAddr, SocketAddr},
-    sync::{Arc, atomic::Ordering, Mutex},
+    net::SocketAddr,
+    sync::Arc,
     time::Duration,
 };
 
 use playit_agent_core::{
-    network::address_lookup::{AddressLookup, AddressValue, HostOrigin},
-    playit_agent::PlayitAgent,
-    utils::now_milli,
+    network::{origin_lookup::{OriginLookup, OriginResource}, tcp::tcp_settings::TcpSettings, udp::udp_settings::UdpSettings}, playit_agent::{PlayitAgent, PlayitAgentSettings}, utils::now_milli
 };
+use playit_agent_proto::PortProto;
 use playit_api_client::api::*;
 use playit_ping_monitor::PingMonitor;
 use rand::random;
-use uuid::Uuid;
 
-use crate::{API_BASE, CliError, match_ip::MatchIp, playit_secret::PlayitSecret, ui::UI};
+use crate::{API_BASE, CliError, playit_secret::PlayitSecret, ui::UI};
 
 pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliError> {
     let secret_code = secret
@@ -39,21 +37,33 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let lookup = {
-        let data = api.agents_rundata().await?;
-        let lookup = Arc::new(LocalLookup {
-            data: Mutex::new(vec![]),
-        });
-        lookup.update(data.tunnels).await;
-
-        lookup
-    };
+    let lookup = Arc::new(OriginLookup::default());
+    lookup.update(api.agents_rundata().await?.tunnels.into_iter().map(|tunn| {
+        OriginResource {
+            tunnel_id: tunn.internal_id,
+            proto: match tunn.proto {
+                PortType::Tcp => PortProto::Tcp,
+                PortType::Udp => PortProto::Udp,
+                PortType::Both => PortProto::Both,
+            },
+            local_addr: SocketAddr::new(tunn.local_ip, tunn.local_port),
+            port_count: tunn.port.to - tunn.port.from,
+            proxy_protocol: tunn.proxy_protocol,
+        }
+    })).await;
 
     let mut error_count = 0;
     ui.write_screen("starting up tunnel connection").await;
 
+    let settings = PlayitAgentSettings {
+        udp_settings: UdpSettings::default(),
+        tcp_settings: TcpSettings::default(),
+        api_url: API_BASE.to_string(),
+        secret_key: secret_code.clone(),
+    };
+
     let runner = loop {
-        match PlayitAgent::new(API_BASE.to_string(), secret_code.clone(), lookup.clone()).await {
+        match PlayitAgent::new(settings.clone(), lookup.clone()).await {
             Ok(res) => break res,
             Err(error) => {
                 error_count += 1;
@@ -69,8 +79,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         }
     };
 
-    let signal = runner.keep_running();
-    let runner = tokio::spawn(runner.run());
+    tokio::spawn(runner.run());
 
     ui.write_screen("tunnel running").await;
 
@@ -142,7 +151,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
 
         writeln!(msg, "\nTUNNELS").unwrap();
 
-        if agent_data.tunnels.len() == 0 && agent_data.pending.len() == 0 {
+        if agent_data.tunnels.is_empty() && agent_data.pending.is_empty() {
             let agent_id = match agent_data.agent_type {
                 AgentType::Default => "default".to_string(),
                 AgentType::Assignable => agent_data.agent_id.to_string(),
@@ -153,7 +162,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         } else {
             for tunnel in &agent_data.tunnels {
                 let addr = tunnel.custom_domain.as_ref().unwrap_or(&tunnel.assigned_domain);
-                let src = match tunnel.tunnel_type.as_ref().map(|v| v.as_str()) {
+                let src = match tunnel.tunnel_type.as_deref() {
                     Some("minecraft-java") => addr.clone(),
                     _ => format!("{}:{}", addr, tunnel.port.from),
                 };
@@ -181,86 +190,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
             }
         }
 
-        lookup.update(agent_data.tunnels).await;
         ui.write_screen(msg).await;
     }
-
-    let _ = runner.await;
-    signal.store(false, Ordering::SeqCst);
-
-    Ok(())
 }
 
-pub struct LocalLookup {
-    data: Mutex<Vec<TunnelEntry>>,
-}
-
-impl AddressLookup for LocalLookup {
-    type Value = HostOrigin;
-
-    fn lookup(&self, ip: IpAddr, port: u16, proto: PortType) -> Option<AddressValue<HostOrigin>> {
-        let values = self.data.lock().unwrap();
-
-        for tunnel in &*values {
-            if tunnel.port_type != proto && tunnel.port_type != PortType::Both {
-                continue;
-            }
-
-            if !tunnel.match_ip.matches(ip) {
-                continue;
-            }
-
-            if tunnel.from_port <= port && port < tunnel.to_port {
-                return Some(AddressValue {
-                    value: HostOrigin {
-                        tunnel_id: tunnel.tunnel_id,
-                        host_addr: tunnel.local_start_address,
-                        use_special_lan: None,
-                        proxy_protocol: tunnel.proxy_protocol,
-                    },
-                    from_port: tunnel.from_port,
-                    to_port: tunnel.to_port,
-                });
-            }
-        }
-
-        None
-    }
-}
-
-impl LocalLookup {
-    pub async fn update(&self, tunnels: Vec<AgentTunnel>) {
-        let mut entries: Vec<TunnelEntry> = vec![];
-
-        for tunnel in tunnels {
-            entries.push(TunnelEntry {
-                tunnel_id: tunnel.id,
-                pub_address: if tunnel.tunnel_type.as_ref().map(|v| v.eq("minecraft-java")).unwrap_or(false) {
-                    tunnel.custom_domain.unwrap_or(tunnel.assigned_domain)
-                } else {
-                    format!("{}:{}", tunnel.custom_domain.unwrap_or(tunnel.assigned_domain), tunnel.port.from)
-                },
-                match_ip: MatchIp { ip_number: tunnel.ip_num, region_id: if tunnel.region_num == 0 { None } else { Some(tunnel.region_num) } },
-                port_type: tunnel.proto,
-                from_port: tunnel.port.from,
-                to_port: tunnel.port.to,
-                local_start_address: SocketAddr::new(tunnel.local_ip, tunnel.local_port),
-                proxy_protocol: tunnel.proxy_protocol,
-            });
-        }
-
-        let mut value = self.data.lock().unwrap();
-        *value = entries;
-    }
-}
-
-pub struct TunnelEntry {
-    pub tunnel_id: Uuid,
-    pub pub_address: String,
-    pub match_ip: MatchIp,
-    pub port_type: PortType,
-    pub from_port: u16,
-    pub to_port: u16,
-    pub local_start_address: SocketAddr,
-    pub proxy_protocol: Option<ProxyProtocol>,
-}

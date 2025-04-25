@@ -1,3 +1,5 @@
+use std::panic::Location;
+
 use reqwest::StatusCode;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -46,7 +48,7 @@ impl HttpClient {
 impl PlayitHttpClient for HttpClient {
     type Error = HttpClientError;
 
-    async fn call<Req: Serialize + Send, Res: DeserializeOwned, Err: DeserializeOwned>(&self, path: &str, req: Req) -> Result<ApiResult<Res, Err>, Self::Error> {
+    async fn call<Req: Serialize + Send, Res: DeserializeOwned, Err: DeserializeOwned>(&self, _caller: &'static Location<'static>, path: &str, req: Req) -> Result<ApiResult<Res, Err>, Self::Error> {
         let mut builder = self.client.post(format!("{}{}", self.api_base, path));
 
         {

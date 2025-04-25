@@ -21,47 +21,138 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 			Err(error) => Err(ApiErrorNoFail::ClientError(error)),
 		}
 	}
-	pub async fn tunnels_create(&self, req: ReqTunnelsCreate) -> Result<ObjectId, ApiError<TunnelCreateError, C::Error>> {
-		Self::unwrap(self.client.call("/tunnels/create", req).await)
+	#[track_caller]
+	pub fn tunnels_create(&self, req: ReqTunnelsCreate) -> impl std::future::Future<Output = Result<ObjectId, ApiError<TunnelCreateError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/tunnels/create", req).await)
+		}
 	}
-	pub async fn tunnels_delete(&self, req: ReqTunnelsDelete) -> Result<(), ApiError<DeleteError, C::Error>> {
-		Self::unwrap(self.client.call("/tunnels/delete", req).await)
+	#[track_caller]
+	pub fn tunnels_delete(&self, req: ReqTunnelsDelete) -> impl std::future::Future<Output = Result<(), ApiError<DeleteError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/tunnels/delete", req).await)
+		}
 	}
-	pub async fn claim_details(&self, req: ReqClaimDetails) -> Result<AgentClaimDetails, ApiError<ClaimDetailsError, C::Error>> {
-		Self::unwrap(self.client.call("/claim/details", req).await)
+	#[track_caller]
+	pub fn claim_details(&self, req: ReqClaimDetails) -> impl std::future::Future<Output = Result<AgentClaimDetails, ApiError<ClaimDetailsError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/claim/details", req).await)
+		}
 	}
-	pub async fn claim_setup(&self, req: ReqClaimSetup) -> Result<ClaimSetupResponse, ApiError<ClaimSetupError, C::Error>> {
-		Self::unwrap(self.client.call("/claim/setup", req).await)
+	#[track_caller]
+	pub fn claim_setup(&self, req: ReqClaimSetup) -> impl std::future::Future<Output = Result<ClaimSetupResponse, ApiError<ClaimSetupError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/claim/setup", req).await)
+		}
 	}
-	pub async fn claim_exchange(&self, req: ReqClaimExchange) -> Result<AgentSecretKey, ApiError<ClaimExchangeError, C::Error>> {
-		Self::unwrap(self.client.call("/claim/exchange", req).await)
+	#[track_caller]
+	pub fn claim_exchange(&self, req: ReqClaimExchange) -> impl std::future::Future<Output = Result<AgentSecretKey, ApiError<ClaimExchangeError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/claim/exchange", req).await)
+		}
 	}
-	pub async fn claim_accept(&self, req: ReqClaimAccept) -> Result<AgentAccepted, ApiError<ClaimAcceptError, C::Error>> {
-		Self::unwrap(self.client.call("/claim/accept", req).await)
+	#[track_caller]
+	pub fn claim_accept(&self, req: ReqClaimAccept) -> impl std::future::Future<Output = Result<AgentAccepted, ApiError<ClaimAcceptError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/claim/accept", req).await)
+		}
 	}
-	pub async fn claim_reject(&self, req: ReqClaimReject) -> Result<(), ApiError<ClaimRejectError, C::Error>> {
-		Self::unwrap(self.client.call("/claim/reject", req).await)
+	#[track_caller]
+	pub fn claim_reject(&self, req: ReqClaimReject) -> impl std::future::Future<Output = Result<(), ApiError<ClaimRejectError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/claim/reject", req).await)
+		}
 	}
-	pub async fn proto_register(&self, req: ReqProtoRegister) -> Result<SignedAgentKey, ApiErrorNoFail<C::Error>> {
-		Self::unwrap_no_fail(self.client.call("/proto/register", req).await)
+	#[track_caller]
+	pub fn proto_register(&self, req: ReqProtoRegister) -> impl std::future::Future<Output = Result<SignedAgentKey, ApiErrorNoFail<C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap_no_fail(self.client.call(caller, "/proto/register", req).await)
+		}
 	}
-	pub async fn login_guest(&self) -> Result<WebSession, ApiError<GuestLoginError, C::Error>> {
-		Self::unwrap(self.client.call("/login/guest", ReqLoginGuest {}).await)
+	#[track_caller]
+	pub fn login_guest(&self) -> impl std::future::Future<Output = Result<WebSession, ApiError<GuestLoginError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/login/guest", ReqLoginGuest {}).await)
+		}
 	}
-	pub async fn agents_routing_get(&self, req: ReqAgentsRoutingGet) -> Result<AgentRouting, ApiError<AgentRoutingGetError, C::Error>> {
-		Self::unwrap(self.client.call("/agents/routing/get", req).await)
+	#[track_caller]
+	pub fn agents_routing_get(&self, req: ReqAgentsRoutingGet) -> impl std::future::Future<Output = Result<AgentRouting, ApiError<AgentRoutingGetError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/agents/routing/get", req).await)
+		}
 	}
-	pub async fn agents_rundata(&self) -> Result<AgentRunData, ApiErrorNoFail<C::Error>> {
-		Self::unwrap_no_fail(self.client.call("/agents/rundata", ReqAgentsRundata {}).await)
+	#[track_caller]
+	pub fn agents_rundata(&self) -> impl std::future::Future<Output = Result<AgentRunData, ApiErrorNoFail<C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap_no_fail(self.client.call(caller, "/agents/rundata", ReqAgentsRundata {}).await)
+		}
 	}
-	pub async fn ping_submit(&self, req: ReqPingSubmit) -> Result<(), ApiErrorNoFail<C::Error>> {
-		Self::unwrap_no_fail(self.client.call("/ping/submit", req).await)
+	#[track_caller]
+	pub fn ping_submit(&self, req: ReqPingSubmit) -> impl std::future::Future<Output = Result<(), ApiErrorNoFail<C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap_no_fail(self.client.call(caller, "/ping/submit", req).await)
+		}
 	}
-	pub async fn ping_get(&self) -> Result<PingExperiments, ApiErrorNoFail<C::Error>> {
-		Self::unwrap_no_fail(self.client.call("/ping/get", ReqPingGet {}).await)
+	#[track_caller]
+	pub fn ping_get(&self) -> impl std::future::Future<Output = Result<PingExperiments, ApiErrorNoFail<C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap_no_fail(self.client.call(caller, "/ping/get", ReqPingGet {}).await)
+		}
 	}
-	pub async fn tunnels_list_json(&self, req: ReqTunnelsList) -> Result<serde_json::Value, ApiErrorNoFail<C::Error>> {
-		Self::unwrap_no_fail(self.client.call("/tunnels/list", req).await)
+	#[track_caller]
+	pub fn tunnels_list_json(&self, req: ReqTunnelsList) -> impl std::future::Future<Output = Result<serde_json::Value, ApiErrorNoFail<C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap_no_fail(self.client.call(caller, "/tunnels/list", req).await)
+		}
+	}
+	#[track_caller]
+	pub fn agents_list_json(&self) -> impl std::future::Future<Output = Result<serde_json::Value, ApiErrorNoFail<C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap_no_fail(self.client.call(caller, "/agents/list", ReqAgentsList {}).await)
+		}
+	}
+	#[track_caller]
+	pub fn query_region(&self, req: ReqQueryRegion) -> impl std::future::Future<Output = Result<QueryRegion, ApiError<QueryRegionError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/query/region", req).await)
+		}
+	}
+	#[track_caller]
+	pub fn tunnels_update(&self, req: ReqTunnelsUpdate) -> impl std::future::Future<Output = Result<(), ApiError<UpdateError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/tunnels/update", req).await)
+		}
+	}
+	#[track_caller]
+	pub fn tunnels_firewall_assign(&self, req: ReqTunnelsFirewallAssign) -> impl std::future::Future<Output = Result<(), ApiError<TunnelsFirewallAssignError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/tunnels/firewall/assign", req).await)
+		}
+	}
+	#[track_caller]
+	pub fn tunnels_proxy_set(&self, req: ReqTunnelsProxySet) -> impl std::future::Future<Output = Result<(), ApiError<TunnelProxySetError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/tunnels/proxy/set", req).await)
+		}
 	}
 }
 
@@ -76,7 +167,7 @@ pub enum ApiResult<S, F> {
     Error(ApiResponseError),
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub enum ApiError<F, C> {
     Fail(F),
     ApiError(ApiResponseError),
@@ -93,7 +184,7 @@ impl<F: std::fmt::Debug, C: std::fmt::Debug> std::error::Error for ApiError<F, C
 }
 
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize)]
 pub enum ApiErrorNoFail<C> {
     ApiError(ApiResponseError),
     ClientError(C),
@@ -113,7 +204,7 @@ impl<C: std::fmt::Debug> std::error::Error for ApiErrorNoFail<C> {
 pub trait PlayitHttpClient {
     type Error;
 
-    fn call<Req: serde::Serialize + std::marker::Send, Res: serde::de::DeserializeOwned, Err: serde::de::DeserializeOwned>(&self, path: &str, req: Req) -> impl std::future::Future<Output = Result<ApiResult<Res, Err>, Self::Error>>;
+    fn call<Req: serde::Serialize + std::marker::Send, Res: serde::de::DeserializeOwned, Err: serde::de::DeserializeOwned>(&self, caller: &'static std::panic::Location<'static>, path: &str, req: Req) -> impl std::future::Future<Output = Result<ApiResult<Res, Err>, Self::Error>>;
 }
 
 #[derive(Clone)]
@@ -131,7 +222,7 @@ pub enum ApiResponseError {
 	#[serde(rename = "auth")]
 	Auth(AuthError),
 	#[serde(rename = "internal")]
-	Internal,
+	Internal(ApiInternalError),
 }
 
 
@@ -160,6 +251,11 @@ pub enum AuthError {
 	TotpRequred,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ApiInternalError {
+	pub trace_id: String,
+}
+
 impl std::fmt::Display for ApiResponseError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "{:?}", self)
@@ -178,6 +274,7 @@ pub struct ReqTunnelsCreate {
 	pub enabled: bool,
 	pub alloc: Option<TunnelCreateUseAllocation>,
 	pub firewall_id: Option<uuid::Uuid>,
+	pub proxy_protocol: Option<ProxyProtocol>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
@@ -288,6 +385,14 @@ pub enum AllocationRegion {
 	SouthAmerica,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum ProxyProtocol {
+	#[serde(rename = "proxy-protocol-v1")]
+	ProxyProtocolV1,
+	#[serde(rename = "proxy-protocol-v2")]
+	ProxyProtocolV2,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ObjectId {
 	pub id: uuid::Uuid,
@@ -305,6 +410,7 @@ pub enum TunnelCreateError {
 	InvalidIpHostname,
 	ManagedMissingAgentId,
 	InvalidPortCount,
+	RequiresVerifiedAccount,
 }
 
 impl std::fmt::Display for TunnelCreateError {
@@ -589,6 +695,7 @@ pub struct AgentRouting {
 	pub agent_id: uuid::Uuid,
 	pub targets4: Vec<std::net::Ipv4Addr>,
 	pub targets6: Vec<std::net::Ipv6Addr>,
+	pub disable_ip6: bool,
 }
 
 
@@ -619,6 +726,7 @@ pub struct AgentRunData {
 	pub account_status: AgentAccountStatus,
 	pub tunnels: Vec<AgentTunnel>,
 	pub pending: Vec<AgentPendingTunnel>,
+	pub account_features: AccountFeatures,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
@@ -644,6 +752,7 @@ pub enum AgentAccountStatus {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct AgentTunnel {
 	pub id: uuid::Uuid,
+	pub internal_id: u64,
 	pub name: Option<String>,
 	pub ip_num: u64,
 	pub region_num: u16,
@@ -670,14 +779,6 @@ pub enum AgentTunnelDisabled {
 	BySystem,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
-pub enum ProxyProtocol {
-	#[serde(rename = "proxy-protocol-v1")]
-	ProxyProtocolV1,
-	#[serde(rename = "proxy-protocol-v2")]
-	ProxyProtocolV2,
-}
-
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct AgentPendingTunnel {
 	pub id: uuid::Uuid,
@@ -686,6 +787,12 @@ pub struct AgentPendingTunnel {
 	pub port_count: u16,
 	pub tunnel_type: Option<String>,
 	pub is_disabled: bool,
+	pub region_num: u16,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AccountFeatures {
+	pub regional_tunnels: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -738,5 +845,127 @@ pub struct PingExperimentDetails {
 pub struct ReqTunnelsList {
 	pub tunnel_id: Option<uuid::Uuid>,
 	pub agent_id: Option<uuid::Uuid>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqAgentsList {
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqQueryRegion {
+	pub limit_region: Option<PlayitRegion>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum PlayitRegion {
+	GlobalAnycast,
+	NorthAmerica,
+	Europe,
+	Asia,
+	India,
+	SouthAmerica,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct QueryRegion {
+	pub region: PlayitRegion,
+	pub pop: PlayitPop,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum PlayitPop {
+	Any,
+	#[serde(rename = "USLosAngeles")]
+	UsLosAngeles,
+	#[serde(rename = "USSeattle")]
+	UsSeattle,
+	#[serde(rename = "USDallas")]
+	UsDallas,
+	#[serde(rename = "USMiami")]
+	UsMiami,
+	#[serde(rename = "USChicago")]
+	UsChicago,
+	#[serde(rename = "USNewJersey")]
+	UsNewJersey,
+	CanadaToronto,
+	Mexico,
+	BrazilSaoPaulo,
+	Spain,
+	London,
+	Germany,
+	Poland,
+	Sweden,
+	IndiaDelhi,
+	IndiaMumbai,
+	IndiaBangalore,
+	Singapore,
+	Tokyo,
+	Sydney,
+	SantiagoChile,
+	Israel,
+	Romania,
+	#[serde(rename = "USNewYork")]
+	UsNewYork,
+	#[serde(rename = "USDenver")]
+	UsDenver,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum QueryRegionError {
+	FailedToDetermineLocation,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqTunnelsUpdate {
+	pub tunnel_id: uuid::Uuid,
+	pub local_ip: std::net::IpAddr,
+	pub local_port: Option<u16>,
+	pub agent_id: Option<uuid::Uuid>,
+	pub enabled: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum UpdateError {
+	ChangingAgentIdNotAllowed,
+	TunnelNotFound,
+}
+
+impl std::fmt::Display for UpdateError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for UpdateError {
+}
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqTunnelsFirewallAssign {
+	pub tunnel_id: uuid::Uuid,
+	pub firewall_id: Option<uuid::Uuid>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum TunnelsFirewallAssignError {
+	TunnelNotFound,
+	InvalidFirewallId,
+}
+
+impl std::fmt::Display for TunnelsFirewallAssignError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for TunnelsFirewallAssignError {
+}
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqTunnelsProxySet {
+	pub tunnel_id: uuid::Uuid,
+	pub proxy_protocol: Option<ProxyProtocol>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
+pub enum TunnelProxySetError {
+	TunnelNotFound,
 }
 

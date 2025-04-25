@@ -1,3 +1,4 @@
+use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 
@@ -21,15 +22,29 @@ impl TcpClient {
         }
     }
 
-    pub fn last_use(&self) -> TcpClientLastUse {
-        TcpClientLastUse {
+    pub fn last_use(&self) -> TcpClientStat {
+        TcpClientStat {
             tunn_to_origin: self.tunn_to_origin.last_activity(),
             origin_to_tunn: self.origin_to_tunn.last_activity(),
         }
     }
+
+    pub fn bytes_written(&self) -> TcpClientStat {
+        TcpClientStat {
+            tunn_to_origin: self.tunn_to_origin.bytes_written(),
+            origin_to_tunn: self.origin_to_tunn.bytes_written(),
+        }
+    }
 }
 
-pub struct TcpClientLastUse {
+#[derive(Debug, Serialize)]
+pub struct TcpClientStat {
     pub tunn_to_origin: u64,
     pub origin_to_tunn: u64,
+}
+
+impl TcpClientStat {
+    pub fn min(&self) -> u64 {
+        self.tunn_to_origin.min(self.origin_to_tunn)
+    }
 }
