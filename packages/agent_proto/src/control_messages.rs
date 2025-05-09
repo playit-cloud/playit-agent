@@ -3,8 +3,8 @@ use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use message_encoding::{m_max, m_max_list, m_static, MessageEncoding};
+use byteorder::{BigEndian, ReadBytesExt};
+use message_encoding::{m_max, m_max_list, m_opt_sum, m_static, MessageEncoding};
 use serde::ser::SerializeStruct;
 use serde::Serialize;
 
@@ -29,6 +29,7 @@ pub enum ControlRequestId {
     SetupUdpChannelV1,
     AgentCheckPortMappingV1,
     PingV2,
+    AgentRegisterV2,
     END,
 }
 
@@ -72,7 +73,7 @@ impl MessageEncoding for ControlRequest {
                 sum += data.write_to(out)?;
             }
             ControlRequest::AgentRegister(data) => {
-                sum += ControlRequestId::AgentRegisterV1.write_to(out)?;
+                sum += ControlRequestId::AgentRegisterV2.write_to(out)?;
                 sum += data.write_to(out)?;
             }
             ControlRequest::AgentKeepAlive(data) => {
@@ -97,7 +98,8 @@ impl MessageEncoding for ControlRequest {
         
         match id {
             ControlRequestId::PingV2 => Ok(ControlRequest::Ping(Ping::read_from(read)?)),
-            ControlRequestId::AgentRegisterV1 => Ok(ControlRequest::AgentRegister(AgentRegister::read_from(read)?)),
+            ControlRequestId::AgentRegisterV1 => Ok(ControlRequest::AgentRegister(AgentRegisterWithoutVersion::read_from(read)?.upgrade())),
+            ControlRequestId::AgentRegisterV2 => Ok(ControlRequest::AgentRegister(AgentRegister::read_from(read)?)),
             ControlRequestId::AgentKeepAliveV1 => Ok(ControlRequest::AgentKeepAlive(AgentSessionId::read_from(read)?)),
             ControlRequestId::SetupUdpChannelV1 => Ok(ControlRequest::SetupUdpChannel(AgentSessionId::read_from(read)?)),
             ControlRequestId::AgentCheckPortMappingV1 => Ok(ControlRequest::AgentCheckPortMapping(AgentCheckPortMapping::read_from(read)?)),
@@ -160,6 +162,7 @@ impl MessageEncoding for Ping {
 
 #[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub struct AgentRegister {
+    pub proto_version: u64,
     pub account_id: u64,
     pub agent_id: u64,
     pub agent_version: u64,
@@ -172,59 +175,131 @@ pub struct AgentRegister {
 impl AgentRegister {
     pub fn update_signature(&mut self, temp_buffer: &mut Vec<u8>, hmac: &HmacSha256) {
         self.write_plain(temp_buffer);
-        self.signature = hmac.sign(&temp_buffer);
+
+        let to_sign = if self.proto_version == 0 {
+            &temp_buffer[u8::STATIC_SIZE.unwrap()..]
+        } else {
+            &temp_buffer[..]
+        };
+
+        self.signature = hmac.sign(&to_sign);
     }
 
     pub fn verify_signature(&self, temp_buffer: &mut Vec<u8>, hmac: &HmacSha256) -> bool {
         self.write_plain(temp_buffer);
-        hmac.verify(&temp_buffer, &self.signature).is_ok()
+
+        let to_verify = if self.proto_version == 0 {
+            &temp_buffer[u8::STATIC_SIZE.unwrap()..]
+        } else {
+            &temp_buffer[..]
+        };
+
+        hmac.verify(to_verify, &self.signature).is_ok()
     }
 
     fn write_plain(&self, temp_buffer: &mut Vec<u8>) {
         temp_buffer.clear();
-        temp_buffer.write_u64::<BigEndian>(self.account_id).unwrap();
-        temp_buffer.write_u64::<BigEndian>(self.agent_id).unwrap();
-        temp_buffer.write_u64::<BigEndian>(self.agent_version).unwrap();
-        temp_buffer.write_u64::<BigEndian>(self.timestamp).unwrap();
-        self.client_addr.write_to(temp_buffer).unwrap();
-        self.tunnel_addr.write_to(temp_buffer).unwrap();
+        self.write_to(temp_buffer).unwrap();
+        assert!(self.signature.len() <= temp_buffer.len());
+
+        let adjusted_len = temp_buffer.len() - self.signature.len();
+        temp_buffer.truncate(adjusted_len);
     }
 }
 
 impl MessageEncoding for AgentRegister {
-    const MAX_SIZE: Option<usize> = Some(8 * 4 + 32 + 2 * m_max::<SocketAddr>());
+    const MAX_SIZE: Option<usize> = m_opt_sum(&[
+        u64::MAX_SIZE,
+        u64::MAX_SIZE,
+        u64::MAX_SIZE,
+        u64::MAX_SIZE,
+        u64::MAX_SIZE,
+        SocketAddr::MAX_SIZE,
+        SocketAddr::MAX_SIZE,
+        Some(32),
+    ]);
 
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
-        out.write_u64::<BigEndian>(self.account_id)?;
-        out.write_u64::<BigEndian>(self.agent_id)?;
-        out.write_u64::<BigEndian>(self.agent_version)?;
-        out.write_u64::<BigEndian>(self.timestamp)?;
-        let mut len = 8 + 8 + 8 + 8;
-        len += self.client_addr.write_to(out)?;
-        len += self.tunnel_addr.write_to(out)?;
-        if out.write(&self.signature)? != 32 {
-            return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "failed to write full signature"));
-        }
-        len += 32;
-        Ok(len)
+        let mut sum = 0;
+        sum += self.proto_version.write_to(out)?;
+        sum += self.account_id.write_to(out)?;
+        sum += self.agent_id.write_to(out)?;
+        sum += self.agent_version.write_to(out)?;
+        sum += self.timestamp.write_to(out)?;
+        sum += self.client_addr.write_to(out)?;
+        sum += self.tunnel_addr.write_to(out)?;
+        out.write_all(&self.signature)?;
+        sum += self.signature.len();
+        Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         let mut res = AgentRegister {
-            account_id: read.read_u64::<BigEndian>()?,
-            agent_id: read.read_u64::<BigEndian>()?,
-            agent_version: read.read_u64::<BigEndian>()?,
-            timestamp: read.read_u64::<BigEndian>()?,
+            proto_version: u64::read_from(read)?,
+            account_id: u64::read_from(read)?,
+            agent_id: u64::read_from(read)?,
+            agent_version: u64::read_from(read)?,
+            timestamp: u64::read_from(read)?,
             client_addr: SocketAddr::read_from(read)?,
             tunnel_addr: SocketAddr::read_from(read)?,
             signature: [0u8; 32],
         };
-
-        if read.read(&mut res.signature[..])? != 32 {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "missing signature"));
-        }
-
+        read.read_exact(&mut res.signature[..])?;
         Ok(res)
+    }
+}
+
+pub struct AgentRegisterWithoutVersion {
+    pub account_id: u64,
+    pub agent_id: u64,
+    pub agent_version: u64,
+    pub timestamp: u64,
+    pub client_addr: SocketAddr,
+    pub tunnel_addr: SocketAddr,
+    pub signature: [u8; 32],
+}
+
+impl MessageEncoding for AgentRegisterWithoutVersion {
+    fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
+        let mut sum = 0;
+        sum += self.account_id.write_to(out)?;
+        sum += self.agent_id.write_to(out)?;
+        sum += self.agent_version.write_to(out)?;
+        sum += self.timestamp.write_to(out)?;
+        sum += self.client_addr.write_to(out)?;
+        sum += self.tunnel_addr.write_to(out)?;
+        out.write_all(&self.signature)?;
+        sum += self.signature.len();
+        Ok(sum)
+    }
+
+    fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
+        let mut res = Self {
+            account_id: u64::read_from(read)?,
+            agent_id: u64::read_from(read)?,
+            agent_version: u64::read_from(read)?,
+            timestamp: u64::read_from(read)?,
+            client_addr: SocketAddr::read_from(read)?,
+            tunnel_addr: SocketAddr::read_from(read)?,
+            signature: [0u8; 32],
+        };
+        read.read_exact(&mut res.signature[..])?;
+        Ok(res)
+    }
+}
+
+impl AgentRegisterWithoutVersion {
+    pub fn upgrade(self) -> AgentRegister {
+        AgentRegister {
+            proto_version: 0,
+            account_id: self.account_id,
+            agent_id: self.agent_id,
+            agent_version: self.agent_version,
+            timestamp: self.timestamp,
+            client_addr: self.client_addr,
+            tunnel_addr: self.tunnel_addr,
+            signature: self.signature,
+        }
     }
 }
 
@@ -553,6 +628,7 @@ mod test {
                 },
             }),
             1 => ControlRequest::AgentRegister(AgentRegister {
+                proto_version: rng.next_u64() % 2,
                 account_id: rng.next_u64(),
                 agent_id: rng.next_u64(),
                 agent_version: rng.next_u64(),
