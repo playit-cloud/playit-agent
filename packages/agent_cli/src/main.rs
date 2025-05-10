@@ -1,14 +1,12 @@
-use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::str::FromStr;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use clap::{arg, Command};
 use playit_agent_core::agent_control::platform::get_platform;
 use playit_agent_core::agent_control::version::register_version;
+use playit_agent_core::PROTOCOL_VERSION;
 use rand::Rng;
 use uuid::Uuid;
 
@@ -16,7 +14,6 @@ use autorun::autorun;
 use playit_api_client::{api::*, PlayitApi};
 use playit_api_client::http_client::HttpClientError;
 use playit_agent_core::agent_control::errors::SetupError;
-use playit_agent_core::playit_agent::PlayitAgent;
 use playit_agent_core::utils::now_milli;
 use playit_secret::PlayitSecret;
 
@@ -53,6 +50,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             },
             official: true,
             details_website: None,
+            proto_version: PROTOCOL_VERSION,
         });
     }
 
@@ -432,11 +430,6 @@ fn cli() -> Command {
                         .about("List tunnels (format \"[tunnel-id] [port-type] [port-count] [public-address]\")")
                 )
         )
-        // .subcommand(
-        //     Command::new("run")
-        //         .about("(depreciated will be removed) Run the playit agent with manual port mappings")
-        //         .arg(arg!([MAPPING_OVERRIDE] "(format \"<tunnel-id>=[<local-ip>:]<local-port> [, ..]\")").required(false).value_delimiter(','))
-        // )
         .subcommand(
             Command::new("reset")
                 .about("removes the secret key on your system so the playit agent can be re-claimed")
