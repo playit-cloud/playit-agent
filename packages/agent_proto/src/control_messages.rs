@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use byteorder::{BigEndian, ReadBytesExt};
+use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use message_encoding::{m_max, m_max_list, m_opt_sum, m_static, MessageEncoding};
 use serde::ser::SerializeStruct;
 use serde::Serialize;
@@ -98,7 +98,7 @@ impl MessageEncoding for ControlRequest {
         
         match id {
             ControlRequestId::PingV2 => Ok(ControlRequest::Ping(Ping::read_from(read)?)),
-            ControlRequestId::AgentRegisterV1 => Ok(ControlRequest::AgentRegister(AgentRegisterWithoutVersion::read_from(read)?.upgrade())),
+            ControlRequestId::AgentRegisterV1 => Ok(ControlRequest::AgentRegister(AgentRegisterV1::read_from(read)?.upgrade())),
             ControlRequestId::AgentRegisterV2 => Ok(ControlRequest::AgentRegister(AgentRegister::read_from(read)?)),
             ControlRequestId::AgentKeepAliveV1 => Ok(ControlRequest::AgentKeepAlive(AgentSessionId::read_from(read)?)),
             ControlRequestId::SetupUdpChannelV1 => Ok(ControlRequest::SetupUdpChannel(AgentSessionId::read_from(read)?)),
@@ -249,7 +249,7 @@ impl MessageEncoding for AgentRegister {
     }
 }
 
-pub struct AgentRegisterWithoutVersion {
+pub struct AgentRegisterV1 {
     pub account_id: u64,
     pub agent_id: u64,
     pub agent_version: u64,
@@ -259,39 +259,45 @@ pub struct AgentRegisterWithoutVersion {
     pub signature: [u8; 32],
 }
 
-impl MessageEncoding for AgentRegisterWithoutVersion {
+impl MessageEncoding for AgentRegisterV1 {
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
-        let mut sum = 0;
-        sum += self.account_id.write_to(out)?;
-        sum += self.agent_id.write_to(out)?;
-        sum += self.agent_version.write_to(out)?;
-        sum += self.timestamp.write_to(out)?;
-        sum += self.client_addr.write_to(out)?;
-        sum += self.tunnel_addr.write_to(out)?;
-        out.write_all(&self.signature)?;
-        sum += self.signature.len();
-        Ok(sum)
+        out.write_u64::<BigEndian>(self.account_id)?;
+        out.write_u64::<BigEndian>(self.agent_id)?;
+        out.write_u64::<BigEndian>(self.agent_version)?;
+        out.write_u64::<BigEndian>(self.timestamp)?;
+        let mut len = 8 + 8 + 8 + 8;
+        len += self.client_addr.write_to(out)?;
+        len += self.tunnel_addr.write_to(out)?;
+        if out.write(&self.signature)? != 32 {
+            return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "failed to write full signature"));
+        }
+        len += 32;
+        Ok(len)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         let mut res = Self {
-            account_id: u64::read_from(read)?,
-            agent_id: u64::read_from(read)?,
-            agent_version: u64::read_from(read)?,
-            timestamp: u64::read_from(read)?,
+            account_id: read.read_u64::<BigEndian>()?,
+            agent_id: read.read_u64::<BigEndian>()?,
+            agent_version: read.read_u64::<BigEndian>()?,
+            timestamp: read.read_u64::<BigEndian>()?,
             client_addr: SocketAddr::read_from(read)?,
             tunnel_addr: SocketAddr::read_from(read)?,
             signature: [0u8; 32],
         };
-        read.read_exact(&mut res.signature[..])?;
+
+        if read.read(&mut res.signature[..])? != 32 {
+            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "missing signature"));
+        }
+
         Ok(res)
     }
 }
 
-impl AgentRegisterWithoutVersion {
+impl AgentRegisterV1 {
     pub fn upgrade(self) -> AgentRegister {
         AgentRegister {
-            proto_version: 0,
+            proto_version: 1,
             account_id: self.account_id,
             agent_id: self.agent_id,
             agent_version: self.agent_version,
@@ -548,6 +554,60 @@ mod test {
     use crate::rpc::ControlRpcMessage;
 
     use super::*;
+
+    #[test]
+    fn agent_register_sign_test() {
+        let mut reg = AgentRegister {
+            proto_version: 0,
+            account_id: 1,
+            agent_id: 2,
+            agent_version: 3,
+            timestamp: 1000,
+            client_addr: "10.20.30.40:5678".parse().unwrap(),
+            tunnel_addr: "9.20.3.40:9912".parse().unwrap(),
+            signature: [0u8; 32],
+        };
+
+        let hmac = HmacSha256::create("this is a super secret secret".as_bytes());
+
+        let mut buffer = Vec::new();
+        reg.update_signature(&mut buffer, &hmac);
+        assert!(reg.verify_signature(&mut buffer, &hmac));
+
+        reg.proto_version = 1;
+        reg.update_signature(&mut buffer, &hmac);
+        assert!(reg.verify_signature(&mut buffer, &hmac));
+    }
+
+    #[test]
+    fn decodee_agent_register_v1() {
+        let reg = AgentRegisterV1 {
+            account_id: 1,
+            agent_id: 2,
+            agent_version: 3,
+            timestamp: 1000,
+            client_addr: "10.20.30.40:5678".parse().unwrap(),
+            tunnel_addr: "9.20.3.40:9912".parse().unwrap(),
+            signature: [0u8; 32],
+        };
+
+        let mut out = Vec::new();
+        ControlRequestId::AgentRegisterV1.write_to(&mut out).unwrap();
+        reg.write_to(&mut out).unwrap();
+
+        let mut reader = &out[..];
+        let read = ControlRequest::read_from(&mut reader).unwrap();
+        assert_eq!(read, ControlRequest::AgentRegister(AgentRegister {
+            proto_version: 0,
+            account_id: 1,
+            agent_id: 2,
+            agent_version: 3,
+            timestamp: 1000,
+            client_addr: "10.20.30.40:5678".parse().unwrap(),
+            tunnel_addr: "9.20.3.40:9912".parse().unwrap(),
+            signature: [0u8; 32],
+        }))
+    }
 
     #[test]
     fn fuzzy_test_control_request() {

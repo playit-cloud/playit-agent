@@ -50,10 +50,10 @@ impl PingMonitor {
         {
             let mut to_send = {
                 let mut lock = self.shared.results.lock().await;
-                std::mem::replace(&mut *lock, Vec::new())
+                std::mem::take(&mut *lock)
             };
 
-            if to_send.len() != 0 {
+            if !to_send.is_empty() {
                 let og_send_len = to_send.len();
                 combine_experiments(&mut to_send);
                 tracing::info!("submit {} ping results, {} entries", og_send_len, to_send.len());
@@ -73,7 +73,7 @@ impl PingMonitor {
         }
 
         let pings = self.api_client.ping_get().await?;
-        let mut keys = self.senders.keys().map(|v| *v).collect::<HashSet<_>>();
+        let mut keys = self.senders.keys().cloned().collect::<HashSet<_>>();
 
         for exp in pings.experiments {
             keys.remove(&exp.id);
@@ -286,7 +286,7 @@ mod test {
             None,
         ))).await.unwrap();
 
-        for _ in 0..10 {
+        for _ in 0..2 {
             monitor.refresh().await.unwrap();
             tokio::time::sleep(Duration::from_secs(1)).await;
         }

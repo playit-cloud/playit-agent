@@ -249,6 +249,8 @@ pub enum AuthError {
 	AdminOnly,
 	InvalidToken,
 	TotpRequred,
+	NotAllowedWithReadOnly,
+	AgentNotSelfManaged,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -595,6 +597,7 @@ pub struct PlayitAgentVersion {
 	pub version: AgentVersion,
 	pub official: bool,
 	pub details_website: Option<String>,
+	pub proto_version: u64,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -627,6 +630,7 @@ pub enum Platform {
 }
 
 
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SignedAgentKey {
 	pub key: String,
@@ -639,19 +643,19 @@ pub struct ReqLoginGuest {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct WebSession {
 	pub session_key: String,
-	pub auth: WebAuth,
+	pub auth: WebAuthToken,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct WebAuth {
+pub struct WebAuthToken {
 	pub update_version: u32,
 	pub account_id: u64,
 	pub timestamp: u64,
 	pub account_status: AccountStatus,
 	pub totp_status: TotpStatus,
-	pub admin_id: Option<u64>,
+	pub admin_id: Option<std::num::NonZeroU64>,
+	pub read_only: bool,
 }
-
 
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
@@ -703,7 +707,6 @@ pub struct AgentRouting {
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Copy, Clone, Hash)]
 pub enum AgentRoutingGetError {
 	MissingAgentId,
-	AgentIdNotSupported,
 	InvalidAgentId,
 }
 

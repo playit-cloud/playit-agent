@@ -105,3 +105,4 @@ impl MessageEncoding for PortProto {
         }
     }
 }
+
