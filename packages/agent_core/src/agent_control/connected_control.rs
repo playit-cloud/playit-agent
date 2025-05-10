@@ -20,6 +20,14 @@ impl<IO: PacketIO> ConnectedControl<IO> {
         ConnectedControl { control_addr, packet_io: udp, pong_latest: pong, buffer: Vec::with_capacity(1024) }
     }
 
+    pub fn control_addr(&self) -> SocketAddr {
+        self.control_addr
+    }
+
+    pub fn pong(&self) -> Pong {
+        self.pong_latest.clone()
+    }
+
     pub async fn auth_into_established<A: AuthResource>(mut self, auth: A) -> Result<EstablishedControl<A, IO>, SetupError> {
         let registered = self.authenticate(&auth).await?;
         Ok(self.into_established(auth, registered))

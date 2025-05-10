@@ -10,6 +10,7 @@ pub mod control_feed;
 pub mod rpc;
 pub mod hmac;
 pub mod raw_slice;
+pub mod udp_proto;
 
 #[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug, Hash)]
 pub struct AgentSessionId {
@@ -104,3 +105,4 @@ impl MessageEncoding for PortProto {
         }
     }
 }
+

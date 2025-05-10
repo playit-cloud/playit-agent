@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::{atomic::Ordering, Arc}, task::{Poll, Waker}};
 
 use crossbeam::queue::ArrayQueue;
 
@@ -13,6 +13,7 @@ struct PacketsInner {
     _buffer: Vec<u8>,
     packet_count: usize,
     free_packets: ArrayQueue<*mut u8>,
+    waiting: ArrayQueue<Waker>,
 }
 
 unsafe impl Send for PacketsInner {}
@@ -25,14 +26,14 @@ pub struct Packet {
 }
 
 unsafe impl Send for Packet {}
+unsafe impl Sync for Packet {}
 
 impl Packets {
     pub fn new(mut packet_count: usize) -> Self {
         packet_count = packet_count.next_power_of_two();
         let bytes = packet_count.next_power_of_two() * PACKET_LEN;
 
-        let mut buffer = Vec::with_capacity(bytes);
-        buffer.resize(bytes, 0u8);
+        let mut buffer = vec![0u8; bytes];
 
         let free_packets = ArrayQueue::new(packet_count);
         let ptr = buffer.as_mut_ptr();
@@ -45,7 +46,8 @@ impl Packets {
             inner: Arc::new(PacketsInner {
                 _buffer: buffer,
                 packet_count,
-                free_packets
+                free_packets,
+                waiting: ArrayQueue::new(1024),
             })
         }
     }
@@ -58,11 +60,33 @@ impl Packets {
         let ptr = self.inner.free_packets.pop()?;
         Some(Packet { ptr, len: PACKET_LEN, inner: self.inner.clone() })
     }
+
+    pub async fn allocate_wait(&self) -> Packet {
+        std::future::poll_fn(|cx| {
+            std::sync::atomic::fence(Ordering::Acquire);
+
+            if let Some(ptr) = self.inner.free_packets.pop() {
+                return Poll::Ready(Packet { ptr, len: PACKET_LEN, inner: self.inner.clone() });
+            }
+
+            if let Err(error) = self.inner.waiting.push(cx.waker().clone()) {
+                error.wake();
+            }
+
+            Poll::Pending
+        }).await
+    }
 }
 
 impl Drop for Packet {
     fn drop(&mut self) {
-        self.inner.free_packets.push(self.ptr).expect("free packet queue full");
+        self.inner.free_packets.push(self.ptr)
+            .expect("free packet queue full");
+
+        if let Some(wake) = self.inner.waiting.pop() {
+            std::sync::atomic::fence(Ordering::Release);
+            wake.wake();
+        }
     }
 }
 
@@ -95,6 +119,7 @@ impl Packet {
         }
     }
 
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         self.len
     }

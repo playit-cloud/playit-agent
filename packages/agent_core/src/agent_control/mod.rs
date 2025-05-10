@@ -5,7 +5,8 @@ use errors::SetupError;
 use tokio::{io::ReadBuf, net::UdpSocket};
 use version::get_version;
 
-use playit_api_client::{api::{ReqAgentsRoutingGet, ReqProtoRegister, SignedAgentKey}, PlayitApi};
+use playit_api_client::{api::{ReqAgentsRoutingGet, ReqProtoRegister}, PlayitApi};
+pub use playit_api_client::api::SignedAgentKey;
 
 use crate::utils::error_helper::ErrorHelper;
 
@@ -16,9 +17,6 @@ pub mod connected_control;
 pub mod established_control;
 pub mod maintained_control;
 pub mod version;
-
-pub mod udp_channel;
-pub mod udp_proto;
 pub mod platform;
 
 pub trait PacketIO: Send + Sync + 'static {
@@ -27,7 +25,7 @@ pub trait PacketIO: Send + Sync + 'static {
     fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send;
 }
 
-pub trait PacketRx {
+pub trait PacketRx: Send + Sync + 'static {
     fn recv_from(&self, buf: &mut [u8]) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send;
 }
 
@@ -76,6 +74,14 @@ impl DualStackUdpSocket {
             next: AtomicUsize::new(0),
         })
     }
+
+    pub fn local_ip4_port(&self) -> Option<u16> {
+        Some(self.ip4.local_addr().ok()?.port())
+    }
+
+    pub fn local_ip6_port(&self) -> Option<u16> {
+        Some(self.ip6.as_ref()?.local_addr().ok()?.port())
+    }
 }
 
 impl PacketIO for DualStackUdpSocket {
@@ -113,7 +119,7 @@ struct PoolBoth<'a> {
     b: Option<&'a UdpSocket>
 }
 
-impl<'a> Future for PoolBoth<'a> {
+impl Future for PoolBoth<'_> {
     type Output = std::io::Result<(usize, SocketAddr)>;
 
     fn poll(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {

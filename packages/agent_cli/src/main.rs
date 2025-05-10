@@ -1,27 +1,22 @@
-use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::str::FromStr;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use clap::{arg, Command};
 use playit_agent_core::agent_control::platform::get_platform;
 use playit_agent_core::agent_control::version::register_version;
+use playit_agent_core::PROTOCOL_VERSION;
 use rand::Rng;
 use uuid::Uuid;
 
 use autorun::autorun;
 use playit_api_client::{api::*, PlayitApi};
 use playit_api_client::http_client::HttpClientError;
-use playit_agent_core::network::address_lookup::{AddressLookup, AddressValue};
 use playit_agent_core::agent_control::errors::SetupError;
-use playit_agent_core::playit_agent::PlayitAgent;
 use playit_agent_core::utils::now_milli;
 use playit_secret::PlayitSecret;
 
-use crate::match_ip::MatchIp;
 use crate::signal_handle::get_signal_handle;
 use crate::ui::{UI, UISettings};
 
@@ -32,7 +27,6 @@ pub static API_BASE: LazyLock<String> = LazyLock::new(|| {
 pub mod util;
 pub mod autorun;
 pub mod playit_secret;
-pub mod match_ip;
 pub mod ui;
 pub mod signal_handle;
 
@@ -56,6 +50,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             },
             official: true,
             details_website: None,
+            proto_version: PROTOCOL_VERSION,
         });
     }
 
@@ -169,24 +164,25 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         },
         Some(("tunnels", m)) => match m.subcommand() {
             Some(("prepare", m)) => {
-                let api = secret.create_api().await?;
+                unimplemented!()
+                // let api = secret.create_api().await?;
 
-                let name = m.get_one::<String>("NAME").cloned();
-                let tunnel_type: Option<TunnelType> = m.get_one::<String>("TUNNEL_TYPE")
-                    .and_then(|v| serde_json::from_str(&format!("{:?}", v)).ok());
-                let port_type = serde_json::from_str::<PortType>(&format!("{:?}", m.get_one::<String>("PORT_TYPE").expect("required")))
-                    .map_err(|_| CliError::InvalidPortType)?;
-                let port_count = m.get_one::<String>("PORT_COUNT").expect("required")
-                    .parse::<u16>().map_err(|_| CliError::InvalidPortCount)?;
-                let exact = m.get_flag("exact");
-                let ignore_name = m.get_flag("ignore_name");
+                // let name = m.get_one::<String>("NAME").cloned();
+                // let tunnel_type: Option<TunnelType> = m.get_one::<String>("TUNNEL_TYPE")
+                //     .and_then(|v| serde_json::from_str(&format!("{:?}", v)).ok());
+                // let port_type = serde_json::from_str::<PortType>(&format!("{:?}", m.get_one::<String>("PORT_TYPE").expect("required")))
+                //     .map_err(|_| CliError::InvalidPortType)?;
+                // let port_count = m.get_one::<String>("PORT_COUNT").expect("required")
+                //     .parse::<u16>().map_err(|_| CliError::InvalidPortCount)?;
+                // let exact = m.get_flag("exact");
+                // let ignore_name = m.get_flag("ignore_name");
 
-                let tunnel_id = tunnels_prepare(
-                    &api, name, tunnel_type, port_type,
-                    port_count, exact, ignore_name,
-                ).await?;
+                // let tunnel_id = tunnels_prepare(
+                //     &api, name, tunnel_type, port_type,
+                //     port_count, exact, ignore_name,
+                // ).await?;
 
-                println!("{}", tunnel_id);
+                // println!("{}", tunnel_id);
             }
             Some(("list", _)) => {
                 let api = secret.create_api().await?;
@@ -194,68 +190,6 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 println!("{}", serde_json::to_string_pretty(&response).unwrap());
             }
             _ => return Err(CliError::NotImplemented)
-        }
-        Some(("run", m)) => {
-            tracing::error!("run is depreciated and will be removed in a future version of the CLI");
-
-            let secret_key = secret.get().await?;
-            let api = PlayitApi::create(API_BASE.to_string(), Some(secret_key.clone()));
-            let tunnels = api.agents_rundata().await?;
-            let mut tunnel_lookup = HashMap::new();
-            let mut tunnel_found = HashSet::new();
-
-            for tunnel in tunnels.tunnels {
-                tunnel_found.insert(tunnel.id);
-                tunnel_lookup.insert(tunnel.id, tunnel);
-            }
-
-            let mapping_override_strings: Vec<String> = match m.get_many::<String>("MAPPING_OVERRIDE") {
-                Some(v) => v.into_iter().map(|v| v.to_string()).collect(),
-                None => vec![],
-            };
-
-            let mut mapping_overrides = Vec::new();
-            for override_str in mapping_override_strings {
-                let mut parts = override_str.split("=");
-
-                let tunnel_id: Uuid = parts.next().ok_or(CliError::InvalidMappingOverride)?
-                    .parse().map_err(|_| CliError::InvalidMappingOverride)?;
-
-                let local_addr_str = parts.next().ok_or(CliError::InvalidMappingOverride)?;
-                let local_addr = match SocketAddr::from_str(local_addr_str) {
-                    Ok(addr) => addr,
-                    _ => match u16::from_str(local_addr_str) {
-                        Ok(port) => SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port),
-                        _ => return Err(CliError::InvalidMappingOverride),
-                    }
-                };
-
-                match tunnel_lookup.remove(&tunnel_id) {
-                    Some(tunnel) => {
-                        mapping_overrides.push(MappingOverride {
-                            match_ip: MatchIp { ip_number: tunnel.ip_num, region_id: if tunnel.region_num == 0 { None } else { Some(tunnel.region_num) } },
-                            port: tunnel.port,
-                            proto: tunnel.proto,
-                            local_addr,
-                        });
-                    }
-                    None => {
-                        return if tunnel_found.contains(&tunnel_id) {
-                            Err(CliError::TunnelOverwrittenAlready(tunnel_id))
-                        } else {
-                            Err(CliError::TunnelNotFound(tunnel_id))
-                        };
-                    }
-                }
-            }
-
-            let tunnel = PlayitAgent::new(
-                API_BASE.to_string(),
-                secret_key,
-                Arc::new(LookupWithOverrides(mapping_overrides)),
-            ).await?;
-
-            tunnel.run().await;
         }
         _ => return Err(CliError::NotImplemented),
     }
@@ -367,138 +301,6 @@ struct TunnelOption {
 struct TunnelAlloc {
     address: String,
     port: u16,
-}
-
-pub async fn tunnels_prepare(api: &PlayitApi, name: Option<String>, tunnel_type: Option<TunnelType>, port_type: PortType, port_count: u16, exact: bool, ignore_name: bool) -> Result<Uuid, CliError> {
-    let tunnel_type_str = tunnel_type.clone().map(|v| format!("{:?}", v));
-    let data = api.agents_rundata().await?;
-
-    let options = data.tunnels.into_iter().map(|v| {
-        let is_minecraft = v.tunnel_type.as_ref().map(|v| v.eq("minecraft-java")).unwrap_or(false);
-
-        TunnelOption {
-            id: v.id,
-            name: v.name,
-            proto: v.proto,
-            port_count: v.port.to - v.port.from,
-            tunnel_type: v.tunnel_type,
-            public_address: Some({
-                let name = v.custom_domain.unwrap_or(v.assigned_domain);
-                let address = if is_minecraft {
-                    name
-                } else {
-                    format!("{}:{}", name, v.port.from)
-                };
-
-                TunnelAlloc {
-                    address,
-                    port: v.port.from,
-                }
-            }),
-        }
-    });
-
-    let options = options.chain(data.pending.into_iter().map(|v| {
-        TunnelOption {
-            id: v.id,
-            name: v.name,
-            proto: v.proto,
-            port_count: v.port_count,
-            tunnel_type: v.tunnel_type,
-            public_address: None,
-        }
-    }));
-
-    let mut options = options.filter(|tunnel| {
-        if exact {
-            if (ignore_name || tunnel.name.eq(&name)) && tunnel.proto == port_type && port_count == tunnel.port_count && tunnel.tunnel_type == tunnel_type_str {
-                true
-            } else {
-                false
-            }
-        } else {
-            if (tunnel.proto == PortType::Both || tunnel.proto == port_type) && port_count <= tunnel.port_count && tunnel.tunnel_type == tunnel_type_str {
-                true
-            } else {
-                false
-            }
-        }
-    }).collect::<Vec<_>>();
-
-    /* rank options by how much they match */
-    options.sort_by_key(|option| {
-        let mut points = 0;
-
-        if ignore_name {
-            if name.is_some() && option.name.eq(&name) {
-                points += 1;
-            }
-        } else {
-            if option.name.eq(&name) {
-                points += 10;
-            }
-        }
-
-        if option.proto == port_type {
-            points += 200;
-        }
-
-        if port_count == option.port_count {
-            points += 100;
-        } else {
-            points += ((port_count as i32) - (option.port_count as i32)) * 10;
-        }
-
-        points
-    });
-
-    if let Some(found_tunnel) = options.pop() {
-        return Ok(found_tunnel.id);
-    }
-
-    let created = api.tunnels_create(ReqTunnelsCreate {
-        name,
-        tunnel_type,
-        port_type,
-        port_count,
-        origin: TunnelOriginCreate::Managed(AssignedManagedCreate { agent_id: None }),
-        enabled: true,
-        alloc: None,
-        firewall_id: None,
-    }).await?;
-
-    Ok(created.id)
-}
-
-struct MappingOverride {
-    match_ip: MatchIp,
-    proto: PortType,
-    port: PortRange,
-    local_addr: SocketAddr,
-}
-
-pub struct LookupWithOverrides(Vec<MappingOverride>);
-
-impl AddressLookup for LookupWithOverrides {
-    type Value = SocketAddr;
-
-    fn lookup(&self, ip: IpAddr, port: u16, proto: PortType) -> Option<AddressValue<SocketAddr>> {
-        for over in &self.0 {
-            if over.proto.matches(proto) && over.match_ip.matches(ip) && over.port.contains(port) {
-                return Some(AddressValue {
-                    value: over.local_addr,
-                    from_port: over.port.from,
-                    to_port: over.port.to,
-                });
-            }
-        }
-
-        Some(AddressValue {
-            value: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)),
-            from_port: port,
-            to_port: port + 1,
-        })
-    }
 }
 
 #[derive(Debug)]
@@ -627,11 +429,6 @@ fn cli() -> Command {
                     Command::new("list")
                         .about("List tunnels (format \"[tunnel-id] [port-type] [port-count] [public-address]\")")
                 )
-        )
-        .subcommand(
-            Command::new("run")
-                .about("(depreciated will be removed) Run the playit agent with manual port mappings")
-                .arg(arg!([MAPPING_OVERRIDE] "(format \"<tunnel-id>=[<local-ip>:]<local-port> [, ..]\")").required(false).value_delimiter(','))
         )
         .subcommand(
             Command::new("reset")

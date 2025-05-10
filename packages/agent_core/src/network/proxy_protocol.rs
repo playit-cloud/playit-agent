@@ -1,9 +1,10 @@
 use std::{io::Write, net::{Ipv4Addr, Ipv6Addr}};
 
 use byteorder::{BigEndian, ReadBytesExt};
+use playit_agent_proto::udp_proto::UdpFlow;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::{agent_control::udp_proto::UdpFlow, utils::ip_bytes::ReadIpBytesExt};
+use crate::utils::ip_bytes::ReadIpBytesExt;
 
 /*
  DOCS: https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
@@ -29,7 +30,7 @@ pub enum ProxyProtocolHeader {
 impl ProxyProtocolHeader {
     pub fn from_udp_flow(flow: &UdpFlow) -> Self {
         match flow {
-            UdpFlow::V4 { src, dst } => {
+            UdpFlow::V4 { src, dst, .. } => {
                 ProxyProtocolHeader::AfInet {
                     client_ip: *src.ip(),
                     proxy_ip: *dst.ip(),
@@ -39,8 +40,8 @@ impl ProxyProtocolHeader {
             }
             UdpFlow::V6 { src, dst, .. } => {
                 ProxyProtocolHeader::AfInet6 {
-                    client_ip: src.0.into(),
-                    proxy_ip: dst.0.into(),
+                    client_ip: src.0,
+                    proxy_ip: dst.0,
                     client_port: src.1,
                     proxy_port: dst.1,
                 }
@@ -62,7 +63,7 @@ impl std::fmt::Display for ProxyProtocolHeader {
     }
 }
 
-const PROXY_PROTOCOL_V2_HEADER: &'static [u8] = &[
+const PROXY_PROTOCOL_V2_HEADER: &[u8] = &[
     0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A,
     /* version 2 + proxy connection byte */ 0x21
 ];
@@ -181,7 +182,7 @@ impl ProxyProtocolHeader {
                     proxy_port,
                 })
             }
-            _ => return None,
+            _ => None,
         }
     }
 }

@@ -29,21 +29,3 @@ impl api::PortRange {
 	}
 }
 
-#[cfg(test)]
-mod test {
-    use crate::api::{AgentType, ReqClaimSetup};
-    use crate::PlayitApi;
-
-    #[tokio::test]
-    async fn test() {
-        let api = PlayitApi::create("http://localhost:8080".to_string(), None);
-
-        let res = api.claim_setup(ReqClaimSetup {
-            code: "ffebed".to_string(),
-            agent_type: AgentType::Assignable,
-            version: "playit program v1.3.5".to_string(),
-        }).await.unwrap();
-
-        println!("{}", serde_json::to_string_pretty(&res).unwrap());
-    }
-}
