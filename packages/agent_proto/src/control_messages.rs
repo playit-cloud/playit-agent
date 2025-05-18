@@ -1,6 +1,7 @@
 use std::fmt::Debug;
 use std::io::{Read, Write};
 use std::net::SocketAddr;
+use std::ops::Not;
 use std::sync::Arc;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -175,26 +176,12 @@ pub struct AgentRegister {
 impl AgentRegister {
     pub fn update_signature(&mut self, temp_buffer: &mut Vec<u8>, hmac: &HmacSha256) {
         self.write_plain(temp_buffer);
-
-        let to_sign = if self.proto_version == 0 {
-            &temp_buffer[u8::STATIC_SIZE.unwrap()..]
-        } else {
-            &temp_buffer[..]
-        };
-
-        self.signature = hmac.sign(&to_sign);
+        self.signature = hmac.sign(temp_buffer);
     }
 
     pub fn verify_signature(&self, temp_buffer: &mut Vec<u8>, hmac: &HmacSha256) -> bool {
         self.write_plain(temp_buffer);
-
-        let to_verify = if self.proto_version == 0 {
-            &temp_buffer[u8::STATIC_SIZE.unwrap()..]
-        } else {
-            &temp_buffer[..]
-        };
-
-        hmac.verify(to_verify, &self.signature).is_ok()
+        hmac.verify(temp_buffer, &self.signature).is_ok()
     }
 
     fn write_plain(&self, temp_buffer: &mut Vec<u8>) {
@@ -206,6 +193,8 @@ impl AgentRegister {
         temp_buffer.truncate(adjusted_len);
     }
 }
+
+const ENCODING_INCLUDES_VERSION_BIT: u64 = 1u64 << 63;
 
 impl MessageEncoding for AgentRegister {
     const MAX_SIZE: Option<usize> = m_opt_sum(&[
@@ -221,8 +210,22 @@ impl MessageEncoding for AgentRegister {
 
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
-        sum += self.proto_version.write_to(out)?;
-        sum += self.account_id.write_to(out)?;
+
+        if self.proto_version <= 1 {
+            if (self.account_id & ENCODING_INCLUDES_VERSION_BIT) == ENCODING_INCLUDES_VERSION_BIT {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "account id too large for proto version 1"));
+            }
+
+            sum += self.account_id.write_to(out)?;
+        } else {
+            if (self.proto_version & ENCODING_INCLUDES_VERSION_BIT) == ENCODING_INCLUDES_VERSION_BIT {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid proto version"));
+            }
+
+            sum += (self.proto_version | ENCODING_INCLUDES_VERSION_BIT).write_to(out)?;
+            sum += self.account_id.write_to(out)?;
+        }
+
         sum += self.agent_id.write_to(out)?;
         sum += self.agent_version.write_to(out)?;
         sum += self.timestamp.write_to(out)?;
@@ -234,9 +237,21 @@ impl MessageEncoding for AgentRegister {
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
+        let first_word = u64::read_from(read)?;
+
+        let mut proto_version = 1;
+        let account_id: u64;
+
+        if (first_word & ENCODING_INCLUDES_VERSION_BIT) == ENCODING_INCLUDES_VERSION_BIT {
+            proto_version = first_word & ENCODING_INCLUDES_VERSION_BIT.not();
+            account_id = u64::read_from(read)?;
+        } else {
+            account_id = first_word;
+        }
+
         let mut res = AgentRegister {
-            proto_version: u64::read_from(read)?,
-            account_id: u64::read_from(read)?,
+            proto_version,
+            account_id,
             agent_id: u64::read_from(read)?,
             agent_version: u64::read_from(read)?,
             timestamp: u64::read_from(read)?,
@@ -244,6 +259,7 @@ impl MessageEncoding for AgentRegister {
             tunnel_addr: SocketAddr::read_from(read)?,
             signature: [0u8; 32],
         };
+
         read.read_exact(&mut res.signature[..])?;
         Ok(res)
     }
@@ -580,7 +596,7 @@ mod test {
     }
 
     #[test]
-    fn decodee_agent_register_v1() {
+    fn agent_register_old_proto_decode() {
         let reg = AgentRegisterV1 {
             account_id: 1,
             agent_id: 2,
@@ -598,7 +614,7 @@ mod test {
         let mut reader = &out[..];
         let read = ControlRequest::read_from(&mut reader).unwrap();
         assert_eq!(read, ControlRequest::AgentRegister(AgentRegister {
-            proto_version: 0,
+            proto_version: 1,
             account_id: 1,
             agent_id: 2,
             agent_version: 3,
@@ -680,7 +696,7 @@ mod test {
                 session_id: if rng.next_u32() % 2 == 0 {
                     Some(AgentSessionId {
                         session_id: rng.next_u64(),
-                        account_id: rng.next_u64(),
+                        account_id: rng.next_u64() % (i64::MAX as u64),
                         agent_id: rng.next_u64(),
                     })
                 } else {
@@ -688,8 +704,8 @@ mod test {
                 },
             }),
             1 => ControlRequest::AgentRegister(AgentRegister {
-                proto_version: rng.next_u64() % 2,
-                account_id: rng.next_u64(),
+                proto_version: 1 + rng.next_u64() % 2,
+                account_id: rng.next_u64() % (i64::MAX as u64),
                 agent_id: rng.next_u64(),
                 agent_version: rng.next_u64(),
                 timestamp: rng.next_u64(),
@@ -703,18 +719,18 @@ mod test {
             }),
             2 => ControlRequest::AgentKeepAlive(AgentSessionId {
                 session_id: rng.next_u64(),
-                account_id: rng.next_u64(),
+                account_id: rng.next_u64() % (i64::MAX as u64),
                 agent_id: rng.next_u64(),
             }),
             3 => ControlRequest::SetupUdpChannel(AgentSessionId {
                 session_id: rng.next_u64(),
-                account_id: rng.next_u64(),
+                account_id: rng.next_u64() % (i64::MAX as u64),
                 agent_id: rng.next_u64(),
             }),
             4 => ControlRequest::AgentCheckPortMapping(AgentCheckPortMapping {
                 agent_session_id: AgentSessionId {
                     session_id: rng.next_u64(),
-                    account_id: rng.next_u64(),
+                    account_id: rng.next_u64() % (i64::MAX as u64),
                     agent_id: rng.next_u64(),
                 },
                 port_range: PortRange {
@@ -763,7 +779,7 @@ mod test {
             5 => ControlResponse::AgentRegistered(AgentRegistered {
                 id: AgentSessionId {
                     session_id: rng.next_u64(),
-                    account_id: rng.next_u64(),
+                    account_id: rng.next_u64() % (i64::MAX as u64),
                     agent_id: rng.next_u64(),
                 },
                 expires_at: rng.next_u64(),
@@ -792,7 +808,7 @@ mod test {
                     0 => None,
                     1 => Some(AgentPortMappingFound::ToAgent(AgentSessionId {
                         session_id: rng.next_u64(),
-                        account_id: rng.next_u64(),
+                        account_id: rng.next_u64() % (i64::MAX as u64),
                         agent_id: rng.next_u64(),
                     })),
                     _ => unreachable!()
@@ -827,7 +843,7 @@ mod test {
     }
 
     #[test]
-    fn agent_register_v4_print_test() {
+    fn agent_register_v1_ip4_same_encoding_test() {
         let mut msg = AgentRegister {
             account_id: 100,
             agent_id: 32,
@@ -836,6 +852,7 @@ mod test {
             client_addr: "127.0.0.1:4123".parse().unwrap(),
             tunnel_addr: "99.12.34.51:5312".parse().unwrap(),
             signature: [0u8; 32],
+            proto_version: 1,
         };
 
         let sig = HmacSha256::create("test-secret-hehehe".as_bytes());
@@ -851,7 +868,7 @@ mod test {
     }
 
     #[test]
-    fn agent_register_v6_print_test() {
+    fn agent_register_v1_ip6_same_encoding_test() {
         let mut msg = AgentRegister {
             account_id: 100,
             agent_id: 32,
@@ -860,6 +877,7 @@ mod test {
             client_addr: "[::88]:4123".parse().unwrap(),
             tunnel_addr: "[::99]:5312".parse().unwrap(),
             signature: [0u8; 32],
+            proto_version: 1,
         };
 
         let sig = HmacSha256::create("test-secret-hehehe".as_bytes());
