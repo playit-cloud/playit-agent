@@ -74,7 +74,11 @@ impl MessageEncoding for ControlRequest {
                 sum += data.write_to(out)?;
             }
             ControlRequest::AgentRegister(data) => {
-                sum += ControlRequestId::AgentRegisterV2.write_to(out)?;
+                if data.proto_version <= 1 {
+                    sum += ControlRequestId::AgentRegisterV1.write_to(out)?;
+                } else {
+                    sum += ControlRequestId::AgentRegisterV2.write_to(out)?;
+                }
                 sum += data.write_to(out)?;
             }
             ControlRequest::AgentKeepAlive(data) => {
