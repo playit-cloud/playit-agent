@@ -679,4 +679,52 @@ mod test {
             rng.next_u32() as u16,
         )
     }
+
+    #[test]
+    fn agent_register_v4_print_test() {
+        let mut msg = AgentRegister {
+            account_id: 100,
+            agent_id: 32,
+            agent_version: 676,
+            timestamp: 103201401,
+            client_addr: "127.0.0.1:4123".parse().unwrap(),
+            tunnel_addr: "99.12.34.51:5312".parse().unwrap(),
+            signature: [0u8; 32],
+        };
+
+        let sig = HmacSha256::create("test-secret-hehehe".as_bytes());
+        let mut buffer = Vec::new();
+        msg.update_signature(&mut buffer, &sig);
+        assert!(msg.verify_signature(&mut buffer, &sig));
+
+        buffer.clear();
+        msg.write_to(&mut buffer).unwrap();
+
+        let hex_buffer = hex::encode(&buffer);
+        assert_eq!(hex_buffer, "0000000000000064000000000000002000000000000002a4000000000626ba79047f000001101b04630c223314c0767a59319b8edfcc1e6f3d3ea2d19ac74a74e5f5333c9b335adc72cda821de5f");
+    }
+
+    #[test]
+    fn agent_register_v6_print_test() {
+        let mut msg = AgentRegister {
+            account_id: 100,
+            agent_id: 32,
+            agent_version: 676,
+            timestamp: 103201401,
+            client_addr: "[::88]:4123".parse().unwrap(),
+            tunnel_addr: "[::99]:5312".parse().unwrap(),
+            signature: [0u8; 32],
+        };
+
+        let sig = HmacSha256::create("test-secret-hehehe".as_bytes());
+        let mut buffer = Vec::new();
+        msg.update_signature(&mut buffer, &sig);
+        assert!(msg.verify_signature(&mut buffer, &sig));
+
+        buffer.clear();
+        msg.write_to(&mut buffer).unwrap();
+
+        let hex_buffer = hex::encode(&buffer);
+        assert_eq!(hex_buffer, "0000000000000064000000000000002000000000000002a4000000000626ba790600000000000000000000000000000088101b060000000000000000000000000000009914c0724f203e7ac2f090800dbeb68afbf184f367f9ca14d8a0082e245070c3835c4b");
+    }
 }
