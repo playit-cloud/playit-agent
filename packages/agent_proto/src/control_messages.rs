@@ -108,7 +108,12 @@ impl MessageEncoding for ControlRequest {
             ControlRequestId::AgentKeepAliveV1 => Ok(ControlRequest::AgentKeepAlive(AgentSessionId::read_from(read)?)),
             ControlRequestId::SetupUdpChannelV1 => Ok(ControlRequest::SetupUdpChannel(AgentSessionId::read_from(read)?)),
             ControlRequestId::AgentCheckPortMappingV1 => Ok(ControlRequest::AgentCheckPortMapping(AgentCheckPortMapping::read_from(read)?)),
-            _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "old control request no longer supported")),
+            ControlRequestId::_PingV1 => Ok(ControlRequest::Ping(Ping {
+                now: u64::read_from(read)?,
+                session_id: None,
+                current_ping: None,
+            })),
+            _ => Err(std::io::Error::other("old control request no longer supported")),
         }
     }
 }
@@ -389,7 +394,7 @@ impl MessageEncoding for ControlResponse {
             6 => Ok(ControlResponse::AgentRegistered(AgentRegistered::read_from(read)?)),
             7 => Ok(ControlResponse::AgentPortMapping(AgentPortMapping::read_from(read)?)),
             8 => Ok(ControlResponse::UdpChannelDetails(UdpChannelDetails::read_from(read)?)),
-            _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "invalid ControlResponse id")),
+            _ => Err(std::io::Error::other("invalid ControlResponse id")),
         }
     }
 }
@@ -894,5 +899,23 @@ mod test {
 
         let hex_buffer = hex::encode(&buffer);
         assert_eq!(hex_buffer, "0000000000000064000000000000002000000000000002a4000000000626ba790600000000000000000000000000000088101b060000000000000000000000000000009914c0724f203e7ac2f090800dbeb68afbf184f367f9ca14d8a0082e245070c3835c4b");
+    }
+
+    #[test]
+    fn legacy_mc_java_ping_decode_test() {
+        let data = hex::decode("000000000000000100000001000000000000000000").unwrap();
+        let mut reader = &data[..];
+
+        let msg = ControlRpcMessage::<ControlRequest>::read_from(&mut reader).unwrap();
+        assert_eq!(msg, ControlRpcMessage {
+            request_id: 1,
+            content: ControlRequest::Ping(Ping {
+                now: 0,
+                current_ping: None,
+                session_id: None,
+            }),
+        });
+        assert_eq!(reader.len(), 0);
+        println!("Got msg: {msg:?}");
     }
 }
