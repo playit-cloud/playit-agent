@@ -33,6 +33,10 @@ Please only use the playit program if you downloaded if from an offical source o
 
 ## Building / Running Locally
 
+> [!NOTE]
+> For Mac, you can run `chmod +x ./macos/setup.sh && sudo ./macos/setup.sh` 
+> And then to use binary: `playit-cli --help`
+
 Requires Rust: https://rustup.rs
 Run using `cargo run --release`
 
