@@ -11,7 +11,6 @@ use playit_agent_core::{
 use playit_agent_proto::PortProto;
 use playit_api_client::api::*;
 // use playit_ping_monitor::PingMonitor;
-use rand::random;
 
 use crate::{API_BASE, CliError, playit_secret::PlayitSecret, ui::UI};
 
@@ -38,19 +37,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let lookup = Arc::new(OriginLookup::default());
-    lookup.update(api.agents_rundata().await?.tunnels.into_iter().map(|tunn| {
-        OriginResource {
-            tunnel_id: tunn.internal_id,
-            proto: match tunn.proto {
-                PortType::Tcp => PortProto::Tcp,
-                PortType::Udp => PortProto::Udp,
-                PortType::Both => PortProto::Both,
-            },
-            local_addr: SocketAddr::new(tunn.local_ip, tunn.local_port),
-            port_count: tunn.port.to - tunn.port.from,
-            proxy_protocol: tunn.proxy_protocol,
-        }
-    })).await;
+    lookup.update_from_run_data(&api.agents_rundata().await?).await;
 
     let mut error_count = 0;
     ui.write_screen("starting up tunnel connection").await;
@@ -97,6 +84,8 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
                 continue;
             }
         };
+
+        lookup.update_from_run_data(&agent_data).await;
 
         let mut msg = format!(
             "playit (v{}): {} tunnel running, {} tunnels registered\n\n",

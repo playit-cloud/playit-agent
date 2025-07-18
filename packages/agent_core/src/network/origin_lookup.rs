@@ -1,7 +1,7 @@
 use std::{collections::HashMap, net::SocketAddr};
 
 use playit_agent_proto::PortProto;
-use playit_api_client::api::ProxyProtocol;
+use playit_api_client::api::{AgentRunData, PortType, ProxyProtocol};
 use tokio::sync::RwLock;
 
 #[derive(Default)]
@@ -10,6 +10,22 @@ pub struct OriginLookup {
 }
 
 impl OriginLookup {
+    pub async fn update_from_run_data(&self, run_data: &AgentRunData) {
+        self.update(run_data.tunnels.iter().map(|tunn| {
+            OriginResource {
+                tunnel_id: tunn.internal_id,
+                proto: match tunn.proto {
+                    PortType::Tcp => PortProto::Tcp,
+                    PortType::Udp => PortProto::Udp,
+                    PortType::Both => PortProto::Both,
+                },
+                local_addr: SocketAddr::new(tunn.local_ip, tunn.local_port),
+                port_count: tunn.port.to - tunn.port.from,
+                proxy_protocol: tunn.proxy_protocol,
+            }
+        })).await;
+    }
+
     pub async fn update<I: Iterator<Item = OriginResource>>(&self, resources: I) {
         let mut lock = self.map.write().await;
         lock.clear();
