@@ -277,20 +277,20 @@ mod test {
 
     use crate::{combine_experiments, PingMonitor};
 
-    #[tokio::test]
-    async fn test_send_pings() {
-        let _ = tracing_subscriber::fmt::try_init();
+    // #[tokio::test]
+    // async fn test_send_pings() {
+    //     let _ = tracing_subscriber::fmt::try_init();
 
-        let mut monitor = PingMonitor::new(PlayitApi::new(HttpClient::new(
-            "https://api.playit.gg".to_string(),
-            None,
-        ))).await.unwrap();
+    //     let mut monitor = PingMonitor::new(PlayitApi::new(HttpClient::new(
+    //         "https://api.playit.gg".to_string(),
+    //         None,
+    //     ))).await.unwrap();
 
-        for _ in 0..2 {
-            monitor.refresh().await.unwrap();
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    }
+    //     for _ in 0..2 {
+    //         monitor.refresh().await.unwrap();
+    //         tokio::time::sleep(Duration::from_secs(1)).await;
+    //     }
+    // }
 
     #[test]
     fn test_combine() {

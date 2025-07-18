@@ -1168,7 +1168,6 @@ dependencies = [
  "playit-agent-core",
  "playit-agent-proto",
  "playit-api-client",
- "playit-ping-monitor",
  "rand 0.8.5",
  "serde",
  "serde_json",

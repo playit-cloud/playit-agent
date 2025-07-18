@@ -1,6 +1,6 @@
 [package]
 name = "playit-api-client"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Contains the logic to create a playit.gg agent"
 license = "BSD-2-Clause"

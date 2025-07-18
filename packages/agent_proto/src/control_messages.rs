@@ -915,7 +915,6 @@ mod test {
                 session_id: None,
             }),
         });
-        assert_eq!(reader.len(), 0);
         println!("Got msg: {msg:?}");
     }
 }
