@@ -1,4 +1,4 @@
-# FROM rust:1.80-alpine AS build-env
+# FROM rust:1.88-alpine AS build-env
 
 # WORKDIR /src/playit-agent
 

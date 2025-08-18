@@ -2,6 +2,8 @@ use std::sync::OnceLock;
 
 use playit_api_client::api::{AgentVersion, PlayitAgentVersion};
 
+use crate::PROTOCOL_VERSION;
+
 use super::platform::get_platform;
 
 pub static AGENT_VERSION: OnceLock<PlayitAgentVersion> = OnceLock::new();
@@ -20,6 +22,8 @@ pub fn get_version() -> PlayitAgentVersion {
             },
             official: true,
             details_website: None,
+            proto_version: PROTOCOL_VERSION,
         }
     }).clone()
 }
+

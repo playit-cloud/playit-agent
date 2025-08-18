@@ -1,6 +1,6 @@
 [package]
 name = "playit-agent-core"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2021"
 description = "Contains the logic to create a playit.gg agent"
 license = "BSD-2-Clause"
@@ -10,6 +10,7 @@ repository = "https://github.com/playit-cloud/playit-agent"
 
 [dependencies]
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
 serde_json = { workspace = true }
 rand = { workspace = true }
@@ -25,6 +26,7 @@ message-encoding = { workspace = true }
 playit-agent-proto = { path = "../agent_proto", version = "1.2.0" }
 playit-api-client = { path = "../api_client", version = "0.1.0" }
 
+governor = "0.10.0"
 crossbeam = "0.8.4"
 slab = "0.4.9"
 

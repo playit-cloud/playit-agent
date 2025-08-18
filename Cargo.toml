@@ -8,10 +8,11 @@ members = [
 ]
 
 [workspace.package]
-version = "0.15.26"
+version = "0.16.2"
 
 [workspace.dependencies]
 tokio = { version = "1.39", features = ["full"] }
+tokio-util = "0.7.14"
 
 tracing = "0.1"
 tracing-subscriber = "0.3"
@@ -34,3 +35,4 @@ strip = "debuginfo"
 opt-level = "z"
 lto = true
 codegen-units = 1
+
