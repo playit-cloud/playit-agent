@@ -15,9 +15,14 @@ serde_json = { workspace = true }
 serde = { workspace = true }
 uuid = { workspace = true }
 byteorder = { workspace = true }
+chrono = { workspace = true }
 
 # use rustls with "ring" and not "aws-lc-rs", having trouble cross compiling "aws-lc-rs"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "gzip",
+] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 
 [dev-dependencies]

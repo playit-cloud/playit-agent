@@ -1,11 +1,13 @@
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc::channel;
 use tokio::time::Instant;
 use tracing::Instrument;
 
+use crate::agent_control::errors::SetupError;
+use crate::agent_control::maintained_control::{MaintainedControl, TunnelControlEvent};
 use crate::agent_control::{AuthApi, DualStackUdpSocket};
 use crate::network::origin_lookup::OriginLookup;
 use crate::network::tcp::tcp_clients::TcpClients;
@@ -13,8 +15,6 @@ use crate::network::tcp::tcp_settings::TcpSettings;
 use crate::network::udp::packets::Packets;
 use crate::network::udp::udp_channel::UdpChannel;
 use crate::network::udp::udp_clients::UdpClients;
-use crate::agent_control::errors::SetupError;
-use crate::agent_control::maintained_control::{MaintainedControl, TunnelControlEvent};
 use crate::network::udp::udp_settings::UdpSettings;
 use crate::utils::now_milli;
 
@@ -37,13 +37,18 @@ pub struct PlayitAgentSettings {
 }
 
 impl PlayitAgent {
-    pub async fn new(settings: PlayitAgentSettings, lookup: Arc<OriginLookup>) -> Result<Self, SetupError> {
+    pub async fn new(
+        settings: PlayitAgentSettings,
+        lookup: Arc<OriginLookup>,
+    ) -> Result<Self, SetupError> {
         let io = DualStackUdpSocket::new().await?;
         let auth = AuthApi::new(settings.api_url, settings.secret_key);
         let control = MaintainedControl::setup(io, auth).await?;
 
         let packets = Packets::new(1024 * 16);
-        let udp_channel = UdpChannel::new(packets.clone()).await.map_err(SetupError::IoError)?;
+        let udp_channel = UdpChannel::new(packets.clone())
+            .await
+            .map_err(SetupError::IoError)?;
 
         let udp_clients = UdpClients::new(settings.udp_settings, lookup.clone(), packets.clone());
         let tcp_clients = TcpClients::new(settings.tcp_settings, lookup.clone());
@@ -75,7 +80,9 @@ impl PlayitAgent {
             while tunnel_run.load(Ordering::SeqCst) {
                 tokio::task::yield_now().await;
 
-                if should_renew_udp.load(Ordering::Acquire) && control.send_udp_session_auth(now_milli(), 5_000).await {
+                if should_renew_udp.load(Ordering::Acquire)
+                    && control.send_udp_session_auth(now_milli(), 5_000).await
+                {
                     tracing::info!("udp channel requires auth, sent auth request");
                 }
 
@@ -85,7 +92,10 @@ impl PlayitAgent {
                     if 30_000 < now_milli() - last_control_addr_check {
                         last_control_addr_check = now;
 
-                        if let Err(error) = control.reload_control_addr(async { DualStackUdpSocket::new().await }).await {
+                        if let Err(error) = control
+                            .reload_control_addr(async { DualStackUdpSocket::new().await })
+                            .await
+                        {
                             tracing::error!(?error, "failed to reload_control_addr");
                         }
                     }
