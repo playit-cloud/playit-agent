@@ -1,11 +1,15 @@
-use std::sync::LazyLock;
+use std::{env, process, sync::LazyLock, time::Duration};
 
 use clap::Parser;
 use playit_agent_core::{PROTOCOL_VERSION, agent_control::version::register_version};
 
 use crate::{
-    cli::{Cli, CliAction, CliAgentVersionDetails},
-    settings::PlayitCliSettings,
+    cli::{Cli, CliCommand},
+    service::{
+        client_server::ServiceServer,
+        playit_service::{PlayitService, PlayitServiceProto},
+    },
+    settings::{CliAgentVersionDetails, CliSecretDetails, PlayitCliSettings},
     version::CURRENT_AGENT_VERSION,
 };
 
@@ -13,6 +17,7 @@ pub static API_BASE: LazyLock<String> =
     LazyLock::new(|| dotenv::var("API_BASE").unwrap_or("https://api.playit.gg".to_string()));
 
 pub mod cli;
+pub mod logging;
 pub mod service;
 pub mod settings;
 pub mod version;
@@ -20,30 +25,34 @@ pub mod version;
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+    let cli = Cli::parse();
 
-    let mut cli = Cli::parse();
+    let (settings, setting_file_path) = {
+        let (file_settings, settings_path) =
+            PlayitCliSettings::load_from_file(cli.settings_path.clone())
+                .await
+                .expect("failed to load settings");
 
-    let (settings, settings_path) = PlayitCliSettings::load(cli.settings_path.clone())
-        .await
-        .expect("failed to load settings");
+        let env_settings = PlayitCliSettings::load_from_env();
+        let mut cli_settings = PlayitCliSettings::from_cli(&cli);
+        env_settings.add_to_missing(&mut cli_settings);
+        if let Some(file_settings) = file_settings {
+            file_settings.add_to_missing(&mut cli_settings);
+        }
 
-    settings.and_to_missing(&mut cli);
+        (cli_settings, settings_path)
+    };
 
-    let agent_version = match CliAgentVersionDetails::extract(&cli) {
+    let agent_version = match CliAgentVersionDetails::extract(&settings) {
         Ok(None) => CURRENT_AGENT_VERSION.clone(),
         Ok(Some(details)) => details.agent_version,
         Err(error) => error.print_and_exit(),
     };
 
-    let action = match CliAction::from_cli(cli) {
-        Ok(action) => action,
-        Err(error) => error.print_and_exit(),
-    };
-
     register_version(agent_version.clone());
 
-    match action {
-        CliAction::Version => {
+    match cli.command {
+        CliCommand::Version => {
             println!("Protocol Version: {}", PROTOCOL_VERSION);
             println!(
                 "Agent Version: {}.{}.{} (variant: {})",
@@ -60,19 +69,75 @@ async fn main() {
                 CURRENT_AGENT_VERSION.variant_id,
             );
         }
-        CliAction::Start {
-            foreground,
-            secret,
-            version,
-        } => {
-            if secret.is_none() {}
+        CliCommand::RevealSecretPath => {
+            println!("{setting_file_path}");
+            process::exit(0);
+        }
+        CliCommand::Run => {
+            let _run_lock = match try_run_lock(&setting_file_path).await {
+                LockStatus::Locked(l) => l,
+                LockStatus::AlreadyLocked => {
+                    eprintln!("Playit program already running in the background");
+                    eprintln!("Run \"playit monitor\" to view the actively running");
+                    process::exit(1);
+                }
+                LockStatus::FileNotSetup => {
+                    eprintln!("playit agent not setup\nRun \"playit setup\"");
+                    process::exit(1);
+                }
+            };
 
-            if foreground {
-                tracing::info!("starting playit service in foreground");
+            let secret = match CliSecretDetails::extract(&settings).await {
+                Ok(Some(d)) => d.secret_key,
+                Ok(None) => {
+                    eprintln!("playit agent not setup\nRun \"playit setup\"");
+                    process::exit(1);
+                }
+                Err(error) => error.print_and_exit(),
+            };
+
+            let client_requests = match ServiceServer::<PlayitServiceProto>::start().await {
+                Ok(rx) => rx,
+                Err(error) => {
+                    tracing::error!(?error, "failed to setup service proto");
+                    process::exit(1);
+                }
+            };
+
+            let task = tokio::spawn(
+                PlayitService {
+                    secret_key: secret,
+                    rx: client_requests,
+                }
+                .start(),
+            );
+
+            tracing::info!("Staring the playit program");
+            match task.await {
+                Err(error) => tracing::error!(?error, "got error"),
+                Ok(result) => {
+                    eprintln!("Closing due to: {result:?}");
+                    process::exit(0);
+                }
             }
         }
-        _ => todo!(),
+        _ => {}
     }
+
+    // match action {
+    //     CliAction::Start {
+    //         foreground,
+    //         secret,
+    //         version,
+    //     } => {
+    //         if secret.is_none() {}
+
+    //         if foreground {
+    //             tracing::info!("starting playit service in foreground");
+    //         }
+    //     }
+    //     _ => todo!(),
+    // }
 
     //     let matches = cli().get_matches();
     //
@@ -516,4 +581,46 @@ async fn main() {
     //     }
     //
     //     cmd
+}
+
+async fn run_lock(path: &str) -> fmutex::Guard<'static> {
+
+    match try_run_lock(path).await {
+        LockStatus::Locked(l) => l,
+        LockStatus::AlreadyLocked => {
+            eprintln!("Failed to acquire lock, playit agent already running.");
+            eprintln!("To reset playit you can run \"playit reset\"");
+            process::exit(1);
+        }
+        LockStatus::FileNotSetup => {
+            eprintln!("Failed to acquire lock, playit agent not setup.");
+            eprintln!("Run \"playit setup\" to setup the playit agent");
+            process::exit(1);
+        }
+    }
+}
+
+async fn try_run_lock(path: &str) -> LockStatus {
+    let path = path.to_string();
+    let task = tokio::task::spawn_blocking(|| fmutex::lock_exclusive_path(path));
+
+    match tokio::time::timeout(Duration::from_secs(2), task).await {
+        Ok(Ok(Ok(lock))) => LockStatus::Locked(lock),
+        Ok(Ok(Err(error))) if error.kind() == std::io::ErrorKind::NotFound => LockStatus::FileNotSetup,
+        Ok(Ok(Err(error))) => {
+            tracing::error!(?error, "failed to setup lock");
+            process::exit(1);
+        }
+        Ok(Err(error)) => {
+            tracing::error!(?error, "failed to run lock task");
+            process::exit(1);
+        }
+        Err(_) => LockStatus::AlreadyLocked,
+    }
+}
+
+pub enum LockStatus {
+    AlreadyLocked,
+    Locked(fmutex::Guard<'static>),
+    FileNotSetup,
 }

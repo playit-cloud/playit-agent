@@ -4,9 +4,7 @@ pub struct NonOverlapping<T> {
 
 impl<T> NonOverlapping<T> {
     pub fn new() -> Self {
-        NonOverlapping {
-            elements: vec![],
-        }
+        NonOverlapping { elements: vec![] }
     }
 
     pub fn with(elem: T) -> Self {
@@ -15,7 +13,10 @@ impl<T> NonOverlapping<T> {
         }
     }
 
-    pub fn add<C: NonOverlappingCheck<Element = T>>(&mut self, to_add: C::Element) -> Result<(), C::Element> {
+    pub fn add<C: NonOverlappingCheck<Element = T>>(
+        &mut self,
+        to_add: C::Element,
+    ) -> Result<(), C::Element> {
         for item in &self.elements {
             if C::is_overlapping(&to_add, item) {
                 return Err(to_add);
@@ -36,10 +37,13 @@ impl<T> NonOverlapping<T> {
     }
 
     pub fn contains<C: NonOverlappingCheck<Element = T>>(&self, item: &C::Element) -> bool {
-        self.elements.iter().position(|a| C::is_same(a, item)).is_some()
+        self.elements
+            .iter()
+            .position(|a| C::is_same(a, item))
+            .is_some()
     }
 
-    pub fn iter(&self) -> std::slice::Iter<T> {
+    pub fn iter(&self) -> std::slice::Iter<'_, T> {
         self.elements.iter()
     }
 }

@@ -121,6 +121,7 @@ impl PlayitService {
     }
 }
 
+#[derive(Debug)]
 pub enum PlayitServiceExitReason {
     SetupError(SetupError),
     FailedToLoadInitialRunData(ApiErrorNoFail<HttpClientError>),

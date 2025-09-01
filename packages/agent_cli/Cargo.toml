@@ -25,6 +25,8 @@ uuid = { workspace = true }
 dirs = { workspace = true }
 
 clap = { version = "4.5", features = ["derive"] }
+fmutex = "0.3"
+circular-buffer = "1.1.0"
 urlencoding = "2.1"
 serde_yaml = "0.9"
 crossterm = "0.28"
