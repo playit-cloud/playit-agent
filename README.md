@@ -1,11 +1,16 @@
 # The playit program
 
-Looking for version 0.9.x? See [this branch](https://github.com/playit-cloud/playit-agent/tree/v0.9).
-
 * Latest Release: 0.16.X
 * Offical Website: https://playit.gg
 * Offical Downloads: https://playit.gg/download
 * Releases: https://github.com/playit-cloud/playit-agent/releases
+
+---
+
+** Non deprecated releases of the playit program:
+`0.15.26` and `0.16.2`
+
+---
 
 Installing on ubuntu or debian
 
