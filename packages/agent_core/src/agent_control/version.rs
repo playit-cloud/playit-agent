@@ -1,29 +1,13 @@
 use std::sync::OnceLock;
 
-use playit_api_client::api::{AgentVersion, PlayitAgentVersion};
+use playit_api_client::api::AgentVersion;
 
-use crate::PROTOCOL_VERSION;
+pub static AGENT_VERSION: OnceLock<AgentVersion> = OnceLock::new();
 
-use super::platform::get_platform;
-
-pub static AGENT_VERSION: OnceLock<PlayitAgentVersion> = OnceLock::new();
-
-pub fn register_version(version: PlayitAgentVersion) {
+pub fn register_version(version: AgentVersion) {
     AGENT_VERSION.get_or_init(|| version);
 }
 
-pub fn get_version() -> PlayitAgentVersion {
-    AGENT_VERSION.get_or_init(|| {
-        PlayitAgentVersion {
-            version: AgentVersion {
-                platform: get_platform(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                has_expired: false,
-            },
-            official: true,
-            details_website: None,
-            proto_version: PROTOCOL_VERSION,
-        }
-    }).clone()
+pub fn get_version() -> AgentVersion {
+    AGENT_VERSION.get().expect("version not registered").clone()
 }
-

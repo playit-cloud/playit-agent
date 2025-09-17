@@ -4,7 +4,6 @@ members = [
     "packages/agent_core",
     "packages/agent_proto",
     "packages/api_client",
-    "packages/ping_monitor",
 ]
 
 [workspace.package]
@@ -35,4 +34,3 @@ strip = "debuginfo"
 opt-level = "z"
 lto = true
 codegen-units = 1
-

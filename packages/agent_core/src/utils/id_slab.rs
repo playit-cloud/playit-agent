@@ -1,4 +1,7 @@
-use std::{mem::{ManuallyDrop, MaybeUninit}, u32};
+use std::{
+    mem::{ManuallyDrop, MaybeUninit},
+    u32,
+};
 
 pub struct IdSlab<T> {
     entries: Vec<Entry<T>>,
@@ -8,6 +11,18 @@ pub struct IdSlab<T> {
 struct Entry<T> {
     id: u64,
     value: MaybeUninit<T>,
+}
+
+impl<T> Drop for Entry<T> {
+    fn drop(&mut self) {
+        if (self.id & EMPTY_BIT) == EMPTY_BIT {
+            return;
+        }
+
+        unsafe {
+            self.value.assume_init_drop();
+        }
+    }
 }
 
 pub struct IdSlabVacantEntry<'a, T> {
@@ -87,9 +102,7 @@ impl<T> IdSlab<T> {
 
         self.free_slots.push(slot);
 
-        Some(unsafe {
-            std::mem::replace(&mut entry.value, MaybeUninit::uninit()).assume_init()
-        })
+        Some(unsafe { std::mem::replace(&mut entry.value, MaybeUninit::uninit()).assume_init() })
     }
 
     fn slot(&self, id: u64) -> Option<usize> {
@@ -116,7 +129,7 @@ impl<T> IdSlab<T> {
         Ok(entry.id)
     }
 
-    pub fn vacant_entry(&mut self) -> Option<IdSlabVacantEntry<T>> {
+    pub fn vacant_entry(&mut self) -> Option<IdSlabVacantEntry<'_, T>> {
         let slot = self.free_slots.pop()?;
         let id = self.entries[slot].id & EMPTY_BIT_NEG;
 
@@ -127,7 +140,7 @@ impl<T> IdSlab<T> {
         })
     }
 
-    pub fn iter(&self) -> IdSlabIter<T> {
+    pub fn iter(&self) -> IdSlabIter<'_, T> {
         IdSlabIter {
             slab: self,
             slot: 0,
@@ -135,9 +148,13 @@ impl<T> IdSlab<T> {
         }
     }
 
-    pub fn iter_mut(&mut self) -> IdSlabIterMut<T> {
+    pub fn iter_mut(&mut self) -> IdSlabIterMut<'_, T> {
         let remaining = self.len();
-        IdSlabIterMut { slab: self, slot: 0, remaining }
+        IdSlabIterMut {
+            slab: self,
+            slot: 0,
+            remaining,
+        }
     }
 }
 
@@ -197,6 +214,26 @@ pub struct IdSlabIterMut<'a, T> {
     slab: &'a mut IdSlab<T>,
     slot: usize,
     remaining: usize,
+}
+
+impl<'a, T> IdSlabIterMut<'a, T> {
+    pub fn remove_last(&mut self) -> Option<T> {
+        if self.slot == 0 {
+            return None;
+        }
+
+        let s = self.slot - 1;
+        let entry = &mut self.slab.entries[self.slot];
+        if (entry.id & EMPTY_BIT) == EMPTY_BIT {
+            return None;
+        }
+
+        entry.id = EMPTY_BIT | (entry.id + USE_NUM);
+        assert_eq!(entry.id & EMPTY_BIT, EMPTY_BIT);
+
+        self.slab.free_slots.push(s);
+        Some(unsafe { std::mem::replace(&mut entry.value, MaybeUninit::uninit()).assume_init() })
+    }
 }
 
 impl<'a, T> Iterator for IdSlabIterMut<'a, T> {
