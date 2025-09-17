@@ -5,6 +5,7 @@ use std::time::Duration;
 use playit_agent_proto::control_feed::{ControlFeed, NewClient};
 use playit_agent_proto::control_messages::{ControlResponse, UdpChannelDetails};
 
+use crate::agent_control::errors::TryTimeoutHelper;
 use crate::agent_control::established_control::EstablishedControl;
 use crate::utils::now_milli;
 
@@ -12,7 +13,6 @@ use super::address_selector::AddressSelector;
 use super::connected_control::ConnectedControl;
 use super::errors::SetupError;
 use super::{AuthResource, PacketIO};
-
 
 pub struct MaintainedControl<I: PacketIO, A: AuthResource> {
     control: EstablishedControl<A, I>,
@@ -26,8 +26,15 @@ pub struct MaintainedControl<I: PacketIO, A: AuthResource> {
 impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
     pub async fn setup(io: I, auth: A) -> Result<Self, SetupError> {
         let addresses = auth.get_control_addresses().await?;
-        let setup = AddressSelector::new(addresses.clone(), io).connect_to_first().await?;
-        let control_channel = setup.auth_into_established(auth).await?;
+        let setup = AddressSelector::new(addresses.clone(), io)
+            .connect_to_first()
+            .try_timeout(Duration::from_secs(10))
+            .await?;
+
+        let control_channel = setup
+            .auth_into_established(auth)
+            .try_timeout(Duration::from_secs(10))
+            .await?;
 
         Ok(MaintainedControl {
             control: control_channel,
@@ -39,33 +46,56 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         })
     }
 
-    pub async fn reload_control_addr<E: Into<SetupError>, C: Future<Output = Result<I, E>>>(&mut self, create_io: C) -> Result<bool, SetupError> {
-        let addresses = self.control.auth.get_control_addresses().await?;
+    pub async fn reload_control_addr<E: Into<SetupError>, C: Future<Output = Result<I, E>>>(
+        &mut self,
+        create_io: C,
+    ) -> Result<bool, SetupError> {
+        let addresses = self
+            .control
+            .auth
+            .get_control_addresses()
+            .try_timeout(Duration::from_secs(5))
+            .await?;
 
         if self.last_control_targets == addresses {
             return Ok(false);
         }
 
-        let new_io = match create_io.await {
-            Ok(v) => v,
-            Err(error) => return Err(error.into()),
-        };
-        
-        let connected = AddressSelector::new(addresses.clone(), new_io).connect_to_first().await?;
-        let updated = self.replace_connection(connected, false).await?;
+        let new_io = async { create_io.await.map_err(|e| e.into()) }
+            .try_timeout(Duration::from_secs(5))
+            .await?;
+
+        let connected = AddressSelector::new(addresses.clone(), new_io)
+            .connect_to_first()
+            .try_timeout(Duration::from_secs(10))
+            .await?;
+
+        let updated = self
+            .replace_connection(connected, false)
+            .try_timeout(Duration::from_secs(5))
+            .await?;
 
         self.last_control_targets = addresses;
         Ok(updated)
     }
 
-    pub async fn replace_connection(&mut self, mut connected: ConnectedControl<I>, force: bool) -> Result<bool, SetupError> {
+    pub async fn replace_connection(
+        &mut self,
+        mut connected: ConnectedControl<I>,
+        force: bool,
+    ) -> Result<bool, SetupError> {
         if !force
-            && self.control.conn.pong_latest.client_addr.ip() == connected.pong_latest.client_addr.ip()
-            && self.control.conn.pong_latest.tunnel_addr == connected.pong_latest.tunnel_addr {
+            && self.control.conn.pong_latest.client_addr.ip()
+                == connected.pong_latest.client_addr.ip()
+            && self.control.conn.pong_latest.tunnel_addr == connected.pong_latest.tunnel_addr
+        {
             return Ok(false);
         }
 
-        let registered = connected.authenticate(&self.control.auth).await?;
+        let registered = connected
+            .authenticate(&self.control.auth)
+            .try_timeout(Duration::from_secs(10))
+            .await?;
 
         tracing::info!(old = %self.control.conn.pong_latest.tunnel_addr, new = %connected.pong_latest.tunnel_addr, "update control address");
         connected.reset_established(&mut self.control, registered);
@@ -77,9 +107,14 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         if now_ms < self.last_udp_auth + min_wait_ms {
             return false;
         }
-        
+
         self.last_udp_auth = now_ms;
-        if let Err(error) = self.control.send_setup_udp_channel(1).await {
+        if let Err(error) = self
+            .control
+            .send_setup_udp_channel(1)
+            .try_timeout(Duration::from_secs(5))
+            .await
+        {
             tracing::error!(?error, "failed to send setup udp channel request");
         }
 
@@ -90,7 +125,12 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         if let Some(reason) = self.control.is_expired() {
             tracing::warn!(?reason, "session expired");
 
-            if let Err(error) = self.control.authenticate().await {
+            if let Err(error) = self
+                .control
+                .authenticate()
+                .try_timeout(Duration::from_secs(5))
+                .await
+            {
                 tracing::error!(?error, "failed to authenticate");
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 return None;
@@ -101,7 +141,12 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         if now - self.last_ping > 1_000 {
             self.last_ping = now;
 
-            if let Err(error) = self.control.send_ping(200, now).await {
+            if let Err(error) = self
+                .control
+                .send_ping(200, now)
+                .try_timeout(Duration::from_secs(1))
+                .await
+            {
                 tracing::error!(?error, "failed to send ping");
             }
         }
@@ -120,7 +165,12 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             self.last_keep_alive = now;
 
             tracing::info!(time_till_expire, "send KeepAlive");
-            if let Err(error) = self.control.send_keep_alive(100).await {
+            if let Err(error) = self
+                .control
+                .send_keep_alive(100)
+                .try_timeout(Duration::from_secs(1))
+                .await
+            {
                 tracing::error!(?error, "failed to send KeepAlive");
             }
         }
@@ -128,11 +178,19 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         let mut timeouts = 0;
 
         for _ in 0..30 {
-            match tokio::time::timeout(Duration::from_millis(100), self.control.recv_feed_msg()).await {
-                Ok(Ok(ControlFeed::NewClient(new_client))) => return Some(TunnelControlEvent::NewClient(new_client)),
-                Ok(Ok(ControlFeed::NewClientOld(new_client))) => return Some(TunnelControlEvent::NewClient(new_client.into())),
+            match tokio::time::timeout(Duration::from_millis(100), self.control.recv_feed_msg())
+                .await
+            {
+                Ok(Ok(ControlFeed::NewClient(new_client))) => {
+                    return Some(TunnelControlEvent::NewClient(new_client))
+                }
+                Ok(Ok(ControlFeed::NewClientOld(new_client))) => {
+                    return Some(TunnelControlEvent::NewClient(new_client.into()))
+                }
                 Ok(Ok(ControlFeed::Response(msg))) => match msg.content {
-                    ControlResponse::UdpChannelDetails(details) => return Some(TunnelControlEvent::UdpChannelDetails(details)),
+                    ControlResponse::UdpChannelDetails(details) => {
+                        return Some(TunnelControlEvent::UdpChannelDetails(details))
+                    }
                     ControlResponse::Unauthorized => {
                         tracing::info!("session no longer authorized");
                         self.control.set_expired();
