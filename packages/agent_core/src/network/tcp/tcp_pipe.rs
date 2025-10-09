@@ -1,4 +1,10 @@
-use std::sync::{atomic::{AtomicU64, Ordering}, Arc};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
@@ -16,27 +22,39 @@ struct Shared {
 }
 
 impl TcpPipe {
-    pub fn new<R: AsyncRead + Unpin + Send + 'static, W: AsyncWrite + Unpin + Send + 'static>(from: R, to: W) -> Self {
-        Self::new_with_cancel(Default::default(), from, to)
+    pub fn new<R: AsyncRead + Unpin + Send + 'static, W: AsyncWrite + Unpin + Send + 'static>(
+        from: R,
+        to: W,
+    ) -> Self {
+        Self::new_with_cancel(Default::default(), from, to, None)
     }
 
-    pub fn new_with_cancel<R: AsyncRead + Unpin + Send + 'static, W: AsyncWrite + Unpin + Send + 'static>(cancel: CancellationToken, from: R, to: W) -> Self {
+    pub fn new_with_cancel<
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    >(
+        cancel: CancellationToken,
+        from: R,
+        to: W,
+        sleep: Option<Duration>,
+    ) -> Self {
         let shared = Arc::new(Shared {
             last_activity: AtomicU64::new(now_milli()),
             bytes_written: AtomicU64::new(0),
         });
 
-        let this = TcpPipe {
-            cancel,
-            shared,
-        };
+        let this = TcpPipe { cancel, shared };
 
-        tokio::spawn(Worker {
-            cancel: this.cancel.clone(),
-            shared: this.shared.clone(),
-            from,
-            to,
-        }.start());
+        tokio::spawn(
+            Worker {
+                cancel: this.cancel.clone(),
+                shared: this.shared.clone(),
+                from,
+                to,
+                init_sleep: sleep,
+            }
+            .start(),
+        );
 
         this
     }
@@ -71,6 +89,7 @@ impl Drop for TcpPipe {
 }
 
 struct Worker<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> {
+    init_sleep: Option<Duration>,
     cancel: CancellationToken,
     shared: Arc<Shared>,
     from: R,
@@ -81,10 +100,18 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
     pub async fn start(mut self) {
         let mut buffer = vec![0u8; 2048];
 
+        if let Some(sleep) = self.init_sleep {
+            tokio::time::sleep(sleep).await;
+        }
+
         loop {
             tokio::task::yield_now().await;
 
-            let Some(read_res) = self.cancel.run_until_cancelled(self.from.read(&mut buffer[..])).await else {
+            let Some(read_res) = self
+                .cancel
+                .run_until_cancelled(self.from.read(&mut buffer[..]))
+                .await
+            else {
                 tracing::info!("TcpPipe cancelled");
                 break;
             };
@@ -107,11 +134,14 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
                 break;
             }
 
-            self.shared.last_activity.store(now_milli(), Ordering::Release);
-            self.shared.bytes_written.fetch_add(byte_count as u64, Ordering::AcqRel);
+            self.shared
+                .last_activity
+                .store(now_milli(), Ordering::Release);
+            self.shared
+                .bytes_written
+                .fetch_add(byte_count as u64, Ordering::AcqRel);
         }
 
         self.shared.last_activity.store(u64::MAX, Ordering::Release);
     }
 }
-
