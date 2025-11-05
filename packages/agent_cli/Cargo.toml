@@ -1,7 +1,7 @@
 [package]
 name = "playit-cli"
 version.workspace = true
-edition = "2021"
+edition = "2024"
 authors = ["Patrick Lorio <patrick@playit.gg>"]
 description = "Making it easy to play games with friends. Makes your server public"
 repository = "https://github.com/playit-cloud/playit-agent"
@@ -10,6 +10,7 @@ repository = "https://github.com/playit-cloud/playit-agent"
 
 [dependencies]
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 toml = { workspace = true }
@@ -18,20 +19,24 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
+futures-util = { workspace = true }
 
 uuid = { workspace = true }
 dirs = { workspace = true }
 
 clap = { version = "4.5", features = ["derive"] }
+fmutex = "0.3"
+circular-buffer = "1.1.0"
 urlencoding = "2.1"
 serde_yaml = "0.9"
 crossterm = "0.28"
 dotenv = "0.15.0"
+tipsy = "0.6.2"
+service-manager = "0.8.0"
 
 playit-agent-core = { path = "../agent_core" }
 playit-agent-proto = { path = "../agent_proto" }
 playit-api-client = { path = "../api_client" }
-# playit-ping-monitor = { path = "../ping_monitor" }
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
