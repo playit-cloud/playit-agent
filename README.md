@@ -24,7 +24,7 @@ Alternatively, you can install via winget (Windows package manager):
 winget install DevelopedMethods.playit
 ```
 
-## Installing on Ubuntu or Debian
+### Installing on Ubuntu or Debian
 
 ```sh
 curl -SsL https://playit-cloud.github.io/ppa/key.gpg | gpg --dearmor | sudo tee /etc/apt/trusted.gpg.d/playit.gpg >/dev/null
