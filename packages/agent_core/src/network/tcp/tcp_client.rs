@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
@@ -17,8 +19,13 @@ impl TcpClient {
         let cancel = CancellationToken::new();
 
         TcpClient {
-            tunn_to_origin: TcpPipe::new_with_cancel(cancel.clone(), tunn_read, origin_write),
-            origin_to_tunn: TcpPipe::new_with_cancel(cancel, origin_read, tunn_write),
+            tunn_to_origin: TcpPipe::new_with_cancel(
+                cancel.clone(),
+                tunn_read,
+                origin_write,
+                Some(Duration::from_millis(100)),
+            ),
+            origin_to_tunn: TcpPipe::new_with_cancel(cancel, origin_read, tunn_write, None),
         }
     }
 
