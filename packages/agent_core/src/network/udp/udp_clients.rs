@@ -289,7 +289,7 @@ impl UdpClients {
                     if proto != ProxyProtocol::ProxyProtocolV2 {
                         udp_errors().origin_v1_proxy_protocol.inc();
                     } else {
-                        let header = ProxyProtocolHeader::from_udp_flow(&client_flow);
+                        let header = ProxyProtocolHeader::from_udp_flow(&flow);
 
                         let mut buffer = Vec::new();
                         header
