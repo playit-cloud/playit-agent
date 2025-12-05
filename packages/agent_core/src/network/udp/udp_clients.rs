@@ -1,14 +1,29 @@
-use std::{collections::{hash_map, HashMap}, net::{IpAddr, SocketAddr, SocketAddrV4}, num::NonZeroU32, sync::Arc};
+use std::{
+    collections::{hash_map, HashMap},
+    net::{IpAddr, SocketAddr, SocketAddrV4},
+    num::NonZeroU32,
+    sync::Arc,
+};
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use playit_api_client::api::ProxyProtocol;
 use slab::Slab;
-use tokio::{net::UdpSocket, sync::mpsc::{channel, Receiver}};
+use tokio::{
+    net::UdpSocket,
+    sync::mpsc::{channel, Receiver},
+};
 
-use crate::network::{lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader};
+use crate::network::{
+    lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
+};
 use playit_agent_proto::udp_proto::UdpFlow;
 
-use super::{packets::{Packet, Packets}, udp_errors::udp_errors, udp_receiver::{UdpReceivedPacket, UdpReceiver, UdpReceiverSetup}, udp_settings::UdpSettings};
+use super::{
+    packets::{Packet, Packets},
+    udp_errors::udp_errors,
+    udp_receiver::{UdpReceivedPacket, UdpReceiver, UdpReceiverSetup},
+    udp_settings::UdpSettings,
+};
 
 pub struct UdpClients {
     lookup: Arc<OriginLookup>,
@@ -51,8 +66,9 @@ impl UdpClients {
         let (origin_tx, origin_rx) = channel(2048);
 
         let quota = unsafe {
-            Quota::per_second(NonZeroU32::new_unchecked(settings.new_client_ratelimit))
-                .allow_burst(NonZeroU32::new_unchecked(settings.new_client_ratelimit_burst))
+            Quota::per_second(NonZeroU32::new_unchecked(settings.new_client_ratelimit)).allow_burst(
+                NonZeroU32::new_unchecked(settings.new_client_ratelimit_burst),
+            )
         };
 
         UdpClients {
@@ -93,10 +109,17 @@ impl UdpClients {
     }
 
     pub async fn recv_origin_packet(&mut self) -> UdpReceivedPacket {
-        self.rx.recv().await.expect("should never close with local reference")
+        self.rx
+            .recv()
+            .await
+            .expect("should never close with local reference")
     }
 
-    pub async fn dispatch_origin_packet(&mut self, now_ms: u64, packet: UdpReceivedPacket) -> Option<(UdpFlow, Packet)> {
+    pub async fn dispatch_origin_packet(
+        &mut self,
+        now_ms: u64,
+        packet: UdpReceivedPacket,
+    ) -> Option<(UdpFlow, Packet)> {
         let Some(client) = self.virtual_clients.get_mut((packet.rx_id as u32) as usize) else {
             udp_errors().origin_client_missing.inc();
             return None;
@@ -114,7 +137,7 @@ impl UdpClients {
 
         let SocketAddr::V4(source) = packet.from else {
             udp_errors().origin_source_not_ip4.inc();
-            return None
+            return None;
         };
 
         if tunnel.local_addr.ip() != IpAddr::V4(*source.ip()) {
@@ -137,11 +160,19 @@ impl UdpClients {
 
         let mut flow = client.flow;
         match &mut flow {
-            UdpFlow::V4 { src, extension: Some(ext), .. } => {
+            UdpFlow::V4 {
+                src,
+                extension: Some(ext),
+                ..
+            } => {
                 *src = SocketAddrV4::new(*src.ip(), src.port() + port_offset);
                 ext.port_offset = port_offset;
             }
-            UdpFlow::V6 { src, extension: Some(ext), .. } => {
+            UdpFlow::V6 {
+                src,
+                extension: Some(ext),
+                ..
+            } => {
                 src.1 += port_offset;
                 ext.port_offset = port_offset;
             }
@@ -152,8 +183,12 @@ impl UdpClients {
     }
 
     pub async fn handle_tunneled_packet(&mut self, now_ms: u64, flow: UdpFlow, packet: Packet) {
-        let Some(extension) = flow.extension() else { return };
-        let Some(origin) = self.lookup.lookup(extension.tunnel_id.get(), false).await else { return };
+        let Some(extension) = flow.extension() else {
+            return;
+        };
+        let Some(origin) = self.lookup.lookup(extension.tunnel_id.get(), false).await else {
+            return;
+        };
 
         let key = UdpClientKey {
             source_addr: flow.src(),
@@ -161,10 +196,14 @@ impl UdpClients {
         };
 
         let target_addr = if extension.port_offset == 0 {
-            let SocketAddr::V4(addr) = origin.local_addr else { return };
+            let SocketAddr::V4(addr) = origin.local_addr else {
+                return;
+            };
             addr
         } else {
-            let IpAddr::V4(ip) = origin.local_addr.ip() else { return };
+            let IpAddr::V4(ip) = origin.local_addr.ip() else {
+                return;
+            };
             SocketAddrV4::new(ip, origin.local_addr.port() + extension.port_offset)
         };
 
@@ -172,11 +211,15 @@ impl UdpClients {
             hash_map::Entry::Occupied(o) => {
                 let slot = *o.get();
 
-                let client = self.virtual_clients
-                    .get_mut(slot).unwrap();
+                let client = self.virtual_clients.get_mut(slot).unwrap();
 
                 client.from_tunnel_ts = now_ms;
-                if client.socket.send_to(packet.as_ref(), target_addr).await.is_err() {
+                if client
+                    .socket
+                    .send_to(packet.as_ref(), target_addr)
+                    .await
+                    .is_err()
+                {
                     udp_errors().origin_send_io_error.inc();
                 }
             }
@@ -186,7 +229,9 @@ impl UdpClients {
                     return;
                 }
 
-                let special_lan = origin.local_addr.ip().is_loopback() && origin.proxy_protocol.is_none();
+                let special_lan =
+                    origin.local_addr.ip().is_loopback() && origin.proxy_protocol.is_none();
+
                 let socket = match v.key().create_socket(special_lan).await {
                     Ok(socket) => Arc::new(socket),
                     Err(error) => {
@@ -199,28 +244,33 @@ impl UdpClients {
                 let slot = entry.key();
                 let id = slot as u64;
 
-                let receiver = self.setup.create(
-                    id,
-                    socket.clone(),
-                );
+                let receiver = self.setup.create(id, socket.clone());
 
                 let mut client_flow = flow.flip();
                 match &mut client_flow {
-                    UdpFlow::V4 { src, extension: Some(ext), .. } => {
+                    UdpFlow::V4 {
+                        src,
+                        extension: Some(ext),
+                        ..
+                    } => {
                         if extension.port_offset != 0 {
                             assert!(extension.port_offset <= src.port());
                             *src = SocketAddrV4::new(*src.ip(), src.port() - extension.port_offset);
                         }
                         ext.port_offset = 0;
                     }
-                    UdpFlow::V6 { src, extension: Some(ext), .. } => {
+                    UdpFlow::V6 {
+                        src,
+                        extension: Some(ext),
+                        ..
+                    } => {
                         if extension.port_offset != 0 {
                             assert!(extension.port_offset <= src.1);
                             src.1 -= extension.port_offset;
                         }
                         ext.port_offset = 0;
                     }
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 }
 
                 let key = v.key().clone();
@@ -242,7 +292,9 @@ impl UdpClients {
                         let header = ProxyProtocolHeader::from_udp_flow(&client_flow);
 
                         let mut buffer = Vec::new();
-                        header.write_v2_udp(&mut buffer).expect("Failed to write proxy proto header to Vec");
+                        header
+                            .write_v2_udp(&mut buffer)
+                            .expect("Failed to write proxy proto header to Vec");
 
                         if client.socket.send_to(&buffer, target_addr).await.is_err() {
                             udp_errors().origin_send_io_error.inc();
@@ -250,7 +302,12 @@ impl UdpClients {
                     }
                 }
 
-                if client.socket.send_to(packet.as_ref(), target_addr).await.is_err() {
+                if client
+                    .socket
+                    .send_to(packet.as_ref(), target_addr)
+                    .await
+                    .is_err()
+                {
                     udp_errors().origin_send_io_error.inc();
                 }
 
@@ -260,4 +317,3 @@ impl UdpClients {
         }
     }
 }
-
