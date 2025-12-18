@@ -5,7 +5,7 @@ use std::{
 };
 
 use playit_agent_proto::PortProto;
-use playit_api_client::api::{AgentRunData, AgentTunnel, PortType, ProxyProtocol, TunnelType};
+use playit_api_client::api::{AgentRunDataV1, AgentTunnelV1, PortType, ProxyProtocol, TunnelType};
 use tokio::sync::RwLock;
 
 #[derive(Default)]
@@ -14,12 +14,12 @@ pub struct OriginLookup {
 }
 
 impl OriginLookup {
-    pub async fn update_from_run_data(&self, run_data: &AgentRunData) {
+    pub async fn update_from_run_data(&self, run_data: &AgentRunDataV1) {
         self.update(
             run_data
                 .tunnels
                 .iter()
-                .map(OriginResource::from_agent_tunnel),
+                .filter_map(OriginResource::from_agent_tunnel),
         )
         .await;
     }
@@ -106,11 +106,21 @@ pub enum OriginTarget {
 }
 
 impl OriginResource {
-    pub fn from_agent_tunnel(tunn: &AgentTunnel) -> Self {
+    pub fn from_agent_tunnel(tunn: &AgentTunnelV1) -> Option<Self> {
         let tunnel_type = tunn
             .tunnel_type
             .clone()
             .and_then(|v| serde_json::from_value::<TunnelType>(serde_json::Value::String(v)).ok());
+
+        let proxy_protocol = tunn
+            .agent_config
+            .fields
+            .iter()
+            .find(|f| f.name.eq("proxy_protocol"))
+            .and_then(|v| {
+                serde_json::from_value::<ProxyProtocol>(serde_json::Value::String(v.value.clone()))
+                    .ok()
+            });
 
         let target = match tunnel_type {
             Some(TunnelType::Https) => OriginTarget::Https {
@@ -149,22 +159,21 @@ impl OriginResource {
                     .fields
                     .iter()
                     .find(|f| f.name.eq("local_port"))
-                    .and_then(|v| u16::from_str(&v.value).ok())
-                    .unwrap_or(tunn.local_port),
+                    .and_then(|v| u16::from_str(&v.value).ok())?,
             },
         };
 
-        OriginResource {
+        Some(OriginResource {
             tunnel_id: tunn.internal_id,
-            proto: match tunn.proto {
+            proto: match tunn.port_type {
                 PortType::Tcp => PortProto::Tcp,
                 PortType::Udp => PortProto::Udp,
                 PortType::Both => PortProto::Both,
             },
             target,
-            port_count: tunn.port.to - tunn.port.from,
-            proxy_protocol: tunn.proxy_protocol,
-        }
+            port_count: tunn.port_count,
+            proxy_protocol,
+        })
     }
 
     pub fn resolve_local(&self, port_offset: u16) -> Option<SocketAddr> {
