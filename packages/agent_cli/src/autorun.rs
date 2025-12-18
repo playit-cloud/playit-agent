@@ -2,7 +2,7 @@ use std::{fmt::Write, net::SocketAddr, sync::Arc, time::Duration};
 
 use playit_agent_core::{
     network::{
-        origin_lookup::{OriginLookup, OriginResource},
+        origin_lookup::{OriginLookup, OriginResource, OriginTarget},
         tcp::tcp_settings::TcpSettings,
         udp::udp_settings::UdpSettings,
     },
@@ -13,7 +13,7 @@ use playit_agent_proto::PortProto;
 use playit_api_client::api::*;
 // use playit_ping_monitor::PingMonitor;
 
-use crate::{playit_secret::PlayitSecret, ui::UI, CliError, API_BASE};
+use crate::{API_BASE, CliError, playit_secret::PlayitSecret, ui::UI};
 
 pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliError> {
     let secret_code = secret.ensure_valid(ui).await?.get_or_setup(ui).await?;
@@ -169,14 +169,15 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
                     .custom_domain
                     .as_ref()
                     .unwrap_or(&tunnel.assigned_domain);
+
                 let src = match tunnel.tunnel_type.as_deref() {
                     Some("minecraft-java") => addr.clone(),
+                    Some("https") => format!("https://{addr}"),
                     _ => format!("{}:{}", addr, tunnel.port.from),
                 };
 
-                let dst = format!("{}:{}", tunnel.local_ip, tunnel.local_port);
-
                 if let Some(disabled) = tunnel.disabled {
+                    let dst = format!("{}:{}", tunnel.local_ip, tunnel.local_port);
                     writeln!(msg, "{} => {} (disabled)", src, dst).unwrap();
                     if disabled == AgentTunnelDisabled::BySystem {
                         writeln!(
@@ -186,18 +187,40 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
                         )
                         .unwrap();
                     }
-                } else if let Some(tunnel_type) = &tunnel.tunnel_type {
-                    writeln!(msg, "{} => {} ({})", src, dst, tunnel_type).unwrap();
                 } else {
-                    writeln!(
-                        msg,
-                        "{} => {} (proto: {:?}, port count: {})",
-                        src,
-                        dst,
-                        tunnel.proto,
-                        tunnel.port.to - tunnel.port.from
-                    )
-                    .unwrap();
+                    let res = OriginResource::from_agent_tunnel(&tunnel);
+
+                    match res.target {
+                        OriginTarget::Https {
+                            ip,
+                            http_port,
+                            https_port,
+                        } => {
+                            writeln!(
+                                msg,
+                                "{} => {} (http: {}, https: {})",
+                                src, ip, http_port, https_port
+                            )
+                            .unwrap();
+                        }
+                        OriginTarget::Port { ip, port } => {
+                            if let Some(tunnel_type) = &tunnel.tunnel_type {
+                                writeln!(msg, "{} => {}:{} ({})", src, ip, port, tunnel_type)
+                                    .unwrap();
+                            } else {
+                                writeln!(
+                                    msg,
+                                    "{} => {}:{} (proto: {:?}, port count: {})",
+                                    src,
+                                    ip,
+                                    port,
+                                    tunnel.proto,
+                                    tunnel.port.to - tunnel.port.from
+                                )
+                                .unwrap();
+                            }
+                        }
+                    }
                 }
             }
 

@@ -1,6 +1,6 @@
 use playit_api_client::api::Platform;
 
-pub fn get_platform() -> Platform {
+pub fn current_platform() -> Platform {
     #[cfg(target_os = "windows")]
     return Platform::Windows;
 

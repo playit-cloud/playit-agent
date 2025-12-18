@@ -1085,7 +1085,7 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "playit-agent-core"
-version = "0.20.1"
+version = "0.17.0"
 dependencies = [
  "byteorder",
  "chrono",
@@ -1123,9 +1123,10 @@ dependencies = [
 
 [[package]]
 name = "playit-api-client"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "byteorder",
+ "chrono",
  "reqwest",
  "rustls",
  "serde",
@@ -1138,7 +1139,7 @@ dependencies = [
 
 [[package]]
 name = "playit-cli"
-version = "0.16.5"
+version = "0.17.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -1160,24 +1161,6 @@ dependencies = [
  "urlencoding",
  "uuid",
  "winres",
-]
-
-[[package]]
-name = "playit-ping-monitor"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "hex",
- "message-encoding",
- "playit-agent-proto",
- "playit-api-client",
- "rand",
- "serde",
- "tokio",
- "toml 0.9.8",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
 ]
 
 [[package]]

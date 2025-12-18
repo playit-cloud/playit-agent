@@ -4,11 +4,11 @@ members = [
     "packages/agent_core",
     "packages/agent_proto",
     "packages/api_client",
-    "packages/ping_monitor",
 ]
+resolver = "3"
 
 [workspace.package]
-version = "0.16.5"
+version = "0.17.0"
 
 [workspace.dependencies]
 tokio = { version = "1.48", features = ["full"] }
@@ -35,4 +35,3 @@ strip = "debuginfo"
 opt-level = "z"
 lto = true
 codegen-units = 1
-

@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map, HashMap},
+    collections::{HashMap, hash_map},
     net::{IpAddr, SocketAddr, SocketAddrV4},
     num::NonZeroU32,
     sync::Arc,
@@ -10,11 +10,13 @@ use playit_api_client::api::ProxyProtocol;
 use slab::Slab;
 use tokio::{
     net::UdpSocket,
-    sync::mpsc::{channel, Receiver},
+    sync::mpsc::{Receiver, channel},
 };
 
 use crate::network::{
-    lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
+    lan_address::LanAddress,
+    origin_lookup::{OriginLookup, OriginTarget},
+    proxy_protocol::ProxyProtocolHeader,
 };
 use playit_agent_proto::udp_proto::UdpFlow;
 
@@ -140,17 +142,25 @@ impl UdpClients {
             return None;
         };
 
-        if tunnel.local_addr.ip() != IpAddr::V4(*source.ip()) {
+        let OriginTarget::Port {
+            ip: local_ip,
+            port: port_start,
+        } = tunnel.target
+        else {
+            return None;
+        };
+
+        if local_ip != IpAddr::V4(*source.ip()) {
             udp_errors().origin_reject_addr_differ.inc();
             return None;
         }
 
-        if source.port() < tunnel.local_addr.port() {
+        if source.port() < port_start {
             udp_errors().origin_reject_port_too_low.inc();
             return None;
         }
 
-        let port_offset = source.port() - tunnel.local_addr.port();
+        let port_offset = source.port() - port_start;
         if tunnel.port_count <= port_offset {
             udp_errors().origin_reject_port_too_high.inc();
             return None;
@@ -195,16 +205,19 @@ impl UdpClients {
             tunnel_id: extension.tunnel_id.get(),
         };
 
-        let target_addr = if extension.port_offset == 0 {
-            let SocketAddr::V4(addr) = origin.local_addr else {
+        let OriginTarget::Port {
+            ip: local_ip,
+            port: port_start,
+        } = origin.target
+        else {
+            return;
+        };
+
+        let target_addr = {
+            let IpAddr::V4(ip) = local_ip else {
                 return;
             };
-            addr
-        } else {
-            let IpAddr::V4(ip) = origin.local_addr.ip() else {
-                return;
-            };
-            SocketAddrV4::new(ip, origin.local_addr.port() + extension.port_offset)
+            SocketAddrV4::new(ip, port_start + extension.port_offset)
         };
 
         match self.virtual_client_lookup.entry(key) {
@@ -229,8 +242,7 @@ impl UdpClients {
                     return;
                 }
 
-                let special_lan =
-                    origin.local_addr.ip().is_loopback() && origin.proxy_protocol.is_none();
+                let special_lan = local_ip.is_loopback() && origin.proxy_protocol.is_none();
 
                 let socket = match v.key().create_socket(special_lan).await {
                     Ok(socket) => Arc::new(socket),
