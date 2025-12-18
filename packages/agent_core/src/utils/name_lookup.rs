@@ -10,10 +10,11 @@ pub async fn address_lookup(name: &str, default_port: u16) -> Vec<SocketAddr> {
     let mut parts = name.split(':');
     let ip_part = match parts.next() {
         Some(v) => v,
-        _ => return vec![]
+        _ => return vec![],
     };
 
-    let port_number = parts.next()
+    let port_number = parts
+        .next()
         .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(default_port);
 
@@ -38,12 +39,14 @@ async fn ip_lookup(name: &str) -> Vec<SocketAddr> {
 
 #[cfg(test)]
 mod test {
-    use tracing::Level;
     use super::*;
+    use tracing::Level;
 
     #[tokio::test]
     async fn test_lookup() {
-        let _ = tracing_subscriber::fmt().with_max_level(Level::INFO).try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(Level::INFO)
+            .try_init();
         assert!(!address_lookup("control.playit.gg", 5523).await.is_empty());
         assert!(!address_lookup("ping.playit.gg", 5523).await.is_empty());
     }

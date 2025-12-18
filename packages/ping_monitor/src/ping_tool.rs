@@ -1,7 +1,11 @@
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use message_encoding::MessageEncoding;
-use playit_agent_proto::{control_feed::ControlFeed, control_messages::{ControlRequest, ControlResponse, Ping, Pong}, rpc::ControlRpcMessage};
+use playit_agent_proto::{
+    control_feed::ControlFeed,
+    control_messages::{ControlRequest, ControlResponse, Ping, Pong},
+    rpc::ControlRpcMessage,
+};
 use playit_api_client::api::PingTarget;
 use tokio::net::UdpSocket;
 
@@ -15,7 +19,9 @@ pub struct PlayitPingTool {
 impl PlayitPingTool {
     pub async fn new() -> Result<Self, std::io::Error> {
         Ok(PlayitPingTool {
-            udp6: UdpSocket::bind(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0)).await.ok(),
+            udp6: UdpSocket::bind(SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 0))
+                .await
+                .ok(),
             udp4: UdpSocket::bind(SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 0)).await?,
         })
     }
@@ -24,7 +30,9 @@ impl PlayitPingTool {
         let udp = if target.ip.is_ipv4() {
             &self.udp4
         } else {
-            let Some(udp) = &self.udp6 else { return Ok(false) };
+            let Some(udp) = &self.udp6 else {
+                return Ok(false);
+            };
             udp
         };
 
@@ -41,7 +49,8 @@ impl PlayitPingTool {
         let mut buffer = Vec::new();
         msg.write_to(&mut buffer).unwrap();
 
-        udp.send_to(&buffer, SocketAddr::new(target.ip, target.port)).await?;
+        udp.send_to(&buffer, SocketAddr::new(target.ip, target.port))
+            .await?;
         Ok(true)
     }
 
@@ -73,8 +82,20 @@ impl PlayitPingTool {
 
             let mut reader = bytes;
             if let Ok(data) = ControlFeed::read_from(&mut reader) {
-                let ControlFeed::Response(ControlRpcMessage { request_id, content: ControlResponse::Pong(pong) }) = data else { continue };
-                return Ok((ControlRpcMessage { request_id, content: pong }, source));
+                let ControlFeed::Response(ControlRpcMessage {
+                    request_id,
+                    content: ControlResponse::Pong(pong),
+                }) = data
+                else {
+                    continue;
+                };
+                return Ok((
+                    ControlRpcMessage {
+                        request_id,
+                        content: pong,
+                    },
+                    source,
+                ));
             }
         }
     }
@@ -82,7 +103,13 @@ impl PlayitPingTool {
 
 #[cfg(test)]
 mod test {
-    use std::{sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
+    use std::{
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
 
     use playit_api_client::api::PingTarget;
 
@@ -99,7 +126,15 @@ mod test {
 
             tokio::spawn(async move {
                 while run.load(Ordering::Relaxed) {
-                    ping.send_ping(32, &PingTarget { ip: "209.25.140.1".parse().unwrap(), port: 5525 }).await.unwrap();
+                    ping.send_ping(
+                        32,
+                        &PingTarget {
+                            ip: "209.25.140.1".parse().unwrap(),
+                            port: 5525,
+                        },
+                    )
+                    .await
+                    .unwrap();
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             })

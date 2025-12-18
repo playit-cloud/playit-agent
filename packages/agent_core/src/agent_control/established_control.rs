@@ -1,5 +1,7 @@
 use playit_agent_proto::control_feed::ControlFeed;
-use playit_agent_proto::control_messages::{AgentRegistered, ControlRequest, ControlResponse, Ping, Pong};
+use playit_agent_proto::control_messages::{
+    AgentRegistered, ControlRequest, ControlResponse, Ping, Pong,
+};
 use playit_agent_proto::rpc::ControlRpcMessage;
 
 use crate::utils::now_milli;
@@ -23,21 +25,28 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
         self.send(ControlRpcMessage {
             request_id,
             content: ControlRequest::AgentKeepAlive(self.registered.id.clone()),
-        }).await
+        })
+        .await
     }
 
     pub async fn send_setup_udp_channel(&mut self, request_id: u64) -> Result<(), ControlError> {
         self.send(ControlRpcMessage {
             request_id,
             content: ControlRequest::SetupUdpChannel(self.registered.id.clone()),
-        }).await
+        })
+        .await
     }
 
     pub async fn send_ping(&mut self, request_id: u64, now: u64) -> Result<(), ControlError> {
         self.send(ControlRpcMessage {
             request_id,
-            content: ControlRequest::Ping(Ping { now, current_ping: self.current_ping, session_id: Some(self.registered.id.clone()) }),
-        }).await
+            content: ControlRequest::Ping(Ping {
+                now,
+                current_ping: self.current_ping,
+                session_id: Some(self.registered.id.clone()),
+            }),
+        })
+        .await
     }
 
     pub fn get_expire_at(&self) -> u64 {
@@ -62,7 +71,7 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
     }
 
     fn flow_changed(&self) -> bool {
-        self.conn.pong_latest.client_addr != self.pong_at_auth.client_addr 
+        self.conn.pong_latest.client_addr != self.pong_at_auth.client_addr
             || self.conn.pong_latest.tunnel_addr != self.pong_at_auth.tunnel_addr
     }
 
@@ -92,7 +101,7 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
 
     pub async fn recv_feed_msg(&mut self) -> Result<ControlFeed, ControlError> {
         let feed = self.conn.recv().await?;
-        
+
         if let ControlFeed::Response(res) = &feed {
             match &res.content {
                 ControlResponse::AgentRegistered(registered) => {
@@ -108,14 +117,19 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
                     self.clock_offset = local_ts as i64 - server_ts as i64;
 
                     if 10_000 < self.clock_offset.abs() {
-                        tracing::warn!(offset = self.clock_offset, "local timestamp if over 10 seconds off");
+                        tracing::warn!(
+                            offset = self.clock_offset,
+                            "local timestamp if over 10 seconds off"
+                        );
                     }
 
                     self.current_ping = Some(rtt);
 
                     if let Some(expires_at) = pong.session_expire_at {
                         /* normalize to local timestamp to handle when host clock is wrong */
-                        self.registered.expires_at = pong.request_now + (expires_at - pong.server_now).max(rtt as u64) - rtt as u64;
+                        self.registered.expires_at = pong.request_now
+                            + (expires_at - pong.server_now).max(rtt as u64)
+                            - rtt as u64;
                     }
                 }
                 _ => {}
@@ -125,7 +139,6 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
         Ok(feed)
     }
 }
-
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExpiredReason {

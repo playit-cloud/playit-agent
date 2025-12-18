@@ -1,5 +1,5 @@
-use std::sync::{Arc, LazyLock};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, LazyLock};
 use tokio::signal::ctrl_c;
 
 static SIGNAL: LazyLock<SignalHandle> = LazyLock::new(SignalHandle::setup);
@@ -41,9 +41,7 @@ impl SignalHandle {
         let inner = self.inner.clone();
         inner.confirm_close.fetch_add(1, Ordering::SeqCst);
 
-        SignalRequireCloseGuard {
-            inner
-        }
+        SignalRequireCloseGuard { inner }
     }
 }
 
@@ -52,8 +50,8 @@ impl SignalHandle {
         let signal = SignalHandle {
             inner: Arc::new(Inner {
                 confirm_close: AtomicU32::new(0),
-                close_requested: AtomicBool::new(false)
-            })
+                close_requested: AtomicBool::new(false),
+            }),
         };
 
         let inner = signal.inner.clone();

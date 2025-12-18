@@ -1,4 +1,7 @@
-use std::{net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6}, num::{NonZeroU16, NonZeroU64}};
+use std::{
+    net::{Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
+    num::{NonZeroU16, NonZeroU64},
+};
 
 use byteorder::{BigEndian, ByteOrder, ReadBytesExt, WriteBytesExt};
 use message_encoding::m_max_list;
@@ -65,7 +68,7 @@ impl UdpFlow {
         match &mut self {
             UdpFlow::V4 { src, dst, .. } => {
                 std::mem::swap(src, dst);
-            },
+            }
             UdpFlow::V6 { src, dst, .. } => {
                 std::mem::swap(src, dst);
             }
@@ -78,8 +81,7 @@ impl UdpFlow {
         match self {
             UdpFlow::V4 { src, .. } => SocketAddr::V4(*src),
             UdpFlow::V6 {
-                src: (ip, port),
-                ..
+                src: (ip, port), ..
             } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, 0, 0)),
         }
     }
@@ -88,8 +90,7 @@ impl UdpFlow {
         match self {
             UdpFlow::V4 { dst, .. } => SocketAddr::V4(*dst),
             UdpFlow::V6 {
-                dst: (ip, port),
-                ..
+                dst: (ip, port), ..
             } => SocketAddr::V6(SocketAddrV6::new(*ip, *port, 0, 0)),
         }
     }
@@ -100,15 +101,24 @@ impl UdpFlow {
         }
 
         match self {
-            UdpFlow::V4 { src, dst, frag, extension } => {
+            UdpFlow::V4 {
+                src,
+                dst,
+                frag,
+                extension,
+            } => {
                 slice.write_u32::<BigEndian>((*src.ip()).into()).unwrap();
                 slice.write_u32::<BigEndian>((*dst.ip()).into()).unwrap();
                 slice.write_u16::<BigEndian>(src.port()).unwrap();
                 slice.write_u16::<BigEndian>(dst.port()).unwrap();
 
                 if let Some(extension) = extension {
-                    slice.write_u64::<BigEndian>(extension.client_server_id.get()).unwrap();
-                    slice.write_u64::<BigEndian>(extension.tunnel_id.get()).unwrap();
+                    slice
+                        .write_u64::<BigEndian>(extension.client_server_id.get())
+                        .unwrap();
+                    slice
+                        .write_u64::<BigEndian>(extension.tunnel_id.get())
+                        .unwrap();
                     slice.write_u16::<BigEndian>(extension.port_offset).unwrap();
 
                     match frag {
@@ -123,26 +133,42 @@ impl UdpFlow {
                         }
                     }
 
-                    slice.write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_V2).unwrap();
+                    slice
+                        .write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_V2)
+                        .unwrap();
                 } else {
-                    slice.write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_V1).unwrap()
+                    slice
+                        .write_u64::<BigEndian>(REDIRECT_FLOW_4_FOOTER_ID_V1)
+                        .unwrap()
                 }
             }
-            UdpFlow::V6 { src, dst, extension } => {
+            UdpFlow::V6 {
+                src,
+                dst,
+                extension,
+            } => {
                 slice.write_u128::<BigEndian>(src.0.into()).unwrap();
                 slice.write_u128::<BigEndian>(dst.0.into()).unwrap();
                 slice.write_u16::<BigEndian>(src.1).unwrap();
                 slice.write_u16::<BigEndian>(dst.1).unwrap();
 
                 if let Some(extension) = extension {
-                    slice.write_u64::<BigEndian>(extension.client_server_id.get()).unwrap();
-                    slice.write_u64::<BigEndian>(extension.tunnel_id.get()).unwrap();
+                    slice
+                        .write_u64::<BigEndian>(extension.client_server_id.get())
+                        .unwrap();
+                    slice
+                        .write_u64::<BigEndian>(extension.tunnel_id.get())
+                        .unwrap();
                     slice.write_u16::<BigEndian>(extension.port_offset).unwrap();
-                    slice.write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID_V2).unwrap();
+                    slice
+                        .write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID_V2)
+                        .unwrap();
                 } else {
                     /* flow label (no longer used) */
                     slice.write_u32::<BigEndian>(0).unwrap();
-                    slice.write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID_V1) .unwrap();
+                    slice
+                        .write_u64::<BigEndian>(REDIRECT_FLOW_6_FOOTER_ID_V1)
+                        .unwrap();
                 }
             }
         }
@@ -200,8 +226,10 @@ impl UdpFlow {
                 let dst_ip = slice.read_u32::<BigEndian>().unwrap();
                 let src_port = slice.read_u16::<BigEndian>().unwrap();
                 let dst_port = slice.read_u16::<BigEndian>().unwrap();
-                let client_server_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
-                let tunnel_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
+                let client_server_id =
+                    NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
+                let tunnel_id =
+                    NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
                 let port_offset = slice.read_u16::<BigEndian>().unwrap();
 
                 let frag = if let Some(packet_id) = NonZeroU16::new(packet_id) {
@@ -259,8 +287,10 @@ impl UdpFlow {
                 let src_port = slice.read_u16::<BigEndian>().unwrap();
                 let dst_port = slice.read_u16::<BigEndian>().unwrap();
 
-                let client_server_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
-                let tunnel_id = NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
+                let client_server_id =
+                    NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
+                let tunnel_id =
+                    NonZeroU64::new(slice.read_u64::<BigEndian>().unwrap()).ok_or(None)?;
                 let port_offset = slice.read_u16::<BigEndian>().unwrap();
 
                 Ok(UdpFlow::V6 {
@@ -279,35 +309,34 @@ impl UdpFlow {
 
     pub fn footer_len(&self) -> usize {
         match self {
-            UdpFlow::V4 { extension: None, .. } => IP4_LEN_V1,
-            UdpFlow::V4 { extension: Some(_), frag: Some(_), .. } => IP4_LEN_V2_WITH_FRAG,
-            UdpFlow::V4 { extension: Some(_), frag: None, .. } => IP4_LEN_V2_WITHOUT_FRAG,
-            UdpFlow::V6 { extension: None, .. } => IP6_LEN_V1,
-            UdpFlow::V6 { extension: Some(_), .. } => IP6_LEN_V2,
+            UdpFlow::V4 {
+                extension: None, ..
+            } => IP4_LEN_V1,
+            UdpFlow::V4 {
+                extension: Some(_),
+                frag: Some(_),
+                ..
+            } => IP4_LEN_V2_WITH_FRAG,
+            UdpFlow::V4 {
+                extension: Some(_),
+                frag: None,
+                ..
+            } => IP4_LEN_V2_WITHOUT_FRAG,
+            UdpFlow::V6 {
+                extension: None, ..
+            } => IP6_LEN_V1,
+            UdpFlow::V6 {
+                extension: Some(_), ..
+            } => IP6_LEN_V2,
         }
     }
 
-    pub const MAX_IP4_LEN: usize = {
-        m_max_list(&[
-            IP4_LEN_V1,
-            IP4_LEN_V2_WITH_FRAG,
-            IP4_LEN_V2_WITHOUT_FRAG,
-        ])
-    };
+    pub const MAX_IP4_LEN: usize =
+        { m_max_list(&[IP4_LEN_V1, IP4_LEN_V2_WITH_FRAG, IP4_LEN_V2_WITHOUT_FRAG]) };
 
-    pub const MAX_IP6_LEN: usize = {
-        m_max_list(&[
-            IP6_LEN_V1,
-            IP6_LEN_V2,
-        ])
-    };
+    pub const MAX_IP6_LEN: usize = { m_max_list(&[IP6_LEN_V1, IP6_LEN_V2]) };
 
-    pub const MX_LEN: usize = {
-        m_max_list(&[
-            Self::MAX_IP4_LEN,
-            Self::MAX_IP6_LEN,
-        ])
-    };
+    pub const MX_LEN: usize = { m_max_list(&[Self::MAX_IP4_LEN, Self::MAX_IP6_LEN]) };
 }
 
 #[cfg(test)]
@@ -332,7 +361,7 @@ mod test {
 
         flow.write_to(&mut data[100..]);
 
-        let parsed = UdpFlow::from_tail(&data[..100+flow.footer_len()]).unwrap();
+        let parsed = UdpFlow::from_tail(&data[..100 + flow.footer_len()]).unwrap();
         assert_eq!(flow, parsed);
     }
 
@@ -351,8 +380,7 @@ mod test {
 
         flow.write_to(&mut data[100..]);
 
-        let parsed = UdpFlow::from_tail(&data[..100+flow.footer_len()]).unwrap();
+        let parsed = UdpFlow::from_tail(&data[..100 + flow.footer_len()]).unwrap();
         assert_eq!(flow, parsed);
     }
 }
-

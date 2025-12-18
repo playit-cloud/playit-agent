@@ -1,10 +1,7 @@
 use std::time::Duration;
 
 use clap::ArgMatches;
-use playit_api_client::{
-    api::*,
-    PlayitApi,
-};
+use playit_api_client::{api::*, PlayitApi};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
@@ -36,7 +33,8 @@ impl PlayitSecret {
         }
 
         /* old versions for linux used /etc/playit/playit.toml */
-        #[cfg(target_os = "linux")] {
+        #[cfg(target_os = "linux")]
+        {
             let old_path = "/etc/playit/playit.toml";
             if tokio::fs::try_exists(&old_path).await.unwrap_or(false) {
                 self.path = Some(old_path.to_string());
@@ -88,21 +86,27 @@ impl PlayitSecret {
                     ui.write_screen(format!(
                         "secret key valid, agent has {} tunnels",
                         data.tunnels.len()
-                    )).await;
+                    ))
+                    .await;
 
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     break;
                 }
                 Err(ApiErrorNoFail::ClientError(error)) => {
-                    ui.write_error("Failed to load data from api\nretrying in 3 seconds", error).await;
+                    ui.write_error("Failed to load data from api\nretrying in 3 seconds", error)
+                        .await;
                     tokio::time::sleep(Duration::from_secs(3)).await;
                 }
-                Err(ApiErrorNoFail::ApiError(ApiResponseError::Auth(AuthError::InvalidAgentKey))) => {
+                Err(ApiErrorNoFail::ApiError(ApiResponseError::Auth(
+                    AuthError::InvalidAgentKey,
+                ))) => {
                     if !self.path.is_some() || !self.allow_path_read {
                         return Err(CliError::InvalidSecret);
                     }
 
-                    let reset = ui.yn_question("Invalid secret, do you want to reset", Some(true)).await?;
+                    let reset = ui
+                        .yn_question("Invalid secret, do you want to reset", Some(true))
+                        .await?;
 
                     if reset {
                         self.allow_path_read = false;
@@ -113,7 +117,8 @@ impl PlayitSecret {
                     }
                 }
                 Err(ApiErrorNoFail::ApiError(error)) => {
-                    ui.write_error("unexpected error checking if secret is valid", &error).await;
+                    ui.write_error("unexpected error checking if secret is valid", &error)
+                        .await;
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     return Err(CliError::ApiError(error));
                 }
@@ -165,7 +170,8 @@ impl PlayitSecret {
         };
 
         if let Err(error) = tokio::fs::write(path, &content).await {
-            ui.write_error(format!("failed to save secret, path: {}", path), &error).await;
+            ui.write_error(format!("failed to save secret, path: {}", path), &error)
+                .await;
             tokio::time::sleep(Duration::from_secs(5)).await;
             return Err(CliError::SecretFileWriteError(error));
         }

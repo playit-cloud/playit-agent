@@ -6,7 +6,10 @@ use serde::Serialize;
 pub struct IntCounter(AtomicU64);
 
 impl Serialize for IntCounter {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
         serializer.serialize_u64(self.0.load(Ordering::Acquire))
     }
 }

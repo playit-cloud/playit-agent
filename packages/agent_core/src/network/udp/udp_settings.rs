@@ -12,4 +12,3 @@ impl Default for UdpSettings {
         }
     }
 }
-

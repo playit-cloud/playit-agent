@@ -5,11 +5,11 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use message_encoding::MessageEncoding;
 use serde::{Deserialize, Serialize};
 
-pub mod control_messages;
 pub mod control_feed;
-pub mod rpc;
+pub mod control_messages;
 pub mod hmac;
 pub mod raw_slice;
+pub mod rpc;
 pub mod udp_proto;
 
 #[derive(Serialize, Deserialize, Clone, Eq, PartialEq, Debug, Hash)]
@@ -59,9 +59,14 @@ impl MessageEncoding for AgentSessionId {
 
 impl MessageEncoding for PortRange {
     const MAX_SIZE: Option<usize> = Some(
-        match IpAddr::MAX_SIZE { Some(v) => v, _ => panic!() }
-        + 4
-        + match PortProto::MAX_SIZE { Some(v) => v, _ => panic!() }
+        match IpAddr::MAX_SIZE {
+            Some(v) => v,
+            _ => panic!(),
+        } + 4
+            + match PortProto::MAX_SIZE {
+                Some(v) => v,
+                _ => panic!(),
+            },
     );
 
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
@@ -105,4 +110,3 @@ impl MessageEncoding for PortProto {
         }
     }
 }
-

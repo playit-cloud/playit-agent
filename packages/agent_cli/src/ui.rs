@@ -3,14 +3,14 @@ use std::io::stdout;
 use crossterm::{
     cursor::RestorePosition,
     event::{self, Event, KeyCode, KeyEvent},
-    ExecutableCommand,
     style::{Print, ResetColor},
     terminal::Clear,
+    ExecutableCommand,
 };
 use playit_agent_core::utils::now_milli;
 
-use crate::CliError;
 use crate::signal_handle::get_signal_handle;
+use crate::CliError;
 
 pub struct UI {
     auto_answer: Option<bool>,
@@ -27,7 +27,12 @@ pub struct UISettings {
 
 impl UI {
     pub fn new(settings: UISettings) -> Self {
-        UI { auto_answer: settings.auto_answer, log_only: settings.log_only, last_display: None, wrote_content: false }
+        UI {
+            auto_answer: settings.auto_answer,
+            log_only: settings.log_only,
+            last_display: None,
+            wrote_content: false,
+        }
     }
 
     pub async fn write_screen<T: std::fmt::Display>(&mut self, content: T) {
@@ -35,14 +40,20 @@ impl UI {
         let exit_confirm = signal.is_confirming_close();
 
         if exit_confirm {
-            match self.yn_question(format!("{}\nClose requested, close program?", content), Some(true)).await {
+            match self
+                .yn_question(
+                    format!("{}\nClose requested, close program?", content),
+                    Some(true),
+                )
+                .await
+            {
                 Ok(close) => {
                     if close {
                         std::process::exit(0);
                     } else {
                         signal.decline_close();
                     }
-                },
+                }
                 Err(error) => {
                     tracing::error!(%error, "failed to ask close signal question");
                 }
@@ -53,7 +64,6 @@ impl UI {
 
         self.write_screen_inner(content).await
     }
-
 
     async fn write_screen_inner<T: std::fmt::Display>(&mut self, content: T) {
         {
@@ -84,8 +94,7 @@ impl UI {
             };
 
             if !cleared {
-                stdout()
-                    .execute(Print(format!("\n{}", content_ref)))?;
+                stdout().execute(Print(format!("\n{}", content_ref)))?;
             } else {
                 stdout()
                     .execute(RestorePosition)?
@@ -104,7 +113,11 @@ impl UI {
         self.wrote_content = true;
     }
 
-    pub async fn yn_question<T: std::fmt::Display + Send + 'static>(&mut self, question: T, default_yes: Option<bool>) -> Result<bool, CliError> {
+    pub async fn yn_question<T: std::fmt::Display + Send + 'static>(
+        &mut self,
+        question: T,
+        default_yes: Option<bool>,
+    ) -> Result<bool, CliError> {
         let mut line = String::new();
         let mut count = 0;
 
@@ -121,12 +134,15 @@ impl UI {
 
             if let Some(default_yes) = default_yes {
                 if default_yes {
-                    self.write_screen_inner(format!("{}{} (Y/n)? ", pref, question)).await;
+                    self.write_screen_inner(format!("{}{} (Y/n)? ", pref, question))
+                        .await;
                 } else {
-                    self.write_screen_inner(format!("{}{} (y/N)? ", pref, question)).await;
+                    self.write_screen_inner(format!("{}{} (y/N)? ", pref, question))
+                        .await;
                 }
             } else {
-                self.write_screen_inner(format!("{}{} (y/n)? ", pref, question)).await;
+                self.write_screen_inner(format!("{}{} (y/n)? ", pref, question))
+                    .await;
             }
 
             loop {
@@ -178,6 +194,7 @@ impl UI {
         msg: M,
         error: E,
     ) {
-        self.write_screen(format!("Got Error\nMSG: {}\nError: {:?}\n", msg, error)).await
+        self.write_screen(format!("Got Error\nMSG: {}\nError: {:?}\n", msg, error))
+            .await
     }
 }

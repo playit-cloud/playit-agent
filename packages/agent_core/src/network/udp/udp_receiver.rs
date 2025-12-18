@@ -24,14 +24,17 @@ impl UdpReceiverSetup {
         let cancel = CancellationToken::new();
         let (end_tx, end_rx) = tokio::sync::oneshot::channel();
 
-        tokio::spawn(Task {
-            id,
-            rx,
-            packets: self.packets.clone(),
-            output: self.output.clone(),
-            cancel: cancel.clone(),
-            end: end_tx
-        }.start());
+        tokio::spawn(
+            Task {
+                id,
+                rx,
+                packets: self.packets.clone(),
+                output: self.output.clone(),
+                cancel: cancel.clone(),
+                end: end_tx,
+            }
+            .start(),
+        );
 
         UdpReceiver {
             id,
@@ -110,14 +113,17 @@ impl<I: PacketRx> Task<I> {
                         packet,
                         from: source,
                     }
-                },
+                }
                 Err(error) => {
                     tracing::error!(?error, id = self.id, "failed to receive UDP packet");
                     break;
                 }
             };
 
-            let result = self.cancel.run_until_cancelled(self.output.send(packet)).await;
+            let result = self
+                .cancel
+                .run_until_cancelled(self.output.send(packet))
+                .await;
             match result {
                 Some(Ok(_)) => {}
                 None | Some(Err(_)) => break,
@@ -127,4 +133,3 @@ impl<I: PacketRx> Task<I> {
         let _ = self.end.send(());
     }
 }
-

@@ -1,12 +1,27 @@
-use std::{sync::{atomic::{AtomicU64, Ordering}, Arc}, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tokio::time::Instant;
 
-use playit_agent_proto::{control_messages::UdpChannelDetails, udp_proto::{UdpFlow, UDP_CHANNEL_ESTABLISH_ID}};
+use playit_agent_proto::{
+    control_messages::UdpChannelDetails,
+    udp_proto::{UdpFlow, UDP_CHANNEL_ESTABLISH_ID},
+};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 
-use crate::{agent_control::{DualStackUdpSocket, PacketIO}, utils::now_milli};
+use crate::{
+    agent_control::{DualStackUdpSocket, PacketIO},
+    utils::now_milli,
+};
 
-use super::{packets::{Packet, Packets}, udp_errors::udp_errors};
+use super::{
+    packets::{Packet, Packets},
+    udp_errors::udp_errors,
+};
 
 pub struct UdpChannel {
     session_tx: Sender<UdpChannelDetails>,
@@ -45,15 +60,18 @@ impl UdpChannel {
 
         let shared = Arc::new(Shared::default());
 
-        tokio::spawn(Task {
-            socket,
-            session: None,
-            session_rx,
-            packets,
-            send_rx,
-            recv_tx,
-            shared: shared.clone(),
-        }.start());
+        tokio::spawn(
+            Task {
+                socket,
+                session: None,
+                session_rx,
+                packets,
+                send_rx,
+                recv_tx,
+                shared: shared.clone(),
+            }
+            .start(),
+        );
 
         Ok(UdpChannel {
             session_tx,
@@ -161,7 +179,9 @@ impl Task {
             let flow = match UdpFlow::from_tail(packet.as_ref()) {
                 Ok(flow) => flow,
                 Err(Some(footer)) if footer == UDP_CHANNEL_ESTABLISH_ID => {
-                    self.shared.establish_rx_epoch.store(now_milli(), Ordering::Release);
+                    self.shared
+                        .establish_rx_epoch
+                        .store(now_milli(), Ordering::Release);
                     continue;
                 }
                 Err(id) => {
@@ -174,7 +194,8 @@ impl Task {
                 }
             };
 
-            packet.set_len(bytes - flow.footer_len())
+            packet
+                .set_len(bytes - flow.footer_len())
                 .expect("failed to remove udp footer");
 
             if self.recv_tx.send((flow, packet)).await.is_err() {
@@ -208,9 +229,16 @@ impl Task {
             return;
         };
 
-        self.shared.establish_tx_epoch.store(now_milli(), Ordering::Release);
+        self.shared
+            .establish_tx_epoch
+            .store(now_milli(), Ordering::Release);
 
-        if self.socket.send_to(&session.token[..], session.tunnel_addr).await.is_err() {
+        if self
+            .socket
+            .send_to(&session.token[..], session.tunnel_addr)
+            .await
+            .is_err()
+        {
             udp_errors().establish_send_io_error.inc();
         }
     }
@@ -228,12 +256,17 @@ impl Task {
             return;
         }
 
-        packet.set_len(og_len + flow.footer_len())
+        packet
+            .set_len(og_len + flow.footer_len())
             .expect("should be able to update packet len");
 
-        if self.socket.send_to(packet.as_ref(), session.tunnel_addr).await.is_err() {
+        if self
+            .socket
+            .send_to(packet.as_ref(), session.tunnel_addr)
+            .await
+            .is_err()
+        {
             udp_errors().send_io_error.inc();
         }
     }
 }
-

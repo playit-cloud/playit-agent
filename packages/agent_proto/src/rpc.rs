@@ -1,6 +1,6 @@
-use std::io::{Read, Write};
-use byteorder::{BigEndian, ReadBytesExt};
 use crate::MessageEncoding;
+use byteorder::{BigEndian, ReadBytesExt};
+use std::io::{Read, Write};
 
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct ControlRpcMessage<T: MessageEncoding> {

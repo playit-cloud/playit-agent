@@ -21,7 +21,7 @@ impl Clone for HttpClient {
                 Ok(v) => RwLock::new(v.clone()),
                 _ => RwLock::new(None),
             },
-            client: self.client.clone()
+            client: self.client.clone(),
         }
     }
 }
@@ -48,17 +48,19 @@ impl HttpClient {
 impl PlayitHttpClient for HttpClient {
     type Error = HttpClientError;
 
-    async fn call<Req: Serialize + Send, Res: DeserializeOwned, Err: DeserializeOwned>(&self, _caller: &'static Location<'static>, path: &str, req: Req) -> Result<ApiResult<Res, Err>, Self::Error> {
+    async fn call<Req: Serialize + Send, Res: DeserializeOwned, Err: DeserializeOwned>(
+        &self,
+        _caller: &'static Location<'static>,
+        path: &str,
+        req: Req,
+    ) -> Result<ApiResult<Res, Err>, Self::Error> {
         let mut builder = self.client.post(format!("{}{}", self.api_base, path));
 
         {
             let lock = self.auth_header.read().await;
 
             if let Some(auth_header) = &*lock {
-                builder = builder.header(
-                    reqwest::header::AUTHORIZATION,
-                    auth_header,
-                );
+                builder = builder.header(reqwest::header::AUTHORIZATION, auth_header);
             }
         }
 
@@ -74,14 +76,14 @@ impl PlayitHttpClient for HttpClient {
             }
 
             let response_txt = response.text().await?;
-            let result: ApiResult<Res, Err> = serde_json::from_str(&response_txt)
-                .map_err(|e| {
-                    tracing::error!("failed to parse json:\n{}", response_txt);
-                    HttpClientError::ParseError(e, response_status, response_txt.to_string())
-                })?;
+            let result: ApiResult<Res, Err> = serde_json::from_str(&response_txt).map_err(|e| {
+                tracing::error!("failed to parse json:\n{}", response_txt);
+                HttpClientError::ParseError(e, response_status, response_txt.to_string())
+            })?;
 
             Ok::<_, Self::Error>(result)
-        }.await;
+        }
+        .await;
 
         if let Err(error) = &res {
             tracing::error!(?error, request = %std::any::type_name::<Req>(), "API call failed");
@@ -103,5 +105,4 @@ impl From<reqwest::Error> for HttpClientError {
     fn from(value: reqwest::Error) -> Self {
         HttpClientError::RequestError(value)
     }
-
 }

@@ -13,8 +13,8 @@ pub fn register_version(version: PlayitAgentVersion) {
 }
 
 pub fn get_version() -> PlayitAgentVersion {
-    AGENT_VERSION.get_or_init(|| {
-        PlayitAgentVersion {
+    AGENT_VERSION
+        .get_or_init(|| PlayitAgentVersion {
             version: AgentVersion {
                 platform: get_platform(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -23,7 +23,6 @@ pub fn get_version() -> PlayitAgentVersion {
             official: true,
             details_website: None,
             proto_version: PROTOCOL_VERSION,
-        }
-    }).clone()
+        })
+        .clone()
 }
-

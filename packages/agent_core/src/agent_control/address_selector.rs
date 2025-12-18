@@ -1,12 +1,15 @@
 use std::{net::SocketAddr, time::Duration};
 
 use message_encoding::MessageEncoding;
-use playit_agent_proto::{control_feed::ControlFeed, control_messages::{ControlRequest, ControlResponse, Ping}, rpc::ControlRpcMessage};
+use playit_agent_proto::{
+    control_feed::ControlFeed,
+    control_messages::{ControlRequest, ControlResponse, Ping},
+    rpc::ControlRpcMessage,
+};
 
 use crate::utils::now_milli;
 
 use super::{connected_control::ConnectedControl, errors::SetupError, PacketIO};
-
 
 pub struct AddressSelector<IO: PacketIO> {
     options: Vec<SocketAddr>,
@@ -26,7 +29,7 @@ impl<IO: PacketIO> AddressSelector<IO> {
 
             let is_ip6 = addr.is_ipv6();
             let attempts = if is_ip6 { 1 } else { 3 };
-            
+
             for _ in 0..attempts {
                 buffer.clear();
 
@@ -37,7 +40,8 @@ impl<IO: PacketIO> AddressSelector<IO> {
                         current_ping: None,
                         session_id: None,
                     }),
-                }.write_to(&mut buffer)?;
+                }
+                .write_to(&mut buffer)?;
 
                 if let Err(error) = self.packet_io.send_to(&buffer, addr).await {
                     tracing::error!(?error, ?addr, "failed to send initial ping");
@@ -51,7 +55,8 @@ impl<IO: PacketIO> AddressSelector<IO> {
                     let res = tokio::time::timeout(
                         Duration::from_millis(500),
                         self.packet_io.recv_from(&mut buffer),
-                    ).await;
+                    )
+                    .await;
 
                     match res {
                         Ok(Ok((bytes, peer))) => {
@@ -64,17 +69,30 @@ impl<IO: PacketIO> AddressSelector<IO> {
                             match ControlFeed::read_from(&mut reader) {
                                 Ok(ControlFeed::Response(msg)) => {
                                     if msg.request_id != 1 {
-                                        tracing::error!(?msg, "got response with unexpected request_id");
+                                        tracing::error!(
+                                            ?msg,
+                                            "got response with unexpected request_id"
+                                        );
                                         continue;
                                     }
 
                                     match msg.content {
                                         ControlResponse::Pong(pong) => {
-                                            tracing::info!(?pong, "got initial pong from tunnel server");
-                                            return Ok(ConnectedControl::new(addr, self.packet_io, pong));
+                                            tracing::info!(
+                                                ?pong,
+                                                "got initial pong from tunnel server"
+                                            );
+                                            return Ok(ConnectedControl::new(
+                                                addr,
+                                                self.packet_io,
+                                                pong,
+                                            ));
                                         }
                                         other => {
-                                            tracing::error!(?other, "expected pong got other response");
+                                            tracing::error!(
+                                                ?other,
+                                                "expected pong got other response"
+                                            );
                                         }
                                     }
                                 }

@@ -9,8 +9,8 @@ use message_encoding::{m_max, m_max_list, m_opt_sum, m_static, MessageEncoding};
 use serde::ser::SerializeStruct;
 use serde::Serialize;
 
-use crate::{AgentSessionId, PortRange};
 use crate::hmac::HmacSha256;
+use crate::{AgentSessionId, PortRange};
 
 #[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub enum ControlRequest {
@@ -45,25 +45,29 @@ impl ControlRequestId {
 
 impl MessageEncoding for ControlRequestId {
     const STATIC_SIZE: Option<usize> = Some(4);
-    
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         (*self as u32).write_to(out)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         let v = u32::read_from(read)?;
-        ControlRequestId::from_num(v)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid request id"))
+        ControlRequestId::from_num(v).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid request id")
+        })
     }
 }
 
 impl MessageEncoding for ControlRequest {
-    const MAX_SIZE: Option<usize> = Some(m_static::<ControlRequestId>() + m_max_list(&[
-        m_max::<Ping>(),
-        m_max::<AgentRegister>(),
-        m_max::<AgentSessionId>(),
-        m_max::<AgentCheckPortMapping>(),
-    ]));
+    const MAX_SIZE: Option<usize> = Some(
+        m_static::<ControlRequestId>()
+            + m_max_list(&[
+                m_max::<Ping>(),
+                m_max::<AgentRegister>(),
+                m_max::<AgentSessionId>(),
+                m_max::<AgentCheckPortMapping>(),
+            ]),
+    );
 
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
@@ -100,20 +104,32 @@ impl MessageEncoding for ControlRequest {
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         let id = ControlRequestId::read_from(read)?;
-        
+
         match id {
             ControlRequestId::PingV2 => Ok(ControlRequest::Ping(Ping::read_from(read)?)),
-            ControlRequestId::AgentRegisterV1 => Ok(ControlRequest::AgentRegister(AgentRegisterV1::read_from(read)?.upgrade())),
-            ControlRequestId::AgentRegisterV2 => Ok(ControlRequest::AgentRegister(AgentRegister::read_from(read)?)),
-            ControlRequestId::AgentKeepAliveV1 => Ok(ControlRequest::AgentKeepAlive(AgentSessionId::read_from(read)?)),
-            ControlRequestId::SetupUdpChannelV1 => Ok(ControlRequest::SetupUdpChannel(AgentSessionId::read_from(read)?)),
-            ControlRequestId::AgentCheckPortMappingV1 => Ok(ControlRequest::AgentCheckPortMapping(AgentCheckPortMapping::read_from(read)?)),
+            ControlRequestId::AgentRegisterV1 => Ok(ControlRequest::AgentRegister(
+                AgentRegisterV1::read_from(read)?.upgrade(),
+            )),
+            ControlRequestId::AgentRegisterV2 => Ok(ControlRequest::AgentRegister(
+                AgentRegister::read_from(read)?,
+            )),
+            ControlRequestId::AgentKeepAliveV1 => Ok(ControlRequest::AgentKeepAlive(
+                AgentSessionId::read_from(read)?,
+            )),
+            ControlRequestId::SetupUdpChannelV1 => Ok(ControlRequest::SetupUdpChannel(
+                AgentSessionId::read_from(read)?,
+            )),
+            ControlRequestId::AgentCheckPortMappingV1 => Ok(ControlRequest::AgentCheckPortMapping(
+                AgentCheckPortMapping::read_from(read)?,
+            )),
             ControlRequestId::_PingV1 => Ok(ControlRequest::Ping(Ping {
                 now: u64::read_from(read)?,
                 session_id: None,
                 current_ping: None,
             })),
-            _ => Err(std::io::Error::other("old control request no longer supported")),
+            _ => Err(std::io::Error::other(
+                "old control request no longer supported",
+            )),
         }
     }
 }
@@ -150,7 +166,8 @@ pub struct Ping {
 }
 
 impl MessageEncoding for Ping {
-    const STATIC_SIZE: Option<usize> = Some(8 + m_static::<Option<u32>>() + m_static::<Option<AgentSessionId>>());
+    const STATIC_SIZE: Option<usize> =
+        Some(8 + m_static::<Option<u32>>() + m_static::<Option<AgentSessionId>>());
 
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
@@ -168,7 +185,6 @@ impl MessageEncoding for Ping {
         })
     }
 }
-
 
 #[derive(Debug, Eq, PartialEq, Clone, Serialize)]
 pub struct AgentRegister {
@@ -222,13 +238,20 @@ impl MessageEncoding for AgentRegister {
 
         if self.proto_version <= 1 {
             if (self.account_id & ENCODING_INCLUDES_VERSION_BIT) == ENCODING_INCLUDES_VERSION_BIT {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "account id too large for proto version 1"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "account id too large for proto version 1",
+                ));
             }
 
             sum += self.account_id.write_to(out)?;
         } else {
-            if (self.proto_version & ENCODING_INCLUDES_VERSION_BIT) == ENCODING_INCLUDES_VERSION_BIT {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid proto version"));
+            if (self.proto_version & ENCODING_INCLUDES_VERSION_BIT) == ENCODING_INCLUDES_VERSION_BIT
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "invalid proto version",
+                ));
             }
 
             sum += (self.proto_version | ENCODING_INCLUDES_VERSION_BIT).write_to(out)?;
@@ -294,7 +317,10 @@ impl MessageEncoding for AgentRegisterV1 {
         len += self.client_addr.write_to(out)?;
         len += self.tunnel_addr.write_to(out)?;
         if out.write(&self.signature)? != 32 {
-            return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "failed to write full signature"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "failed to write full signature",
+            ));
         }
         len += 32;
         Ok(len)
@@ -312,7 +338,10 @@ impl MessageEncoding for AgentRegisterV1 {
         };
 
         if read.read(&mut res.signature[..])? != 32 {
-            return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "missing signature"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "missing signature",
+            ));
         }
 
         Ok(res)
@@ -391,9 +420,15 @@ impl MessageEncoding for ControlResponse {
             3 => Ok(ControlResponse::Unauthorized),
             4 => Ok(ControlResponse::RequestQueued),
             5 => Ok(ControlResponse::TryAgainLater),
-            6 => Ok(ControlResponse::AgentRegistered(AgentRegistered::read_from(read)?)),
-            7 => Ok(ControlResponse::AgentPortMapping(AgentPortMapping::read_from(read)?)),
-            8 => Ok(ControlResponse::UdpChannelDetails(UdpChannelDetails::read_from(read)?)),
+            6 => Ok(ControlResponse::AgentRegistered(
+                AgentRegistered::read_from(read)?,
+            )),
+            7 => Ok(ControlResponse::AgentPortMapping(
+                AgentPortMapping::read_from(read)?,
+            )),
+            8 => Ok(ControlResponse::UdpChannelDetails(
+                UdpChannelDetails::read_from(read)?,
+            )),
             _ => Err(std::io::Error::other("invalid ControlResponse id")),
         }
     }
@@ -406,10 +441,8 @@ pub struct AgentPortMapping {
 }
 
 impl MessageEncoding for AgentPortMapping {
-    const MAX_SIZE: Option<usize> = Some(
-        m_max::<PortRange>() +
-        m_max::<Option<AgentPortMappingFound>>()
-    );
+    const MAX_SIZE: Option<usize> =
+        Some(m_max::<PortRange>() + m_max::<Option<AgentPortMappingFound>>());
 
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
@@ -432,10 +465,8 @@ pub enum AgentPortMappingFound {
 }
 
 impl MessageEncoding for AgentPortMappingFound {
-    const MAX_SIZE: Option<usize> = Some(4 + m_max_list(&[
-        m_max::<AgentSessionId>(),
-    ]));
-    
+    const MAX_SIZE: Option<usize> = Some(4 + m_max_list(&[m_max::<AgentSessionId>()]));
+
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
 
@@ -451,8 +482,13 @@ impl MessageEncoding for AgentPortMappingFound {
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         match read.read_u32::<BigEndian>()? {
-            1 => Ok(AgentPortMappingFound::ToAgent(AgentSessionId::read_from(read)?)),
-            _ => Err(std::io::Error::new(std::io::ErrorKind::Other, "unknown AgentPortMappingFound id")),
+            1 => Ok(AgentPortMappingFound::ToAgent(AgentSessionId::read_from(
+                read,
+            )?)),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "unknown AgentPortMappingFound id",
+            )),
         }
     }
 }
@@ -464,7 +500,10 @@ pub struct UdpChannelDetails {
 }
 
 impl Serialize for UdpChannelDetails {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: serde::Serializer {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
         let mut s = serializer.serialize_struct("UdpChannelDetails", 2)?;
         s.serialize_field("tunnel_addr", &self.tunnel_addr)?;
         s.serialize_field("token", &*self.token)?;
@@ -510,10 +549,10 @@ pub struct Pong {
 
 impl MessageEncoding for Pong {
     const MAX_SIZE: Option<usize> = Some(
-        m_static::<u64>() * 3 +
-        m_static::<u32>() +
-        m_max::<SocketAddr>() * 2 +
-        m_static::<Option<u64>>()
+        m_static::<u64>() * 3
+            + m_static::<u32>()
+            + m_max::<SocketAddr>() * 2
+            + m_static::<Option<u64>>(),
     );
 
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
@@ -548,10 +587,7 @@ pub struct AgentRegistered {
 }
 
 impl MessageEncoding for AgentRegistered {
-    const STATIC_SIZE: Option<usize> = Some(
-        m_static::<AgentSessionId>() +
-        m_static::<u64>()
-    );
+    const STATIC_SIZE: Option<usize> = Some(m_static::<AgentSessionId>() + m_static::<u64>());
 
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
@@ -573,10 +609,10 @@ mod test {
     use std::fmt::Debug;
     use std::net::{IpAddr, Ipv4Addr};
 
-    use rand::{Rng, RngCore, thread_rng};
+    use rand::{thread_rng, Rng, RngCore};
 
-    use crate::PortProto;
     use crate::rpc::ControlRpcMessage;
+    use crate::PortProto;
 
     use super::*;
 
@@ -617,21 +653,26 @@ mod test {
         };
 
         let mut out = Vec::new();
-        ControlRequestId::AgentRegisterV1.write_to(&mut out).unwrap();
+        ControlRequestId::AgentRegisterV1
+            .write_to(&mut out)
+            .unwrap();
         reg.write_to(&mut out).unwrap();
 
         let mut reader = &out[..];
         let read = ControlRequest::read_from(&mut reader).unwrap();
-        assert_eq!(read, ControlRequest::AgentRegister(AgentRegister {
-            proto_version: 1,
-            account_id: 1,
-            agent_id: 2,
-            agent_version: 3,
-            timestamp: 1000,
-            client_addr: "10.20.30.40:5678".parse().unwrap(),
-            tunnel_addr: "9.20.3.40:9912".parse().unwrap(),
-            signature: [0u8; 32],
-        }))
+        assert_eq!(
+            read,
+            ControlRequest::AgentRegister(AgentRegister {
+                proto_version: 1,
+                account_id: 1,
+                agent_id: 2,
+                agent_version: 3,
+                timestamp: 1000,
+                client_addr: "10.20.30.40:5678".parse().unwrap(),
+                tunnel_addr: "9.20.3.40:9912".parse().unwrap(),
+                signature: [0u8; 32],
+            })
+        )
     }
 
     #[test]
@@ -645,10 +686,13 @@ mod test {
         }
 
         for _ in 0..1000 {
-            test_encoding(ControlRpcMessage {
-                request_id: rng.next_u64(),
-                content: rng_control_request(&mut rng),
-            }, &mut buffer);
+            test_encoding(
+                ControlRpcMessage {
+                    request_id: rng.next_u64(),
+                    content: rng_control_request(&mut rng),
+                },
+                &mut buffer,
+            );
         }
     }
 
@@ -663,10 +707,13 @@ mod test {
         }
 
         for _ in 0..1000 {
-            test_encoding(ControlRpcMessage {
-                request_id: rng.next_u64(),
-                content: rng_control_response(&mut rng),
-            }, &mut buffer);
+            test_encoding(
+                ControlRpcMessage {
+                    request_id: rng.next_u64(),
+                    content: rng_control_response(&mut rng),
+                },
+                &mut buffer,
+            );
         }
     }
 
@@ -679,7 +726,7 @@ mod test {
         let remaining_len = writer.len();
         let written = buffer.len() - remaining_len;
 
-        if let Some(size) =  T::STATIC_SIZE {
+        if let Some(size) = T::STATIC_SIZE {
             assert_eq!(written, size);
         }
 
@@ -820,7 +867,7 @@ mod test {
                         account_id: rng.next_u64() % (i64::MAX as u64),
                         agent_id: rng.next_u64(),
                     })),
-                    _ => unreachable!()
+                    _ => unreachable!(),
                 },
             }),
             7 => ControlResponse::UdpChannelDetails(UdpChannelDetails {
@@ -832,7 +879,7 @@ mod test {
                     Arc::new(buffer)
                 },
             }),
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     }
 
@@ -907,14 +954,17 @@ mod test {
         let mut reader = &data[..];
 
         let msg = ControlRpcMessage::<ControlRequest>::read_from(&mut reader).unwrap();
-        assert_eq!(msg, ControlRpcMessage {
-            request_id: 1,
-            content: ControlRequest::Ping(Ping {
-                now: 0,
-                current_ping: None,
-                session_id: None,
-            }),
-        });
+        assert_eq!(
+            msg,
+            ControlRpcMessage {
+                request_id: 1,
+                content: ControlRequest::Ping(Ping {
+                    now: 0,
+                    current_ping: None,
+                    session_id: None,
+                }),
+            }
+        );
         println!("Got msg: {msg:?}");
     }
 }

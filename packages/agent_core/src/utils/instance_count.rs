@@ -6,7 +6,9 @@ pub struct InstanceCount<K: Eq + Hash> {
 
 impl<K: Eq + Hash> Default for InstanceCount<K> {
     fn default() -> Self {
-        Self { counters: Default::default() }
+        Self {
+            counters: Default::default(),
+        }
     }
 }
 

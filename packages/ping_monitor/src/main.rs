@@ -26,7 +26,8 @@ async fn main() {
                 }
             }
 
-            #[cfg(target_os = "linux")] {
+            #[cfg(target_os = "linux")]
+            {
                 let old_path = "/etc/playit/playit.toml";
                 if let Ok(secret) = tokio::fs::read_to_string(old_path).await {
                     break 'load_secret Some(secret);
@@ -47,7 +48,9 @@ async fn main() {
     let mut ping_monitor = PingMonitor::new(PlayitApi::new(HttpClient::new(
         "https://api.playit.gg".to_string(),
         playit_secret,
-    ))).await.unwrap();
+    )))
+    .await
+    .unwrap();
 
     loop {
         if let Err(error) = ping_monitor.refresh().await {

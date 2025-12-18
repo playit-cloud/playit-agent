@@ -1,5 +1,5 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use byteorder::{BigEndian, ByteOrder};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Hash)]
 pub struct IpResource {
@@ -80,10 +80,7 @@ impl PlayitRegion {
             _ => None,
         };
 
-        (
-            region,
-            ip_number
-        )
+        (region, ip_number)
     }
 
     pub fn tunnel_address(&self, ip_number: u64) -> Ipv6Addr {

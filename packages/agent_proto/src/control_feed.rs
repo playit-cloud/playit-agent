@@ -42,7 +42,12 @@ pub struct ClaimInstructions {
 
 impl Debug for ClaimInstructions {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "ClaimInstructions {{ address: {}, token: {} }}", self.address, hex::encode(&self.token))
+        write!(
+            f,
+            "ClaimInstructions {{ address: {}, token: {} }}",
+            self.address,
+            hex::encode(&self.token)
+        )
     }
 }
 
@@ -71,7 +76,9 @@ impl MessageEncoding for ControlFeed {
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         match read.read_u32::<BigEndian>()? {
             1 => Ok(ControlFeed::Response(ControlRpcMessage::read_from(read)?)),
-            2 => Ok(ControlFeed::NewClient(NewClientOld::read_from(read)?.into())),
+            2 => Ok(ControlFeed::NewClient(
+                NewClientOld::read_from(read)?.into(),
+            )),
             3 => Ok(ControlFeed::NewClient(NewClient::read_from(read)?)),
             _ => Err(Error::new(ErrorKind::Other, "invalid ControlFeed id")),
         }
@@ -169,4 +176,3 @@ mod test {
         println!("{:?}", req);
     }
 }
-

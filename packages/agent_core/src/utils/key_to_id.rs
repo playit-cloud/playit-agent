@@ -1,4 +1,7 @@
-use std::{collections::{hash_map, HashMap}, hash::Hash};
+use std::{
+    collections::{hash_map, HashMap},
+    hash::Hash,
+};
 
 use super::id_slab::IdSlab;
 

@@ -1,25 +1,22 @@
-use std::{
-    fmt::Write,
-    net::SocketAddr,
-    sync::Arc,
-    time::Duration,
-};
+use std::{fmt::Write, net::SocketAddr, sync::Arc, time::Duration};
 
 use playit_agent_core::{
-    network::{origin_lookup::{OriginLookup, OriginResource}, tcp::tcp_settings::TcpSettings, udp::udp_settings::UdpSettings}, playit_agent::{PlayitAgent, PlayitAgentSettings}, utils::now_milli
+    network::{
+        origin_lookup::{OriginLookup, OriginResource},
+        tcp::tcp_settings::TcpSettings,
+        udp::udp_settings::UdpSettings,
+    },
+    playit_agent::{PlayitAgent, PlayitAgentSettings},
+    utils::now_milli,
 };
 use playit_agent_proto::PortProto;
 use playit_api_client::api::*;
 // use playit_ping_monitor::PingMonitor;
 
-use crate::{API_BASE, CliError, playit_secret::PlayitSecret, ui::UI};
+use crate::{playit_secret::PlayitSecret, ui::UI, CliError, API_BASE};
 
 pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliError> {
-    let secret_code = secret
-        .ensure_valid(ui)
-        .await?
-        .get_or_setup(ui)
-        .await?;
+    let secret_code = secret.ensure_valid(ui).await?.get_or_setup(ui).await?;
 
     let api = secret.create_api().await?;
     // let mut ping_monitor = PingMonitor::new(api.clone()).await.unwrap();
@@ -37,7 +34,9 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     let lookup = Arc::new(OriginLookup::default());
-    lookup.update_from_run_data(&api.agents_rundata().await?).await;
+    lookup
+        .update_from_run_data(&api.agents_rundata().await?)
+        .await;
 
     let mut error_count = 0;
     ui.write_screen("starting up tunnel connection").await;
@@ -55,7 +54,8 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
             Err(error) => {
                 error_count += 1;
                 if error_count > 5 {
-                    ui.write_error("Final attempted failed to setup tunnel", &error).await;
+                    ui.write_error("Final attempted failed to setup tunnel", &error)
+                        .await;
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     return Err(CliError::TunnelSetupError(error));
                 };
@@ -95,30 +95,35 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         );
 
         match agent_data.account_status {
-            AgentAccountStatus::Guest => {
-                'login_link: {
-                    let now = now_milli();
+            AgentAccountStatus::Guest => 'login_link: {
+                let now = now_milli();
 
-                    match &guest_login_link {
-                        Some((link, ts)) if now - *ts < 15_000 => {
-                            writeln!(msg, "login: {}", link).unwrap();
-                        }
-                        _ => {
-                            let Ok(session) = api.login_guest().await else {
-                                writeln!(msg, "Failed to create guest login link").unwrap();
-                                break 'login_link;
-                            };
+                match &guest_login_link {
+                    Some((link, ts)) if now - *ts < 15_000 => {
+                        writeln!(msg, "login: {}", link).unwrap();
+                    }
+                    _ => {
+                        let Ok(session) = api.login_guest().await else {
+                            writeln!(msg, "Failed to create guest login link").unwrap();
+                            break 'login_link;
+                        };
 
-                            let link = format!("https://playit.gg/login/guest-account/{}", session.session_key);
-                            writeln!(msg, "login: {}", link).unwrap();
+                        let link = format!(
+                            "https://playit.gg/login/guest-account/{}",
+                            session.session_key
+                        );
+                        writeln!(msg, "login: {}", link).unwrap();
 
-                            guest_login_link = Some((link, now_milli()));
-                        }
+                        guest_login_link = Some((link, now_milli()));
                     }
                 }
             }
             AgentAccountStatus::EmailNotVerified => {
-                writeln!(msg, "Email not verified https://playit.gg/account/settings/account/verify-email").unwrap();
+                writeln!(
+                    msg,
+                    "Email not verified https://playit.gg/account/settings/account/verify-email"
+                )
+                .unwrap();
             }
             AgentAccountStatus::AccountDeleteScheduled => {
                 writeln!(msg, "Account scheduled for delete: https://playit.gg/account/settings/account/delete-account").unwrap();
@@ -133,7 +138,12 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
                 writeln!(msg, "Too many agents: https://playit.gg/account/agents").unwrap();
             }
             AgentAccountStatus::AgentDisabled => {
-                writeln!(msg, "Account disabled: https://playit.gg/account/agents/{}", agent_data.agent_id).unwrap();
+                writeln!(
+                    msg,
+                    "Account disabled: https://playit.gg/account/agents/{}",
+                    agent_data.agent_id
+                )
+                .unwrap();
             }
             AgentAccountStatus::Ready => {}
         }
@@ -147,10 +157,18 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
                 AgentType::SelfManaged => agent_data.agent_id.to_string(),
             };
 
-            writeln!(msg, "Add tunnels here: https://playit.gg/account/agents/{}", agent_id).unwrap();
+            writeln!(
+                msg,
+                "Add tunnels here: https://playit.gg/account/agents/{}",
+                agent_id
+            )
+            .unwrap();
         } else {
             for tunnel in &agent_data.tunnels {
-                let addr = tunnel.custom_domain.as_ref().unwrap_or(&tunnel.assigned_domain);
+                let addr = tunnel
+                    .custom_domain
+                    .as_ref()
+                    .unwrap_or(&tunnel.assigned_domain);
                 let src = match tunnel.tunnel_type.as_deref() {
                     Some("minecraft-java") => addr.clone(),
                     _ => format!("{}:{}", addr, tunnel.port.from),
@@ -161,20 +179,43 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
                 if let Some(disabled) = tunnel.disabled {
                     writeln!(msg, "{} => {} (disabled)", src, dst).unwrap();
                     if disabled == AgentTunnelDisabled::BySystem {
-                        writeln!(msg, "\tsee: https://playit.gg/account/tunnels/{}", tunnel.id).unwrap();
+                        writeln!(
+                            msg,
+                            "\tsee: https://playit.gg/account/tunnels/{}",
+                            tunnel.id
+                        )
+                        .unwrap();
                     }
                 } else if let Some(tunnel_type) = &tunnel.tunnel_type {
                     writeln!(msg, "{} => {} ({})", src, dst, tunnel_type).unwrap();
                 } else {
-                    writeln!(msg, "{} => {} (proto: {:?}, port count: {})", src, dst, tunnel.proto, tunnel.port.to - tunnel.port.from).unwrap();
+                    writeln!(
+                        msg,
+                        "{} => {} (proto: {:?}, port count: {})",
+                        src,
+                        dst,
+                        tunnel.proto,
+                        tunnel.port.to - tunnel.port.from
+                    )
+                    .unwrap();
                 }
             }
 
             for tunnel in &agent_data.pending {
                 if tunnel.is_disabled {
-                    writeln!(msg, "tunnel pending (disabled): https://playit.gg/account/tunnels/{}", tunnel.id).unwrap();
+                    writeln!(
+                        msg,
+                        "tunnel pending (disabled): https://playit.gg/account/tunnels/{}",
+                        tunnel.id
+                    )
+                    .unwrap();
                 } else {
-                    writeln!(msg, "tunnel pending: https://playit.gg/account/tunnels/{}", tunnel.id).unwrap();
+                    writeln!(
+                        msg,
+                        "tunnel pending: https://playit.gg/account/tunnels/{}",
+                        tunnel.id
+                    )
+                    .unwrap();
                 }
             }
         }
@@ -182,4 +223,3 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         ui.write_screen(msg).await;
     }
 }
-

@@ -8,7 +8,11 @@ use crate::utils::shuffle::shuffle;
 pub struct LanAddress;
 
 impl LanAddress {
-    pub async fn tcp_socket(special_lan_ip: bool, peer: SocketAddr, host: SocketAddr) -> std::io::Result<TcpStream> {
+    pub async fn tcp_socket(
+        special_lan_ip: bool,
+        peer: SocketAddr,
+        host: SocketAddr,
+    ) -> std::io::Result<TcpStream> {
         let is_loopback = host.ip().is_loopback();
         if is_loopback && special_lan_ip {
             let local_ip = map_to_local_ip4(peer.ip());
@@ -32,14 +36,22 @@ impl LanAddress {
         tracing::warn!(is_loopback, host_ip = %host.ip(), special_lan_ip, "not using special lan address");
         match TcpStream::connect(host).await {
             Err(e) => {
-                tracing::error!("Failed to establish connection for flow {:?} {:?}. Is your server running?", (peer, host), e);
+                tracing::error!(
+                    "Failed to establish connection for flow {:?} {:?}. Is your server running?",
+                    (peer, host),
+                    e
+                );
                 Err(e)
             }
             v => v,
         }
     }
 
-    pub async fn udp_socket(special_lan_ip: bool, peer: SocketAddr, tunnel_id: u64) -> std::io::Result<UdpSocket> {
+    pub async fn udp_socket(
+        special_lan_ip: bool,
+        peer: SocketAddr,
+        tunnel_id: u64,
+    ) -> std::io::Result<UdpSocket> {
         let ip_shuffle = shuffle_ip_to_u32(peer.ip());
 
         /* try to have the same client bind to the same local resource */
@@ -55,15 +67,17 @@ impl LanAddress {
 
             match UdpSocket::bind(SocketAddrV4::new(local_ip, local_port)).await {
                 Ok(v) => Ok(v),
-                Err(bad_port_error) => match UdpSocket::bind(SocketAddrV4::new(local_ip, 0)).await {
-                    Ok(v) => {
-                        tracing::warn!("Failed to bind UDP port to {} to have connections survive agent restart: {:?}", local_port, bad_port_error);
-                        Ok(v)
-                    }
-                    Err(bad_local_ip_err) => {
-                        let v = UdpSocket::bind(SocketAddrV4::new(0.into(), 0)).await?;
-                        tracing::warn!("Failed to bind UDP to special local address, in-game ip banning will not work: {:?}", bad_local_ip_err);
-                        Ok(v)
+                Err(bad_port_error) => {
+                    match UdpSocket::bind(SocketAddrV4::new(local_ip, 0)).await {
+                        Ok(v) => {
+                            tracing::warn!("Failed to bind UDP port to {} to have connections survive agent restart: {:?}", local_port, bad_port_error);
+                            Ok(v)
+                        }
+                        Err(bad_local_ip_err) => {
+                            let v = UdpSocket::bind(SocketAddrV4::new(0.into(), 0)).await?;
+                            tracing::warn!("Failed to bind UDP to special local address, in-game ip banning will not work: {:?}", bad_local_ip_err);
+                            Ok(v)
+                        }
                     }
                 }
             }

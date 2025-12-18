@@ -1,4 +1,7 @@
-use std::{fmt::Debug, time::{Duration, Instant}};
+use std::{
+    fmt::Debug,
+    time::{Duration, Instant},
+};
 
 pub trait ErrorHelper<T: Debug> {
     fn with_error<F: FnOnce(&T)>(self, f: F) -> Self;
@@ -40,7 +43,7 @@ impl MaxErrorInterval {
 
     pub fn check(&mut self) -> bool {
         let now = Instant::now();
-        
+
         if self.min_wait <= now - self.last_report {
             self.last_report = now;
             true

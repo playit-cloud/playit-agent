@@ -1,4 +1,7 @@
-use std::{sync::{atomic::Ordering, Arc}, task::{Poll, Waker}};
+use std::{
+    sync::{atomic::Ordering, Arc},
+    task::{Poll, Waker},
+};
 
 use crossbeam::queue::ArrayQueue;
 
@@ -39,7 +42,9 @@ impl Packets {
         let ptr = buffer.as_mut_ptr();
 
         for i in 0..packet_count {
-            free_packets.push(unsafe { ptr.add(i * PACKET_LEN) }).expect("free packet queue too small");
+            free_packets
+                .push(unsafe { ptr.add(i * PACKET_LEN) })
+                .expect("free packet queue too small");
         }
 
         Packets {
@@ -48,7 +53,7 @@ impl Packets {
                 packet_count,
                 free_packets,
                 waiting: ArrayQueue::new(1024),
-            })
+            }),
         }
     }
 
@@ -58,7 +63,11 @@ impl Packets {
 
     pub fn allocate(&self) -> Option<Packet> {
         let ptr = self.inner.free_packets.pop()?;
-        Some(Packet { ptr, len: PACKET_LEN, inner: self.inner.clone() })
+        Some(Packet {
+            ptr,
+            len: PACKET_LEN,
+            inner: self.inner.clone(),
+        })
     }
 
     pub async fn allocate_wait(&self) -> Packet {
@@ -66,7 +75,11 @@ impl Packets {
             std::sync::atomic::fence(Ordering::Acquire);
 
             if let Some(ptr) = self.inner.free_packets.pop() {
-                return Poll::Ready(Packet { ptr, len: PACKET_LEN, inner: self.inner.clone() });
+                return Poll::Ready(Packet {
+                    ptr,
+                    len: PACKET_LEN,
+                    inner: self.inner.clone(),
+                });
             }
 
             if let Err(error) = self.inner.waiting.push(cx.waker().clone()) {
@@ -74,13 +87,16 @@ impl Packets {
             }
 
             Poll::Pending
-        }).await
+        })
+        .await
     }
 }
 
 impl Drop for Packet {
     fn drop(&mut self) {
-        self.inner.free_packets.push(self.ptr)
+        self.inner
+            .free_packets
+            .push(self.ptr)
             .expect("free packet queue full");
 
         if let Some(wake) = self.inner.waiting.pop() {
@@ -92,31 +108,23 @@ impl Drop for Packet {
 
 impl AsMut<[u8]> for Packet {
     fn as_mut(&mut self) -> &mut [u8] {
-        unsafe {
-            std::slice::from_raw_parts_mut(self.ptr, self.len)
-        }
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 }
 
 impl AsRef<[u8]> for Packet {
     fn as_ref(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(self.ptr, self.len)
-        }
+        unsafe { std::slice::from_raw_parts(self.ptr, self.len) }
     }
 }
 
 impl Packet {
     pub fn full_slice_mut(&mut self) -> &mut [u8] {
-        unsafe {
-            std::slice::from_raw_parts_mut(self.ptr, PACKET_LEN)
-        }
+        unsafe { std::slice::from_raw_parts_mut(self.ptr, PACKET_LEN) }
     }
 
     pub fn full_slice(&self) -> &[u8] {
-        unsafe {
-            std::slice::from_raw_parts(self.ptr, PACKET_LEN)
-        }
+        unsafe { std::slice::from_raw_parts(self.ptr, PACKET_LEN) }
     }
 
     #[allow(clippy::len_without_is_empty)]
@@ -126,7 +134,10 @@ impl Packet {
 
     pub fn set_len(&mut self, len: usize) -> std::io::Result<()> {
         if PACKET_LEN < len {
-            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "packet len too large"));
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "packet len too large",
+            ));
         }
 
         self.len = len;

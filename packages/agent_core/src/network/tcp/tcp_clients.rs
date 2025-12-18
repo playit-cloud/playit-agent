@@ -4,12 +4,26 @@ use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use playit_agent_proto::control_feed::NewClient;
 use playit_api_client::api::ProxyProtocol;
 use serde::Serialize;
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::mpsc::{channel, Receiver, Sender}, time::Instant};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+    sync::mpsc::{channel, Receiver, Sender},
+    time::Instant,
+};
 use tokio_util::sync::CancellationToken;
 
-use crate::{network::{lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader}, utils::now_milli};
+use crate::{
+    network::{
+        lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
+    },
+    utils::now_milli,
+};
 
-use super::{tcp_client::{TcpClient, TcpClientStat}, tcp_errors::tcp_errors, tcp_settings::TcpSettings};
+use super::{
+    tcp_client::{TcpClient, TcpClientStat},
+    tcp_errors::tcp_errors,
+    tcp_settings::TcpSettings,
+};
 
 pub struct TcpClients {
     events_tx: Sender<Event>,
@@ -78,22 +92,26 @@ enum Event {
 impl TcpClients {
     pub fn new(settings: TcpSettings, lookup: Arc<OriginLookup>) -> Self {
         let quota = unsafe {
-            Quota::per_second(NonZeroU32::new_unchecked(settings.new_client_ratelimit))
-                .allow_burst(NonZeroU32::new_unchecked(settings.new_client_ratelimit_burst))
+            Quota::per_second(NonZeroU32::new_unchecked(settings.new_client_ratelimit)).allow_burst(
+                NonZeroU32::new_unchecked(settings.new_client_ratelimit_burst),
+            )
         };
 
         let (events_tx, events_rx) = channel(1024);
         let cancel = CancellationToken::new();
 
-        tokio::spawn(Worker {
-            next_client_id: 1,
-            lookup,
-            events: events_rx,
-            events_tx: events_tx.clone(),
-            cancel: cancel.clone(),
-            settings,
-            clients: Vec::with_capacity(32),
-        }.start());
+        tokio::spawn(
+            Worker {
+                next_client_id: 1,
+                lookup,
+                events: events_rx,
+                events_tx: events_tx.clone(),
+                cancel: cancel.clone(),
+                settings,
+                clients: Vec::with_capacity(32),
+            }
+            .start(),
+        );
 
         TcpClients {
             new_client_limiter: RateLimiter::direct(quota),
@@ -104,7 +122,9 @@ impl TcpClients {
 
     pub async fn get_details(&self) -> Vec<TcpClientDetails> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.events_tx.send(Event::GetDetails(tx)).await
+        self.events_tx
+            .send(Event::GetDetails(tx))
+            .await
             .expect("TcpClients worker closed");
         rx.await.expect("TcpClients worker closed")
     }
@@ -115,7 +135,9 @@ impl TcpClients {
             return;
         }
 
-        self.events_tx.send(Event::NewClient(new_client)).await
+        self.events_tx
+            .send(Event::NewClient(new_client))
+            .await
             .expect("TcpClients worker closed");
     }
 }
@@ -151,7 +173,10 @@ impl Worker {
                     tracing::info!(?details, id = client_id, "New TCP Client");
 
                     let Some(found) = self.lookup.lookup(details.tunnel_id, true).await else {
-                        tracing::info!(tunnel_id = details.tunnel_id, "Could not find tunnel for new client");
+                        tracing::info!(
+                            tunnel_id = details.tunnel_id,
+                            "Could not find tunnel for new client"
+                        );
                         tcp_errors().new_client_origin_not_found.inc();
                         continue;
                     };
@@ -162,7 +187,7 @@ impl Worker {
                                 client_ip: *peer.ip(),
                                 proxy_ip: *tunn.ip(),
                                 client_port: peer.port(),
-                                proxy_port: tunn.port()
+                                proxy_port: tunn.port(),
                             }
                         }
                         (SocketAddr::V6(peer), SocketAddr::V6(tunn)) => {
@@ -170,7 +195,7 @@ impl Worker {
                                 client_ip: *peer.ip(),
                                 proxy_ip: *tunn.ip(),
                                 client_port: peer.port(),
-                                proxy_port: tunn.port()
+                                proxy_port: tunn.port(),
                             }
                         }
                         _ => {
@@ -181,7 +206,11 @@ impl Worker {
                     };
 
                     let Some(origin_addr) = found.resolve_local(details.port_offset) else {
-                        tracing::error!(port_offset = details.port_offset, tunnel_id = details.tunnel_id, "port offset not valid for tunnel");
+                        tracing::error!(
+                            port_offset = details.port_offset,
+                            tunnel_id = details.tunnel_id,
+                            "port offset not valid for tunnel"
+                        );
                         tcp_errors().new_client_invalid_port_offset.inc();
                         continue;
                     };
@@ -194,8 +223,9 @@ impl Worker {
 
                         let conn_res = tokio::time::timeout(
                             Duration::from_secs(8),
-                            TcpStream::connect(details.claim_instructions.address)
-                        ).await;
+                            TcpStream::connect(details.claim_instructions.address),
+                        )
+                        .await;
 
                         let mut tunn_stream = match conn_res {
                             Ok(Ok(stream)) => stream,
@@ -212,13 +242,21 @@ impl Worker {
                         };
 
                         if let Err(error) = tunn_stream.set_nodelay(setting_tcp_no_delay) {
-                            tracing::error!(?error, "failed to set tunn tcp no delay, value: {}", setting_tcp_no_delay);
+                            tracing::error!(
+                                ?error,
+                                "failed to set tunn tcp no delay, value: {}",
+                                setting_tcp_no_delay
+                            );
                             tcp_errors().new_client_set_tunnel_no_delay_error.inc();
                         }
 
                         /* send token to tunnel server to claim client */
 
-                        let send_res = tokio::time::timeout(Duration::from_secs(8), tunn_stream.write_all(&details.claim_instructions.token)).await;
+                        let send_res = tokio::time::timeout(
+                            Duration::from_secs(8),
+                            tunn_stream.write_all(&details.claim_instructions.token),
+                        )
+                        .await;
                         match send_res {
                             Ok(Ok(_)) => {}
                             Err(_) => {
@@ -227,15 +265,21 @@ impl Worker {
                                 return;
                             }
                             Ok(Err(error)) => {
-                                tracing::error!(?error, "io error sending claim instruction to claim address");
+                                tracing::error!(
+                                    ?error,
+                                    "io error sending claim instruction to claim address"
+                                );
                                 tcp_errors().new_client_send_claim_error.inc();
                                 return;
                             }
                         }
 
-
                         let mut expect_buffer = [0u8; 8];
-                        let confirm_res = tokio::time::timeout(Duration::from_secs(4), tunn_stream.read_exact(&mut expect_buffer[..])).await;
+                        let confirm_res = tokio::time::timeout(
+                            Duration::from_secs(4),
+                            tunn_stream.read_exact(&mut expect_buffer[..]),
+                        )
+                        .await;
                         match confirm_res {
                             Ok(Ok(_)) => {}
                             Err(_) => {
@@ -254,13 +298,18 @@ impl Worker {
 
                         let connect_res = tokio::time::timeout(
                             Duration::from_secs(2),
-                            LanAddress::tcp_socket(true, details.peer_addr, origin_addr)
-                        ).await;
+                            LanAddress::tcp_socket(true, details.peer_addr, origin_addr),
+                        )
+                        .await;
 
                         let mut origin_stream = match connect_res {
                             Ok(Ok(stream)) => stream,
                             Ok(Err(error)) => {
-                                tracing::error!(?error, "io error failed to connect to origin: {:?}", origin_addr);
+                                tracing::error!(
+                                    ?error,
+                                    "io error failed to connect to origin: {:?}",
+                                    origin_addr
+                                );
                                 tcp_errors().new_client_origin_connect_error.inc();
                                 return;
                             }
@@ -278,10 +327,18 @@ impl Worker {
 
                         let proxy_write_res = match found.proxy_protocol {
                             Some(ProxyProtocol::ProxyProtocolV1) => {
-                                tokio::time::timeout(Duration::from_secs(2), proxy_header.write_v1_tcp(&mut origin_stream)).await
+                                tokio::time::timeout(
+                                    Duration::from_secs(2),
+                                    proxy_header.write_v1_tcp(&mut origin_stream),
+                                )
+                                .await
                             }
                             Some(ProxyProtocol::ProxyProtocolV2) => {
-                                tokio::time::timeout(Duration::from_secs(2), proxy_header.write_v2_tcp(&mut origin_stream)).await
+                                tokio::time::timeout(
+                                    Duration::from_secs(2),
+                                    proxy_header.write_v2_tcp(&mut origin_stream),
+                                )
+                                .await
                             }
                             None => Ok(Ok(())),
                         };
@@ -301,16 +358,18 @@ impl Worker {
                         }
 
                         let tcp_client = TcpClient::create(tunn_stream, origin_stream).await;
-                        let _ = event_tx.send(Event::ConnectedClient(Client {
-                            id: client_id,
-                            added_at: now_milli(),
-                            tunnel_id: details.tunnel_id,
-                            port_offset: details.port_offset,
-                            source_addr: details.peer_addr,
-                            tunnel_addr: details.connect_addr,
-                            origin_addr,
-                            tcp: tcp_client,
-                        })).await;
+                        let _ = event_tx
+                            .send(Event::ConnectedClient(Client {
+                                id: client_id,
+                                added_at: now_milli(),
+                                tunnel_id: details.tunnel_id,
+                                port_offset: details.port_offset,
+                                source_addr: details.peer_addr,
+                                tunnel_addr: details.connect_addr,
+                                origin_addr,
+                                tcp: tcp_client,
+                            }))
+                            .await;
                     });
                 }
                 Event::GetDetails(resp) => {
@@ -349,4 +408,3 @@ impl Worker {
         }
     }
 }
-

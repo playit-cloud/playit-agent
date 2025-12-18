@@ -1,4 +1,7 @@
-use std::{mem::{ManuallyDrop, MaybeUninit}, u32};
+use std::{
+    mem::{ManuallyDrop, MaybeUninit},
+    u32,
+};
 
 pub struct IdSlab<T> {
     entries: Vec<Entry<T>>,
@@ -87,9 +90,7 @@ impl<T> IdSlab<T> {
 
         self.free_slots.push(slot);
 
-        Some(unsafe {
-            std::mem::replace(&mut entry.value, MaybeUninit::uninit()).assume_init()
-        })
+        Some(unsafe { std::mem::replace(&mut entry.value, MaybeUninit::uninit()).assume_init() })
     }
 
     fn slot(&self, id: u64) -> Option<usize> {
@@ -137,7 +138,11 @@ impl<T> IdSlab<T> {
 
     pub fn iter_mut(&mut self) -> IdSlabIterMut<T> {
         let remaining = self.len();
-        IdSlabIterMut { slab: self, slot: 0, remaining }
+        IdSlabIterMut {
+            slab: self,
+            slot: 0,
+            remaining,
+        }
     }
 }
 

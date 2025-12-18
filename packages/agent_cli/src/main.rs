@@ -11,24 +11,23 @@ use rand::Rng;
 use uuid::Uuid;
 
 use autorun::autorun;
-use playit_api_client::{api::*, PlayitApi};
-use playit_api_client::http_client::HttpClientError;
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::utils::now_milli;
+use playit_api_client::http_client::HttpClientError;
+use playit_api_client::{api::*, PlayitApi};
 use playit_secret::PlayitSecret;
 
 use crate::signal_handle::get_signal_handle;
-use crate::ui::{UI, UISettings};
+use crate::ui::{UISettings, UI};
 
-pub static API_BASE: LazyLock<String> = LazyLock::new(|| {
-    dotenv::var("API_BASE").unwrap_or("https://api.playit.gg".to_string())
-});
+pub static API_BASE: LazyLock<String> =
+    LazyLock::new(|| dotenv::var("API_BASE").unwrap_or("https://api.playit.gg".to_string()));
 
-pub mod util;
 pub mod autorun;
 pub mod playit_secret;
-pub mod ui;
 pub mod signal_handle;
+pub mod ui;
+pub mod util;
 
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, CliError> {
@@ -106,31 +105,36 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         Some(("setup", _)) => {
             let mut secret = PlayitSecret::linux_service();
             let key = secret
-                .ensure_valid(&mut ui).await?
-                .get_or_setup(&mut ui).await?;
+                .ensure_valid(&mut ui)
+                .await?
+                .get_or_setup(&mut ui)
+                .await?;
 
             let api = PlayitApi::create(API_BASE.to_string(), Some(key));
             if let Ok(session) = api.login_guest().await {
-                ui.write_screen(format!("Guest login:\nhttps://playit.gg/login/guest-account/{}", session.session_key)).await;
+                ui.write_screen(format!(
+                    "Guest login:\nhttps://playit.gg/login/guest-account/{}",
+                    session.session_key
+                ))
+                .await;
                 tokio::time::sleep(Duration::from_secs(10)).await;
             }
 
-            ui.write_screen("Playit setup, secret written to /etc/playit/playit.toml").await;
+            ui.write_screen("Playit setup, secret written to /etc/playit/playit.toml")
+                .await;
         }
-        Some(("reset", _)) => {
-            loop {
-                let mut secerts = PlayitSecret::from_args(&matches).await;
-                secerts.with_default_path().await;
+        Some(("reset", _)) => loop {
+            let mut secerts = PlayitSecret::from_args(&matches).await;
+            secerts.with_default_path().await;
 
-                let path = secerts.get_path().unwrap();
-                if !tokio::fs::try_exists(path).await.unwrap_or(false) {
-                    break;
-                }
-
-                tokio::fs::remove_file(path).await.unwrap();
-                println!("deleted secret at: {}", path);
+            let path = secerts.get_path().unwrap();
+            if !tokio::fs::try_exists(path).await.unwrap_or(false) {
+                break;
             }
-        }
+
+            tokio::fs::remove_file(path).await.unwrap();
+            println!("deleted secret at: {}", path);
+        },
         Some(("secret-path", _)) => {
             let mut secerts = PlayitSecret::from_args(&matches).await;
             secerts.with_default_path().await;
@@ -141,10 +145,13 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             Some(("login-url", _)) => {
                 let api = secret.create_api().await?;
                 let session = api.login_guest().await?;
-                println!("https://playit.gg/login/guest-account/{}", session.session_key)
+                println!(
+                    "https://playit.gg/login/guest-account/{}",
+                    session.session_key
+                )
             }
             _ => return Err(CliError::NotImplemented),
-        }
+        },
         Some(("claim", m)) => match m.subcommand() {
             Some(("generate", _)) => {
                 ui.write_screen(claim_generate()).await;
@@ -155,9 +162,14 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             }
             Some(("exchange", m)) => {
                 let claim_code = m.get_one::<String>("CLAIM_CODE").expect("required");
-                let wait: u32 = m.get_one::<String>("wait").expect("required").parse().expect("invalid wait value");
+                let wait: u32 = m
+                    .get_one::<String>("wait")
+                    .expect("required")
+                    .parse()
+                    .expect("invalid wait value");
 
-                let secret_key = claim_exchange(&mut ui, claim_code, AgentType::SelfManaged, wait).await?;
+                let secret_key =
+                    claim_exchange(&mut ui, claim_code, AgentType::SelfManaged, wait).await?;
                 ui.write_screen(secret_key).await;
             }
             _ => return Err(CliError::NotImplemented),
@@ -186,11 +198,16 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             }
             Some(("list", _)) => {
                 let api = secret.create_api().await?;
-                let response = api.tunnels_list_json(ReqTunnelsList { tunnel_id: None, agent_id: None }).await?;
+                let response = api
+                    .tunnels_list_json(ReqTunnelsList {
+                        tunnel_id: None,
+                        agent_id: None,
+                    })
+                    .await?;
                 println!("{}", serde_json::to_string_pretty(&response).unwrap());
             }
-            _ => return Err(CliError::NotImplemented)
-        }
+            _ => return Err(CliError::NotImplemented),
+        },
         _ => return Err(CliError::NotImplemented),
     }
 
@@ -208,13 +225,15 @@ pub fn claim_url(code: &str) -> Result<String, CliError> {
         return Err(CliError::InvalidClaimCode);
     }
 
-    Ok(format!(
-        "https://playit.gg/claim/{}",
-        code,
-    ))
+    Ok(format!("https://playit.gg/claim/{}", code,))
 }
 
-pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType, wait_sec: u32) -> Result<String, CliError> {
+pub async fn claim_exchange(
+    ui: &mut UI,
+    claim_code: &str,
+    agent_type: AgentType,
+    wait_sec: u32,
+) -> Result<String, CliError> {
     let api = PlayitApi::create(API_BASE.to_string(), None);
 
     let end_at = if wait_sec == 0 {
@@ -228,17 +247,20 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
         let mut last_message = "Preparing Setup".to_string();
 
         loop {
-            let setup_res = api.claim_setup(ReqClaimSetup {
-                code: claim_code.to_string(),
-                agent_type,
-                version: format!("playit-cli {}", env!("CARGO_PKG_VERSION")),
-            }).await;
+            let setup_res = api
+                .claim_setup(ReqClaimSetup {
+                    code: claim_code.to_string(),
+                    agent_type,
+                    version: format!("playit-cli {}", env!("CARGO_PKG_VERSION")),
+                })
+                .await;
 
             let setup = match setup_res {
                 Ok(v) => v,
                 Err(error) => {
                     tracing::error!(?error, "Failed loading claim setup");
-                    ui.write_screen(format!("{}\n\nError: {:?}", last_message, error)).await;
+                    ui.write_screen(format!("{}\n\nError: {:?}", last_message, error))
+                        .await;
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
                 }
@@ -252,7 +274,8 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
                     format!("Approve program at {}", claim_url(claim_code)?)
                 }
                 ClaimSetupResponse::UserAccepted => {
-                    ui.write_screen("Program approved :). Secret code being setup.").await;
+                    ui.write_screen("Program approved :). Secret code being setup.")
+                        .await;
                     break;
                 }
                 ClaimSetupResponse::UserRejected => {
@@ -268,7 +291,12 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
     }
 
     let secret_key = loop {
-        match api.claim_exchange(ReqClaimExchange { code: claim_code.to_string() }).await {
+        match api
+            .claim_exchange(ReqClaimExchange {
+                code: claim_code.to_string(),
+            })
+            .await
+        {
             Ok(res) => break res.secret_key,
             Err(ApiError::Fail(status)) => {
                 let msg = format!("code \"{}\" not ready, {:?}", claim_code, status);
@@ -278,7 +306,8 @@ pub async fn claim_exchange(ui: &mut UI, claim_code: &str, agent_type: AgentType
         };
 
         if now_milli() > end_at {
-            ui.write_screen("you took too long to approve the program, closing").await;
+            ui.write_screen("you took too long to approve the program, closing")
+                .await;
             tokio::time::sleep(Duration::from_secs(2)).await;
             return Err(CliError::TimedOut);
         }
@@ -330,9 +359,7 @@ pub enum CliError {
     TunnelSetupError(SetupError),
 }
 
-impl Error for CliError {
-
-}
+impl Error for CliError {}
 
 impl Display for CliError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -345,7 +372,7 @@ impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for CliError {
         match e {
             ApiError::ApiError(e) => CliError::ApiError(e),
             ApiError::ClientError(e) => CliError::RequestError(e),
-            ApiError::Fail(fail) => CliError::ApiFail(serde_json::to_string(&fail).unwrap())
+            ApiError::Fail(fail) => CliError::ApiFail(serde_json::to_string(&fail).unwrap()),
         }
     }
 }
@@ -440,7 +467,8 @@ fn cli() -> Command {
         )
         ;
 
-    #[cfg(target_os = "linux")] {
+    #[cfg(target_os = "linux")]
+    {
         cmd = cmd.subcommand(Command::new("setup"));
     }
 
