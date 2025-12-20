@@ -192,6 +192,10 @@ impl OriginResource {
                 }
             }
             OriginTarget::Port { ip, port } => {
+                if self.port_count == 0 {
+                    return Some(SocketAddr::new(*ip, *port));
+                }
+
                 if self.port_count <= port_offset {
                     return None;
                 }
