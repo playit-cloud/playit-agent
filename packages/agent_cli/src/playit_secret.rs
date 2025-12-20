@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use clap::ArgMatches;
-use playit_api_client::{api::*, PlayitApi};
+use playit_api_client::{PlayitApi, api::*};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::{claim_exchange, claim_generate, ui::UI, CliError, API_BASE};
+use crate::{API_BASE, CliError, claim_exchange, claim_generate, ui::UI};
 
 pub struct PlayitSecret {
     secret: RwLock<Option<String>>,
@@ -145,7 +145,7 @@ impl PlayitSecret {
         }
 
         let claim_code = claim_generate();
-        let secret = claim_exchange(ui, &claim_code, AgentType::Assignable, 0).await?;
+        let secret = claim_exchange(ui, &claim_code, ClaimAgentType::Assignable, 0).await?;
 
         {
             let mut lock = self.secret.write().await;

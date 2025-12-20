@@ -1,7 +1,7 @@
 [package]
 name = "playit-agent-core"
-version = "0.20.1"
-edition = "2021"
+version.workspace = true
+edition = "2024"
 description = "Contains the logic to create a playit.gg agent"
 license = "BSD-2-Clause"
 repository = "https://github.com/playit-cloud/playit-agent"
@@ -24,7 +24,7 @@ futures-util = { workspace = true }
 message-encoding = { workspace = true }
 
 playit-agent-proto = { path = "../agent_proto", version = "1.3.0" }
-playit-api-client = { path = "../api_client", version = "0.1.2" }
+playit-api-client = { path = "../api_client", version = "0.2.0" }
 
 governor = "0.10.0"
 crossbeam = "0.8.4"
