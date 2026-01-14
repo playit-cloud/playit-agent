@@ -115,16 +115,16 @@ pub fn render_stats_bar(frame: &mut Frame, area: Rect, stats: &ConnectionStats) 
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray));
 
+    let inner = block.inner(area);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .margin(1)
         .constraints([
             Constraint::Percentage(25),
             Constraint::Percentage(25),
             Constraint::Percentage(25),
             Constraint::Percentage(25),
         ])
-        .split(block.inner(area));
+        .split(inner);
 
     frame.render_widget(block, area);
 

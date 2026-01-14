@@ -11,7 +11,7 @@ pub mod tui_app;
 pub mod widgets;
 
 pub use log_capture::LogCapture;
-pub use tui_app::{AgentData, TuiApp};
+pub use tui_app::{AgentData, ConnectionStats, TuiApp};
 
 /// UI mode - either TUI (interactive) or log-only (stdout)
 pub enum UI {
@@ -65,6 +65,13 @@ impl UI {
     pub fn update_agent_data(&mut self, data: AgentData) {
         if let UI::Tui(tui) = self {
             tui.update_agent_data(data);
+        }
+    }
+
+    /// Update UI with connection stats (for TUI mode)
+    pub fn update_stats(&mut self, stats: ConnectionStats) {
+        if let UI::Tui(tui) = self {
+            tui.update_stats(stats);
         }
     }
 

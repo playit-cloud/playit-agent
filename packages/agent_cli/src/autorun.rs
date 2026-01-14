@@ -7,6 +7,7 @@ use playit_agent_core::{
         udp::udp_settings::UdpSettings,
     },
     playit_agent::{PlayitAgent, PlayitAgentSettings},
+    stats::AgentStats,
     utils::now_milli,
 };
 use playit_api_client::api::*;
@@ -16,7 +17,7 @@ use crate::{
     API_BASE, CliError,
     playit_secret::PlayitSecret,
     ui::{
-        tui_app::{AccountStatusInfo, AgentData, NoticeInfo, PendingTunnelInfo, TunnelInfo},
+        tui_app::{AccountStatusInfo, AgentData, ConnectionStats, NoticeInfo, PendingTunnelInfo, TunnelInfo},
         UI,
     },
 };
@@ -43,9 +44,12 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
         secret_key: secret_code.clone(),
     };
 
-    let runner = loop {
+    let (runner, stats) = loop {
         match PlayitAgent::new(settings.clone(), lookup.clone()).await {
-            Ok(res) => break res,
+            Ok(res) => {
+                let stats = res.stats();
+                break (res, stats);
+            }
             Err(error) => {
                 error_count += 1;
                 if error_count > 5 {
@@ -67,7 +71,7 @@ pub async fn autorun(ui: &mut UI, mut secret: PlayitSecret) -> Result<(), CliErr
 
     // Run the appropriate UI loop
     if ui.is_tui() {
-        run_tui_loop(ui, api, lookup).await
+        run_tui_loop(ui, api, lookup, stats).await
     } else {
         run_log_only_loop(ui, api, lookup).await
     }
@@ -78,6 +82,7 @@ async fn run_tui_loop(
     ui: &mut UI,
     api: playit_api_client::PlayitApi,
     lookup: Arc<OriginLookup>,
+    stats: AgentStats,
 ) -> Result<(), CliError> {
     let (data_tx, mut data_rx) = mpsc::channel::<AgentData>(4);
 
@@ -205,6 +210,15 @@ async fn run_tui_loop(
         while let Ok(data) = data_rx.try_recv() {
             ui.update_agent_data(data);
         }
+
+        // Update stats from the agent
+        let snapshot = stats.snapshot();
+        ui.update_stats(ConnectionStats {
+            bytes_in: snapshot.bytes_in,
+            bytes_out: snapshot.bytes_out,
+            active_tcp: snapshot.active_tcp,
+            active_udp: snapshot.active_udp,
+        });
 
         // Run one iteration of the TUI
         match ui.tick_tui() {

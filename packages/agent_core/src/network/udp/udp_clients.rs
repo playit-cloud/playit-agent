@@ -18,6 +18,7 @@ use crate::network::{
     origin_lookup::{OriginLookup, OriginTarget},
     proxy_protocol::ProxyProtocolHeader,
 };
+use crate::stats::AgentStats;
 use playit_agent_proto::udp_proto::UdpFlow;
 
 use super::{
@@ -36,6 +37,7 @@ pub struct UdpClients {
     rx: Receiver<UdpReceivedPacket>,
 
     new_client_limiter: DefaultDirectRateLimiter,
+    stats: AgentStats,
 }
 
 struct Client {
@@ -64,7 +66,7 @@ impl UdpClientKey {
 }
 
 impl UdpClients {
-    pub fn new(settings: UdpSettings, lookup: Arc<OriginLookup>, packets: Packets) -> Self {
+    pub fn new(settings: UdpSettings, lookup: Arc<OriginLookup>, packets: Packets, stats: AgentStats) -> Self {
         let (origin_tx, origin_rx) = channel(2048);
 
         let quota = unsafe {
@@ -83,6 +85,7 @@ impl UdpClients {
             },
             rx: origin_rx,
             new_client_limiter: RateLimiter::direct(quota),
+            stats,
         }
     }
 
@@ -108,6 +111,9 @@ impl UdpClients {
                 true
             }
         });
+
+        // Update active UDP count
+        self.stats.set_udp(self.virtual_clients.len() as u32);
     }
 
     pub async fn recv_origin_packet(&mut self) -> UdpReceivedPacket {
@@ -168,6 +174,10 @@ impl UdpClients {
 
         client.from_origin_ts = now_ms;
 
+        // Track bytes going out (from origin to tunnel)
+        let packet_len = packet.packet.len() as u64;
+        self.stats.add_bytes_out(packet_len);
+
         let mut flow = client.flow;
         match &mut flow {
             UdpFlow::V4 {
@@ -219,6 +229,10 @@ impl UdpClients {
             };
             SocketAddrV4::new(ip, port_start + extension.port_offset)
         };
+
+        // Track bytes coming in (from tunnel to origin)
+        let packet_len = packet.len() as u64;
+        self.stats.add_bytes_in(packet_len);
 
         match self.virtual_client_lookup.entry(key) {
             hash_map::Entry::Occupied(o) => {
@@ -325,6 +339,9 @@ impl UdpClients {
 
                 v.insert(slot);
                 entry.insert(client);
+
+                // Update active UDP count for new client
+                self.stats.set_udp(self.virtual_clients.len() as u32);
             }
         }
     }
