@@ -16,6 +16,7 @@ use crate::network::udp::packets::Packets;
 use crate::network::udp::udp_channel::UdpChannel;
 use crate::network::udp::udp_clients::UdpClients;
 use crate::network::udp::udp_settings::UdpSettings;
+use crate::stats::AgentStats;
 use crate::utils::now_milli;
 
 pub struct PlayitAgent {
@@ -26,6 +27,7 @@ pub struct PlayitAgent {
 
     tcp_clients: TcpClients,
     keep_running: Arc<AtomicBool>,
+    stats: AgentStats,
 }
 
 #[derive(Clone, Debug)]
@@ -50,8 +52,9 @@ impl PlayitAgent {
             .await
             .map_err(SetupError::IoError)?;
 
-        let udp_clients = UdpClients::new(settings.udp_settings, lookup.clone(), packets.clone());
-        let tcp_clients = TcpClients::new(settings.tcp_settings, lookup.clone());
+        let stats = AgentStats::new();
+        let udp_clients = UdpClients::new(settings.udp_settings, lookup.clone(), packets.clone(), stats.clone());
+        let tcp_clients = TcpClients::new(settings.tcp_settings, lookup.clone(), stats.clone());
 
         Ok(PlayitAgent {
             control,
@@ -59,11 +62,17 @@ impl PlayitAgent {
             udp_channel,
             tcp_clients,
             keep_running: Arc::new(AtomicBool::new(true)),
+            stats,
         })
     }
 
     pub fn keep_running(&self) -> Arc<AtomicBool> {
         self.keep_running.clone()
+    }
+
+    /// Get a handle to the agent stats
+    pub fn stats(&self) -> AgentStats {
+        self.stats.clone()
     }
 
     pub async fn run(self) {

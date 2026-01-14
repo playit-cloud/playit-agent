@@ -7,6 +7,9 @@ use clap::{Command, arg};
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use rand::Rng;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use autorun::autorun;
@@ -17,6 +20,7 @@ use playit_api_client::{PlayitApi, api::*};
 use playit_secret::PlayitSecret;
 
 use crate::signal_handle::get_signal_handle;
+use crate::ui::log_capture::LogCaptureLayer;
 use crate::ui::{UI, UISettings};
 
 pub static API_BASE: LazyLock<String> =
@@ -54,7 +58,17 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     let log_only = matches.get_flag("stdout");
     let log_path = matches.get_one::<String>("log_path");
 
+    // Create UI first so we can get its log capture
+    let mut ui = UI::new(UISettings {
+        auto_answer: None,
+        log_only,
+    });
+
     /* setup logging */
+    // Get log level from PLAYIT_LOG env var, defaulting to "info"
+    let log_filter = EnvFilter::try_from_env("PLAYIT_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
     let _guard = match (log_only, log_path) {
         (true, Some(_)) => panic!("try to use -s and -l at the same time"),
         (false, Some(path)) => {
@@ -67,6 +81,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             tracing_subscriber::fmt()
                 .with_ansi(false)
                 .with_writer(non_blocking)
+                .with_env_filter(log_filter)
                 .init();
             Some(guard)
         }
@@ -75,16 +90,22 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             tracing_subscriber::fmt()
                 .with_ansi(current_platform() == Platform::Linux)
                 .with_writer(non_blocking)
+                .with_env_filter(log_filter)
                 .init();
             Some(guard)
         }
-        _ => None,
+        (false, None) => {
+            // TUI mode - set up log capture layer with filter
+            if let Some(log_capture) = ui.log_capture() {
+                let capture_layer = LogCaptureLayer::new(log_capture);
+                tracing_subscriber::registry()
+                    .with(log_filter)
+                    .with(capture_layer)
+                    .init();
+            }
+            None
+        }
     };
-
-    let mut ui = UI::new(UISettings {
-        auto_answer: None,
-        log_only,
-    });
 
     match matches.subcommand() {
         None => {

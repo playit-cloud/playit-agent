@@ -2,7 +2,9 @@ use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 
-use super::tcp_pipe::TcpPipe;
+use crate::stats::AgentStats;
+
+use super::tcp_pipe::{PipeDirection, TcpPipe};
 
 pub struct TcpClient {
     tunn_to_origin: TcpPipe,
@@ -11,14 +13,30 @@ pub struct TcpClient {
 
 impl TcpClient {
     pub async fn create(tunn: TcpStream, origin: TcpStream) -> Self {
+        Self::create_with_stats(tunn, origin, None).await
+    }
+
+    pub async fn create_with_stats(tunn: TcpStream, origin: TcpStream, stats: Option<AgentStats>) -> Self {
         let (tunn_read, tunn_write) = tunn.into_split();
         let (origin_read, origin_write) = origin.into_split();
 
         let cancel = CancellationToken::new();
 
         TcpClient {
-            tunn_to_origin: TcpPipe::new_with_cancel(cancel.clone(), tunn_read, origin_write),
-            origin_to_tunn: TcpPipe::new_with_cancel(cancel, origin_read, tunn_write),
+            tunn_to_origin: TcpPipe::new_with_stats(
+                cancel.clone(),
+                tunn_read,
+                origin_write,
+                stats.clone(),
+                PipeDirection::TunnelToOrigin,
+            ),
+            origin_to_tunn: TcpPipe::new_with_stats(
+                cancel,
+                origin_read,
+                tunn_write,
+                stats,
+                PipeDirection::OriginToTunnel,
+            ),
         }
     }
 

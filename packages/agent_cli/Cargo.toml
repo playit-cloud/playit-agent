@@ -26,6 +26,7 @@ clap = { version = "4.5", features = ["derive"] }
 urlencoding = "2.1"
 serde_yaml = "0.9"
 crossterm = "0.28"
+ratatui = "0.29"
 dotenv = "0.15.0"
 
 playit-agent-core = { path = "../agent_core", version = "0.17.0" }

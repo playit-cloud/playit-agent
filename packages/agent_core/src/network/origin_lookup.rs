@@ -146,21 +146,33 @@ impl OriginResource {
                     .and_then(|v| u16::from_str(&v.value).ok())
                     .unwrap_or(443),
             },
-            _ => OriginTarget::Port {
-                ip: tunn
-                    .agent_config
-                    .fields
-                    .iter()
-                    .find(|f| f.name.eq("local_ip"))
-                    .and_then(|v| IpAddr::from_str(&v.value).ok())
-                    .unwrap_or_else(|| "127.0.0.1".parse().unwrap()),
-                port: tunn
+            _ => {
+                // Get local_port from config, or fall back to public port from display_address
+                let local_port = tunn
                     .agent_config
                     .fields
                     .iter()
                     .find(|f| f.name.eq("local_port"))
-                    .and_then(|v| u16::from_str(&v.value).ok())?,
-            },
+                    .and_then(|v| u16::from_str(&v.value).ok())
+                    .or_else(|| {
+                        // Extract port from display_address (format: "hostname:port" or "ip:port")
+                        tunn.display_address
+                            .rsplit(':')
+                            .next()
+                            .and_then(|p| u16::from_str(p).ok())
+                    })?;
+
+                OriginTarget::Port {
+                    ip: tunn
+                        .agent_config
+                        .fields
+                        .iter()
+                        .find(|f| f.name.eq("local_ip"))
+                        .and_then(|v| IpAddr::from_str(&v.value).ok())
+                        .unwrap_or_else(|| "127.0.0.1".parse().unwrap()),
+                    port: local_port,
+                }
+            }
         };
 
         Some(OriginResource {
