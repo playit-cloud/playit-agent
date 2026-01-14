@@ -29,7 +29,7 @@ crossterm = "0.28"
 ratatui = "0.29"
 dotenv = "0.15.0"
 
-playit-agent-core = { path = "../agent_core", version = "0.17.0" }
+playit-agent-core = { path = "../agent_core", version = "0.17.1" }
 playit-agent-proto = { path = "../agent_proto", version = "1.3.0" }
 playit-api-client = { path = "../api_client", version = "0.2.0" }
 # playit-ping-monitor = { path = "../ping_monitor" }
