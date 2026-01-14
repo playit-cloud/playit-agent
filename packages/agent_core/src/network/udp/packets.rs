@@ -34,7 +34,7 @@ unsafe impl Sync for Packet {}
 impl Packets {
     pub fn new(mut packet_count: usize) -> Self {
         packet_count = packet_count.next_power_of_two();
-        let bytes = packet_count.next_power_of_two() * PACKET_LEN;
+        let bytes = packet_count * PACKET_LEN;
 
         let mut buffer = vec![0u8; bytes];
 
@@ -82,8 +82,9 @@ impl Packets {
                 });
             }
 
-            if let Err(error) = self.inner.waiting.push(cx.waker().clone()) {
-                error.wake();
+            if let Err(waker) = self.inner.waiting.push(cx.waker().clone()) {
+                // Queue full - schedule a retry after yielding
+                waker.wake();
             }
 
             Poll::Pending

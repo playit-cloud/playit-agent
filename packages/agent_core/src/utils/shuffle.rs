@@ -10,7 +10,7 @@ pub fn shuffle(mut v: u32) -> u32 {
 pub fn shuffle_slice(mut bytes: &[u8]) -> u32 {
     let mut v = 0;
 
-    while bytes.len() > 4 {
+    while bytes.len() >= 4 {
         v ^= shuffle(bytes.read_u32::<BigEndian>().unwrap());
     }
     for byte in bytes {

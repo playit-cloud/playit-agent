@@ -3,22 +3,25 @@ use std::fmt::{Display, Formatter};
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use clap::{arg, Command};
-use playit_agent_core::agent_control::platform::get_platform;
-use playit_agent_core::agent_control::version::register_version;
-use playit_agent_core::PROTOCOL_VERSION;
+use clap::{Command, arg};
+use playit_agent_core::agent_control::platform::current_platform;
+use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use rand::Rng;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use autorun::autorun;
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::http_client::HttpClientError;
-use playit_api_client::{api::*, PlayitApi};
+use playit_api_client::{PlayitApi, api::*};
 use playit_secret::PlayitSecret;
 
 use crate::signal_handle::get_signal_handle;
-use crate::ui::{UISettings, UI};
+use crate::ui::log_capture::LogCaptureLayer;
+use crate::ui::{UI, UISettings};
 
 pub static API_BASE: LazyLock<String> =
     LazyLock::new(|| dotenv::var("API_BASE").unwrap_or("https://api.playit.gg".to_string()));
@@ -38,19 +41,15 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         let platform = if matches.get_flag("platform_docker") {
             Platform::Docker
         } else {
-            get_platform()
+            current_platform()
         };
 
-        register_version(PlayitAgentVersion {
-            version: AgentVersion {
-                platform,
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                has_expired: false,
-            },
-            official: true,
-            details_website: None,
-            proto_version: PROTOCOL_VERSION,
-        });
+        register_platform(platform);
+
+        help_register_version(
+            env!("CARGO_PKG_VERSION"),
+            "308943e8-faef-4835-a2ba-270351f72aa3",
+        );
     }
 
     let mut secret = PlayitSecret::from_args(&matches).await;
@@ -59,7 +58,17 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     let log_only = matches.get_flag("stdout");
     let log_path = matches.get_one::<String>("log_path");
 
+    // Create UI first so we can get its log capture
+    let mut ui = UI::new(UISettings {
+        auto_answer: None,
+        log_only,
+    });
+
     /* setup logging */
+    // Get log level from PLAYIT_LOG env var, defaulting to "info"
+    let log_filter = EnvFilter::try_from_env("PLAYIT_LOG")
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
     let _guard = match (log_only, log_path) {
         (true, Some(_)) => panic!("try to use -s and -l at the same time"),
         (false, Some(path)) => {
@@ -72,24 +81,31 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             tracing_subscriber::fmt()
                 .with_ansi(false)
                 .with_writer(non_blocking)
+                .with_env_filter(log_filter)
                 .init();
             Some(guard)
         }
         (true, None) => {
             let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
             tracing_subscriber::fmt()
-                .with_ansi(get_platform() == Platform::Linux)
+                .with_ansi(current_platform() == Platform::Linux)
                 .with_writer(non_blocking)
+                .with_env_filter(log_filter)
                 .init();
             Some(guard)
         }
-        _ => None,
+        (false, None) => {
+            // TUI mode - set up log capture layer with filter
+            if let Some(log_capture) = ui.log_capture() {
+                let capture_layer = LogCaptureLayer::new(log_capture);
+                tracing_subscriber::registry()
+                    .with(log_filter)
+                    .with(capture_layer)
+                    .init();
+            }
+            None
+        }
     };
-
-    let mut ui = UI::new(UISettings {
-        auto_answer: None,
-        log_only,
-    });
 
     match matches.subcommand() {
         None => {
@@ -169,42 +185,8 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                     .expect("invalid wait value");
 
                 let secret_key =
-                    claim_exchange(&mut ui, claim_code, AgentType::SelfManaged, wait).await?;
+                    claim_exchange(&mut ui, claim_code, ClaimAgentType::SelfManaged, wait).await?;
                 ui.write_screen(secret_key).await;
-            }
-            _ => return Err(CliError::NotImplemented),
-        },
-        Some(("tunnels", m)) => match m.subcommand() {
-            Some(("prepare", m)) => {
-                unimplemented!()
-                // let api = secret.create_api().await?;
-
-                // let name = m.get_one::<String>("NAME").cloned();
-                // let tunnel_type: Option<TunnelType> = m.get_one::<String>("TUNNEL_TYPE")
-                //     .and_then(|v| serde_json::from_str(&format!("{:?}", v)).ok());
-                // let port_type = serde_json::from_str::<PortType>(&format!("{:?}", m.get_one::<String>("PORT_TYPE").expect("required")))
-                //     .map_err(|_| CliError::InvalidPortType)?;
-                // let port_count = m.get_one::<String>("PORT_COUNT").expect("required")
-                //     .parse::<u16>().map_err(|_| CliError::InvalidPortCount)?;
-                // let exact = m.get_flag("exact");
-                // let ignore_name = m.get_flag("ignore_name");
-
-                // let tunnel_id = tunnels_prepare(
-                //     &api, name, tunnel_type, port_type,
-                //     port_count, exact, ignore_name,
-                // ).await?;
-
-                // println!("{}", tunnel_id);
-            }
-            Some(("list", _)) => {
-                let api = secret.create_api().await?;
-                let response = api
-                    .tunnels_list_json(ReqTunnelsList {
-                        tunnel_id: None,
-                        agent_id: None,
-                    })
-                    .await?;
-                println!("{}", serde_json::to_string_pretty(&response).unwrap());
             }
             _ => return Err(CliError::NotImplemented),
         },
@@ -216,7 +198,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
 pub fn claim_generate() -> String {
     let mut buffer = [0u8; 5];
-    rand::thread_rng().fill(&mut buffer);
+    rand::rng().fill(&mut buffer);
     hex::encode(&buffer)
 }
 
@@ -231,7 +213,7 @@ pub fn claim_url(code: &str) -> Result<String, CliError> {
 pub async fn claim_exchange(
     ui: &mut UI,
     claim_code: &str,
-    agent_type: AgentType,
+    agent_type: ClaimAgentType,
     wait_sec: u32,
 ) -> Result<String, CliError> {
     let api = PlayitApi::create(API_BASE.to_string(), None);
@@ -316,20 +298,6 @@ pub async fn claim_exchange(
     };
 
     Ok(secret_key)
-}
-
-struct TunnelOption {
-    id: Uuid,
-    name: Option<String>,
-    proto: PortType,
-    port_count: u16,
-    tunnel_type: Option<String>,
-    public_address: Option<TunnelAlloc>,
-}
-
-struct TunnelAlloc {
-    address: String,
-    port: u16,
 }
 
 #[derive(Debug)]

@@ -114,8 +114,8 @@ fn shuffle_ip_to_u32(ip: IpAddr) -> u32 {
 
             shuffle(BigEndian::read_u32(&bytes[..4]))
                 ^ shuffle(BigEndian::read_u32(&bytes[4..8]))
-                ^ shuffle(BigEndian::read_u32(&bytes[4..8]))
-                ^ shuffle(BigEndian::read_u32(&bytes[4..8]))
+                ^ shuffle(BigEndian::read_u32(&bytes[8..12]))
+                ^ shuffle(BigEndian::read_u32(&bytes[12..16]))
         }
     }
 }

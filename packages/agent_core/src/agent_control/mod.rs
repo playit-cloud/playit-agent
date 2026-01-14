@@ -1,7 +1,7 @@
 use std::{
     future::Future,
     net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{Arc, atomic::AtomicUsize},
     task::Poll,
 };
 
@@ -12,11 +12,11 @@ use version::get_version;
 
 pub use playit_api_client::api::SignedAgentKey;
 use playit_api_client::{
-    api::{ReqAgentsRoutingGet, ReqProtoRegister},
     PlayitApi,
+    api::{ReqAgentsRoutingGet, ReqProtoRegister},
 };
 
-use crate::utils::error_helper::ErrorHelper;
+use crate::{agent_control::platform::current_platform, utils::error_helper::ErrorHelper};
 
 pub mod errors;
 
@@ -243,9 +243,12 @@ impl AuthResource for AuthApi {
         let res = self
             .client
             .proto_register(ReqProtoRegister {
-                agent_version: get_version(),
+                agent_version: None,
                 client_addr: pong.client_addr,
                 tunnel_addr: pong.tunnel_addr,
+                proto_version: 2,
+                version: get_version(),
+                platform: current_platform(),
             })
             .await
             .with_error(|error| tracing::error!(?error, "failed to sign and register"))?;

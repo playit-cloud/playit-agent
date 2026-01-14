@@ -6,7 +6,17 @@ use std::sync::{
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
+use crate::stats::AgentStats;
 use crate::utils::now_milli;
+
+/// Direction of data flow for stats tracking
+#[derive(Clone, Copy)]
+pub enum PipeDirection {
+    /// Data flowing from tunnel to local origin (bytes in)
+    TunnelToOrigin,
+    /// Data flowing from local origin to tunnel (bytes out)
+    OriginToTunnel,
+}
 
 pub struct TcpPipe {
     cancel: CancellationToken,
@@ -34,6 +44,19 @@ impl TcpPipe {
         from: R,
         to: W,
     ) -> Self {
+        Self::new_with_stats(cancel, from, to, None, PipeDirection::TunnelToOrigin)
+    }
+
+    pub fn new_with_stats<
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    >(
+        cancel: CancellationToken,
+        from: R,
+        to: W,
+        stats: Option<AgentStats>,
+        direction: PipeDirection,
+    ) -> Self {
         let shared = Arc::new(Shared {
             last_activity: AtomicU64::new(now_milli()),
             bytes_written: AtomicU64::new(0),
@@ -47,6 +70,8 @@ impl TcpPipe {
                 shared: this.shared.clone(),
                 from,
                 to,
+                stats,
+                direction,
             }
             .start(),
         );
@@ -88,6 +113,8 @@ struct Worker<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> {
     shared: Arc<Shared>,
     from: R,
     to: W,
+    stats: Option<AgentStats>,
+    direction: PipeDirection,
 }
 
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
@@ -130,6 +157,15 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
             self.shared
                 .bytes_written
                 .fetch_add(byte_count as u64, Ordering::AcqRel);
+
+            // Update global stats if provided
+            if let Some(ref stats) = self.stats {
+                let bytes = byte_count as u64;
+                match self.direction {
+                    PipeDirection::TunnelToOrigin => stats.add_bytes_in(bytes),
+                    PipeDirection::OriginToTunnel => stats.add_bytes_out(bytes),
+                }
+            }
         }
 
         self.shared.last_activity.store(u64::MAX, Ordering::Release);

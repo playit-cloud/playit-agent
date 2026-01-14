@@ -16,6 +16,7 @@ use crate::{
     network::{
         lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
     },
+    stats::AgentStats,
     utils::now_milli,
 };
 
@@ -37,6 +38,7 @@ struct Worker {
     events_tx: Sender<Event>,
     cancel: CancellationToken,
     settings: TcpSettings,
+    stats: AgentStats,
 
     clients: Vec<Client>,
     next_client_id: u64,
@@ -90,7 +92,7 @@ enum Event {
 }
 
 impl TcpClients {
-    pub fn new(settings: TcpSettings, lookup: Arc<OriginLookup>) -> Self {
+    pub fn new(settings: TcpSettings, lookup: Arc<OriginLookup>, stats: AgentStats) -> Self {
         let quota = unsafe {
             Quota::per_second(NonZeroU32::new_unchecked(settings.new_client_ratelimit)).allow_burst(
                 NonZeroU32::new_unchecked(settings.new_client_ratelimit_burst),
@@ -108,6 +110,7 @@ impl TcpClients {
                 events_tx: events_tx.clone(),
                 cancel: cancel.clone(),
                 settings,
+                stats,
                 clients: Vec::with_capacity(32),
             }
             .start(),
@@ -218,6 +221,7 @@ impl Worker {
                     let setting_tcp_no_delay = self.settings.tcp_no_delay;
 
                     let event_tx = self.events_tx.clone();
+                    let stats = self.stats.clone();
                     tokio::spawn(async move {
                         /* connect to tunnel server */
 
@@ -357,7 +361,7 @@ impl Worker {
                             }
                         }
 
-                        let tcp_client = TcpClient::create(tunn_stream, origin_stream).await;
+                        let tcp_client = TcpClient::create_with_stats(tunn_stream, origin_stream, Some(stats)).await;
                         let _ = event_tx
                             .send(Event::ConnectedClient(Client {
                                 id: client_id,
@@ -377,6 +381,7 @@ impl Worker {
                 }
                 Event::ConnectedClient(client) => {
                     self.clients.push(client);
+                    self.stats.set_tcp(self.clients.len() as u32);
                 }
                 Event::ClearOld => {
                     let now = now_milli();
@@ -403,6 +408,9 @@ impl Worker {
 
                         true
                     });
+
+                    // Update active TCP connection count
+                    self.stats.set_tcp(self.clients.len() as u32);
                 }
             }
         }

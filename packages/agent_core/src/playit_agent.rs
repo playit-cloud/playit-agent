@@ -16,6 +16,7 @@ use crate::network::udp::packets::Packets;
 use crate::network::udp::udp_channel::UdpChannel;
 use crate::network::udp::udp_clients::UdpClients;
 use crate::network::udp::udp_settings::UdpSettings;
+use crate::stats::AgentStats;
 use crate::utils::now_milli;
 
 pub struct PlayitAgent {
@@ -26,6 +27,7 @@ pub struct PlayitAgent {
 
     tcp_clients: TcpClients,
     keep_running: Arc<AtomicBool>,
+    stats: AgentStats,
 }
 
 #[derive(Clone, Debug)]
@@ -50,8 +52,9 @@ impl PlayitAgent {
             .await
             .map_err(SetupError::IoError)?;
 
-        let udp_clients = UdpClients::new(settings.udp_settings, lookup.clone(), packets.clone());
-        let tcp_clients = TcpClients::new(settings.tcp_settings, lookup.clone());
+        let stats = AgentStats::new();
+        let udp_clients = UdpClients::new(settings.udp_settings, lookup.clone(), packets.clone(), stats.clone());
+        let tcp_clients = TcpClients::new(settings.tcp_settings, lookup.clone(), stats.clone());
 
         Ok(PlayitAgent {
             control,
@@ -59,11 +62,17 @@ impl PlayitAgent {
             udp_channel,
             tcp_clients,
             keep_running: Arc::new(AtomicBool::new(true)),
+            stats,
         })
     }
 
     pub fn keep_running(&self) -> Arc<AtomicBool> {
         self.keep_running.clone()
+    }
+
+    /// Get a handle to the agent stats
+    pub fn stats(&self) -> AgentStats {
+        self.stats.clone()
     }
 
     pub async fn run(self) {
@@ -134,7 +143,11 @@ impl PlayitAgent {
                         udp_clients.handle_tunneled_packet(now_milli(), flow, packet).await;
                     }
                     session_opt = udp_session_rx.recv() => {
-                        udp_channel.update_session(session_opt.unwrap()).await;
+                        let Some(session) = session_opt else {
+                            tracing::warn!("udp session channel closed");
+                            break;
+                        };
+                        udp_channel.update_session(session).await;
                     }
                     _ = tokio::time::sleep_until(next_clear) => {
                         next_clear = Instant::now() + Duration::from_secs(16);

@@ -8,7 +8,7 @@ pub async fn load_config<T: DeserializeOwned>(path: &str) -> Option<T> {
     }
 
     if path.ends_with(".toml") {
-        return Some(toml::from_str(&data).unwrap());
+        return toml::from_str(&data).ok();
     }
 
     if path.ends_with(".yaml") || path.ends_with(".yml") {

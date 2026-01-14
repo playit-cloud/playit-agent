@@ -1,11 +1,11 @@
 use std::time::Duration;
 
 use clap::ArgMatches;
-use playit_api_client::{api::*, PlayitApi};
+use playit_api_client::{PlayitApi, api::*};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::{claim_exchange, claim_generate, ui::UI, CliError, API_BASE};
+use crate::{API_BASE, CliError, claim_exchange, claim_generate, ui::UI};
 
 pub struct PlayitSecret {
     secret: RwLock<Option<String>>,
@@ -145,7 +145,7 @@ impl PlayitSecret {
         }
 
         let claim_code = claim_generate();
-        let secret = claim_exchange(ui, &claim_code, AgentType::Assignable, 0).await?;
+        let secret = claim_exchange(ui, &claim_code, ClaimAgentType::Assignable, 0).await?;
 
         {
             let mut lock = self.secret.write().await;
@@ -226,14 +226,14 @@ impl PlayitSecret {
         let mut path = matches.get_one::<String>("secret_path").cloned();
 
         if secret.is_none() && path.is_none() {
-            if let Some(secret_env) = option_env!("PLAYIT_SECRET") {
-                secret.replace(secret_env.to_string());
+            if let Ok(secret_env) = std::env::var("PLAYIT_SECRET") {
+                secret.replace(secret_env);
             }
         }
 
         if path.is_none() {
-            if let Some(path_env) = option_env!("PLAYIT_SECRET_PATH") {
-                path.replace(path_env.to_string());
+            if let Ok(path_env) = std::env::var("PLAYIT_SECRET_PATH") {
+                path.replace(path_env);
             }
         }
 
