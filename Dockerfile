@@ -42,5 +42,6 @@ COPY --from=build-env /src/playit-agent/target/release/playit-cli /usr/local/bin
 RUN mkdir /playit
 COPY docker/entrypoint.sh /playit/entrypoint.sh
 RUN chmod +x /playit/entrypoint.sh
+STOPSIGNAL SIGINT
 
 ENTRYPOINT ["/playit/entrypoint.sh"]
