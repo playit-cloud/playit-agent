@@ -279,20 +279,6 @@ pub async fn claim_exchange(
     Ok(secret_key)
 }
 
-struct TunnelOption {
-    id: Uuid,
-    name: Option<String>,
-    proto: PortType,
-    port_count: u16,
-    tunnel_type: Option<String>,
-    public_address: Option<TunnelAlloc>,
-}
-
-struct TunnelAlloc {
-    address: String,
-    port: u16,
-}
-
 #[derive(Debug)]
 pub enum CliError {
     InvalidClaimCode,

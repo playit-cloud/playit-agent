@@ -609,7 +609,7 @@ mod test {
     use std::fmt::Debug;
     use std::net::{IpAddr, Ipv4Addr};
 
-    use rand::{thread_rng, Rng, RngCore};
+    use rand::{rng, Rng, RngCore};
 
     use crate::rpc::ControlRpcMessage;
     use crate::PortProto;
@@ -677,7 +677,7 @@ mod test {
 
     #[test]
     fn fuzzy_test_control_request() {
-        let mut rng = thread_rng();
+        let mut rng = rng();
         let mut buffer = vec![0u8; 2048];
 
         for _ in 0..100000 {
@@ -698,7 +698,7 @@ mod test {
 
     #[test]
     fn fuzzy_test_control_response() {
-        let mut rng = thread_rng();
+        let mut rng = rng();
         let mut buffer = vec![0u8; 2048];
 
         for _ in 0..100000 {

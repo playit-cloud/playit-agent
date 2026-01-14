@@ -9,7 +9,6 @@ use playit_agent_core::{
     playit_agent::{PlayitAgent, PlayitAgentSettings},
     utils::now_milli,
 };
-use playit_agent_proto::PortProto;
 use playit_api_client::api::*;
 // use playit_ping_monitor::PingMonitor;
 

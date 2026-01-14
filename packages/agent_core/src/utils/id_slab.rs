@@ -117,7 +117,7 @@ impl<T> IdSlab<T> {
         Ok(entry.id)
     }
 
-    pub fn vacant_entry(&mut self) -> Option<IdSlabVacantEntry<T>> {
+    pub fn vacant_entry(&mut self) -> Option<IdSlabVacantEntry<'_, T>> {
         let slot = self.free_slots.pop()?;
         let id = self.entries[slot].id & EMPTY_BIT_NEG;
 
@@ -128,7 +128,7 @@ impl<T> IdSlab<T> {
         })
     }
 
-    pub fn iter(&self) -> IdSlabIter<T> {
+    pub fn iter(&self) -> IdSlabIter<'_, T> {
         IdSlabIter {
             slab: self,
             slot: 0,
@@ -136,7 +136,7 @@ impl<T> IdSlab<T> {
         }
     }
 
-    pub fn iter_mut(&mut self) -> IdSlabIterMut<T> {
+    pub fn iter_mut(&mut self) -> IdSlabIterMut<'_, T> {
         let remaining = self.len();
         IdSlabIterMut {
             slab: self,
@@ -230,7 +230,7 @@ impl<'a, T> Iterator for IdSlabIterMut<'a, T> {
 mod test {
     use std::collections::HashSet;
 
-    use rand::{seq::SliceRandom, thread_rng};
+    use rand::{rng, seq::SliceRandom};
 
     use super::IdSlab;
 
@@ -251,7 +251,7 @@ mod test {
                 assert_eq!(slab.len(), ids.len() + 1);
             }
 
-            ids.shuffle(&mut thread_rng());
+            ids.shuffle(&mut rng());
             while 7 < ids.len() {
                 let id = ids.pop().unwrap();
 
