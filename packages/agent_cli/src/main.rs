@@ -58,10 +58,13 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     let log_only = matches.get_flag("stdout");
     let log_path = matches.get_one::<String>("log_path");
 
+    // Use log-only mode if stdout flag is set OR if a log file path is specified
+    let use_log_only = log_only || log_path.is_some();
+
     // Create UI first so we can get its log capture
     let mut ui = UI::new(UISettings {
         auto_answer: None,
-        log_only,
+        log_only: use_log_only,
     });
 
     /* setup logging */
