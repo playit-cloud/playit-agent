@@ -1,25 +1,25 @@
-use std::io::stdout;
+use std::sync::Arc;
 
-use crossterm::{
-    cursor::RestorePosition,
-    event::{self, Event, KeyCode, KeyEvent},
-    style::{Print, ResetColor},
-    terminal::Clear,
-    ExecutableCommand,
-};
+use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use playit_agent_core::utils::now_milli;
 
 use crate::signal_handle::get_signal_handle;
 use crate::CliError;
 
-pub struct UI {
-    auto_answer: Option<bool>,
-    last_display: Option<(u64, String)>,
-    log_only: bool,
-    wrote_content: bool,
+pub mod log_capture;
+pub mod tui_app;
+pub mod widgets;
+
+pub use log_capture::LogCapture;
+pub use tui_app::{AgentData, TuiApp};
+
+/// UI mode - either TUI (interactive) or log-only (stdout)
+pub enum UI {
+    Tui(Box<TuiApp>),
+    LogOnly(LogOnlyUI),
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct UISettings {
     pub auto_answer: Option<bool>,
     pub log_only: bool,
@@ -27,11 +27,92 @@ pub struct UISettings {
 
 impl UI {
     pub fn new(settings: UISettings) -> Self {
-        UI {
+        if settings.log_only {
+            UI::LogOnly(LogOnlyUI::new(settings))
+        } else {
+            UI::Tui(Box::new(TuiApp::new(settings)))
+        }
+    }
+
+    pub async fn write_screen<T: std::fmt::Display>(&mut self, content: T) {
+        match self {
+            UI::Tui(tui) => tui.write_screen(content).await,
+            UI::LogOnly(log_only) => log_only.write_screen(content).await,
+        }
+    }
+
+    pub async fn yn_question<T: std::fmt::Display + Send + 'static>(
+        &mut self,
+        question: T,
+        default_yes: Option<bool>,
+    ) -> Result<bool, CliError> {
+        match self {
+            UI::Tui(tui) => tui.yn_question(question, default_yes).await,
+            UI::LogOnly(log_only) => log_only.yn_question(question, default_yes).await,
+        }
+    }
+
+    pub async fn write_error<M: std::fmt::Display, E: std::fmt::Debug>(
+        &mut self,
+        msg: M,
+        error: E,
+    ) {
+        self.write_screen(format!("Got Error\nMSG: {}\nError: {:?}\n", msg, error))
+            .await
+    }
+
+    /// Update UI with agent data (for TUI mode)
+    pub fn update_agent_data(&mut self, data: AgentData) {
+        if let UI::Tui(tui) = self {
+            tui.update_agent_data(data);
+        }
+    }
+
+    /// Get the log capture for TUI mode
+    pub fn log_capture(&self) -> Option<Arc<LogCapture>> {
+        if let UI::Tui(tui) = self {
+            Some(tui.log_capture())
+        } else {
+            None
+        }
+    }
+
+    /// Run one iteration of the TUI event loop
+    /// Returns Ok(true) if should continue, Ok(false) if should quit
+    pub fn tick_tui(&mut self) -> Result<bool, CliError> {
+        if let UI::Tui(tui) = self {
+            tui.tick()
+        } else {
+            Ok(true)
+        }
+    }
+
+    /// Shutdown the TUI
+    pub fn shutdown_tui(&mut self) -> Result<(), CliError> {
+        if let UI::Tui(tui) = self {
+            tui.shutdown()
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Check if TUI mode is active
+    pub fn is_tui(&self) -> bool {
+        matches!(self, UI::Tui(_))
+    }
+}
+
+/// Log-only UI mode (original behavior)
+pub struct LogOnlyUI {
+    auto_answer: Option<bool>,
+    last_display: Option<(u64, String)>,
+}
+
+impl LogOnlyUI {
+    pub fn new(settings: UISettings) -> Self {
+        LogOnlyUI {
             auto_answer: settings.auto_answer,
-            log_only: settings.log_only,
             last_display: None,
-            wrote_content: false,
         }
     }
 
@@ -78,39 +159,6 @@ impl UI {
             tracing::info!("{}", content.lines().next().unwrap());
             self.last_display = Some((now_milli(), content));
         }
-
-        if self.log_only {
-            return;
-        }
-
-        let content_ref = &content;
-        let res: std::io::Result<()> = (|| {
-            let cleared = if self.wrote_content {
-                stdout()
-                    .execute(Clear(crossterm::terminal::ClearType::All))
-                    .is_ok()
-            } else {
-                true
-            };
-
-            if !cleared {
-                stdout().execute(Print(format!("\n{}", content_ref)))?;
-            } else {
-                stdout()
-                    .execute(RestorePosition)?
-                    .execute(ResetColor)?
-                    .execute(Print(content_ref))?;
-            }
-
-            Ok(())
-        })();
-
-        if let Err(error) = res {
-            tracing::error!(?error, "failed to write to screen");
-            println!("{}", content);
-        }
-
-        self.wrote_content = true;
     }
 
     pub async fn yn_question<T: std::fmt::Display + Send + 'static>(
@@ -187,14 +235,5 @@ impl UI {
         }
 
         Err(CliError::AnswerNotProvided)
-    }
-
-    pub async fn write_error<M: std::fmt::Display, E: std::fmt::Debug>(
-        &mut self,
-        msg: M,
-        error: E,
-    ) {
-        self.write_screen(format!("Got Error\nMSG: {}\nError: {:?}\n", msg, error))
-            .await
     }
 }
