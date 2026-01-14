@@ -167,12 +167,12 @@ impl Task {
 
             let Some(session) = self.session.as_ref() else {
                 udp_errors().recv_with_no_session.inc();
-                return;
+                continue;
             };
 
             if session.tunnel_addr != source {
                 udp_errors().recv_source_no_match.inc();
-                return;
+                continue;
             }
 
             packet.set_len(bytes).expect("failed to update packet len");
@@ -212,7 +212,7 @@ impl Task {
                 if old != details {
                     true
                 } else {
-                    5_000 < now_milli() - self.shared.establish_rx_epoch.load(Ordering::Relaxed)
+                    5_000 < now_milli().saturating_sub(self.shared.establish_rx_epoch.load(Ordering::Relaxed))
                 }
             }
         };

@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, time::Duration};
+use std::net::SocketAddr;
 
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
@@ -52,7 +52,11 @@ impl UdpReceiver {
 
     pub fn is_closed(&mut self) -> bool {
         if !self.closed {
-            self.closed = self.end.as_mut().unwrap().try_recv().is_ok();
+            self.closed = match self.end.as_mut().unwrap().try_recv() {
+                Ok(_) => true,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => true,
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => false,
+            };
         }
         self.closed
     }
@@ -88,15 +92,9 @@ pub struct UdpReceivedPacket {
 impl<I: PacketRx> Task<I> {
     async fn start(self) {
         'rx_loop: loop {
-            let mut packet = loop {
-                if let Some(packet) = self.packets.allocate() {
-                    break packet;
-                }
-
-                tokio::select! {
-                    _ = self.cancel.cancelled() => break 'rx_loop,
-                    _ = tokio::time::sleep(Duration::from_millis(30)) => continue,
-                }
+            let mut packet = tokio::select! {
+                _ = self.cancel.cancelled() => break 'rx_loop,
+                p = self.packets.allocate_wait() => p,
             };
 
             let res = tokio::select! {
