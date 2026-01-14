@@ -226,14 +226,14 @@ impl PlayitSecret {
         let mut path = matches.get_one::<String>("secret_path").cloned();
 
         if secret.is_none() && path.is_none() {
-            if let Some(secret_env) = option_env!("PLAYIT_SECRET") {
-                secret.replace(secret_env.to_string());
+            if let Ok(secret_env) = std::env::var("PLAYIT_SECRET") {
+                secret.replace(secret_env);
             }
         }
 
         if path.is_none() {
-            if let Some(path_env) = option_env!("PLAYIT_SECRET_PATH") {
-                path.replace(path_env.to_string());
+            if let Ok(path_env) = std::env::var("PLAYIT_SECRET_PATH") {
+                path.replace(path_env);
             }
         }
 

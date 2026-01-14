@@ -88,8 +88,8 @@ impl UdpClients {
 
     pub fn clear_old(&mut self, now_ms: u64) {
         self.virtual_clients.retain(|slot, client| {
-            let since_origin = now_ms - client.from_origin_ts;
-            let since_tunnel = now_ms - client.from_tunnel_ts;
+            let since_origin = now_ms.saturating_sub(client.from_origin_ts);
+            let since_tunnel = now_ms.saturating_sub(client.from_tunnel_ts);
 
             let remove = {
                 /* both haven't seen action in over 1m */

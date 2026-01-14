@@ -134,7 +134,11 @@ impl PlayitAgent {
                         udp_clients.handle_tunneled_packet(now_milli(), flow, packet).await;
                     }
                     session_opt = udp_session_rx.recv() => {
-                        udp_channel.update_session(session_opt.unwrap()).await;
+                        let Some(session) = session_opt else {
+                            tracing::warn!("udp session channel closed");
+                            break;
+                        };
+                        udp_channel.update_session(session).await;
                     }
                     _ = tokio::time::sleep_until(next_clear) => {
                         next_clear = Instant::now() + Duration::from_secs(16);
