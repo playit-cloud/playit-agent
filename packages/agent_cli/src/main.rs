@@ -7,9 +7,9 @@ use clap::{Parser, Subcommand};
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use rand::Rng;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use autorun::autorun;
@@ -74,6 +74,10 @@ enum Commands {
         /// Install as system-wide service (requires admin/root)
         #[arg(long)]
         system: bool,
+
+        /// Print logs to stdout instead of using TUI
+        #[arg(short = 's', long)]
+        stdout: bool,
     },
 
     /// Stop the background service
@@ -132,7 +136,10 @@ enum Commands {
     },
 
     /// Setting up a new playit agent
-    #[command(about = "Setting up a new playit agent", long_about = "Provides a URL that can be visited to claim the agent and generate a secret key")]
+    #[command(
+        about = "Setting up a new playit agent",
+        long_about = "Provides a URL that can be visited to claim the agent and generate a secret key"
+    )]
     Claim {
         #[command(subcommand)]
         command: ClaimCommands,
@@ -231,18 +238,31 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         );
     }
 
-    let mut secret = PlayitSecret::from_args(
-        cli.secret.clone(),
-        cli.secret_path.clone(),
-        cli.secret_wait,
-    ).await;
+    let mut secret =
+        PlayitSecret::from_args(cli.secret.clone(), cli.secret_path.clone(), cli.secret_wait).await;
     let _ = secret.with_default_path().await;
+
+    // Handle run-service command first - it sets up its own logging
+    if let Some(Commands::RunService { user }) = &cli.command {
+        let system_mode = !user;
+        if let Err(e) = service::run_daemon(system_mode).await {
+            eprintln!("Daemon error: {}", e);
+            return Ok(std::process::ExitCode::FAILURE);
+        }
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
 
     let log_only = cli.stdout;
     let log_path = cli.log_path.as_ref();
 
-    // Use log-only mode if stdout flag is set OR if a log file path is specified
-    let use_log_only = log_only || log_path.is_some();
+    // Check if Start command has --stdout flag
+    let start_stdout = matches!(
+        &cli.command,
+        Some(Commands::Start { stdout: true, .. } | Commands::RunEmbedded)
+    );
+
+    // Use log-only mode if stdout flag is set OR if a log file path is specified OR if start --stdout
+    let use_log_only = log_only || log_path.is_some() || start_stdout;
 
     // Create UI first so we can get its log capture
     let mut ui = UI::new(UISettings {
@@ -252,12 +272,12 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
     /* setup logging */
     // Get log level from PLAYIT_LOG env var, defaulting to "info"
-    let log_filter = EnvFilter::try_from_env("PLAYIT_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let log_filter =
+        EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let _guard = match (log_only, log_path) {
-        (true, Some(_)) => panic!("try to use -s and -l at the same time"),
-        (false, Some(path)) => {
+    let _guard = match (use_log_only, log_path) {
+        (true, Some(path)) => {
+            // Log to file
             let write_path = match path.rsplit_once("/") {
                 Some((dir, file)) => tracing_appender::rolling::never(dir, file),
                 None => tracing_appender::rolling::never(".", path),
@@ -272,6 +292,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             Some(guard)
         }
         (true, None) => {
+            // Log to stdout (for -s flag, run-embedded, or start -s)
             let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
             tracing_subscriber::fmt()
                 .with_ansi(current_platform() == Platform::Linux)
@@ -279,6 +300,9 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 .with_env_filter(log_filter)
                 .init();
             Some(guard)
+        }
+        (false, Some(_)) => {
+            panic!("log_path set but use_log_only is false - this shouldn't happen");
         }
         (false, None) => {
             // TUI mode - set up log capture layer with filter
@@ -295,11 +319,11 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
     match cli.command {
         None => {
-            // Default behavior: start service and attach
-            run_start_command(&mut ui, false).await?;
+            // Default behavior: start service and attach (use TUI)
+            run_start_command(&mut ui, false, false).await?;
         }
-        Some(Commands::Start { system }) => {
-            run_start_command(&mut ui, system).await?;
+        Some(Commands::Start { system, stdout }) => {
+            run_start_command(&mut ui, system, stdout).await?;
         }
         Some(Commands::Stop { system }) => {
             run_stop_command(system).await?;
@@ -314,16 +338,16 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             run_uninstall_command(system)?;
         }
         Some(Commands::RunEmbedded) => {
-            // Run agent directly (like old start behavior)
-            autorun(&mut ui, secret).await?;
+            // Run agent directly without TUI, printing logs to stdout
+            let mut embedded_ui = UI::new(UISettings {
+                auto_answer: Some(true),
+                log_only: true,
+            });
+            autorun(&mut embedded_ui, secret).await?;
         }
-        Some(Commands::RunService { user }) => {
-            // Run as background daemon
-            let system_mode = !user;
-            if let Err(e) = service::run_daemon(system_mode).await {
-                tracing::error!("Daemon error: {}", e);
-                return Err(CliError::ServiceError(e.to_string()));
-            }
+        Some(Commands::RunService { .. }) => {
+            // Handled above before logging setup
+            unreachable!("RunService is handled before logging setup");
         }
         Some(Commands::Version) => println!("{}", env!("CARGO_PKG_VERSION")),
         #[cfg(target_os = "linux")]
@@ -353,7 +377,8 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 cli.secret.clone(),
                 cli.secret_path.clone(),
                 cli.secret_wait,
-            ).await;
+            )
+            .await;
             secrets.with_default_path().await;
 
             let path = secrets.get_path().unwrap();
@@ -369,7 +394,8 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 cli.secret.clone(),
                 cli.secret_path.clone(),
                 cli.secret_wait,
-            ).await;
+            )
+            .await;
             secrets.with_default_path().await;
             let path = secrets.get_path().unwrap();
             println!("{}", path);
@@ -411,18 +437,26 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 }
 
 /// Run the start command: start service and attach to receive updates
-async fn run_start_command(ui: &mut UI, system_mode: bool) -> Result<(), CliError> {
+async fn run_start_command(
+    ui: &mut UI,
+    system_mode: bool,
+    stdout_mode: bool,
+) -> Result<(), CliError> {
     use crate::service::ipc::{IpcClient, ServiceEvent};
     use crate::service::manager::ensure_service_running;
 
     // Ensure service is running
-    ui.write_screen("Starting playit service...").await;
+    ui.write_screen("Ensuring playit service is running...")
+        .await;
 
     if let Err(e) = ensure_service_running(system_mode).await {
-        return Err(CliError::ServiceError(format!("Failed to start service: {}", e)));
+        return Err(CliError::ServiceError(format!(
+            "Failed to start service: {}",
+            e
+        )));
     }
 
-    tracing::info!("Service is running");
+    ui.write_screen("Service is running").await;
 
     // Connect to service via IPC
     ui.write_screen("Connecting to service...").await;
@@ -430,7 +464,10 @@ async fn run_start_command(ui: &mut UI, system_mode: bool) -> Result<(), CliErro
     let mut client = match IpcClient::connect(system_mode).await {
         Ok(client) => client,
         Err(e) => {
-            return Err(CliError::IpcError(format!("Failed to connect to service: {}", e)));
+            return Err(CliError::IpcError(format!(
+                "Failed to connect to service: {}",
+                e
+            )));
         }
     };
 
@@ -449,17 +486,24 @@ async fn run_start_command(ui: &mut UI, system_mode: bool) -> Result<(), CliErro
                     Ok(event) => {
                         match event {
                             ServiceEvent::AgentData { .. } => {
-                                if let Some(data) = event.to_agent_data() {
-                                    ui.update_agent_data(data);
+                                if !stdout_mode {
+                                    if let Some(data) = event.to_agent_data() {
+                                        ui.update_agent_data(data);
+                                    }
                                 }
                             }
                             ServiceEvent::Stats { .. } => {
-                                if let Some(stats) = event.to_connection_stats() {
-                                    ui.update_stats(stats);
+                                if !stdout_mode {
+                                    if let Some(stats) = event.to_connection_stats() {
+                                        ui.update_stats(stats);
+                                    }
                                 }
                             }
                             ServiceEvent::Log { level, target, message, timestamp } => {
-                                if let Some(log_capture) = ui.log_capture() {
+                                if stdout_mode {
+                                    // Print log directly to stdout
+                                    println!("{} [{}] {}: {}", timestamp, level.to_uppercase(), target, message);
+                                } else if let Some(log_capture) = ui.log_capture() {
                                     use crate::ui::log_capture::{LogEntry, LogLevel};
                                     let log_level = match level.as_str() {
                                         "error" | "ERROR" => LogLevel::Error,
@@ -485,16 +529,20 @@ async fn run_start_command(ui: &mut UI, system_mode: bool) -> Result<(), CliErro
                         }
                     }
                     Err(e) => {
-                        tracing::error!("IPC error: {}", e);
-                        ui.write_screen(format!("Connection to service lost: {}", e)).await;
+                        if stdout_mode {
+                            eprintln!("Connection to service lost: {}", e);
+                        } else {
+                            tracing::error!("IPC error: {}", e);
+                            ui.write_screen(format!("Connection to service lost: {}", e)).await;
+                        }
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         break;
                     }
                 }
             }
-            // Handle TUI tick
+            // Handle TUI tick (only when not in stdout mode)
             _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                if ui.is_tui() {
+                if !stdout_mode && ui.is_tui() {
                     match ui.tick_tui() {
                         Ok(true) => {} // Continue
                         Ok(false) => {
@@ -513,7 +561,7 @@ async fn run_start_command(ui: &mut UI, system_mode: bool) -> Result<(), CliErro
             }
             // Handle Ctrl+C
             _ = tokio::signal::ctrl_c() => {
-                if ui.is_tui() {
+                if !stdout_mode && ui.is_tui() {
                     ui.shutdown_tui()?;
                 }
                 println!("\nDetached from service. Service continues running in background.");
@@ -585,7 +633,11 @@ async fn run_status_command(system_mode: bool) -> Result<(), CliError> {
     };
 
     match client.status().await {
-        Ok(service::ipc::ServiceEvent::Status { running, pid, uptime_secs }) => {
+        Ok(service::ipc::ServiceEvent::Status {
+            running,
+            pid,
+            uptime_secs,
+        }) => {
             println!("Service status:");
             println!("  Running: {}", running);
             println!("  PID: {}", pid);
@@ -607,7 +659,8 @@ fn run_install_command(system_mode: bool) -> Result<(), CliError> {
     let controller = service::ServiceController::new(system_mode)
         .map_err(|e| CliError::ServiceError(e.to_string()))?;
 
-    controller.install()
+    controller
+        .install()
         .map_err(|e| CliError::ServiceError(e.to_string()))?;
 
     let mode_str = if system_mode { "system" } else { "user" };
@@ -625,7 +678,8 @@ fn run_uninstall_command(system_mode: bool) -> Result<(), CliError> {
     // Try to stop first
     let _ = controller.stop();
 
-    controller.uninstall()
+    controller
+        .uninstall()
         .map_err(|e| CliError::ServiceError(e.to_string()))?;
 
     println!("Service uninstalled successfully");

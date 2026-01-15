@@ -7,8 +7,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use interprocess::local_socket::{
-    tokio::{prelude::*, Stream},
     GenericFilePath, GenericNamespaced, ListenerOptions, ToFsName, ToNsName,
+    tokio::{Stream, prelude::*},
 };
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
@@ -333,14 +333,18 @@ pub async fn is_instance_running(system_mode: bool) -> bool {
 async fn try_connect(socket_path: &str) -> Result<Stream, IpcError> {
     // Try namespaced socket first (for abstract sockets on Linux)
     if socket_path.starts_with('@') {
-        let name = socket_path[1..].to_ns_name::<GenericNamespaced>()
-            .map_err(|e| IpcError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
+        let name = socket_path[1..]
+            .to_ns_name::<GenericNamespaced>()
+            .map_err(|e| {
+                IpcError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidInput, e))
+            })?;
         Stream::connect(name)
             .await
             .map_err(IpcError::ConnectionFailed)
     } else {
-        let name = socket_path.to_fs_name::<GenericFilePath>()
-            .map_err(|e| IpcError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
+        let name = socket_path.to_fs_name::<GenericFilePath>().map_err(|e| {
+            IpcError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidInput, e))
+        })?;
         Stream::connect(name)
             .await
             .map_err(IpcError::ConnectionFailed)
@@ -365,6 +369,18 @@ impl IpcServer {
         system_mode: bool,
         cancel_token: tokio_util::sync::CancellationToken,
     ) -> Result<Self, IpcError> {
+        let (event_tx, _) = broadcast::channel(256);
+        Self::new_with_sender(system_mode, cancel_token, event_tx).await
+    }
+
+    /// Create a new IPC server with an existing broadcast sender
+    ///
+    /// This allows sharing the event channel with other components (like logging)
+    pub async fn new_with_sender(
+        system_mode: bool,
+        cancel_token: tokio_util::sync::CancellationToken,
+        event_tx: broadcast::Sender<ServiceEvent>,
+    ) -> Result<Self, IpcError> {
         use playit_agent_core::utils::now_milli;
 
         let socket_path = get_socket_path(system_mode);
@@ -379,7 +395,6 @@ impl IpcServer {
             let _ = std::fs::remove_file(&socket_path);
         }
 
-        let (event_tx, _) = broadcast::channel(256);
         let start_time = now_milli();
 
         Ok(IpcServer {
@@ -427,17 +442,27 @@ impl IpcServer {
         Ok(())
     }
 
-    async fn create_listener(&self) -> Result<interprocess::local_socket::tokio::Listener, IpcError> {
+    async fn create_listener(
+        &self,
+    ) -> Result<interprocess::local_socket::tokio::Listener, IpcError> {
         if self.socket_path.starts_with('@') {
-            let name = self.socket_path[1..].to_ns_name::<GenericNamespaced>()
-                .map_err(|e| IpcError::BindFailed(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
+            let name = self.socket_path[1..]
+                .to_ns_name::<GenericNamespaced>()
+                .map_err(|e| {
+                    IpcError::BindFailed(io::Error::new(io::ErrorKind::InvalidInput, e))
+                })?;
             ListenerOptions::new()
                 .name(name)
                 .create_tokio()
                 .map_err(IpcError::BindFailed)
         } else {
-            let name = self.socket_path.clone().to_fs_name::<GenericFilePath>()
-                .map_err(|e| IpcError::BindFailed(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
+            let name = self
+                .socket_path
+                .clone()
+                .to_fs_name::<GenericFilePath>()
+                .map_err(|e| {
+                    IpcError::BindFailed(io::Error::new(io::ErrorKind::InvalidInput, e))
+                })?;
             ListenerOptions::new()
                 .name(name)
                 .create_tokio()
