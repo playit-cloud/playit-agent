@@ -29,6 +29,10 @@ crossterm = "0.28"
 ratatui = "0.29"
 dotenv = "0.15.0"
 
+# Service management and IPC
+service-manager = "0.10"
+interprocess = { version = "2.2", features = ["tokio"] }
+
 playit-agent-core = { path = "../agent_core", version = "0.17.1" }
 playit-agent-proto = { path = "../agent_proto", version = "1.3.0" }
 playit-api-client = { path = "../api_client", version = "0.2.0" }

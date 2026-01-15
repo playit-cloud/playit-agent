@@ -28,6 +28,7 @@ pub static API_BASE: LazyLock<String> =
 
 pub mod autorun;
 pub mod playit_secret;
+pub mod service;
 pub mod signal_handle;
 pub mod ui;
 pub mod util;
@@ -68,8 +69,51 @@ enum Commands {
     /// Print version information
     Version,
 
-    /// Start the playit agent
-    Start,
+    /// Start the playit agent (starts service and attaches to receive updates)
+    Start {
+        /// Install as system-wide service (requires admin/root)
+        #[arg(long)]
+        system: bool,
+    },
+
+    /// Stop the background service
+    Stop {
+        /// Stop system-wide service (requires admin/root)
+        #[arg(long)]
+        system: bool,
+    },
+
+    /// Show the status of the background service
+    Status {
+        /// Check system-wide service status
+        #[arg(long)]
+        system: bool,
+    },
+
+    /// Install the playit agent as a system service
+    Install {
+        /// Install as system-wide service (requires admin/root)
+        #[arg(long)]
+        system: bool,
+    },
+
+    /// Uninstall the playit agent system service
+    Uninstall {
+        /// Uninstall system-wide service (requires admin/root)
+        #[arg(long)]
+        system: bool,
+    },
+
+    /// Run the agent directly in foreground (for Docker/debugging)
+    RunEmbedded,
+
+    /// Internal: Run as background service daemon
+    #[command(hide = true)]
+    RunService {
+        /// Run as user service (not system-wide)
+        #[arg(long)]
+        user: bool,
+    },
 
     /// Removes the secret key on your system so the playit agent can be re-claimed
     Reset,
@@ -251,12 +295,35 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
     match cli.command {
         None => {
-            ui.write_screen("no command provided, doing auto run").await;
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            // Default behavior: start service and attach
+            run_start_command(&mut ui, false).await?;
+        }
+        Some(Commands::Start { system }) => {
+            run_start_command(&mut ui, system).await?;
+        }
+        Some(Commands::Stop { system }) => {
+            run_stop_command(system).await?;
+        }
+        Some(Commands::Status { system }) => {
+            run_status_command(system).await?;
+        }
+        Some(Commands::Install { system }) => {
+            run_install_command(system)?;
+        }
+        Some(Commands::Uninstall { system }) => {
+            run_uninstall_command(system)?;
+        }
+        Some(Commands::RunEmbedded) => {
+            // Run agent directly (like old start behavior)
             autorun(&mut ui, secret).await?;
         }
-        Some(Commands::Start) => {
-            autorun(&mut ui, secret).await?;
+        Some(Commands::RunService { user }) => {
+            // Run as background daemon
+            let system_mode = !user;
+            if let Err(e) = service::run_daemon(system_mode).await {
+                tracing::error!("Daemon error: {}", e);
+                return Err(CliError::ServiceError(e.to_string()));
+            }
         }
         Some(Commands::Version) => println!("{}", env!("CARGO_PKG_VERSION")),
         #[cfg(target_os = "linux")]
@@ -341,6 +408,240 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     }
 
     Ok(std::process::ExitCode::SUCCESS)
+}
+
+/// Run the start command: start service and attach to receive updates
+async fn run_start_command(ui: &mut UI, system_mode: bool) -> Result<(), CliError> {
+    use crate::service::ipc::{IpcClient, ServiceEvent};
+    use crate::service::manager::ensure_service_running;
+
+    // Ensure service is running
+    ui.write_screen("Starting playit service...").await;
+
+    match ensure_service_running(system_mode).await {
+        Ok(_) => {
+            tracing::info!("Service is running");
+        }
+        Err(e) => {
+            tracing::warn!("Failed to start via service manager: {}", e);
+            // Fall back to starting directly if service manager fails
+            ui.write_screen("Service manager not available, running directly...").await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            // Load secret and run embedded
+            let mut secret = PlayitSecret::from_args(None, None, false).await;
+            let _ = secret.with_default_path().await;
+            return autorun(ui, secret).await;
+        }
+    }
+
+    // Connect to service via IPC
+    ui.write_screen("Connecting to service...").await;
+
+    let mut client = match IpcClient::connect(system_mode).await {
+        Ok(client) => client,
+        Err(e) => {
+            return Err(CliError::IpcError(format!("Failed to connect to service: {}", e)));
+        }
+    };
+
+    // Subscribe to updates
+    if let Err(e) = client.subscribe().await {
+        return Err(CliError::IpcError(format!("Failed to subscribe: {}", e)));
+    }
+
+    tracing::info!("Connected to service, receiving updates");
+
+    // Main loop: receive events and update UI
+    loop {
+        tokio::select! {
+            event_result = client.recv_event() => {
+                match event_result {
+                    Ok(event) => {
+                        match event {
+                            ServiceEvent::AgentData { .. } => {
+                                if let Some(data) = event.to_agent_data() {
+                                    ui.update_agent_data(data);
+                                }
+                            }
+                            ServiceEvent::Stats { .. } => {
+                                if let Some(stats) = event.to_connection_stats() {
+                                    ui.update_stats(stats);
+                                }
+                            }
+                            ServiceEvent::Log { level, target, message, timestamp } => {
+                                if let Some(log_capture) = ui.log_capture() {
+                                    use crate::ui::log_capture::{LogEntry, LogLevel};
+                                    let log_level = match level.as_str() {
+                                        "error" | "ERROR" => LogLevel::Error,
+                                        "warn" | "WARN" => LogLevel::Warn,
+                                        "info" | "INFO" => LogLevel::Info,
+                                        "debug" | "DEBUG" => LogLevel::Debug,
+                                        _ => LogLevel::Trace,
+                                    };
+                                    log_capture.push(LogEntry {
+                                        level: log_level,
+                                        target,
+                                        message,
+                                        timestamp,
+                                    });
+                                }
+                            }
+                            ServiceEvent::Status { .. } => {
+                                // Status updates are handled separately
+                            }
+                            ServiceEvent::Ack { .. } | ServiceEvent::Error { .. } => {
+                                // Acknowledgements handled in specific commands
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!("IPC error: {}", e);
+                        ui.write_screen(format!("Connection to service lost: {}", e)).await;
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        break;
+                    }
+                }
+            }
+            // Handle TUI tick
+            _ = tokio::time::sleep(Duration::from_millis(50)) => {
+                if ui.is_tui() {
+                    match ui.tick_tui() {
+                        Ok(true) => {} // Continue
+                        Ok(false) => {
+                            // Quit requested - just detach, don't stop service
+                            ui.shutdown_tui()?;
+                            println!("Detached from service. Service continues running in background.");
+                            println!("Use 'playit-cli stop' to stop the service.");
+                            break;
+                        }
+                        Err(e) => {
+                            ui.shutdown_tui()?;
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+            // Handle Ctrl+C
+            _ = tokio::signal::ctrl_c() => {
+                if ui.is_tui() {
+                    ui.shutdown_tui()?;
+                }
+                println!("\nDetached from service. Service continues running in background.");
+                println!("Use 'playit-cli stop' to stop the service.");
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Run the stop command
+async fn run_stop_command(system_mode: bool) -> Result<(), CliError> {
+    use crate::service::ipc::IpcClient;
+
+    // First try to stop via IPC
+    if let Ok(mut client) = IpcClient::connect(system_mode).await {
+        match client.stop().await {
+            Ok(_) => {
+                println!("Service stop requested");
+                // Wait a bit for service to stop
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to send stop via IPC: {}", e);
+            }
+        }
+    }
+
+    // Also try via service manager
+    match service::ServiceController::new(system_mode) {
+        Ok(controller) => {
+            if let Err(e) = controller.stop() {
+                tracing::warn!("Failed to stop via service manager: {}", e);
+            }
+        }
+        Err(e) => {
+            tracing::debug!("Service manager not available: {}", e);
+        }
+    }
+
+    // Verify service stopped
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    if !IpcClient::is_running(system_mode).await {
+        println!("Service stopped");
+    } else {
+        println!("Service may still be running");
+    }
+
+    Ok(())
+}
+
+/// Run the status command
+async fn run_status_command(system_mode: bool) -> Result<(), CliError> {
+    use crate::service::ipc::IpcClient;
+
+    if !IpcClient::is_running(system_mode).await {
+        println!("Service is not running");
+        return Ok(());
+    }
+
+    let mut client = match IpcClient::connect(system_mode).await {
+        Ok(client) => client,
+        Err(e) => {
+            println!("Service appears to be running but cannot connect: {}", e);
+            return Ok(());
+        }
+    };
+
+    match client.status().await {
+        Ok(service::ipc::ServiceEvent::Status { running, pid, uptime_secs }) => {
+            println!("Service status:");
+            println!("  Running: {}", running);
+            println!("  PID: {}", pid);
+            println!("  Uptime: {} seconds", uptime_secs);
+        }
+        Ok(other) => {
+            println!("Unexpected response: {:?}", other);
+        }
+        Err(e) => {
+            println!("Failed to get status: {}", e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Run the install command
+fn run_install_command(system_mode: bool) -> Result<(), CliError> {
+    let controller = service::ServiceController::new(system_mode)
+        .map_err(|e| CliError::ServiceError(e.to_string()))?;
+
+    controller.install()
+        .map_err(|e| CliError::ServiceError(e.to_string()))?;
+
+    let mode_str = if system_mode { "system" } else { "user" };
+    println!("Service installed successfully ({} mode)", mode_str);
+    println!("Use 'playit-cli start' to start the service");
+
+    Ok(())
+}
+
+/// Run the uninstall command
+fn run_uninstall_command(system_mode: bool) -> Result<(), CliError> {
+    let controller = service::ServiceController::new(system_mode)
+        .map_err(|e| CliError::ServiceError(e.to_string()))?;
+
+    // Try to stop first
+    let _ = controller.stop();
+
+    controller.uninstall()
+        .map_err(|e| CliError::ServiceError(e.to_string()))?;
+
+    println!("Service uninstalled successfully");
+
+    Ok(())
 }
 
 pub fn claim_generate() -> String {
@@ -472,6 +773,8 @@ pub enum CliError {
     ApiError(ApiResponseError),
     ApiFail(String),
     TunnelSetupError(SetupError),
+    ServiceError(String),
+    IpcError(String),
 }
 
 impl Error for CliError {}
