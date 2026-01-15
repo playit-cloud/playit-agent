@@ -187,17 +187,38 @@ pub async fn ensure_service_running(system_mode: bool) -> Result<(), ServiceMana
         return Ok(());
     }
 
-    // Try to start via service manager
-    let controller = ServiceController::new(system_mode)?;
+    // Try to start via service manager first
+    let service_manager_result = match ServiceController::new(system_mode) {
+        Ok(controller) => {
+            tracing::info!("Starting service via service manager");
+            controller.start()
+        }
+        Err(e) => {
+            tracing::debug!("Service manager not available: {}", e);
+            Err(e)
+        }
+    };
 
-    tracing::info!("Starting service via service manager");
-    controller.start()?;
+    // If service manager worked, wait for it to be ready
+    if service_manager_result.is_ok() {
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if IpcClient::is_running(system_mode).await {
+                tracing::debug!("Service started via service manager");
+                return Ok(());
+            }
+        }
+    }
 
-    // Wait for service to be ready
+    // If service manager failed or service didn't start, spawn daemon directly
+    tracing::info!("Starting daemon process directly");
+    spawn_daemon_process(system_mode)?;
+
+    // Wait for daemon to be ready
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if IpcClient::is_running(system_mode).await {
-            tracing::debug!("Service started successfully");
+            tracing::debug!("Daemon started successfully");
             return Ok(());
         }
     }
@@ -205,4 +226,48 @@ pub async fn ensure_service_running(system_mode: bool) -> Result<(), ServiceMana
     Err(ServiceManagerError::StartFailed(
         "Service did not start within timeout".to_string(),
     ))
+}
+
+/// Spawn the daemon process directly (without service manager)
+fn spawn_daemon_process(system_mode: bool) -> Result<(), ServiceManagerError> {
+    let exe = std::env::current_exe().map_err(ServiceManagerError::IoError)?;
+    
+    let mut args = vec!["run-service".to_string()];
+    if !system_mode {
+        args.push("--user".to_string());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::process::{Command, Stdio};
+        
+        // Spawn detached process
+        Command::new(&exe)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| ServiceManagerError::StartFailed(format!("Failed to spawn daemon: {}", e)))?;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::process::{Command, Stdio};
+        use std::os::windows::process::CommandExt;
+        
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        const DETACHED_PROCESS: u32 = 0x00000008;
+        
+        Command::new(&exe)
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+            .spawn()
+            .map_err(|e| ServiceManagerError::StartFailed(format!("Failed to spawn daemon: {}", e)))?;
+    }
+
+    Ok(())
 }

@@ -10,7 +10,8 @@ use playit_agent_core::playit_agent::{PlayitAgent, PlayitAgentSettings};
 use playit_agent_core::stats::AgentStats;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::api::AccountStatus;
-use tokio::sync::{broadcast, watch};
+use tokio::sync::broadcast;
+use tokio_util::sync::CancellationToken;
 
 use crate::playit_secret::PlayitSecret;
 use crate::service::ipc::{IpcError, IpcServer, ServiceEvent};
@@ -53,18 +54,18 @@ pub async fn run_daemon(system_mode: bool) -> Result<(), DaemonError> {
 
     tracing::info!("Starting playit daemon (system_mode={})", system_mode);
 
+    // Shutdown signal
+    let cancel_token = CancellationToken::new();
+
     // Create IPC server (this also enforces single-instance)
     let ipc_server = Arc::new(
-        IpcServer::new(system_mode)
+        IpcServer::new(system_mode, cancel_token.clone())
             .await
             .map_err(DaemonError::Ipc)?,
     );
     let event_tx = ipc_server.event_sender();
 
     tracing::info!("IPC server created");
-
-    // Shutdown signal
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Load secret
     let mut secret = PlayitSecret::from_args(None, None, false).await;
@@ -118,9 +119,8 @@ pub async fn run_daemon(system_mode: bool) -> Result<(), DaemonError> {
     // Spawn IPC server
     let ipc_handle = {
         let server = ipc_server.clone();
-        let rx = shutdown_rx.clone();
         tokio::spawn(async move {
-            if let Err(e) = server.run(rx).await {
+            if let Err(e) = server.run().await {
                 tracing::error!("IPC server error: {}", e);
             }
         })
@@ -129,29 +129,32 @@ pub async fn run_daemon(system_mode: bool) -> Result<(), DaemonError> {
     // Spawn stats broadcaster
     let stats_handle = {
         let event_tx = event_tx.clone();
-        let shutdown_rx = shutdown_rx.clone();
-        tokio::spawn(broadcast_stats(stats, event_tx, shutdown_rx))
+        let token = cancel_token.clone();
+        tokio::spawn(broadcast_stats(stats, event_tx, token))
     };
 
     // Spawn agent data fetcher/broadcaster
     let data_handle = {
         let event_tx = event_tx.clone();
-        let shutdown_rx = shutdown_rx.clone();
-        tokio::spawn(broadcast_agent_data(api, lookup, event_tx, shutdown_rx, start_time))
+        let token = cancel_token.clone();
+        tokio::spawn(broadcast_agent_data(api, lookup, event_tx, token, start_time))
     };
 
-    // Wait for shutdown signal (Ctrl+C or stop command)
+    // Wait for shutdown signal (Ctrl+C, stop command, or agent completion)
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             tracing::info!("Received Ctrl+C, shutting down");
+        }
+        _ = cancel_token.cancelled() => {
+            tracing::info!("Shutdown requested via IPC");
         }
         _ = agent_handle => {
             tracing::info!("Agent task completed");
         }
     }
 
-    // Signal shutdown
-    let _ = shutdown_tx.send(true);
+    // Signal shutdown to all tasks
+    cancel_token.cancel();
 
     // Wait for tasks to complete
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
@@ -184,7 +187,7 @@ async fn get_secret(secret: &mut PlayitSecret) -> Result<String, String> {
 async fn broadcast_stats(
     stats: AgentStats,
     event_tx: broadcast::Sender<ServiceEvent>,
-    mut shutdown_rx: watch::Receiver<bool>,
+    cancel_token: CancellationToken,
 ) {
     let mut interval = tokio::time::interval(Duration::from_millis(100));
 
@@ -201,10 +204,8 @@ async fn broadcast_stats(
                 // Ignore send errors (no subscribers)
                 let _ = event_tx.send(event);
             }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
+            _ = cancel_token.cancelled() => {
+                break;
             }
         }
     }
@@ -215,8 +216,8 @@ async fn broadcast_agent_data(
     api: playit_api_client::PlayitApi,
     lookup: Arc<OriginLookup>,
     event_tx: broadcast::Sender<ServiceEvent>,
-    mut shutdown_rx: watch::Receiver<bool>,
-    _start_time: u64,
+    cancel_token: CancellationToken,
+    start_time: u64,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(3));
     let mut guest_login_link: Option<(String, u64)> = None;
@@ -311,6 +312,7 @@ async fn broadcast_agent_data(
                             account_status,
                             agent_id: api_data.agent_id.to_string(),
                             login_link,
+                            start_time,
                         };
 
                         let event = ServiceEvent::from(&agent_data);
@@ -321,10 +323,8 @@ async fn broadcast_agent_data(
                     }
                 }
             }
-            _ = shutdown_rx.changed() => {
-                if *shutdown_rx.borrow() {
-                    break;
-                }
+            _ = cancel_token.cancelled() => {
+                break;
             }
         }
     }

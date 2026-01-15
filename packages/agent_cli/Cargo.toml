@@ -10,6 +10,7 @@ repository = "https://github.com/playit-cloud/playit-agent"
 
 [dependencies]
 tokio = { workspace = true }
+tokio-util = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 toml = { workspace = true }

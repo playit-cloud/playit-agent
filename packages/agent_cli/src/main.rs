@@ -418,22 +418,11 @@ async fn run_start_command(ui: &mut UI, system_mode: bool) -> Result<(), CliErro
     // Ensure service is running
     ui.write_screen("Starting playit service...").await;
 
-    match ensure_service_running(system_mode).await {
-        Ok(_) => {
-            tracing::info!("Service is running");
-        }
-        Err(e) => {
-            tracing::warn!("Failed to start via service manager: {}", e);
-            // Fall back to starting directly if service manager fails
-            ui.write_screen("Service manager not available, running directly...").await;
-            tokio::time::sleep(Duration::from_secs(1)).await;
-
-            // Load secret and run embedded
-            let mut secret = PlayitSecret::from_args(None, None, false).await;
-            let _ = secret.with_default_path().await;
-            return autorun(ui, secret).await;
-        }
+    if let Err(e) = ensure_service_running(system_mode).await {
+        return Err(CliError::ServiceError(format!("Failed to start service: {}", e)));
     }
+
+    tracing::info!("Service is running");
 
     // Connect to service via IPC
     ui.write_screen("Connecting to service...").await;

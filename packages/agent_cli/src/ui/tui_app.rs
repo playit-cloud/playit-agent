@@ -7,7 +7,6 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use playit_agent_core::utils::now_milli;
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
@@ -33,6 +32,8 @@ pub struct AgentData {
     pub account_status: AccountStatusInfo,
     pub agent_id: String,
     pub login_link: Option<String>,
+    /// Start time of the agent/service in milliseconds since epoch
+    pub start_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -96,7 +97,6 @@ pub struct TuiApp {
     log_capture: Arc<LogCapture>,
     agent_data: AgentData,
     stats: ConnectionStats,
-    start_time: u64,
 
     // UI state
     mode: TuiMode,
@@ -118,7 +118,6 @@ impl TuiApp {
             log_capture: LogCapture::new(500),
             agent_data: AgentData::default(),
             stats: ConnectionStats::default(),
-            start_time: now_milli(),
             mode: TuiMode::Setup { message: "Initializing...".to_string() },
             focused_panel: FocusedPanel::Tunnels,
             tunnel_list_state: ListState::default(),
@@ -367,7 +366,7 @@ impl TuiApp {
         let mode = self.mode.clone();
         let agent_data = self.agent_data.clone();
         let stats = self.stats.clone();
-        let start_time = self.start_time;
+        let start_time = agent_data.start_time;
         let focused_panel = self.focused_panel;
         let quit_confirm = self.quit_confirm;
         let log_entries = self.log_capture.get_entries();
