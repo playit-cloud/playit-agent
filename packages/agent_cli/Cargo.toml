@@ -23,6 +23,7 @@ tracing-appender = { workspace = true }
 uuid = { workspace = true }
 dirs = { workspace = true }
 
+chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
 urlencoding = "2.1"
 serde_yaml = "0.9"

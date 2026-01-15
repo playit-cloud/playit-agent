@@ -26,6 +26,18 @@ use crate::ui::{UI, UISettings};
 pub static API_BASE: LazyLock<String> =
     LazyLock::new(|| dotenv::var("API_BASE").unwrap_or("https://api.playit.gg".to_string()));
 
+/// The name of the executable as invoked by the user
+pub static EXE_NAME: LazyLock<String> = LazyLock::new(|| {
+    std::env::args()
+        .next()
+        .and_then(|path| {
+            std::path::Path::new(&path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "playit".to_string())
+});
+
 pub mod autorun;
 pub mod playit_secret;
 pub mod service;
@@ -501,8 +513,9 @@ async fn run_start_command(
                             }
                             ServiceEvent::Log { level, target, message, timestamp } => {
                                 if stdout_mode {
-                                    // Print log directly to stdout
-                                    println!("{} [{}] {}: {}", timestamp, level.to_uppercase(), target, message);
+                                    // Print log in tracing format
+                                    let formatted_ts = format_timestamp_millis(timestamp);
+                                    println!("{} {:>5} {}: {}", formatted_ts, level.to_uppercase(), target, message);
                                 } else if let Some(log_capture) = ui.log_capture() {
                                     use crate::ui::log_capture::{LogEntry, LogLevel};
                                     let log_level = match level.as_str() {
@@ -549,7 +562,7 @@ async fn run_start_command(
                             // Quit requested - just detach, don't stop service
                             ui.shutdown_tui()?;
                             println!("Detached from service. Service continues running in background.");
-                            println!("Use 'playit-cli stop' to stop the service.");
+                            println!("Use '{} stop' to stop the service.", *EXE_NAME);
                             break;
                         }
                         Err(e) => {
@@ -565,7 +578,7 @@ async fn run_start_command(
                     ui.shutdown_tui()?;
                 }
                 println!("\nDetached from service. Service continues running in background.");
-                println!("Use 'playit-cli stop' to stop the service.");
+                println!("Use '{} stop' to stop the service.", *EXE_NAME);
                 break;
             }
         }
@@ -665,7 +678,7 @@ fn run_install_command(system_mode: bool) -> Result<(), CliError> {
 
     let mode_str = if system_mode { "system" } else { "user" };
     println!("Service installed successfully ({} mode)", mode_str);
-    println!("Use 'playit-cli start' to start the service");
+    println!("Use '{} start' to start the service", *EXE_NAME);
 
     Ok(())
 }
@@ -724,7 +737,7 @@ pub async fn claim_exchange(
                 .claim_setup(ReqClaimSetup {
                     code: claim_code.to_string(),
                     agent_type,
-                    version: format!("playit-cli {}", env!("CARGO_PKG_VERSION")),
+                    version: format!("{} {}", *EXE_NAME, env!("CARGO_PKG_VERSION")),
                 })
                 .await;
 
@@ -851,4 +864,13 @@ impl From<SetupError> for CliError {
     fn from(e: SetupError) -> Self {
         CliError::TunnelSetupError(e)
     }
+}
+
+/// Format a timestamp in milliseconds since epoch to RFC3339 format (like tracing uses)
+fn format_timestamp_millis(millis: u64) -> String {
+    use chrono::{DateTime, Utc};
+
+    DateTime::<Utc>::from_timestamp_millis(millis as i64)
+        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())
+        .unwrap_or_else(|| format!("{}ms", millis))
 }

@@ -1376,6 +1376,7 @@ dependencies = [
 name = "playit-cli"
 version = "0.17.1"
 dependencies = [
+ "chrono",
  "clap",
  "crossterm",
  "dirs 6.0.0",
