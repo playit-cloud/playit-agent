@@ -1,9 +1,12 @@
 //! Daemon entry point for running the agent as a background service.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use playit_agent_core::network::origin_lookup::OriginLookup;
+use playit_agent_core::agent_control::platform::current_platform;
+use playit_api_client::api::Platform;
+use playit_agent_core::network::origin_lookup::{OriginLookup, OriginResource, OriginTarget};
 use playit_agent_core::network::tcp::tcp_settings::TcpSettings;
 use playit_agent_core::network::udp::udp_settings::UdpSettings;
 use playit_agent_core::playit_agent::{PlayitAgent, PlayitAgentSettings};
@@ -12,15 +15,17 @@ use playit_agent_core::utils::now_milli;
 use playit_api_client::api::AccountStatus;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 use crate::playit_secret::PlayitSecret;
 use crate::service::ipc::{IpcError, IpcServer, ServiceEvent};
+use crate::ui::log_capture::IpcBroadcastLayer;
 use crate::ui::tui_app::{
     AccountStatusInfo, AgentData, NoticeInfo, PendingTunnelInfo, TunnelInfo,
 };
 use crate::API_BASE;
-use playit_agent_core::network::origin_lookup::{OriginResource, OriginTarget};
-use std::net::SocketAddr;
 
 /// Error type for daemon operations
 #[derive(Debug)]
@@ -52,6 +57,24 @@ impl From<IpcError> for DaemonError {
 pub async fn run_daemon(system_mode: bool) -> Result<(), DaemonError> {
     let start_time = now_milli();
 
+    // Create broadcast channel for IPC events (including logs)
+    let (event_tx, _) = broadcast::channel::<ServiceEvent>(256);
+
+    // Set up tracing with IPC broadcast layer
+    let log_filter =
+        EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let ipc_log_layer = IpcBroadcastLayer::new(event_tx.clone());
+
+    // Also log to stderr for debugging (with color on Linux)
+    let use_ansi = current_platform() == Platform::Linux;
+
+    tracing_subscriber::registry()
+        .with(log_filter)
+        .with(ipc_log_layer)
+        .with(tracing_subscriber::fmt::layer().with_ansi(use_ansi).with_writer(std::io::stderr))
+        .init();
+
     tracing::info!("Starting playit daemon (system_mode={})", system_mode);
 
     // Shutdown signal
@@ -59,7 +82,7 @@ pub async fn run_daemon(system_mode: bool) -> Result<(), DaemonError> {
 
     // Create IPC server (this also enforces single-instance)
     let ipc_server = Arc::new(
-        IpcServer::new(system_mode, cancel_token.clone())
+        IpcServer::new_with_sender(system_mode, cancel_token.clone(), event_tx.clone())
             .await
             .map_err(DaemonError::Ipc)?,
     );
