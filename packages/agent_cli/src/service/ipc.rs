@@ -93,6 +93,7 @@ pub enum ServiceEvent {
         tunnels: Vec<TunnelInfoJson>,
         pending_tunnels: Vec<PendingTunnelInfoJson>,
         notices: Vec<NoticeInfoJson>,
+        start_time: u64,
     },
     /// Connection stats update
     Stats {
@@ -208,6 +209,7 @@ impl From<&AgentData> for ServiceEvent {
             tunnels: data.tunnels.iter().map(|t| t.into()).collect(),
             pending_tunnels: data.pending_tunnels.iter().map(|p| p.into()).collect(),
             notices: data.notices.iter().map(|n| n.into()).collect(),
+            start_time: data.start_time,
         }
     }
 }
@@ -235,6 +237,7 @@ impl ServiceEvent {
                 tunnels,
                 pending_tunnels,
                 notices,
+                start_time,
             } => {
                 let status = match account_status.as_str() {
                     "Guest" => AccountStatusInfo::Guest,
@@ -250,6 +253,7 @@ impl ServiceEvent {
                     tunnels: tunnels.iter().cloned().map(|t| t.into()).collect(),
                     pending_tunnels: pending_tunnels.iter().cloned().map(|p| p.into()).collect(),
                     notices: notices.iter().cloned().map(|n| n.into()).collect(),
+                    start_time: *start_time,
                 })
             }
             _ => None,
@@ -349,13 +353,20 @@ pub struct IpcServer {
     socket_path: String,
     #[allow(dead_code)]
     system_mode: bool,
+    start_time: u64,
+    cancel_token: tokio_util::sync::CancellationToken,
 }
 
 impl IpcServer {
     /// Create a new IPC server
     ///
     /// This will fail if another instance is already running (single-instance enforcement)
-    pub async fn new(system_mode: bool) -> Result<Self, IpcError> {
+    pub async fn new(
+        system_mode: bool,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> Result<Self, IpcError> {
+        use playit_agent_core::utils::now_milli;
+
         let socket_path = get_socket_path(system_mode);
 
         // Check if another instance is running
@@ -369,11 +380,14 @@ impl IpcServer {
         }
 
         let (event_tx, _) = broadcast::channel(256);
+        let start_time = now_milli();
 
         Ok(IpcServer {
             event_tx,
             socket_path,
             system_mode,
+            start_time,
+            cancel_token,
         })
     }
 
@@ -383,10 +397,7 @@ impl IpcServer {
     }
 
     /// Run the IPC server accept loop
-    pub async fn run(
-        self: Arc<Self>,
-        mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
-    ) -> Result<(), IpcError> {
+    pub async fn run(self: Arc<Self>) -> Result<(), IpcError> {
         let listener = self.create_listener().await?;
 
         loop {
@@ -406,11 +417,9 @@ impl IpcServer {
                         }
                     }
                 }
-                _ = shutdown_rx.changed() => {
-                    if *shutdown_rx.borrow() {
-                        tracing::info!("IPC server shutting down");
-                        break;
-                    }
+                _ = self.cancel_token.cancelled() => {
+                    tracing::info!("IPC server shutting down");
+                    break;
                 }
             }
         }
@@ -459,17 +468,21 @@ impl IpcServer {
                                     tracing::debug!("Client subscribed to events");
                                 }
                                 ServiceRequest::Status => {
+                                    use playit_agent_core::utils::now_milli;
+                                    let uptime_ms = now_milli().saturating_sub(self.start_time);
+                                    let uptime_secs = uptime_ms / 1000;
                                     let event = ServiceEvent::Status {
                                         running: true,
                                         pid: std::process::id(),
-                                        uptime_secs: 0, // TODO: Track actual uptime
+                                        uptime_secs,
                                     };
                                     self.send_event(&mut writer, &event).await?;
                                 }
                                 ServiceRequest::Stop => {
                                     self.send_event(&mut writer, &ServiceEvent::Ack { success: true }).await?;
-                                    // The daemon will handle the actual shutdown
-                                    tracing::info!("Stop request received");
+                                    tracing::info!("Stop request received, initiating shutdown");
+                                    // Trigger daemon shutdown
+                                    self.cancel_token.cancel();
                                 }
                             }
                         }

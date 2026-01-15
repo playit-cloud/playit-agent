@@ -84,6 +84,7 @@ async fn run_tui_loop(
     lookup: Arc<OriginLookup>,
     stats: AgentStats,
 ) -> Result<(), CliError> {
+    let start_time = now_milli();
     let (data_tx, mut data_rx) = mpsc::channel::<AgentData>(4);
 
     // Spawn the data fetcher task
@@ -195,6 +196,7 @@ async fn run_tui_loop(
                 account_status,
                 agent_id: api_data.agent_id.to_string(),
                 login_link,
+                start_time,
             };
 
             if data_tx.send(agent_data).await.is_err() {
