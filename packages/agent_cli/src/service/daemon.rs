@@ -203,7 +203,10 @@ async fn get_secret(secret: &mut PlayitSecret) -> Result<String, String> {
 
     // For daemon mode, we don't do interactive setup
     // The user should run the CLI to set up the secret first
-    Err("No valid secret found. Please run 'playit-cli' to set up the agent first.".to_string())
+    Err(format!(
+        "No valid secret found. Please run '{}' to set up the agent first.",
+        *crate::EXE_NAME
+    ))
 }
 
 /// Broadcast stats at regular intervals
