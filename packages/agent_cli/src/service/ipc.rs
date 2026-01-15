@@ -3,6 +3,7 @@
 //! Uses JSON messages delimited by newlines over local sockets.
 
 use std::io;
+#[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::sync::Arc;
 
