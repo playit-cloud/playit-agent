@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use clap::ArgMatches;
 use playit_api_client::{PlayitApi, api::*};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -221,9 +220,13 @@ impl PlayitSecret {
         }
     }
 
-    pub async fn from_args(matches: &ArgMatches) -> Self {
-        let mut secret = matches.get_one::<String>("secret").cloned();
-        let mut path = matches.get_one::<String>("secret_path").cloned();
+    pub async fn from_args(
+        secret: Option<String>,
+        secret_path: Option<String>,
+        secret_wait: bool,
+    ) -> Self {
+        let mut secret = secret;
+        let mut path = secret_path;
 
         if secret.is_none() && path.is_none() {
             if let Ok(secret_env) = std::env::var("PLAYIT_SECRET") {
@@ -243,7 +246,7 @@ impl PlayitSecret {
             secret: RwLock::new(secret),
             path,
             allow_path_read,
-            wait_for_path: matches.get_flag("secret_wait"),
+            wait_for_path: secret_wait,
         }
     }
 

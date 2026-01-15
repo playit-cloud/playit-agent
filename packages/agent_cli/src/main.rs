@@ -3,7 +3,7 @@ use std::fmt::{Display, Formatter};
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use clap::{Command, arg};
+use clap::{Parser, Subcommand};
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use rand::Rng;
@@ -32,13 +32,148 @@ pub mod signal_handle;
 pub mod ui;
 pub mod util;
 
+#[derive(Parser)]
+#[command(name = "playit-cli")]
+struct Cli {
+    /// Secret code for the agent
+    #[arg(long)]
+    secret: Option<String>,
+
+    /// Path to file containing secret
+    #[arg(long)]
+    secret_path: Option<String>,
+
+    /// Wait for secret_path file to read secret
+    #[arg(short = 'w', long)]
+    secret_wait: bool,
+
+    /// Prints logs to stdout
+    #[arg(short = 's', long)]
+    stdout: bool,
+
+    /// Path to write logs to
+    #[arg(short = 'l', long)]
+    log_path: Option<String>,
+
+    /// Overrides platform in version to be docker
+    #[arg(long)]
+    platform_docker: bool,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Print version information
+    Version,
+
+    /// Start the playit agent
+    Start,
+
+    /// Removes the secret key on your system so the playit agent can be re-claimed
+    Reset,
+
+    /// Shows the file path where the playit secret can be found
+    SecretPath,
+
+    #[cfg(target_os = "linux")]
+    /// Setup playit for Linux service
+    Setup,
+
+    /// Account management commands
+    Account {
+        #[command(subcommand)]
+        command: AccountCommands,
+    },
+
+    /// Setting up a new playit agent
+    #[command(about = "Setting up a new playit agent", long_about = "Provides a URL that can be visited to claim the agent and generate a secret key")]
+    Claim {
+        #[command(subcommand)]
+        command: ClaimCommands,
+    },
+
+    /// Manage tunnels
+    Tunnels {
+        #[command(subcommand)]
+        command: TunnelCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccountCommands {
+    /// Generates a link to allow user to login
+    LoginUrl,
+}
+
+#[derive(Subcommand)]
+enum ClaimCommands {
+    /// Generates a random claim code
+    Generate,
+
+    /// Print a claim URL given the code and options
+    Url {
+        /// Claim code
+        claim_code: String,
+
+        /// Name for the agent
+        #[arg(long, default_value = "from-cli")]
+        name: String,
+
+        /// The agent type
+        #[arg(long, default_value = "self-managed")]
+        r#type: String,
+    },
+
+    /// Exchanges the claim for the secret key
+    Exchange {
+        /// Claim code (see "claim generate")
+        claim_code: String,
+
+        /// Number of seconds to wait (0=infinite)
+        #[arg(long, default_value = "0")]
+        wait: u32,
+    },
+}
+
+#[derive(Subcommand)]
+enum TunnelCommands {
+    /// Create a tunnel if it doesn't exist with the parameters
+    Prepare {
+        /// Either "tcp", "udp", or "both"
+        port_type: String,
+
+        /// Number of ports in a series to allocate
+        #[arg(default_value = "1")]
+        port_count: String,
+
+        /// The tunnel type
+        #[arg(long)]
+        r#type: Option<String>,
+
+        /// Name of the tunnel
+        #[arg(long)]
+        name: Option<String>,
+
+        #[arg(long)]
+        exact: bool,
+
+        #[arg(long)]
+        ignore_name: bool,
+    },
+
+    /// List tunnels (format "[tunnel-id] [port-type] [port-count] [public-address]")
+    List,
+}
+
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, CliError> {
-    let matches = cli().get_matches();
+    let cli = Cli::parse();
 
     /* register docker */
     {
-        let platform = if matches.get_flag("platform_docker") {
+        let platform = if cli.platform_docker {
             Platform::Docker
         } else {
             current_platform()
@@ -52,11 +187,15 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         );
     }
 
-    let mut secret = PlayitSecret::from_args(&matches).await;
+    let mut secret = PlayitSecret::from_args(
+        cli.secret.clone(),
+        cli.secret_path.clone(),
+        cli.secret_wait,
+    ).await;
     let _ = secret.with_default_path().await;
 
-    let log_only = matches.get_flag("stdout");
-    let log_path = matches.get_one::<String>("log_path");
+    let log_only = cli.stdout;
+    let log_path = cli.log_path.as_ref();
 
     // Use log-only mode if stdout flag is set OR if a log file path is specified
     let use_log_only = log_only || log_path.is_some();
@@ -110,18 +249,18 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
         }
     };
 
-    match matches.subcommand() {
+    match cli.command {
         None => {
             ui.write_screen("no command provided, doing auto run").await;
             tokio::time::sleep(Duration::from_secs(1)).await;
             autorun(&mut ui, secret).await?;
         }
-        Some(("start", _)) => {
+        Some(Commands::Start) => {
             autorun(&mut ui, secret).await?;
         }
-        Some(("version", _)) => println!("{}", env!("CARGO_PKG_VERSION")),
+        Some(Commands::Version) => println!("{}", env!("CARGO_PKG_VERSION")),
         #[cfg(target_os = "linux")]
-        Some(("setup", _)) => {
+        Some(Commands::Setup) => {
             let mut secret = PlayitSecret::linux_service();
             let key = secret
                 .ensure_valid(&mut ui)
@@ -142,11 +281,15 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             ui.write_screen("Playit setup, secret written to /etc/playit/playit.toml")
                 .await;
         }
-        Some(("reset", _)) => loop {
-            let mut secerts = PlayitSecret::from_args(&matches).await;
-            secerts.with_default_path().await;
+        Some(Commands::Reset) => loop {
+            let mut secrets = PlayitSecret::from_args(
+                cli.secret.clone(),
+                cli.secret_path.clone(),
+                cli.secret_wait,
+            ).await;
+            secrets.with_default_path().await;
 
-            let path = secerts.get_path().unwrap();
+            let path = secrets.get_path().unwrap();
             if !tokio::fs::try_exists(path).await.unwrap_or(false) {
                 break;
             }
@@ -154,14 +297,18 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             tokio::fs::remove_file(path).await.unwrap();
             println!("deleted secret at: {}", path);
         },
-        Some(("secret-path", _)) => {
-            let mut secerts = PlayitSecret::from_args(&matches).await;
-            secerts.with_default_path().await;
-            let path = secerts.get_path().unwrap();
+        Some(Commands::SecretPath) => {
+            let mut secrets = PlayitSecret::from_args(
+                cli.secret.clone(),
+                cli.secret_path.clone(),
+                cli.secret_wait,
+            ).await;
+            secrets.with_default_path().await;
+            let path = secrets.get_path().unwrap();
             println!("{}", path);
         }
-        Some(("account", m)) => match m.subcommand() {
-            Some(("login-url", _)) => {
+        Some(Commands::Account { command }) => match command {
+            AccountCommands::LoginUrl => {
                 let api = secret.create_api().await?;
                 let session = api.login_guest().await?;
                 println!(
@@ -169,31 +316,28 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                     session.session_key
                 )
             }
-            _ => return Err(CliError::NotImplemented),
         },
-        Some(("claim", m)) => match m.subcommand() {
-            Some(("generate", _)) => {
+        Some(Commands::Claim { command }) => match command {
+            ClaimCommands::Generate => {
                 ui.write_screen(claim_generate()).await;
             }
-            Some(("url", m)) => {
-                let code = m.get_one::<String>("CLAIM_CODE").expect("required");
-                ui.write_screen(claim_url(code)?.to_string()).await;
+            ClaimCommands::Url { claim_code, .. } => {
+                ui.write_screen(claim_url(&claim_code)?.to_string()).await;
             }
-            Some(("exchange", m)) => {
-                let claim_code = m.get_one::<String>("CLAIM_CODE").expect("required");
-                let wait: u32 = m
-                    .get_one::<String>("wait")
-                    .expect("required")
-                    .parse()
-                    .expect("invalid wait value");
-
+            ClaimCommands::Exchange { claim_code, wait } => {
                 let secret_key =
-                    claim_exchange(&mut ui, claim_code, ClaimAgentType::SelfManaged, wait).await?;
+                    claim_exchange(&mut ui, &claim_code, ClaimAgentType::SelfManaged, wait).await?;
                 ui.write_screen(secret_key).await;
             }
-            _ => return Err(CliError::NotImplemented),
         },
-        _ => return Err(CliError::NotImplemented),
+        Some(Commands::Tunnels { command }) => match command {
+            TunnelCommands::Prepare { .. } => {
+                return Err(CliError::NotImplemented);
+            }
+            TunnelCommands::List => {
+                return Err(CliError::NotImplemented);
+            }
+        },
     }
 
     Ok(std::process::ExitCode::SUCCESS)
@@ -361,87 +505,4 @@ impl From<SetupError> for CliError {
     fn from(e: SetupError) -> Self {
         CliError::TunnelSetupError(e)
     }
-}
-
-fn cli() -> Command {
-    let mut cmd = Command::new("playit-cli")
-        .arg(arg!(--secret <SECRET> "secret code for the agent").required(false))
-        .arg(arg!(--secret_path <PATH> "path to file containing secret").required(false))
-        .arg(arg!(-w --secret_wait "wait for secret_path file to read secret").required(false))
-        .arg(arg!(-s --stdout "prints logs to stdout").required(false))
-        .arg(arg!(-l --log_path <PATH> "path to write logs to").required(false))
-        .arg(arg!(--platform_docker "overrides platform in version to be docker").required(false))
-        .subcommand_required(false)
-        .subcommand(Command::new("version"))
-        .subcommand(
-            Command::new("account")
-                .subcommand_required(true)
-                .subcommand(
-                    Command::new("login-url")
-                        .about("Generates a link to allow user to login")
-                )
-        )
-        .subcommand(
-            Command::new("claim")
-                .subcommand_required(true)
-                .arg(arg!(--name <TUNNEL_NAME> "name of the agent").required(false))
-                .about("Setting up a new playit agent")
-                .long_about("Provides a URL that can be visited to claim the agent and generate a secret key")
-                .subcommand(
-                    Command::new("generate")
-                        .about("Generates a random claim code")
-                )
-                .subcommand(
-                    Command::new("url")
-                        .about("Print a claim URL given the code and options")
-                        .arg(arg!(<CLAIM_CODE> "claim code"))
-                        .arg(arg!(--name [NAME] "name for the agent").default_value("from-cli"))
-                        .arg(arg!(--type [TYPE] "the agent type").default_value("self-managed"))
-                )
-                .subcommand(
-                    Command::new("exchange")
-                        .about("Exchanges the claim for the secret key")
-                        .arg(arg!(<CLAIM_CODE> "claim code (see \"claim generate\")"))
-                        .arg(arg!(--wait <WAIT_SEC> "number of seconds to wait 0=infinite").default_value("0"))
-                )
-        )
-        .subcommand(
-            Command::new("start")
-                .about("Start the playit agent")
-        )
-        .subcommand(
-            Command::new("tunnels")
-                .subcommand_required(true)
-                .about("Manage tunnels")
-                .subcommand(
-                    Command::new("prepare")
-                        .about("Create a tunnel if it doesn't exist with the parameters")
-                        .arg(arg!(--type [TUNNEL_TYPE] "the tunnel type"))
-                        .arg(arg!(--name [NAME] "name of the tunnel"))
-                        .arg(arg!(<PORT_TYPE> "either \"tcp\", \"udp\", or \"both\""))
-                        .arg(arg!(<PORT_COUNT> "number of ports in a series to allocate").default_value("1"))
-                        .arg(arg!(--exact))
-                        .arg(arg!(--ignore_name))
-                )
-                .subcommand(
-                    Command::new("list")
-                        .about("List tunnels (format \"[tunnel-id] [port-type] [port-count] [public-address]\")")
-                )
-        )
-        .subcommand(
-            Command::new("reset")
-                .about("removes the secret key on your system so the playit agent can be re-claimed")
-        )
-        .subcommand(
-            Command::new("secret-path")
-                .about("shows the file path where the playit secret can be found")
-        )
-        ;
-
-    #[cfg(target_os = "linux")]
-    {
-        cmd = cmd.subcommand(Command::new("setup"));
-    }
-
-    cmd
 }
