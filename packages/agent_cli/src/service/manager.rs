@@ -1,10 +1,11 @@
 //! Service manager integration for install/uninstall/start/stop.
 
-use service_manager::{
-    ServiceInstallCtx, ServiceLabel, ServiceManager, ServiceStartCtx, ServiceStopCtx,
-    ServiceUninstallCtx,
-};
+use service_manager::{ServiceLabel, ServiceManager, ServiceStartCtx, ServiceStopCtx};
+#[cfg(not(target_os = "linux"))]
+use service_manager::{ServiceInstallCtx, ServiceUninstallCtx};
+#[cfg(not(target_os = "linux"))]
 use std::ffi::OsString;
+#[cfg(not(target_os = "linux"))]
 use std::path::PathBuf;
 
 /// Error type for service manager operations
@@ -24,6 +25,8 @@ pub enum ServiceManagerError {
     NotFound,
     /// Generic IO error
     IoError(std::io::Error),
+    /// Service is managed by package manager (Linux)
+    ManagedByPackageManager,
 }
 
 impl std::fmt::Display for ServiceManagerError {
@@ -42,6 +45,9 @@ impl std::fmt::Display for ServiceManagerError {
             ServiceManagerError::StopFailed(msg) => write!(f, "Failed to stop service: {}", msg),
             ServiceManagerError::NotFound => write!(f, "Service not found"),
             ServiceManagerError::IoError(e) => write!(f, "IO error: {}", e),
+            ServiceManagerError::ManagedByPackageManager => {
+                write!(f, "The playit service is managed by the package manager. Use your system package manager to install or uninstall the service.")
+            }
         }
     }
 }
@@ -58,15 +64,18 @@ impl From<std::io::Error> for ServiceManagerError {
 pub struct ServiceController {
     manager: Box<dyn ServiceManager>,
     label: ServiceLabel,
+    #[cfg(not(target_os = "linux"))]
     system_mode: bool,
 }
 
 impl ServiceController {
     /// Service label for playit agent
     const SERVICE_LABEL: &'static str = "gg.playit.agent";
+    #[cfg(not(target_os = "linux"))]
     const USER_SERVICE_LABEL: &'static str = "gg.playit.agent.user";
 
     /// Create a new service controller
+    #[cfg(not(target_os = "linux"))]
     pub fn new(system_mode: bool) -> Result<Self, ServiceManagerError> {
         let manager = <dyn ServiceManager>::native()
             .map_err(|e| ServiceManagerError::NotAvailable(e.to_string()))?;
@@ -86,53 +95,84 @@ impl ServiceController {
         })
     }
 
+    /// Create a new service controller (Linux only supports system mode)
+    #[cfg(target_os = "linux")]
+    pub fn new(_system_mode: bool) -> Result<Self, ServiceManagerError> {
+        let manager = <dyn ServiceManager>::native()
+            .map_err(|e| ServiceManagerError::NotAvailable(e.to_string()))?;
+
+        let label: ServiceLabel = Self::SERVICE_LABEL.parse().unwrap();
+
+        Ok(ServiceController { manager, label })
+    }
+
     /// Get the path to the current executable
+    #[cfg(not(target_os = "linux"))]
     fn get_executable_path() -> Result<PathBuf, ServiceManagerError> {
         std::env::current_exe().map_err(ServiceManagerError::IoError)
     }
 
     /// Install the service
     pub fn install(&self) -> Result<(), ServiceManagerError> {
-        let program = Self::get_executable_path()?;
-
-        // Build arguments for the service
-        let mut args = vec![OsString::from("run-service")];
-        if !self.system_mode {
-            args.push(OsString::from("--user"));
+        // On Linux, the service is managed by the package manager
+        #[cfg(target_os = "linux")]
+        {
+            return Err(ServiceManagerError::ManagedByPackageManager);
         }
 
-        let ctx = ServiceInstallCtx {
-            label: self.label.clone(),
-            program,
-            args,
-            contents: None,
-            username: None,
-            working_directory: None,
-            environment: None,
-            autostart: true,
-            restart_policy: service_manager::RestartPolicy::OnFailure {
-                delay_secs: Some(5),
-            },
-        };
+        #[cfg(not(target_os = "linux"))]
+        {
+            let program = Self::get_executable_path()?;
 
-        self.manager
-            .install(ctx)
-            .map_err(|e| ServiceManagerError::InstallFailed(e.to_string()))?;
+            // Build arguments for the service
+            let args = if self.system_mode {
+                vec![OsString::from("run-service")]
+            } else {
+                vec![OsString::from("run-service"), OsString::from("--user")]
+            };
 
-        Ok(())
+            let ctx = ServiceInstallCtx {
+                label: self.label.clone(),
+                program,
+                args,
+                contents: None,
+                username: None,
+                working_directory: None,
+                environment: None,
+                autostart: true,
+                restart_policy: service_manager::RestartPolicy::OnFailure {
+                    delay_secs: Some(5),
+                },
+            };
+
+            self.manager
+                .install(ctx)
+                .map_err(|e| ServiceManagerError::InstallFailed(e.to_string()))?;
+
+            Ok(())
+        }
     }
 
     /// Uninstall the service
     pub fn uninstall(&self) -> Result<(), ServiceManagerError> {
-        let ctx = ServiceUninstallCtx {
-            label: self.label.clone(),
-        };
+        // On Linux, the service is managed by the package manager
+        #[cfg(target_os = "linux")]
+        {
+            return Err(ServiceManagerError::ManagedByPackageManager);
+        }
 
-        self.manager
-            .uninstall(ctx)
-            .map_err(|e| ServiceManagerError::UninstallFailed(e.to_string()))?;
+        #[cfg(not(target_os = "linux"))]
+        {
+            let ctx = ServiceUninstallCtx {
+                label: self.label.clone(),
+            };
 
-        Ok(())
+            self.manager
+                .uninstall(ctx)
+                .map_err(|e| ServiceManagerError::UninstallFailed(e.to_string()))?;
+
+            Ok(())
+        }
     }
 
     /// Start the service
@@ -174,9 +214,58 @@ impl ServiceController {
     }
 
     /// Check if running in system mode
+    #[cfg(not(target_os = "linux"))]
     pub fn is_system_mode(&self) -> bool {
         self.system_mode
     }
+
+    /// Check if running in system mode (Linux always uses system mode)
+    #[cfg(target_os = "linux")]
+    pub fn is_system_mode(&self) -> bool {
+        true
+    }
+}
+
+/// Start the playit systemd service on Linux using systemctl
+#[cfg(target_os = "linux")]
+fn start_systemd_service() -> Result<(), ServiceManagerError> {
+    use std::process::Command;
+
+    let output = Command::new("systemctl")
+        .args(["start", "playit"])
+        .output()
+        .map_err(|e| ServiceManagerError::StartFailed(format!("Failed to run systemctl: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ServiceManagerError::StartFailed(format!(
+            "systemctl start playit failed: {}",
+            stderr
+        )));
+    }
+
+    Ok(())
+}
+
+/// Stop the playit systemd service on Linux using systemctl
+#[cfg(target_os = "linux")]
+pub fn stop_systemd_service() -> Result<(), ServiceManagerError> {
+    use std::process::Command;
+
+    let output = Command::new("systemctl")
+        .args(["stop", "playit"])
+        .output()
+        .map_err(|e| ServiceManagerError::StopFailed(format!("Failed to run systemctl: {}", e)))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ServiceManagerError::StopFailed(format!(
+            "systemctl stop playit failed: {}",
+            stderr
+        )));
+    }
+
+    Ok(())
 }
 
 /// Ensure the service is running, starting it if necessary
@@ -189,55 +278,90 @@ pub async fn ensure_service_running(system_mode: bool) -> Result<(), ServiceMana
         return Ok(());
     }
 
-    // Try to start via service manager first
-    let service_manager_result = match ServiceController::new(system_mode) {
-        Ok(controller) => {
-            tracing::info!("Starting service via service manager");
-            controller.start()
+    // On Linux, only use systemctl to start the package-installed service (no user-level service support)
+    #[cfg(target_os = "linux")]
+    {
+        let _ = system_mode; // silence unused variable warning
+        tracing::info!("Starting playit service via systemctl");
+        if let Err(e) = start_systemd_service() {
+            tracing::error!("Failed to start via systemctl: {}", e);
+            return Err(e);
         }
-        Err(e) => {
-            tracing::error!("Service manager not available: {}", e);
-            Err(e)
-        }
-    };
 
-    // If service manager worked, wait for it to be ready
-    if service_manager_result.is_ok() {
+        // Wait for service to be ready
         for _ in 0..50 {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            if IpcClient::is_running(system_mode).await {
-                tracing::info!("Service started via service manager");
+            if IpcClient::is_running(true).await {
+                tracing::info!("Service started via systemctl");
                 return Ok(());
             }
         }
+
+        return Err(ServiceManagerError::StartFailed(
+            "Service did not start within timeout. Ensure the playit service is installed via your package manager.".to_string(),
+        ));
     }
 
-    // If service manager failed or service didn't start, spawn daemon directly
-    tracing::info!("Starting daemon process directly");
-    spawn_daemon_process(system_mode)?;
+    // On non-Linux, try to start via service manager
+    #[cfg(not(target_os = "linux"))]
+    {
+        let service_manager_result = match ServiceController::new(system_mode) {
+            Ok(controller) => {
+                tracing::info!("Starting service via service manager");
+                controller.start()
+            }
+            Err(e) => {
+                tracing::error!("Service manager not available: {}", e);
+                Err(e)
+            }
+        };
 
-    // Wait for daemon to be ready
-    for _ in 0..50 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if IpcClient::is_running(system_mode).await {
-            tracing::info!("Daemon started successfully");
-            return Ok(());
+        // If service manager worked, wait for it to be ready
+        match service_manager_result {
+            Ok(_) => {
+                for _ in 0..50 {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    if IpcClient::is_running(system_mode).await {
+                        tracing::info!("Service started via service manager");
+                        return Ok(());
+                    }
+                }
+            }
+            Err(error) => {
+                tracing::error!(?error, "failed to start service with manager");
+            }
         }
-    }
 
-    Err(ServiceManagerError::StartFailed(
-        "Service did not start within timeout".to_string(),
-    ))
+        // If service manager failed or service didn't start, spawn daemon directly
+        tracing::info!("Starting daemon process directly");
+        spawn_daemon_process(system_mode)?;
+
+        // Wait for daemon to be ready
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if IpcClient::is_running(system_mode).await {
+                tracing::info!("Daemon started successfully");
+                return Ok(());
+            }
+        }
+
+        Err(ServiceManagerError::StartFailed(
+            "Service did not start within timeout".to_string(),
+        ))
+    }
 }
 
 /// Spawn the daemon process directly (without service manager)
+/// Not available on Linux where only the package-managed systemd service is supported.
+#[cfg(not(target_os = "linux"))]
 fn spawn_daemon_process(system_mode: bool) -> Result<(), ServiceManagerError> {
     let exe = std::env::current_exe().map_err(ServiceManagerError::IoError)?;
 
-    let mut args = vec!["run-service".to_string()];
-    if !system_mode {
-        args.push("--user".to_string());
-    }
+    let args = if system_mode {
+        vec!["run-service".to_string()]
+    } else {
+        vec!["run-service".to_string(), "--user".to_string()]
+    };
 
     #[cfg(unix)]
     {

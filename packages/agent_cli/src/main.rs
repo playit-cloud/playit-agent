@@ -23,6 +23,19 @@ use crate::signal_handle::get_signal_handle;
 use crate::ui::log_capture::LogCaptureLayer;
 use crate::ui::{UI, UISettings};
 
+/// Represents the service mode selection for the start command
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServiceMode {
+    /// Auto-detect: check user service first, then system service
+    #[cfg(not(target_os = "linux"))]
+    Auto,
+    /// Explicitly use user-level service (not available on Linux)
+    #[cfg(not(target_os = "linux"))]
+    User,
+    /// Explicitly use system-level service
+    System,
+}
+
 pub static API_BASE: LazyLock<String> =
     LazyLock::new(|| dotenv::var("API_BASE").unwrap_or("https://api.playit.gg".to_string()));
 
@@ -83,9 +96,15 @@ enum Commands {
 
     /// Start the playit agent (starts service and attaches to receive updates)
     Start {
-        /// Install as system-wide service (requires admin/root)
+        /// Run as system-wide service (requires admin/root)
+        #[cfg(not(target_os = "linux"))]
         #[arg(long)]
         system: bool,
+
+        /// Run as user service (default when starting new service)
+        #[cfg(not(target_os = "linux"))]
+        #[arg(long)]
+        user: bool,
 
         /// Print logs to stdout instead of using TUI
         #[arg(short = 's', long)]
@@ -95,6 +114,7 @@ enum Commands {
     /// Stop the background service
     Stop {
         /// Stop system-wide service (requires admin/root)
+        #[cfg(not(target_os = "linux"))]
         #[arg(long)]
         system: bool,
     },
@@ -102,6 +122,7 @@ enum Commands {
     /// Show the status of the background service
     Status {
         /// Check system-wide service status
+        #[cfg(not(target_os = "linux"))]
         #[arg(long)]
         system: bool,
     },
@@ -109,6 +130,7 @@ enum Commands {
     /// Install the playit agent as a system service
     Install {
         /// Install as system-wide service (requires admin/root)
+        #[cfg(not(target_os = "linux"))]
         #[arg(long)]
         system: bool,
     },
@@ -116,6 +138,7 @@ enum Commands {
     /// Uninstall the playit agent system service
     Uninstall {
         /// Uninstall system-wide service (requires admin/root)
+        #[cfg(not(target_os = "linux"))]
         #[arg(long)]
         system: bool,
     },
@@ -126,7 +149,8 @@ enum Commands {
     /// Internal: Run as background service daemon
     #[command(hide = true)]
     RunService {
-        /// Run as user service (not system-wide)
+        /// Run as user service (not system-wide) - not available on Linux
+        #[cfg(not(target_os = "linux"))]
         #[arg(long)]
         user: bool,
     },
@@ -255,9 +279,20 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     let _ = secret.with_default_path().await;
 
     // Handle run-service command first - it sets up its own logging
+    #[cfg(not(target_os = "linux"))]
     if let Some(Commands::RunService { user }) = &cli.command {
         let system_mode = !user;
         if let Err(e) = service::run_daemon(system_mode).await {
+            eprintln!("Daemon error: {}", e);
+            return Ok(std::process::ExitCode::FAILURE);
+        }
+        return Ok(std::process::ExitCode::SUCCESS);
+    }
+
+    // On Linux, run-service always runs in system mode (no user-level service)
+    #[cfg(target_os = "linux")]
+    if let Some(Commands::RunService { .. }) = &cli.command {
+        if let Err(e) = service::run_daemon(true).await {
             eprintln!("Daemon error: {}", e);
             return Ok(std::process::ExitCode::FAILURE);
         }
@@ -332,22 +367,65 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     match cli.command {
         None => {
             // Default behavior: start service and attach (use TUI)
-            run_start_command(&mut ui, false, false).await?;
+            #[cfg(not(target_os = "linux"))]
+            {
+                run_start_command(&mut ui, ServiceMode::Auto, false).await?;
+            }
+            #[cfg(target_os = "linux")]
+            {
+                run_start_command(&mut ui, ServiceMode::System, false).await?;
+            }
         }
-        Some(Commands::Start { system, stdout }) => {
-            run_start_command(&mut ui, system, stdout).await?;
+        #[cfg(not(target_os = "linux"))]
+        Some(Commands::Start { system, user, stdout }) => {
+            let mode = match (user, system) {
+                (true, true) => {
+                    return Err(CliError::ServiceError(
+                        "Cannot specify both --user and --system".to_string(),
+                    ));
+                }
+                (true, false) => ServiceMode::User,
+                (false, true) => ServiceMode::System,
+                (false, false) => ServiceMode::Auto,
+            };
+            run_start_command(&mut ui, mode, stdout).await?;
         }
+        #[cfg(target_os = "linux")]
+        Some(Commands::Start { stdout }) => {
+            // On Linux, only system-level service is supported
+            run_start_command(&mut ui, ServiceMode::System, stdout).await?;
+        }
+        #[cfg(not(target_os = "linux"))]
         Some(Commands::Stop { system }) => {
             run_stop_command(system).await?;
         }
+        #[cfg(target_os = "linux")]
+        Some(Commands::Stop { .. }) => {
+            run_stop_command(true).await?;
+        }
+        #[cfg(not(target_os = "linux"))]
         Some(Commands::Status { system }) => {
             run_status_command(system).await?;
         }
+        #[cfg(target_os = "linux")]
+        Some(Commands::Status { .. }) => {
+            run_status_command(true).await?;
+        }
+        #[cfg(not(target_os = "linux"))]
         Some(Commands::Install { system }) => {
             run_install_command(system)?;
         }
+        #[cfg(target_os = "linux")]
+        Some(Commands::Install { .. }) => {
+            run_install_command(true)?;
+        }
+        #[cfg(not(target_os = "linux"))]
         Some(Commands::Uninstall { system }) => {
             run_uninstall_command(system)?;
+        }
+        #[cfg(target_os = "linux")]
+        Some(Commands::Uninstall { .. }) => {
+            run_uninstall_command(true)?;
         }
         Some(Commands::RunEmbedded) => {
             // Run agent directly without TUI, printing logs to stdout
@@ -451,11 +529,41 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 /// Run the start command: start service and attach to receive updates
 async fn run_start_command(
     ui: &mut UI,
-    system_mode: bool,
+    mode: ServiceMode,
     stdout_mode: bool,
 ) -> Result<(), CliError> {
     use crate::service::ipc::{IpcClient, ServiceEvent};
     use crate::service::manager::ensure_service_running;
+
+    // Determine which service mode to use based on what's running
+    #[cfg(not(target_os = "linux"))]
+    let system_mode = match mode {
+        ServiceMode::User => false,
+        ServiceMode::System => true,
+        ServiceMode::Auto => {
+            // Check user service first, then system service
+            ui.write_screen("Checking for running services...").await;
+
+            if IpcClient::is_running(false).await {
+                tracing::info!("Found running user service");
+                false
+            } else if IpcClient::is_running(true).await {
+                tracing::info!("Found running system service");
+                true
+            } else {
+                // Neither is running, default to user mode
+                tracing::info!("No running service found, will start user service");
+                false
+            }
+        }
+    };
+
+    // On Linux, only system-level service is supported (via package manager's systemd unit)
+    #[cfg(target_os = "linux")]
+    let system_mode = {
+        let _ = mode; // silence unused variable warning
+        true
+    };
 
     // Ensure service is running
     ui.write_screen("Ensuring playit service is running...")
@@ -468,7 +576,9 @@ async fn run_start_command(
         )));
     }
 
-    ui.write_screen("Service is running").await;
+    let mode_str = if system_mode { "system" } else { "user" };
+    ui.write_screen(format!("Service is running ({})", mode_str))
+        .await;
 
     // Connect to service via IPC
     ui.write_screen("Connecting to service...").await;
@@ -605,15 +715,27 @@ async fn run_stop_command(system_mode: bool) -> Result<(), CliError> {
         }
     }
 
-    // Also try via service manager
-    match service::ServiceController::new(system_mode) {
-        Ok(controller) => {
-            if let Err(e) = controller.stop() {
-                tracing::warn!("Failed to stop via service manager: {}", e);
-            }
+    // On Linux, use systemctl to stop the service (only system-level is supported)
+    #[cfg(target_os = "linux")]
+    {
+        let _ = system_mode; // silence unused variable warning
+        if let Err(e) = service::manager::stop_systemd_service() {
+            tracing::warn!("Failed to stop via systemctl: {}", e);
         }
-        Err(e) => {
-            tracing::debug!("Service manager not available: {}", e);
+    }
+
+    // On non-Linux, try via service manager
+    #[cfg(not(target_os = "linux"))]
+    {
+        match service::ServiceController::new(system_mode) {
+            Ok(controller) => {
+                if let Err(e) = controller.stop() {
+                    tracing::warn!("Failed to stop via service manager: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::debug!("Service manager not available: {}", e);
+            }
         }
     }
 
@@ -668,6 +790,16 @@ async fn run_status_command(system_mode: bool) -> Result<(), CliError> {
 }
 
 /// Run the install command
+#[cfg(target_os = "linux")]
+fn run_install_command(_system_mode: bool) -> Result<(), CliError> {
+    // On Linux, the service is managed by the package manager
+    Err(CliError::ServiceError(
+        "The playit service is managed by the package manager. Use your system package manager to install or uninstall the service.".to_string()
+    ))
+}
+
+/// Run the install command
+#[cfg(not(target_os = "linux"))]
 fn run_install_command(system_mode: bool) -> Result<(), CliError> {
     let controller = service::ServiceController::new(system_mode)
         .map_err(|e| CliError::ServiceError(e.to_string()))?;
@@ -684,6 +816,16 @@ fn run_install_command(system_mode: bool) -> Result<(), CliError> {
 }
 
 /// Run the uninstall command
+#[cfg(target_os = "linux")]
+fn run_uninstall_command(_system_mode: bool) -> Result<(), CliError> {
+    // On Linux, the service is managed by the package manager
+    Err(CliError::ServiceError(
+        "The playit service is managed by the package manager. Use your system package manager to install or uninstall the service.".to_string()
+    ))
+}
+
+/// Run the uninstall command
+#[cfg(not(target_os = "linux"))]
 fn run_uninstall_command(system_mode: bool) -> Result<(), CliError> {
     let controller = service::ServiceController::new(system_mode)
         .map_err(|e| CliError::ServiceError(e.to_string()))?;
