@@ -282,14 +282,11 @@ impl ServiceEvent {
 
 /// Get the socket path for the IPC connection
 pub fn get_socket_path(system_mode: bool) -> String {
+    // On Linux, only system-level service is supported (via package manager's systemd unit)
     #[cfg(target_os = "linux")]
     {
-        if system_mode {
-            "/var/run/playit-agent.sock".to_string()
-        } else {
-            // Use abstract socket namespace on Linux
-            format!("@playit-agent-{}", unsafe { libc::getuid() })
-        }
+        let _ = system_mode; // silence unused variable warning - always uses system path
+        "/var/run/playit-agent.sock".to_string()
     }
 
     #[cfg(target_os = "macos")]
