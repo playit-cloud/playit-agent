@@ -84,8 +84,9 @@ impl PlayitSecret {
             match api.agents_rundata().await {
                 Ok(data) => {
                     ui.write_screen(format!(
-                        "secret key valid, agent has {} tunnels",
-                        data.tunnels.len()
+                        "secret key valid, agent has {} tunnel{}",
+                        data.tunnels.len(),
+                        if data.tunnels.len() == 1 {""} else {"s"}
                     ))
                     .await;
 
