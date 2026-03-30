@@ -26,6 +26,19 @@ use super::{
     tcp_settings::TcpSettings,
 };
 
+fn build_quota(settings: &TcpSettings) -> Quota {
+    let rate = NonZeroU32::new(settings.new_client_ratelimit).unwrap_or_else(|| {
+        tracing::warn!("invalid tcp new client rate limit of 0, clamping to 1");
+        NonZeroU32::MIN
+    });
+    let burst = NonZeroU32::new(settings.new_client_ratelimit_burst).unwrap_or_else(|| {
+        tracing::warn!("invalid tcp new client burst of 0, clamping to 1");
+        NonZeroU32::MIN
+    });
+
+    Quota::per_second(rate).allow_burst(burst)
+}
+
 pub struct TcpClients {
     events_tx: Sender<Event>,
     new_client_limiter: DefaultDirectRateLimiter,
@@ -93,12 +106,7 @@ enum Event {
 
 impl TcpClients {
     pub fn new(settings: TcpSettings, lookup: Arc<OriginLookup>, stats: AgentStats) -> Self {
-        let quota = unsafe {
-            Quota::per_second(NonZeroU32::new_unchecked(settings.new_client_ratelimit)).allow_burst(
-                NonZeroU32::new_unchecked(settings.new_client_ratelimit_burst),
-            )
-        };
-
+        let quota = build_quota(&settings);
         let (events_tx, events_rx) = channel(1024);
         let cancel = CancellationToken::new();
 

@@ -25,13 +25,12 @@ impl OriginLookup {
     }
 
     pub async fn update<I: Iterator<Item = OriginResource>>(&self, resources: I) {
-        let mut lock = self.map.write().await;
-        lock.clear();
+        let mut next = HashMap::new();
 
         for res in resources {
             match res.proto {
                 PortProto::Tcp => {
-                    lock.insert(
+                    next.insert(
                         Key {
                             tunnel_id: res.tunnel_id,
                             is_tcp: true,
@@ -40,7 +39,7 @@ impl OriginLookup {
                     );
                 }
                 PortProto::Udp => {
-                    lock.insert(
+                    next.insert(
                         Key {
                             tunnel_id: res.tunnel_id,
                             is_tcp: false,
@@ -49,14 +48,14 @@ impl OriginLookup {
                     );
                 }
                 PortProto::Both => {
-                    lock.insert(
+                    next.insert(
                         Key {
                             tunnel_id: res.tunnel_id,
                             is_tcp: true,
                         },
                         res.clone(),
                     );
-                    lock.insert(
+                    next.insert(
                         Key {
                             tunnel_id: res.tunnel_id,
                             is_tcp: false,
@@ -66,6 +65,9 @@ impl OriginLookup {
                 }
             }
         }
+
+        let mut lock = self.map.write().await;
+        *lock = next;
     }
 
     pub async fn lookup(&self, tunnel_id: u64, is_tcp: bool) -> Option<OriginResource> {

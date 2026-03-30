@@ -47,13 +47,15 @@ impl PlayitAgent {
         let auth = AuthApi::new(settings.api_url, settings.secret_key);
         let control = MaintainedControl::setup(io, auth).await?;
 
-        let packets = Packets::new(1024 * 16);
-        let udp_channel = UdpChannel::new(packets.clone())
+        let tunnel_packets = Packets::new(1024 * 8);
+        let origin_packets = Packets::new(1024 * 8);
+        let udp_channel = UdpChannel::new(tunnel_packets)
             .await
             .map_err(SetupError::IoError)?;
 
         let stats = AgentStats::new();
-        let udp_clients = UdpClients::new(settings.udp_settings, lookup.clone(), packets.clone(), stats.clone());
+        let udp_clients =
+            UdpClients::new(settings.udp_settings, lookup.clone(), origin_packets, stats.clone());
         let tcp_clients = TcpClients::new(settings.tcp_settings, lookup.clone(), stats.clone());
 
         Ok(PlayitAgent {
