@@ -12,7 +12,7 @@ use crate::utils::now_milli;
 
 use super::{
     errors::{ControlError, SetupError},
-    established_control::EstablishedControl,
+    established_control::{EstablishedControl, MtuData},
     AuthResource, PacketIO,
 };
 
@@ -65,6 +65,8 @@ impl<IO: PacketIO> ConnectedControl<IO> {
             current_ping: None,
             clock_offset: 0,
             force_expired: false,
+            pending_mtu_data: MtuData::default(),
+            known_mtu_data: MtuData::default(),
         }
     }
 
@@ -78,6 +80,8 @@ impl<IO: PacketIO> ConnectedControl<IO> {
         established.conn = self;
         established.current_ping = None;
         established.force_expired = false;
+        established.pending_mtu_data = MtuData::default();
+        established.known_mtu_data = MtuData::default();
     }
 
     pub async fn authenticate<A: AuthResource>(

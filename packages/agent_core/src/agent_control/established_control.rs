@@ -1,6 +1,9 @@
+use std::collections::BTreeMap;
+
 use playit_agent_proto::control_feed::ControlFeed;
 use playit_agent_proto::control_messages::{
-    AgentRegistered, ControlRequest, ControlResponse, Ping, Pong,
+    AgentRegistered, CheckMtuReceived, CheckMtuReceivedAck, ControlRequest, ControlResponse,
+    MtuTestFail, MtuTestFailCode, MtuTestPacket, Ping, Pong, SendMtuTest,
 };
 use playit_agent_proto::rpc::ControlRpcMessage;
 
@@ -18,6 +21,39 @@ pub struct EstablishedControl<A: AuthResource, IO: PacketIO> {
     pub(super) current_ping: Option<u32>,
     pub(super) clock_offset: i64,
     pub(super) force_expired: bool,
+    pub(super) pending_mtu_data: MtuData,
+    pub(super) known_mtu_data: MtuData,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MtuData {
+    pub largest_received_packet: Option<CheckMtuReceivedAck>,
+    pub largest_payload_by_datacenter: BTreeMap<u32, u32>,
+    pub latest_test_fail: Option<MtuTestFail>,
+}
+
+impl MtuData {
+    fn record_check_mtu_received_ack(&mut self, ack: CheckMtuReceivedAck) {
+        let should_replace = match self.largest_received_packet.as_ref() {
+            Some(current) => ack.message_length >= current.message_length,
+            None => true,
+        };
+
+        if should_replace {
+            self.largest_received_packet = Some(ack);
+        }
+    }
+
+    fn record_mtu_test_packet(&mut self, packet: MtuTestPacket) {
+        self.largest_payload_by_datacenter
+            .entry(packet.data_center_id)
+            .and_modify(|current| *current = (*current).max(packet.udp_payload_length))
+            .or_insert(packet.udp_payload_length);
+    }
+
+    fn record_mtu_test_fail(&mut self, fail: MtuTestFail) {
+        self.latest_test_fail = Some(fail);
+    }
 }
 
 impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
@@ -49,6 +85,37 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
         .await
     }
 
+    pub async fn send_check_mtu_received(
+        &mut self,
+        request_id: u64,
+        id: u64,
+        message_size: u32,
+    ) -> Result<(), ControlError> {
+        self.send(ControlRpcMessage {
+            request_id,
+            content: ControlRequest::CheckMtuReceived(CheckMtuReceived { id, message_size }),
+        })
+        .await
+    }
+
+    pub async fn send_mtu_test(
+        &mut self,
+        request_id: u64,
+        id: u64,
+        data_center_id: u32,
+        udp_payload_length: u32,
+    ) -> Result<(), ControlError> {
+        self.send(ControlRpcMessage {
+            request_id,
+            content: ControlRequest::SendMtuTest(SendMtuTest {
+                id,
+                data_center_id,
+                udp_payload_length,
+            }),
+        })
+        .await
+    }
+
     pub fn get_expire_at(&self) -> u64 {
         self.registered.expires_at
     }
@@ -68,6 +135,26 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
 
     pub fn set_expired(&mut self) {
         self.force_expired = true;
+    }
+
+    pub fn pending_mtu_data(&self) -> &MtuData {
+        &self.pending_mtu_data
+    }
+
+    pub fn known_mtu_data(&self) -> &MtuData {
+        &self.known_mtu_data
+    }
+
+    pub fn commit_pending_mtu_data(&mut self) {
+        self.known_mtu_data = self.pending_mtu_data.clone();
+    }
+
+    pub fn clear_pending_mtu_data(&mut self) {
+        self.pending_mtu_data = MtuData::default();
+    }
+
+    pub fn clear_known_mtu_data(&mut self) {
+        self.known_mtu_data = MtuData::default();
     }
 
     fn flow_changed(&self) -> bool {
@@ -132,6 +219,16 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
                             - rtt as u64;
                     }
                 }
+                ControlResponse::CheckMtuReceivedAck(ack) => {
+                    self.pending_mtu_data
+                        .record_check_mtu_received_ack(ack.clone());
+                }
+                ControlResponse::MtuTestPacket(packet) => {
+                    self.pending_mtu_data.record_mtu_test_packet(packet.clone());
+                }
+                ControlResponse::MtuTestFail(fail) => {
+                    self.pending_mtu_data.record_mtu_test_fail(fail.clone());
+                }
                 _ => {}
             }
         }
@@ -145,4 +242,10 @@ pub enum ExpiredReason {
     Forced,
     SessionNotSetup,
     FlowChanged,
+}
+
+impl MtuData {
+    pub fn latest_test_fail_code(&self) -> Option<MtuTestFailCode> {
+        self.latest_test_fail.as_ref().map(|fail| fail.error_code)
+    }
 }
