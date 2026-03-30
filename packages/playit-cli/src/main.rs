@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use client::{
-    CliTarget, provision_service_secret, run_account_login_url_command, run_reset_command,
-    run_secret_path_command, run_start_command, run_status_command, run_stop_command,
+    CliTarget, provision_service_secret, run_account_login_url_command, run_attach_command,
+    run_default_attach_command, run_reset_command, run_secret_path_command, run_start_command,
+    run_status_command, run_stop_command,
 };
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
@@ -65,12 +66,15 @@ enum Commands {
     /// Print version information
     Version,
 
-    /// Start the installed playitd service and attach
-    Start {
+    /// Attach to a running playitd service
+    Attach {
         /// Print logs to stdout instead of using TUI
         #[arg(short = 's', long)]
         stdout: bool,
     },
+
+    /// Start the installed playitd service
+    Start,
 
     /// Stop the installed playitd service
     Stop,
@@ -142,7 +146,17 @@ enum ClaimCommands {
 }
 
 #[tokio::main]
-async fn main() -> Result<std::process::ExitCode, CliError> {
+async fn main() -> std::process::ExitCode {
+    match run_cli().await {
+        Ok(code) => code,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run_cli() -> Result<std::process::ExitCode, CliError> {
     let cli = Cli::parse();
 
     /* register docker */
@@ -160,11 +174,11 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     let log_only = cli.stdout;
     let target = CliTarget::from_socket_path(cli.socket_path.clone());
 
-    // Check if Start command has --stdout flag
-    let start_stdout = matches!(&cli.command, Some(Commands::Start { stdout: true, .. }));
+    // Check if attach has --stdout flag
+    let attach_stdout = matches!(&cli.command, Some(Commands::Attach { stdout: true, .. }));
 
-    // Use log-only mode if stdout flag is set or if start --stdout was requested.
-    let use_log_only = log_only || start_stdout;
+    // Use log-only mode if stdout flag is set or if attach --stdout was requested.
+    let use_log_only = log_only || attach_stdout;
 
     // Create UI first so we can get its log capture
     let mut ui = UI::new(UISettings {
@@ -179,7 +193,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
     let _guard = match use_log_only {
         true => {
-            // Log to stdout for `-s` or `start -s`.
+            // Log to stdout for `-s` or `attach -s`.
             let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
             tracing_subscriber::fmt()
                 .with_ansi(current_platform() == Platform::Linux)
@@ -203,10 +217,13 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
     match cli.command {
         None => {
-            run_start_command(&mut ui, false, &target).await?;
+            run_default_attach_command(&mut ui, &target).await?;
         }
-        Some(Commands::Start { stdout }) => {
-            run_start_command(&mut ui, stdout, &target).await?;
+        Some(Commands::Attach { stdout }) => {
+            run_attach_command(&mut ui, stdout, &target).await?;
+        }
+        Some(Commands::Start) => {
+            run_start_command(&target).await?;
         }
         Some(Commands::Stop) => {
             run_stop_command(&target).await?;

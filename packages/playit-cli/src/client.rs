@@ -16,6 +16,13 @@ use crate::ui::tui_app::{
 use crate::ui::UI;
 use crate::{CliError, EXE_NAME};
 
+enum AttachErrorContext {
+    Standard,
+    DefaultCommand {
+        start_attempt_failed: Option<String>,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub enum CliTarget {
     InstalledService,
@@ -38,32 +45,52 @@ impl CliTarget {
     }
 }
 
-pub async fn run_start_command(
+pub async fn run_attach_command(
     ui: &mut UI,
     stdout_mode: bool,
     target: &CliTarget,
 ) -> Result<(), CliError> {
-    if let CliTarget::ExplicitSocket(path) = target {
-        return Err(CliError::ServiceError(format!(
-            "The start command only manages the installed playitd service and cannot be used with --socket-path ({path})."
-        )));
-    }
+    run_attach_command_with_context(ui, stdout_mode, target, AttachErrorContext::Standard).await
+}
 
-    ui.write_screen("Ensuring installed playitd service is running...")
-        .await;
-    ensure_installed_service_running()
-        .await
-        .map_err(|e| CliError::ServiceError(format!("Failed to start service: {e}")))?;
+pub async fn run_default_attach_command(
+    ui: &mut UI,
+    target: &CliTarget,
+) -> Result<(), CliError> {
+    let start_attempt_failed = match target {
+        CliTarget::InstalledService => ensure_installed_service_running()
+            .await
+            .err()
+            .map(|error| error.to_string()),
+        CliTarget::ExplicitSocket(_) => None,
+    };
 
-    ui.write_screen("Installed playitd service is running").await;
+    run_attach_command_with_context(
+        ui,
+        false,
+        target,
+        AttachErrorContext::DefaultCommand {
+            start_attempt_failed,
+        },
+    )
+    .await
+}
+
+async fn run_attach_command_with_context(
+    ui: &mut UI,
+    stdout_mode: bool,
+    target: &CliTarget,
+    error_context: AttachErrorContext,
+) -> Result<(), CliError> {
     ui.write_screen("Connecting to playitd...").await;
-
-    let mut client = connect_target(target).await?;
+    let mut client = connect_target(target)
+        .await
+        .map_err(|_| initial_attach_error(target, &error_context))?;
 
     let snapshot = client
         .subscribe()
         .await
-        .map_err(|e| CliError::IpcError(format!("Failed to subscribe: {e}")))?;
+        .map_err(|_| initial_attach_error(target, &error_context))?;
 
     if !stdout_mode {
         apply_status(ui, snapshot.snapshot.status.clone(), false).await;
@@ -77,11 +104,12 @@ pub async fn run_start_command(
                 match update_result {
                     Ok(update) => apply_update(ui, update, stdout_mode).await,
                     Err(error) => {
+                        let message = attach_lost_message(target, &error.to_string());
                         if stdout_mode {
-                            eprintln!("Connection to service lost: {error}");
+                            eprintln!("{message}");
                         } else {
                             tracing::error!("IPC error: {error}");
-                            ui.write_screen(format!("Connection to service lost: {error}")).await;
+                            ui.write_screen(message).await;
                         }
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         break;
@@ -119,11 +147,27 @@ pub async fn run_start_command(
     Ok(())
 }
 
+pub async fn run_start_command(target: &CliTarget) -> Result<(), CliError> {
+    if let CliTarget::ExplicitSocket(path) = target {
+        return Err(CliError::ServiceError(format!(
+            "The start command only manages the installed playitd service and cannot be used with --socket-path ({path})."
+        )));
+    }
+
+    ensure_installed_service_running()
+        .await
+        .map_err(|e| CliError::ServiceError(format!("Failed to start service: {e}")))?;
+
+    println!("playitd service started");
+    println!("Run \"playit attach\" to see the playit program.");
+    Ok(())
+}
+
 pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
     match target {
         CliTarget::InstalledService => {
-            if let Ok(mut client) = connect_target(target).await {
-                match client.stop().await {
+            match connect_target(target).await {
+                Ok(mut client) => match client.stop().await {
                     Ok(response) if response.accepted => {
                         println!("playitd service stop requested");
                         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -136,7 +180,18 @@ pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
                                 .unwrap_or_else(|| "service rejected stop request".to_string())
                         );
                     }
-                    Err(error) => tracing::warn!("Failed to send stop via IPC: {error}"),
+                    Err(error) => {
+                        tracing::warn!("Failed to send stop via IPC: {error}");
+                        eprintln!(
+                            "Could not reach playitd over IPC, attempting to stop the installed service directly."
+                        );
+                    }
+                },
+                Err(error) => {
+                    tracing::warn!("Failed to connect to installed service over IPC: {error}");
+                    eprintln!(
+                        "Could not reach playitd over IPC, attempting to stop the installed service directly."
+                    );
                 }
             }
 
@@ -221,7 +276,7 @@ pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
                 println!("  Last error: {}", error.message);
             }
         }
-        Err(error) => println!("Failed to get status: {error}"),
+        Err(_) => return Err(ipc_connection_error()),
     }
 
     Ok(())
@@ -257,25 +312,41 @@ pub async fn provision_service_secret(
 
 pub async fn run_reset_command(target: &CliTarget) -> Result<(), CliError> {
     let mut client = connect_target(target).await?;
-    let response = client
+    let reset_response = client
         .reset_secret()
         .await
         .map_err(|e| CliError::IpcError(format!("Failed to reset secret: {e}")))?;
 
-    if !response.accepted {
+    if !reset_response.accepted {
         return Err(CliError::IpcError(
-            response
+            reset_response
                 .message
                 .unwrap_or_else(|| "playitd rejected the reset request".to_string()),
         ));
     }
 
-    println!(
-        "{}",
-        response
-            .message
-            .unwrap_or_else(|| "playitd reset the secret file".to_string())
-    );
+    let stop_response = client
+        .stop()
+        .await
+        .map_err(|e| CliError::IpcError(format!("Secret was reset, but failed to stop playitd: {e}")))?;
+
+    if !stop_response.accepted {
+        return Err(CliError::IpcError(
+            stop_response
+                .message
+                .unwrap_or_else(|| "Secret was reset, but playitd rejected the stop request".to_string()),
+        ));
+    }
+
+    let reset_message = reset_response
+        .message
+        .unwrap_or_else(|| "playitd reset the secret file".to_string());
+    let stop_message = stop_response
+        .message
+        .unwrap_or_else(|| "shutdown requested".to_string());
+
+    println!("{reset_message}");
+    println!("playitd stop requested: {stop_message}");
     Ok(())
 }
 
@@ -311,14 +382,47 @@ pub async fn run_account_login_url_command(target: &CliTarget) -> Result<(), Cli
 async fn connect_target(target: &CliTarget) -> Result<IpcClient, CliError> {
     IpcClient::connect_with_path(target.socket_path())
         .await
-        .map_err(|e| match target {
-            CliTarget::InstalledService => {
-                CliError::IpcError(format!("Failed to connect to installed playitd service: {e}"))
-            }
-            CliTarget::ExplicitSocket(path) => {
-                CliError::IpcError(format!("Failed to connect to playitd at {path}: {e}"))
-            }
-        })
+        .map_err(|_| ipc_connection_error())
+}
+
+fn ipc_connection_error() -> CliError {
+    CliError::IpcError("Failed to connect to playitd over IPC. Start playitd and try again.".to_string())
+}
+
+fn initial_attach_error(target: &CliTarget, error_context: &AttachErrorContext) -> CliError {
+    match error_context {
+        AttachErrorContext::Standard => ipc_connection_error(),
+        AttachErrorContext::DefaultCommand { start_attempt_failed } => {
+            default_attach_error(target, start_attempt_failed.as_deref())
+        }
+    }
+}
+
+fn default_attach_error(target: &CliTarget, start_attempt_failed: Option<&str>) -> CliError {
+    match target {
+        CliTarget::InstalledService => match start_attempt_failed {
+            Some(error) => CliError::IpcError(format!(
+                "Failed to connect to playitd over IPC. playit-cli also tried starting playitd first, but that start attempt failed: {error}"
+            )),
+            None => CliError::IpcError(
+                "Failed to connect to playitd over IPC. playit-cli tried starting playitd first, but it is still not reachable."
+                    .to_string(),
+            ),
+        },
+        CliTarget::ExplicitSocket(_) => ipc_connection_error(),
+    }
+}
+
+fn attach_lost_message(target: &CliTarget, error: &str) -> String {
+    match target {
+        CliTarget::InstalledService => format!(
+            "Connection to playitd lost: {error}. Run \"playit attach\" to reconnect."
+        ),
+        CliTarget::ExplicitSocket(path) => format!(
+            "Connection to playitd lost: {error}. Reattach with \"playit attach --socket-path {}\" once the daemon is reachable again.",
+            path
+        ),
+    }
 }
 
 async fn apply_update(ui: &mut UI, update: ServiceUpdate, stdout_mode: bool) {
