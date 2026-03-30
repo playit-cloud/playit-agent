@@ -1,18 +1,20 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use interprocess::local_socket::{
     GenericFilePath, GenericNamespaced, ListenerOptions, ToFsName, ToNsName,
-    tokio::{Stream, prelude::*},
+    tokio::{Listener, Stream, prelude::*},
 };
 use playit_agent_core::utils::now_milli;
+use playit_api_client::PlayitApi;
 use playit_ipc::ipc::{
     EventEnvelope, IpcError, PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope, ServerEnvelope,
-    ServiceRequest, ServiceResponse, protocol_info, resolve_socket_path,
+    ServiceRequest, ServiceResponse, get_default_socket_path, protocol_info,
 };
 use playit_ipc::model::{
-    AgentLifecycle, CommandResponse, ConnectionStats, ServiceError, ServiceErrorCode,
-    ServiceStatus, ServiceUpdate, SubscribeResponse, SubscriptionSnapshot,
+    AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ConnectionStats,
+    SecretPathResponse, ServiceError, ServiceErrorCode, ServiceStatus, ServiceUpdate,
+    SubscribeResponse, SubscriptionSnapshot,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
@@ -70,18 +72,25 @@ pub struct IpcServer {
     start_time: u64,
     cancel_token: CancellationToken,
     state_cache: Arc<StateCache>,
+    secret_path: Option<PathBuf>,
     secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
+    secret_provision_error: ServiceError,
+    secret_reset_error: ServiceError,
+    api: RwLock<Option<PlayitApi>>,
+    guest_login_cache: RwLock<Option<(String, u64)>>,
 }
 
 impl IpcServer {
     pub async fn new_with_sender(
-        system_mode: bool,
         socket_path: Option<String>,
         cancel_token: CancellationToken,
         event_tx: broadcast::Sender<ServiceUpdate>,
+        secret_path: Option<PathBuf>,
         secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
+        secret_provision_error: ServiceError,
+        secret_reset_error: ServiceError,
     ) -> Result<Self, IpcError> {
-        let socket_path = resolve_socket_path(socket_path.as_deref(), system_mode);
+        let socket_path = socket_path.unwrap_or_else(|| get_default_socket_path().to_string());
 
         if try_connect(&socket_path).await.is_ok() {
             return Err(IpcError::AlreadyRunning);
@@ -103,7 +112,12 @@ impl IpcServer {
             start_time: now_milli(),
             cancel_token,
             state_cache: Arc::new(StateCache::default()),
+            secret_path,
             secret_provision_tx,
+            secret_provision_error,
+            secret_reset_error,
+            api: RwLock::new(None),
+            guest_login_cache: RwLock::new(None),
         })
     }
 
@@ -115,9 +129,15 @@ impl IpcServer {
         self.state_cache.clone()
     }
 
-    pub async fn run(self: Arc<Self>) -> Result<(), IpcError> {
-        let listener = self.create_listener().await?;
+    pub async fn set_api(&self, api: PlayitApi) {
+        *self.api.write().await = Some(api);
+    }
 
+    pub async fn bind_listener(&self) -> Result<Listener, IpcError> {
+        self.create_listener()
+    }
+
+    pub async fn run(self: Arc<Self>, listener: Listener) -> Result<(), IpcError> {
         loop {
             tokio::select! {
                 accept_result = listener.accept() => {
@@ -143,9 +163,7 @@ impl IpcServer {
         Ok(())
     }
 
-    async fn create_listener(
-        &self,
-    ) -> Result<interprocess::local_socket::tokio::Listener, IpcError> {
+    fn create_listener(&self) -> Result<Listener, IpcError> {
         if self.socket_path.starts_with('@') {
             let name = self.socket_path[1..]
                 .to_ns_name::<GenericNamespaced>()
@@ -252,11 +270,7 @@ impl IpcServer {
                                         self.send_response(
                                             &mut writer,
                                             request.request_id,
-                                            ServiceResponse::Error(protocol_error(
-                                                ServiceErrorCode::ProvisioningUnavailable,
-                                                "Secret provisioning is unavailable".to_string(),
-                                                true,
-                                            )),
+                                            ServiceResponse::Error(self.secret_provision_error.clone()),
                                         )
                                         .await?;
                                         continue;
@@ -287,7 +301,7 @@ impl IpcServer {
                                                 &mut writer,
                                                 request.request_id,
                                                 ServiceResponse::Error(protocol_error(
-                                                    ServiceErrorCode::ConfigWriteFailed,
+                                                    ServiceErrorCode::SecretWriteFailed,
                                                     message,
                                                     true,
                                                 )),
@@ -303,6 +317,64 @@ impl IpcServer {
                                                     "daemon dropped secret provisioning response".to_string(),
                                                     true,
                                                 )),
+                                            )
+                                            .await?;
+                                        }
+                                    }
+                                }
+                                ServiceRequest::ResetSecret => {
+                                    match self.reset_secret().await {
+                                        Ok(message) => {
+                                            self.send_response(
+                                                &mut writer,
+                                                request.request_id,
+                                                ServiceResponse::ResetSecret(CommandResponse {
+                                                    accepted: true,
+                                                    message: Some(message),
+                                                }),
+                                            )
+                                            .await?;
+                                        }
+                                        Err(error) => {
+                                            self.send_response(
+                                                &mut writer,
+                                                request.request_id,
+                                                ServiceResponse::Error(error),
+                                            )
+                                            .await?;
+                                        }
+                                    }
+                                }
+                                ServiceRequest::GetSecretPath => {
+                                    self.send_response(
+                                        &mut writer,
+                                        request.request_id,
+                                        ServiceResponse::SecretPath(SecretPathResponse {
+                                            secret_path: self
+                                                .secret_path
+                                                .as_ref()
+                                                .map(|path| path.display().to_string()),
+                                        }),
+                                    )
+                                    .await?;
+                                }
+                                ServiceRequest::GetAccountLoginUrl => {
+                                    match self.get_account_login_url().await {
+                                        Ok(login_url) => {
+                                            self.send_response(
+                                                &mut writer,
+                                                request.request_id,
+                                                ServiceResponse::AccountLoginUrl(
+                                                    AccountLoginUrlResponse { login_url },
+                                                ),
+                                            )
+                                            .await?;
+                                        }
+                                        Err(error) => {
+                                            self.send_response(
+                                                &mut writer,
+                                                request.request_id,
+                                                ServiceResponse::Error(error),
                                             )
                                             .await?;
                                         }
@@ -358,6 +430,65 @@ impl IpcServer {
         writer.write_all(b"\n").await?;
         writer.flush().await?;
         Ok(())
+    }
+
+    async fn reset_secret(&self) -> Result<String, ServiceError> {
+        let Some(secret_path) = &self.secret_path else {
+            return Err(self.secret_reset_error.clone());
+        };
+
+        match tokio::fs::remove_file(secret_path).await {
+            Ok(()) => Ok(format!(
+                "Deleted secret file at {}. Restart playitd to reprovision a new secret.",
+                secret_path.display()
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(format!(
+                "Secret file was already absent at {}.",
+                secret_path.display()
+            )),
+            Err(error) => Err(protocol_error(
+                ServiceErrorCode::SecretWriteFailed,
+                format!(
+                    "Failed to delete secret file {}: {error}",
+                    secret_path.display()
+                ),
+                true,
+            )),
+        }
+    }
+
+    async fn get_account_login_url(&self) -> Result<String, ServiceError> {
+        {
+            let cache = self.guest_login_cache.read().await;
+            if let Some((link, ts)) = &*cache {
+                if now_milli().saturating_sub(*ts) < 15_000 {
+                    return Ok(link.clone());
+                }
+            }
+        }
+
+        let api = self.api.read().await.clone().ok_or_else(|| {
+            protocol_error(
+                ServiceErrorCode::InvalidRequest,
+                "playitd is not ready to generate a login URL yet".to_string(),
+                true,
+            )
+        })?;
+
+        let session = api.login_guest().await.map_err(|error| {
+            protocol_error(
+                ServiceErrorCode::Internal,
+                format!("Failed to create login URL: {error:?}"),
+                true,
+            )
+        })?;
+
+        let link = format!(
+            "https://playit.gg/login/guest-account/{}",
+            session.session_key
+        );
+        *self.guest_login_cache.write().await = Some((link.clone(), now_milli()));
+        Ok(link)
     }
 }
 

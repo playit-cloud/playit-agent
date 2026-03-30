@@ -42,6 +42,7 @@ pub struct ProtocolInfo {
 #[serde(rename_all = "snake_case")]
 pub enum ServicePhase {
     WaitingForSecret,
+    HasInvalidSecret,
     #[default]
     Starting,
     Running,
@@ -57,8 +58,9 @@ pub enum ServiceErrorCode {
     UnsupportedProtocol,
     InvalidRequest,
     InvalidSecret,
+    SecretPinned,
     ProvisioningUnavailable,
-    ConfigWriteFailed,
+    SecretWriteFailed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -112,6 +114,7 @@ pub struct AgentState {
 #[serde(tag = "state", content = "data", rename_all = "snake_case")]
 pub enum AgentLifecycle {
     WaitingForSecret,
+    HasInvalidSecret(ServiceError),
     #[default]
     Starting,
     Running(AgentState),
@@ -134,7 +137,7 @@ pub struct ServiceStatus {
     pub uptime_secs: u64,
     pub version: String,
     pub socket_path: String,
-    pub config_path: String,
+    pub secret_path: Option<String>,
     pub has_secret: bool,
     pub protocol: ProtocolInfo,
     pub last_error: Option<ServiceError>,
@@ -168,6 +171,16 @@ pub enum ServiceUpdate {
 pub struct CommandResponse {
     pub accepted: bool,
     pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SecretPathResponse {
+    pub secret_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountLoginUrlResponse {
+    pub login_url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

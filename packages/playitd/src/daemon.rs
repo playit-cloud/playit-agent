@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use playit_agent_core::agent_control::platform::current_platform;
-use playit_agent_core::agent_control::version::help_register_version;
+use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use playit_agent_core::network::origin_lookup::{OriginLookup, OriginResource, OriginTarget};
 use playit_agent_core::network::tcp::tcp_settings::TcpSettings;
 use playit_agent_core::network::udp::udp_settings::UdpSettings;
@@ -14,7 +14,7 @@ use playit_agent_core::stats::AgentStats;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
 use playit_api_client::api::{AccountStatus, Platform};
-use playit_ipc::ipc::{IpcError, protocol_info, resolve_socket_path};
+use playit_ipc::ipc::{IpcError, get_default_socket_path, protocol_info};
 use playit_ipc::model::{
     AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ConnectionStats,
     NoticeState, PendingTunnelState, ServiceError, ServiceErrorCode, ServicePhase,
@@ -23,6 +23,7 @@ use playit_ipc::model::{
 use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -33,20 +34,39 @@ pub const DEFAULT_VARIANT_ID: &str = "308943e8-faef-4835-a2ba-270351f72aa3";
 
 #[derive(Debug, Clone)]
 pub struct DaemonOptions {
-    pub config_path: PathBuf,
+    pub secret: Option<String>,
+    pub secret_path: Option<PathBuf>,
     pub socket_path: Option<String>,
+    pub log_path: Option<PathBuf>,
+    pub platform_docker: bool,
     pub version: VersionDetails,
 }
 
 impl Default for DaemonOptions {
     fn default() -> Self {
         Self {
-            config_path: default_config_path(),
+            secret: None,
+            secret_path: Some(default_secret_path()),
             socket_path: None,
+            log_path: None,
+            platform_docker: false,
             version: VersionDetails::from_cargo_package()
                 .expect("Cargo package version must be a valid semver triplet"),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+enum SecretSource {
+    Inline { secret: String },
+    File { path: PathBuf },
+}
+
+#[derive(Debug, Clone)]
+enum LoadedSecret {
+    Ready(String),
+    Missing,
+    Invalid(String),
 }
 
 #[derive(Debug, Clone)]
@@ -160,7 +180,7 @@ pub async fn load_version_overrides(path: &Path) -> Result<VersionOverrideFile, 
     }
 }
 
-pub fn default_config_path() -> PathBuf {
+pub fn default_secret_path() -> PathBuf {
     if Path::new("playit.toml").exists() {
         return PathBuf::from("playit.toml");
     }
@@ -176,62 +196,147 @@ pub fn default_config_path() -> PathBuf {
         .join("playit.toml")
 }
 
+impl SecretSource {
+    fn from_options(options: &DaemonOptions) -> Self {
+        match options.secret.clone() {
+            Some(secret) => Self::Inline { secret },
+            None => Self::File {
+                path: options
+                    .secret_path
+                    .clone()
+                    .unwrap_or_else(default_secret_path),
+            },
+        }
+    }
+
+    fn secret_path(&self) -> Option<&Path> {
+        match self {
+            Self::Inline { .. } => None,
+            Self::File { path } => Some(path.as_path()),
+        }
+    }
+
+    fn allows_ipc_provisioning(&self) -> bool {
+        matches!(self, Self::File { .. })
+    }
+
+    async fn load(&self) -> LoadedSecret {
+        match self {
+            Self::Inline { secret } => match validate_secret(secret.trim()) {
+                Ok(secret) => LoadedSecret::Ready(secret),
+                Err(error) => LoadedSecret::Invalid(format!(
+                    "Invalid secret passed via --secret: {error}"
+                )),
+            },
+            Self::File { path } => load_secret_from_path(path).await,
+        }
+    }
+
+    fn secret_provision_error(&self) -> ServiceError {
+        match self {
+            Self::Inline { .. } => daemon_error(
+                ServiceErrorCode::SecretPinned,
+                "Secret provisioning is disabled because playitd was started with --secret"
+                    .to_string(),
+                false,
+            ),
+            Self::File { .. } => daemon_error(
+                ServiceErrorCode::ProvisioningUnavailable,
+                "Secret provisioning is unavailable".to_string(),
+                true,
+            ),
+        }
+    }
+
+    fn secret_reset_error(&self) -> ServiceError {
+        match self {
+            Self::Inline { .. } => daemon_error(
+                ServiceErrorCode::SecretPinned,
+                "Secret reset is disabled because playitd was started with --secret".to_string(),
+                false,
+            ),
+            Self::File { path } => daemon_error(
+                ServiceErrorCode::SecretWriteFailed,
+                format!("Failed to access secret file {}", path.display()),
+                true,
+            ),
+        }
+    }
+}
+
 pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     let start_time = now_milli();
     let (event_tx, _) = broadcast::channel::<ServiceUpdate>(256);
     let version_string = options.version.version_string();
+    let platform = if options.platform_docker {
+        Platform::Docker
+    } else {
+        current_platform()
+    };
+    let secret_source = SecretSource::from_options(&options);
     let status_context = StatusContext {
-        config_path: options.config_path.display().to_string(),
-        socket_path: resolve_socket_path(options.socket_path.as_deref(), true),
+        secret_path: secret_source
+            .secret_path()
+            .map(|path| path.display().to_string()),
+        socket_path: options
+            .socket_path
+            .clone()
+            .unwrap_or_else(|| get_default_socket_path().to_string()),
         version: version_string.clone(),
         start_time,
     };
 
     let log_filter =
         EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
-    let use_ansi = current_platform() == Platform::Linux;
+    let use_ansi = matches!(platform, Platform::Linux | Platform::Docker);
+    let _log_guard = init_tracing(log_filter, use_ansi, event_tx.clone(), options.log_path.as_deref())
+        .map_err(DaemonError::SetupError)?;
 
-    tracing_subscriber::registry()
-        .with(log_filter)
-        .with(IpcBroadcastLayer::new(event_tx.clone()))
-        .with(tracing_subscriber::fmt::layer().with_ansi(use_ansi).with_writer(std::io::stderr))
-        .init();
+    register_platform(platform);
 
     let _ = help_register_version(&version_string, &options.version.variant_id);
 
     tracing::info!(
         socket_path = ?options.socket_path,
-        config_path = %options.config_path.display(),
+        secret_path = ?status_context.secret_path,
         version = %version_string,
         "Starting playitd"
     );
 
     let cancel_token = CancellationToken::new();
-    let (secret_tx, mut secret_rx) = mpsc::channel::<SecretProvisionRequest>(8);
+    let (secret_provision_tx, mut secret_rx) = if secret_source.allows_ipc_provisioning() {
+        let (secret_tx, secret_rx) = mpsc::channel::<SecretProvisionRequest>(8);
+        (Some(secret_tx), Some(secret_rx))
+    } else {
+        (None, None)
+    };
     let ipc_server = Arc::new(
         IpcServer::new_with_sender(
-            true,
             options.socket_path.clone(),
             cancel_token.clone(),
             event_tx.clone(),
-            Some(secret_tx),
+            secret_source.secret_path().map(PathBuf::from),
+            secret_provision_tx,
+            secret_source.secret_provision_error(),
+            secret_source.secret_reset_error(),
         )
             .await
             .map_err(DaemonError::Ipc)?,
     );
+    let listener = ipc_server.bind_listener().await.map_err(DaemonError::Ipc)?;
     let state_cache = ipc_server.state_cache();
     let event_tx = ipc_server.event_sender();
     let ipc_handle = {
         let server = ipc_server.clone();
         tokio::spawn(async move {
-            if let Err(e) = server.run().await {
+            if let Err(e) = server.run(listener).await {
                 tracing::error!("IPC server error: {e}");
             }
         })
     };
 
-    let secret_code = match load_service_secret(&options.config_path).await {
-        Ok(Some(secret)) => {
+    let secret_code = match secret_source.load().await {
+        LoadedSecret::Ready(secret) => {
             publish_runtime_state(
                 &state_cache,
                 &event_tx,
@@ -241,7 +346,12 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
             .await;
             secret
         }
-        Ok(None) => {
+        LoadedSecret::Missing => {
+            let Some(secret_path) = secret_source.secret_path() else {
+                return Err(DaemonError::SecretError(
+                    "No secret source available for startup".to_string(),
+                ));
+            };
             publish_runtime_state(
                 &state_cache,
                 &event_tx,
@@ -250,7 +360,13 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
             )
             .await;
 
-            match wait_for_secret_provisioning(&options.config_path, &mut secret_rx, &cancel_token)
+            match wait_for_secret_provisioning(
+                secret_path,
+                secret_rx
+                    .as_mut()
+                    .expect("file-backed secret mode must enable provisioning"),
+                &cancel_token,
+            )
                 .await
                 .map_err(DaemonError::SecretError)?
             {
@@ -278,28 +394,69 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
                 }
             }
         }
-        Err(error) => {
+        LoadedSecret::Invalid(error) => {
             let service_error = daemon_error(
                 ServiceErrorCode::InvalidSecret,
                 error.clone(),
-                false,
+                secret_source.allows_ipc_provisioning(),
             );
             publish_runtime_state(
                 &state_cache,
                 &event_tx,
                 status_context.status(
-                    ServicePhase::Error,
+                    ServicePhase::HasInvalidSecret,
                     false,
                     Some(service_error.clone()),
                 ),
-                AgentLifecycle::Error(service_error),
+                AgentLifecycle::HasInvalidSecret(service_error.clone()),
             )
             .await;
-            return Err(DaemonError::SecretError(error));
+
+            if !secret_source.allows_ipc_provisioning() {
+                return Err(DaemonError::SecretError(error));
+            }
+
+            let secret_path = secret_source
+                .secret_path()
+                .expect("file-backed secret mode must provide a secret path");
+            match wait_for_secret_provisioning(
+                secret_path,
+                secret_rx
+                    .as_mut()
+                    .expect("file-backed secret mode must enable provisioning"),
+                &cancel_token,
+            )
+            .await
+            .map_err(DaemonError::SecretError)?
+            {
+                Some(secret) => {
+                    publish_runtime_state(
+                        &state_cache,
+                        &event_tx,
+                        status_context.status(ServicePhase::Starting, true, None),
+                        AgentLifecycle::Starting,
+                    )
+                    .await;
+                    secret
+                }
+                None => {
+                    publish_runtime_state(
+                        &state_cache,
+                        &event_tx,
+                        status_context.status(ServicePhase::Stopping, false, None),
+                        AgentLifecycle::Stopping,
+                    )
+                    .await;
+                    let _ = ipc_handle.await;
+                    tracing::info!("playitd shutdown before invalid secret was corrected");
+                    return Ok(());
+                }
+            }
         }
     };
 
     let api = PlayitApi::create(api_base(), Some(secret_code.clone()));
+    ipc_server.set_api(api.clone()).await;
 
     let lookup = Arc::new(OriginLookup::default());
     if let Ok(data) = api.v1_agents_rundata().await {
@@ -439,21 +596,7 @@ async fn broadcast_agent_state(
 
                         let login_link = match api_data.permissions.account_status {
                             AccountStatus::Guest => {
-                                let now = now_milli();
-                                match &guest_login_link {
-                                    Some((link, ts)) if now - *ts < 15_000 => Some(link.clone()),
-                                    _ => match api.login_guest().await {
-                                        Ok(session) => {
-                                            let link = format!(
-                                                "https://playit.gg/login/guest-account/{}",
-                                                session.session_key
-                                            );
-                                            guest_login_link = Some((link.clone(), now_milli()));
-                                            Some(link)
-                                        }
-                                        Err(_) => None,
-                                    },
-                                }
+                                get_cached_guest_login_link(&api, &mut guest_login_link).await
                             }
                             _ => None,
                         };
@@ -527,34 +670,56 @@ fn api_base() -> String {
     dotenv::var("API_BASE").unwrap_or_else(|_| "https://api.playit.gg".to_string())
 }
 
-async fn load_service_secret(path: &Path) -> Result<Option<String>, String> {
+async fn get_cached_guest_login_link(
+    api: &PlayitApi,
+    guest_login_link: &mut Option<(String, u64)>,
+) -> Option<String> {
+    let now = now_milli();
+    match guest_login_link {
+        Some((link, ts)) if now.saturating_sub(*ts) < 15_000 => Some(link.clone()),
+        _ => match api.login_guest().await {
+            Ok(session) => {
+                let link = format!(
+                    "https://playit.gg/login/guest-account/{}",
+                    session.session_key
+                );
+                *guest_login_link = Some((link.clone(), now));
+                Some(link)
+            }
+            Err(_) => None,
+        },
+    }
+}
+
+async fn load_secret_from_path(path: &Path) -> LoadedSecret {
     let content = match tokio::fs::read_to_string(path).await {
         Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return LoadedSecret::Missing,
         Err(error) => {
-            return Err(format!(
-                "Failed to read config file {}: {error}",
+            return LoadedSecret::Invalid(format!(
+                "Failed to read secret file {}: {error}",
                 path.display()
             ))
         }
     };
 
-    parse_secret_file(&content).map(Some).map_err(|_| {
-        format!(
+    match parse_secret_file(&content) {
+        Ok(secret) => LoadedSecret::Ready(secret),
+        Err(()) => LoadedSecret::Invalid(format!(
             "Invalid secret file at {}. Remove or replace it with a valid secret.",
             path.display()
-        )
-    })
+        )),
+    }
 }
 
 async fn wait_for_secret_provisioning(
-    config_path: &Path,
+    secret_path: &Path,
     provision_rx: &mut mpsc::Receiver<SecretProvisionRequest>,
     cancel_token: &CancellationToken,
 ) -> Result<Option<String>, String> {
     tracing::info!(
-        config_path = %config_path.display(),
-        "No secret configured. Waiting for frontend provisioning over IPC"
+        secret_path = %secret_path.display(),
+        "Waiting for frontend secret provisioning over IPC"
     );
 
     loop {
@@ -564,17 +729,17 @@ async fn wait_for_secret_provisioning(
                     return Err("Secret provisioning channel closed".to_string());
                 };
 
-                let result = persist_secret_config(config_path, &request.secret).await;
+                let result = persist_secret_file(secret_path, &request.secret).await;
                 let ack = result.as_ref().map(|_| ()).map_err(Clone::clone);
                 let _ = request.response_tx.send(ack);
 
                 match result {
                     Ok(()) => {
-                        tracing::info!(config_path = %config_path.display(), "Secret provisioned successfully");
+                        tracing::info!(secret_path = %secret_path.display(), "Secret provisioned successfully");
                         return Ok(Some(request.secret));
                     }
                     Err(error) => {
-                        tracing::error!(config_path = %config_path.display(), "{error}");
+                        tracing::error!(secret_path = %secret_path.display(), "{error}");
                     }
                 }
             }
@@ -585,27 +750,27 @@ async fn wait_for_secret_provisioning(
     }
 }
 
-async fn persist_secret_config(path: &Path, secret: &str) -> Result<(), String> {
+async fn persist_secret_file(path: &Path, secret: &str) -> Result<(), String> {
     let secret = validate_secret(secret.trim())?;
 
     if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         tokio::fs::create_dir_all(parent)
             .await
-            .map_err(|error| format!("Failed to create config directory {}: {error}", parent.display()))?;
+            .map_err(|error| format!("Failed to create secret directory {}: {error}", parent.display()))?;
     }
 
     let content = if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
         toml::to_string(&SecretConfig {
             secret_key: secret.clone(),
         })
-        .map_err(|error| format!("Failed to serialize config file {}: {error}", path.display()))?
+        .map_err(|error| format!("Failed to serialize secret file {}: {error}", path.display()))?
     } else {
         secret
     };
 
     tokio::fs::write(path, content)
         .await
-        .map_err(|error| format!("Failed to write config file {}: {error}", path.display()))
+        .map_err(|error| format!("Failed to write secret file {}: {error}", path.display()))
 }
 
 fn parse_secret_file(content: &str) -> Result<String, ()> {
@@ -634,7 +799,7 @@ fn parse_version_part(part: &str) -> Result<u32, String> {
 }
 
 struct StatusContext {
-    config_path: String,
+    secret_path: Option<String>,
     socket_path: String,
     version: String,
     start_time: u64,
@@ -653,7 +818,7 @@ impl StatusContext {
             uptime_secs: now_milli().saturating_sub(self.start_time) / 1000,
             version: self.version.clone(),
             socket_path: self.socket_path.clone(),
-            config_path: self.config_path.clone(),
+            secret_path: self.secret_path.clone(),
             has_secret,
             protocol: protocol_info(),
             last_error,
@@ -679,5 +844,51 @@ fn daemon_error(code: ServiceErrorCode, message: String, retryable: bool) -> Ser
         message,
         retryable,
         details: None,
+    }
+}
+
+fn init_tracing(
+    log_filter: EnvFilter,
+    use_ansi: bool,
+    event_tx: broadcast::Sender<ServiceUpdate>,
+    log_path: Option<&Path>,
+) -> Result<Option<WorkerGuard>, String> {
+    match log_path {
+        Some(path) => {
+            let parent = path.parent().unwrap_or_else(|| Path::new("."));
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("Failed to create log directory {}: {error}", parent.display()))?;
+            let file_name = path
+                .file_name()
+                .and_then(|file| file.to_str())
+                .ok_or_else(|| format!("Invalid --log-path {}", path.display()))?;
+            let writer = tracing_appender::rolling::never(parent, file_name);
+            let (non_blocking, guard) = tracing_appender::non_blocking(writer);
+
+            tracing_subscriber::registry()
+                .with(log_filter)
+                .with(IpcBroadcastLayer::new(event_tx))
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_ansi(use_ansi)
+                        .with_writer(non_blocking),
+                )
+                .init();
+
+            Ok(Some(guard))
+        }
+        None => {
+            tracing_subscriber::registry()
+                .with(log_filter)
+                .with(IpcBroadcastLayer::new(event_tx))
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_ansi(use_ansi)
+                        .with_writer(std::io::stderr),
+                )
+                .init();
+
+            Ok(None)
+        }
     }
 }

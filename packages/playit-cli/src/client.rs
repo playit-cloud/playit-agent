@@ -1,15 +1,13 @@
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use playit_ipc::ipc::IpcClient;
+use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 use playit_ipc::model::{
     AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState as ServiceAgentState,
     ConnectionStats as ServiceConnectionStats, LogLevel as ServiceLogLevel, ServicePhase,
     ServiceStatus, ServiceUpdate,
 };
-use playitd::manager::ensure_service_running;
-#[cfg(not(target_os = "linux"))]
-use playitd::manager::ServiceController;
+use playitd::manager::{ensure_installed_service_running, stop_installed_service};
 
 use crate::ui::log_capture::{LogEntry, LogLevel as UiLogLevel};
 use crate::ui::tui_app::{
@@ -18,23 +16,49 @@ use crate::ui::tui_app::{
 use crate::ui::UI;
 use crate::{CliError, EXE_NAME};
 
+#[derive(Debug, Clone)]
+pub enum CliTarget {
+    InstalledService,
+    ExplicitSocket(String),
+}
+
+impl CliTarget {
+    pub fn from_socket_path(socket_path: Option<String>) -> Self {
+        match socket_path {
+            Some(socket_path) => Self::ExplicitSocket(socket_path),
+            None => Self::InstalledService,
+        }
+    }
+
+    fn socket_path(&self) -> &str {
+        match self {
+            Self::InstalledService => get_default_socket_path(),
+            Self::ExplicitSocket(path) => path.as_str(),
+        }
+    }
+}
+
 pub async fn run_start_command(
     ui: &mut UI,
     stdout_mode: bool,
-    socket_path: Option<&str>,
+    target: &CliTarget,
 ) -> Result<(), CliError> {
+    if let CliTarget::ExplicitSocket(path) = target {
+        return Err(CliError::ServiceError(format!(
+            "The start command only manages the installed playitd service and cannot be used with --socket-path ({path})."
+        )));
+    }
+
     ui.write_screen("Ensuring installed playitd service is running...")
         .await;
-    ensure_service_running(socket_path)
+    ensure_installed_service_running()
         .await
         .map_err(|e| CliError::ServiceError(format!("Failed to start service: {e}")))?;
 
     ui.write_screen("Installed playitd service is running").await;
     ui.write_screen("Connecting to playitd...").await;
 
-    let mut client = IpcClient::connect_with_path(socket_path, true)
-        .await
-        .map_err(|e| CliError::IpcError(format!("Failed to connect to service: {e}")))?;
+    let mut client = connect_target(target).await?;
 
     let snapshot = client
         .subscribe()
@@ -95,68 +119,99 @@ pub async fn run_start_command(
     Ok(())
 }
 
-pub async fn run_stop_command(socket_path: Option<&str>) -> Result<(), CliError> {
-    if let Ok(mut client) = IpcClient::connect_with_path(socket_path, true).await {
-        if let Err(error) = client.stop().await {
-            tracing::warn!("Failed to send stop via IPC: {error}");
-        } else {
-            println!("playitd service stop requested");
-            tokio::time::sleep(Duration::from_secs(1)).await;
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        if let Err(error) = playitd::manager::stop_systemd_service() {
-            tracing::warn!("Failed to stop via systemctl: {error}");
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        match ServiceController::new() {
-            Ok(controller) => {
-                if let Err(error) = controller.stop() {
-                    tracing::warn!("Failed to stop via service manager: {error}");
+pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
+    match target {
+        CliTarget::InstalledService => {
+            if let Ok(mut client) = connect_target(target).await {
+                match client.stop().await {
+                    Ok(response) if response.accepted => {
+                        println!("playitd service stop requested");
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    Ok(response) => {
+                        tracing::warn!(
+                            "playitd rejected stop request: {}",
+                            response
+                                .message
+                                .unwrap_or_else(|| "service rejected stop request".to_string())
+                        );
+                    }
+                    Err(error) => tracing::warn!("Failed to send stop via IPC: {error}"),
                 }
             }
-            Err(error) => tracing::debug!("Service manager not available: {error}"),
+
+            if let Err(error) = stop_installed_service() {
+                tracing::warn!("Failed to stop installed service: {error}");
+            }
+
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if !IpcClient::is_running(get_default_socket_path()).await {
+                println!("playitd service stopped");
+            } else {
+                println!("playitd service may still be running");
+            }
+
+            Ok(())
+        }
+        CliTarget::ExplicitSocket(path) => {
+            let mut client = connect_target(target).await?;
+            let response = client
+                .stop()
+                .await
+                .map_err(|e| CliError::IpcError(format!("Failed to stop daemon at {path}: {e}")))?;
+
+            if !response.accepted {
+                return Err(CliError::IpcError(
+                    response
+                        .message
+                        .unwrap_or_else(|| format!("playitd rejected stop request for {path}")),
+                ));
+            }
+
+            println!("playitd stop requested for socket {path}");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            if !IpcClient::is_running(path.as_str()).await {
+                println!("playitd daemon stopped");
+            } else {
+                println!("playitd daemon may still be running");
+            }
+
+            Ok(())
         }
     }
-
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    if !IpcClient::is_running_with_path(socket_path, true).await {
-        println!("playitd service stopped");
-    } else {
-        println!("playitd service may still be running");
-    }
-
-    Ok(())
 }
 
-pub async fn run_status_command(socket_path: Option<&str>) -> Result<(), CliError> {
-    if !IpcClient::is_running_with_path(socket_path, true).await {
-        println!("playitd service is not running");
+pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
+    if !IpcClient::is_running(target.socket_path()).await {
+        match target {
+            CliTarget::InstalledService => println!("playitd service is not running"),
+            CliTarget::ExplicitSocket(path) => {
+                println!("playitd daemon is not reachable at socket {path}")
+            }
+        }
         return Ok(());
     }
 
-    let mut client = match IpcClient::connect_with_path(socket_path, true).await {
-        Ok(client) => client,
-        Err(error) => {
-            println!("playitd service appears to be running but cannot connect: {error}");
-            return Ok(());
-        }
-    };
+    let mut client = connect_target(target).await?;
 
     match client.status().await {
         Ok(status) => {
-            println!("playitd service status:");
+            match target {
+                CliTarget::InstalledService => println!("playitd service status:"),
+                CliTarget::ExplicitSocket(path) => {
+                    println!("playitd daemon status for socket {path}:")
+                }
+            }
             println!("  Phase: {}", format_service_phase(&status.phase));
             println!("  PID: {}", status.pid);
             println!("  Uptime: {} seconds", status.uptime_secs);
             println!("  Version: {}", status.version);
             println!("  Socket: {}", status.socket_path);
-            println!("  Config: {}", status.config_path);
+            match &status.secret_path {
+                Some(secret_path) => println!("  Secret path: {}", secret_path),
+                None => println!("  Secret path: <inline secret>"),
+            }
             println!("  Secret configured: {}", status.has_secret);
             println!("  Protocol version: {}", status.protocol.version);
             if !status.protocol.capabilities.is_empty() {
@@ -173,16 +228,16 @@ pub async fn run_status_command(socket_path: Option<&str>) -> Result<(), CliErro
 }
 
 pub async fn provision_service_secret(
-    socket_path: Option<&str>,
+    target: &CliTarget,
     secret: &str,
 ) -> Result<(), CliError> {
-    ensure_service_running(socket_path)
-        .await
-        .map_err(|e| CliError::ServiceError(format!("Failed to start service: {e}")))?;
+    if matches!(target, CliTarget::InstalledService) {
+        ensure_installed_service_running()
+            .await
+            .map_err(|e| CliError::ServiceError(format!("Failed to start service: {e}")))?;
+    }
 
-    let mut client = IpcClient::connect_with_path(socket_path, true)
-        .await
-        .map_err(|e| CliError::IpcError(format!("Failed to connect to service: {e}")))?;
+    let mut client = connect_target(target).await?;
 
     let response = client
         .set_secret(secret)
@@ -198,6 +253,72 @@ pub async fn provision_service_secret(
     }
 
     Ok(())
+}
+
+pub async fn run_reset_command(target: &CliTarget) -> Result<(), CliError> {
+    let mut client = connect_target(target).await?;
+    let response = client
+        .reset_secret()
+        .await
+        .map_err(|e| CliError::IpcError(format!("Failed to reset secret: {e}")))?;
+
+    if !response.accepted {
+        return Err(CliError::IpcError(
+            response
+                .message
+                .unwrap_or_else(|| "playitd rejected the reset request".to_string()),
+        ));
+    }
+
+    println!(
+        "{}",
+        response
+            .message
+            .unwrap_or_else(|| "playitd reset the secret file".to_string())
+    );
+    Ok(())
+}
+
+pub async fn run_secret_path_command(target: &CliTarget) -> Result<(), CliError> {
+    let mut client = connect_target(target).await?;
+    let response = client
+        .get_secret_path()
+        .await
+        .map_err(|e| CliError::IpcError(format!("Failed to read secret path: {e}")))?;
+
+    let Some(secret_path) = response.secret_path else {
+        return Err(CliError::IpcError(
+            "playitd is using an inline --secret, so no secret file path is available"
+                .to_string(),
+        ));
+    };
+
+    println!("{secret_path}");
+    Ok(())
+}
+
+pub async fn run_account_login_url_command(target: &CliTarget) -> Result<(), CliError> {
+    let mut client = connect_target(target).await?;
+    let response = client
+        .get_account_login_url()
+        .await
+        .map_err(|e| CliError::IpcError(format!("Failed to create account login URL: {e}")))?;
+
+    println!("{}", response.login_url);
+    Ok(())
+}
+
+async fn connect_target(target: &CliTarget) -> Result<IpcClient, CliError> {
+    IpcClient::connect_with_path(target.socket_path())
+        .await
+        .map_err(|e| match target {
+            CliTarget::InstalledService => {
+                CliError::IpcError(format!("Failed to connect to installed playitd service: {e}"))
+            }
+            CliTarget::ExplicitSocket(path) => {
+                CliError::IpcError(format!("Failed to connect to playitd at {path}: {e}"))
+            }
+        })
 }
 
 async fn apply_update(ui: &mut UI, update: ServiceUpdate, stdout_mode: bool) {
@@ -248,6 +369,13 @@ async fn apply_lifecycle(ui: &mut UI, lifecycle: AgentLifecycle) {
         AgentLifecycle::WaitingForSecret => {
             ui.write_screen("playitd is waiting for a secret to be provisioned").await;
         }
+        AgentLifecycle::HasInvalidSecret(error) => {
+            ui.write_screen(format!(
+                "playitd has an invalid secret configuration: {}",
+                error.message
+            ))
+            .await;
+        }
         AgentLifecycle::Starting => {
             ui.write_screen("playitd is starting the agent").await;
         }
@@ -289,6 +417,7 @@ fn format_timestamp_millis(millis: u64) -> String {
 fn format_service_phase(phase: &ServicePhase) -> &'static str {
     match phase {
         ServicePhase::WaitingForSecret => "waiting_for_secret",
+        ServicePhase::HasInvalidSecret => "has_invalid_secret",
         ServicePhase::Starting => "starting",
         ServicePhase::Running => "running",
         ServicePhase::Stopping => "stopping",

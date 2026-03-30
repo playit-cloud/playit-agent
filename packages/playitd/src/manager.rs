@@ -1,6 +1,6 @@
 use service_manager::{ServiceLabel, ServiceManager, ServiceStartCtx, ServiceStopCtx};
 
-use playit_ipc::ipc::IpcClient;
+use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 
 #[derive(Debug)]
 pub enum ServiceManagerError {
@@ -45,10 +45,7 @@ impl ServiceController {
             .map_err(|e| ServiceManagerError::NotAvailable(e.to_string()))?;
         let label = Self::SERVICE_LABEL.parse().unwrap();
 
-        Ok(Self {
-            manager,
-            label,
-        })
+        Ok(Self { manager, label })
     }
 
     #[cfg(target_os = "linux")]
@@ -110,29 +107,42 @@ fn run_systemctl(
     )))
 }
 
-pub async fn ensure_service_running(socket_path: Option<&str>) -> Result<(), ServiceManagerError> {
-    if IpcClient::is_running_with_path(socket_path, true).await {
+pub async fn ensure_installed_service_running() -> Result<(), ServiceManagerError> {
+    if IpcClient::is_running(get_default_socket_path()).await {
         return Ok(());
     }
 
     #[cfg(target_os = "linux")]
     {
         start_systemd_service()?;
-        return wait_for_service(socket_path).await;
+        return wait_for_installed_service().await;
     }
 
     #[cfg(not(target_os = "linux"))]
     {
         let controller = ServiceController::new()?;
         controller.start()?;
-        wait_for_service(socket_path).await
+        wait_for_installed_service().await
     }
 }
 
-async fn wait_for_service(socket_path: Option<&str>) -> Result<(), ServiceManagerError> {
+pub fn stop_installed_service() -> Result<(), ServiceManagerError> {
+    #[cfg(target_os = "linux")]
+    {
+        return stop_systemd_service();
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let controller = ServiceController::new()?;
+        controller.stop()
+    }
+}
+
+async fn wait_for_installed_service() -> Result<(), ServiceManagerError> {
     for _ in 0..50 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if IpcClient::is_running_with_path(socket_path, true).await {
+        if IpcClient::is_running(get_default_socket_path()).await {
             return Ok(());
         }
     }

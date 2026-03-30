@@ -1,18 +1,30 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use playitd::{DaemonOptions, VersionDetails, default_config_path, load_version_overrides};
+use playitd::{DaemonOptions, VersionDetails, default_secret_path, load_version_overrides};
 
 #[derive(Parser)]
 #[command(name = "playitd")]
 struct Cli {
-    /// Path to the daemon config file containing the secret key
-    #[arg(long)]
-    config_path: Option<PathBuf>,
+    /// Inline secret key for the daemon
+    #[arg(long, conflicts_with = "secret_path")]
+    secret: Option<String>,
+
+    /// Path to the daemon secret file
+    #[arg(long, conflicts_with = "secret")]
+    secret_path: Option<PathBuf>,
 
     /// Override the IPC socket or named pipe path
     #[arg(long)]
     socket_path: Option<String>,
+
+    /// Path to write daemon logs to
+    #[arg(short = 'l', long)]
+    log_path: Option<PathBuf>,
+
+    /// Overrides platform registration to be docker
+    #[arg(long)]
+    platform_docker: bool,
 
     /// JSON or YAML file containing version overrides
     #[arg(long)]
@@ -42,8 +54,15 @@ async fn main() -> std::process::ExitCode {
     }
 
     let options = DaemonOptions {
-        config_path: cli.config_path.unwrap_or_else(default_config_path),
+        secret: cli.secret.clone(),
+        secret_path: if cli.secret.is_some() {
+            None
+        } else {
+            Some(cli.secret_path.unwrap_or_else(default_secret_path))
+        },
         socket_path: cli.socket_path,
+        log_path: cli.log_path,
+        platform_docker: cli.platform_docker,
         version,
     };
 

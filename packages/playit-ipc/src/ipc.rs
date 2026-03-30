@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::model::{
-    AgentLifecycle, CommandResponse, ProtocolInfo, ServiceCapability, ServiceError, ServiceStatus,
-    ServiceUpdate, SubscribeResponse,
+    AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ProtocolInfo, SecretPathResponse,
+    ServiceCapability, ServiceError, ServiceStatus, ServiceUpdate, SubscribeResponse,
 };
 
 pub const PROTOCOL_VERSION: u32 = 2;
@@ -79,6 +79,9 @@ pub enum ServiceRequest {
     GetState,
     Stop,
     SetSecret { secret: String },
+    ResetSecret,
+    GetSecretPath,
+    GetAccountLoginUrl,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +105,9 @@ pub enum ServiceResponse {
     State(AgentLifecycle),
     Stop(CommandResponse),
     SetSecret(CommandResponse),
+    ResetSecret(CommandResponse),
+    SecretPath(SecretPathResponse),
+    AccountLoginUrl(AccountLoginUrlResponse),
     Error(ServiceError),
 }
 
@@ -125,66 +131,45 @@ pub fn protocol_info() -> ProtocolInfo {
     }
 }
 
-pub fn get_socket_path(system_mode: bool) -> String {
-    resolve_socket_path(None, system_mode)
-}
-
-pub fn resolve_socket_path(socket_path: Option<&str>, system_mode: bool) -> String {
-    if let Some(socket_path) = socket_path {
-        return socket_path.to_string();
-    }
-
+pub fn get_default_socket_path() -> &'static str {
     #[cfg(target_os = "linux")]
     {
-        let _ = system_mode;
-        "/var/run/playitd.sock".to_string()
+        "/var/run/playitd.sock"
     }
 
     #[cfg(target_os = "macos")]
     {
-        if system_mode {
-            "/var/run/playitd.sock".to_string()
-        } else {
-            let data_dir = dirs::data_local_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join("playit_gg");
-            let _ = std::fs::create_dir_all(&data_dir);
-            data_dir.join("playitd.sock").to_string_lossy().to_string()
-        }
+        "/var/run/playitd.sock"
     }
 
     #[cfg(target_os = "windows")]
     {
-        if system_mode {
-            r"\\.\pipe\playitd-system".to_string()
-        } else {
-            format!(r"\\.\pipe\playitd-{}", whoami::username())
-        }
+        r"\\.\pipe\playitd-system"
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
-        let _ = system_mode;
-        "./playitd.sock".to_string()
+        "./playitd.sock"
     }
-}
-
-pub async fn is_instance_running(socket_path: Option<&str>, system_mode: bool) -> bool {
-    let socket_path = resolve_socket_path(socket_path, system_mode);
-    try_connect(&socket_path).await.is_ok()
 }
 
 async fn try_connect(socket_path: &str) -> Result<Stream, IpcError> {
     if socket_path.starts_with('@') {
         let name = socket_path[1..]
             .to_ns_name::<GenericNamespaced>()
-            .map_err(|e| IpcError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
-        Stream::connect(name).await.map_err(IpcError::ConnectionFailed)
+            .map_err(|e| {
+                IpcError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidInput, e))
+            })?;
+        Stream::connect(name)
+            .await
+            .map_err(IpcError::ConnectionFailed)
     } else {
-        let name = socket_path
-            .to_fs_name::<GenericFilePath>()
-            .map_err(|e| IpcError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidInput, e)))?;
-        Stream::connect(name).await.map_err(IpcError::ConnectionFailed)
+        let name = socket_path.to_fs_name::<GenericFilePath>().map_err(|e| {
+            IpcError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidInput, e))
+        })?;
+        Stream::connect(name)
+            .await
+            .map_err(IpcError::ConnectionFailed)
     }
 }
 
@@ -195,16 +180,12 @@ pub struct IpcClient {
 }
 
 impl IpcClient {
-    pub async fn connect(system_mode: bool) -> Result<Self, IpcError> {
-        Self::connect_with_path(None, system_mode).await
+    pub async fn connect() -> Result<Self, IpcError> {
+        Self::connect_with_path(get_default_socket_path()).await
     }
 
-    pub async fn connect_with_path(
-        socket_path: Option<&str>,
-        system_mode: bool,
-    ) -> Result<Self, IpcError> {
-        let socket_path = resolve_socket_path(socket_path, system_mode);
-        let stream = try_connect(&socket_path).await?;
+    pub async fn connect_with_path(socket_path: &str) -> Result<Self, IpcError> {
+        let stream = try_connect(socket_path).await?;
         let (reader, writer) = stream.split();
         Ok(Self {
             reader: BufReader::new(reader),
@@ -213,12 +194,8 @@ impl IpcClient {
         })
     }
 
-    pub async fn is_running(system_mode: bool) -> bool {
-        Self::is_running_with_path(None, system_mode).await
-    }
-
-    pub async fn is_running_with_path(socket_path: Option<&str>, system_mode: bool) -> bool {
-        is_instance_running(socket_path, system_mode).await
+    pub async fn is_running(socket_path: &str) -> bool {
+        try_connect(socket_path).await.is_ok()
     }
 
     pub async fn subscribe(&mut self) -> Result<SubscribeResponse, IpcError> {
@@ -285,6 +262,36 @@ impl IpcClient {
             ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
             other => Err(IpcError::ProtocolError(format!(
                 "expected secret provisioning response, got {other:?}"
+            ))),
+        }
+    }
+
+    pub async fn reset_secret(&mut self) -> Result<CommandResponse, IpcError> {
+        match self.request(ServiceRequest::ResetSecret).await? {
+            ServiceResponse::ResetSecret(response) => Ok(response),
+            ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
+            other => Err(IpcError::ProtocolError(format!(
+                "expected reset secret response, got {other:?}"
+            ))),
+        }
+    }
+
+    pub async fn get_secret_path(&mut self) -> Result<SecretPathResponse, IpcError> {
+        match self.request(ServiceRequest::GetSecretPath).await? {
+            ServiceResponse::SecretPath(response) => Ok(response),
+            ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
+            other => Err(IpcError::ProtocolError(format!(
+                "expected secret path response, got {other:?}"
+            ))),
+        }
+    }
+
+    pub async fn get_account_login_url(&mut self) -> Result<AccountLoginUrlResponse, IpcError> {
+        match self.request(ServiceRequest::GetAccountLoginUrl).await? {
+            ServiceResponse::AccountLoginUrl(response) => Ok(response),
+            ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
+            other => Err(IpcError::ProtocolError(format!(
+                "expected account login URL response, got {other:?}"
             ))),
         }
     }

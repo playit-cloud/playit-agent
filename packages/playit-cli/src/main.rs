@@ -4,7 +4,10 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
-use client::{provision_service_secret, run_start_command, run_status_command, run_stop_command};
+use client::{
+    CliTarget, provision_service_secret, run_account_login_url_command, run_reset_command,
+    run_secret_path_command, run_start_command, run_status_command, run_stop_command,
+};
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use rand::Rng;
@@ -13,12 +16,10 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use uuid::Uuid;
 
-use autorun::autorun;
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::http_client::HttpClientError;
 use playit_api_client::{PlayitApi, api::*};
-use playit_secret::PlayitSecret;
 
 use crate::signal_handle::get_signal_handle;
 use crate::ui::log_capture::LogCaptureLayer;
@@ -40,8 +41,6 @@ pub static EXE_NAME: LazyLock<String> = LazyLock::new(|| {
 });
 
 mod client;
-pub mod autorun;
-pub mod playit_secret;
 pub mod signal_handle;
 pub mod ui;
 pub mod util;
@@ -49,33 +48,13 @@ pub mod util;
 #[derive(Parser)]
 #[command(name = "playit-cli")]
 struct Cli {
-    /// Secret code for the agent
-    #[arg(long)]
-    secret: Option<String>,
-
-    /// Path to file containing secret
-    #[arg(long)]
-    secret_path: Option<String>,
-
-    /// Wait for secret_path file to read secret
-    #[arg(short = 'w', long)]
-    secret_wait: bool,
-
     /// Prints logs to stdout
     #[arg(short = 's', long)]
     stdout: bool,
 
-    /// Path to write logs to
-    #[arg(short = 'l', long)]
-    log_path: Option<String>,
-
     /// Override the IPC socket or named pipe used to reach playitd
     #[arg(long)]
     socket_path: Option<String>,
-
-    /// Overrides platform in version to be docker
-    #[arg(long)]
-    platform_docker: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -98,15 +77,6 @@ enum Commands {
 
     /// Show the status of the installed playitd service
     Status,
-
-    /// Install the playit agent as a system service
-    Install,
-
-    /// Uninstall the playit agent system service
-    Uninstall,
-
-    /// Run the agent directly in foreground (for Docker/debugging)
-    RunEmbedded,
 
     /// Removes the secret key on your system so the playit agent can be re-claimed
     Reset,
@@ -132,12 +102,6 @@ enum Commands {
     Claim {
         #[command(subcommand)]
         command: ClaimCommands,
-    },
-
-    /// Manage tunnels
-    Tunnels {
-        #[command(subcommand)]
-        command: TunnelCommands,
     },
 }
 
@@ -177,47 +141,13 @@ enum ClaimCommands {
     },
 }
 
-#[derive(Subcommand)]
-enum TunnelCommands {
-    /// Create a tunnel if it doesn't exist with the parameters
-    Prepare {
-        /// Either "tcp", "udp", or "both"
-        port_type: String,
-
-        /// Number of ports in a series to allocate
-        #[arg(default_value = "1")]
-        port_count: String,
-
-        /// The tunnel type
-        #[arg(long)]
-        r#type: Option<String>,
-
-        /// Name of the tunnel
-        #[arg(long)]
-        name: Option<String>,
-
-        #[arg(long)]
-        exact: bool,
-
-        #[arg(long)]
-        ignore_name: bool,
-    },
-
-    /// List tunnels (format "[tunnel-id] [port-type] [port-count] [public-address]")
-    List,
-}
-
 #[tokio::main]
 async fn main() -> Result<std::process::ExitCode, CliError> {
     let cli = Cli::parse();
 
     /* register docker */
     {
-        let platform = if cli.platform_docker {
-            Platform::Docker
-        } else {
-            current_platform()
-        };
+        let platform = current_platform();
 
         register_platform(platform);
 
@@ -228,16 +158,13 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     }
 
     let log_only = cli.stdout;
-    let log_path = cli.log_path.as_ref();
+    let target = CliTarget::from_socket_path(cli.socket_path.clone());
 
     // Check if Start command has --stdout flag
-    let start_stdout = matches!(
-        &cli.command,
-        Some(Commands::Start { stdout: true, .. } | Commands::RunEmbedded)
-    );
+    let start_stdout = matches!(&cli.command, Some(Commands::Start { stdout: true, .. }));
 
-    // Use log-only mode if stdout flag is set OR if a log file path is specified OR if start --stdout
-    let use_log_only = log_only || log_path.is_some() || start_stdout;
+    // Use log-only mode if stdout flag is set or if start --stdout was requested.
+    let use_log_only = log_only || start_stdout;
 
     // Create UI first so we can get its log capture
     let mut ui = UI::new(UISettings {
@@ -250,24 +177,9 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
     let log_filter =
         EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
 
-    let _guard = match (use_log_only, log_path) {
-        (true, Some(path)) => {
-            // Log to file
-            let write_path = match path.rsplit_once("/") {
-                Some((dir, file)) => tracing_appender::rolling::never(dir, file),
-                None => tracing_appender::rolling::never(".", path),
-            };
-
-            let (non_blocking, guard) = tracing_appender::non_blocking(write_path);
-            tracing_subscriber::fmt()
-                .with_ansi(false)
-                .with_writer(non_blocking)
-                .with_env_filter(log_filter)
-                .init();
-            Some(guard)
-        }
-        (true, None) => {
-            // Log to stdout (for -s flag, run-embedded, or start -s)
+    let _guard = match use_log_only {
+        true => {
+            // Log to stdout for `-s` or `start -s`.
             let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
             tracing_subscriber::fmt()
                 .with_ansi(current_platform() == Platform::Linux)
@@ -276,10 +188,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 .init();
             Some(guard)
         }
-        (false, Some(_)) => {
-            panic!("log_path set but use_log_only is false - this shouldn't happen");
-        }
-        (false, None) => {
+        false => {
             // TUI mode - set up log capture layer with filter
             if let Some(log_capture) = ui.log_capture() {
                 let capture_layer = LogCaptureLayer::new(log_capture);
@@ -294,31 +203,16 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
 
     match cli.command {
         None => {
-            run_start_command(&mut ui, false, cli.socket_path.as_deref()).await?;
+            run_start_command(&mut ui, false, &target).await?;
         }
         Some(Commands::Start { stdout }) => {
-            run_start_command(&mut ui, stdout, cli.socket_path.as_deref()).await?;
+            run_start_command(&mut ui, stdout, &target).await?;
         }
         Some(Commands::Stop) => {
-            run_stop_command(cli.socket_path.as_deref()).await?;
+            run_stop_command(&target).await?;
         }
         Some(Commands::Status) => {
-            run_status_command(cli.socket_path.as_deref()).await?;
-        }
-        Some(Commands::Install) => {
-            run_install_command()?;
-        }
-        Some(Commands::Uninstall) => {
-            run_uninstall_command()?;
-        }
-        Some(Commands::RunEmbedded) => {
-            // Run agent directly without TUI, printing logs to stdout
-            let mut embedded_ui = UI::new(UISettings {
-                auto_answer: Some(true),
-                log_only: true,
-            });
-            let secret = load_cli_secret(&cli).await;
-            autorun(&mut embedded_ui, secret).await?;
+            run_status_command(&target).await?;
         }
         Some(Commands::Version) => println!("{}", env!("CARGO_PKG_VERSION")),
         #[cfg(target_os = "linux")]
@@ -328,7 +222,7 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 .await;
 
             let key = claim_exchange(&mut ui, &claim_code, ClaimAgentType::Assignable, 0).await?;
-            provision_service_secret(cli.socket_path.as_deref(), &key).await?;
+            provision_service_secret(&target, &key).await?;
 
             let api = PlayitApi::create(API_BASE.to_string(), Some(key));
             if let Ok(session) = api.login_guest().await {
@@ -343,43 +237,15 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
             ui.write_screen("Playit setup complete, secret provisioned to playitd")
                 .await;
         }
-        Some(Commands::Reset) => loop {
-            let mut secrets = PlayitSecret::from_args(
-                cli.secret.clone(),
-                cli.secret_path.clone(),
-                cli.secret_wait,
-            )
-            .await;
-            secrets.with_default_path().await;
-
-            let path = secrets.get_path().unwrap();
-            if !tokio::fs::try_exists(path).await.unwrap_or(false) {
-                break;
-            }
-
-            tokio::fs::remove_file(path).await.unwrap();
-            println!("deleted secret at: {}", path);
-        },
+        Some(Commands::Reset) => {
+            run_reset_command(&target).await?;
+        }
         Some(Commands::SecretPath) => {
-            let mut secrets = PlayitSecret::from_args(
-                cli.secret.clone(),
-                cli.secret_path.clone(),
-                cli.secret_wait,
-            )
-            .await;
-            secrets.with_default_path().await;
-            let path = secrets.get_path().unwrap();
-            println!("{}", path);
+            run_secret_path_command(&target).await?;
         }
         Some(Commands::Account { ref command }) => match command {
             AccountCommands::LoginUrl => {
-                let secret = load_cli_secret(&cli).await;
-                let api = secret.create_api().await?;
-                let session = api.login_guest().await?;
-                println!(
-                    "https://playit.gg/login/guest-account/{}",
-                    session.session_key
-                )
+                run_account_login_url_command(&target).await?;
             }
         },
         Some(Commands::Claim { command }) => match command {
@@ -395,39 +261,9 @@ async fn main() -> Result<std::process::ExitCode, CliError> {
                 ui.write_screen(secret_key).await;
             }
         },
-        Some(Commands::Tunnels { command }) => match command {
-            TunnelCommands::Prepare { .. } => {
-                return Err(CliError::NotImplemented);
-            }
-            TunnelCommands::List => {
-                return Err(CliError::NotImplemented);
-            }
-        },
     }
 
     Ok(std::process::ExitCode::SUCCESS)
-}
-
-/// Background service setup is owned by the platform installer.
-fn background_service_setup_message() -> String {
-    "Background service setup is handled by the platform installer. Use your installer or package manager to install or remove the playitd service.".to_string()
-}
-
-async fn load_cli_secret(cli: &Cli) -> PlayitSecret {
-    let mut secret =
-        PlayitSecret::from_args(cli.secret.clone(), cli.secret_path.clone(), cli.secret_wait).await;
-    let _ = secret.with_default_path().await;
-    secret
-}
-
-/// Run the install command
-fn run_install_command() -> Result<(), CliError> {
-    Err(CliError::ServiceError(background_service_setup_message()))
-}
-
-/// Run the uninstall command
-fn run_uninstall_command() -> Result<(), CliError> {
-    Err(CliError::ServiceError(background_service_setup_message()))
 }
 
 pub fn claim_generate() -> String {
@@ -567,7 +403,12 @@ impl Error for CliError {}
 
 impl Display for CliError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        match self {
+            Self::ServiceError(message) | Self::IpcError(message) | Self::ApiFail(message) => {
+                write!(f, "{message}")
+            }
+            _ => write!(f, "{:?}", self),
+        }
     }
 }
 
@@ -595,4 +436,5 @@ impl From<SetupError> for CliError {
         CliError::TunnelSetupError(e)
     }
 }
+
 
