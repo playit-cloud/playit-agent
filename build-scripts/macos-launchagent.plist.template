@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>gg.playit.playitd</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PLAYITD_PATH__</string>
+        <string>--socket_path</string>
+        <string>__PLAYIT_SOCKET_PATH__</string>
+        <string>--secret_path</string>
+        <string>__PLAYIT_SECRET_PATH__</string>
+        <string>--log_path</string>
+        <string>__PLAYIT_LOG_PATH__</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__PLAYIT_WORK_DIR__</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardOutPath</key>
+    <string>__PLAYIT_STDOUT_PATH__</string>
+
+    <key>StandardErrorPath</key>
+    <string>__PLAYIT_STDERR_PATH__</string>
+</dict>
+</plist>

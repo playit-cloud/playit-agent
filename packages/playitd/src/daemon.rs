@@ -196,6 +196,37 @@ pub fn default_secret_path() -> PathBuf {
         .join("playit.toml")
 }
 
+#[cfg(target_os = "macos")]
+pub fn macos_launch_agent_data_dir() -> PathBuf {
+    dirs::config_local_dir()
+        .unwrap_or_else(|| ".".into())
+        .join("playit_gg")
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_launch_agent_secret_path() -> PathBuf {
+    macos_launch_agent_data_dir().join("playit.toml")
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_launch_agent_socket_path() -> PathBuf {
+    macos_launch_agent_data_dir().join("playitd.sock")
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_launch_agent_log_dir() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| ".".into())
+        .join("Library")
+        .join("Logs")
+        .join("playit")
+}
+
+#[cfg(target_os = "macos")]
+pub fn macos_launch_agent_log_path() -> PathBuf {
+    macos_launch_agent_log_dir().join("playitd.log")
+}
+
 #[cfg(target_os = "windows")]
 pub fn windows_service_data_dir() -> PathBuf {
     std::env::var_os("PROGRAMDATA")

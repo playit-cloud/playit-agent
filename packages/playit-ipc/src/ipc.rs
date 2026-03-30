@@ -3,6 +3,8 @@
 use std::io;
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::sync::LazyLock;
 
 use interprocess::local_socket::{
     GenericFilePath, GenericNamespaced, ToFsName, ToNsName,
@@ -139,7 +141,7 @@ pub fn get_default_socket_path() -> &'static str {
 
     #[cfg(target_os = "macos")]
     {
-        "/var/run/playitd.sock"
+        MACOS_DEFAULT_SOCKET_PATH.as_str()
     }
 
     #[cfg(target_os = "windows")]
@@ -151,6 +153,21 @@ pub fn get_default_socket_path() -> &'static str {
     {
         "./playitd.sock"
     }
+}
+
+#[cfg(target_os = "macos")]
+static MACOS_DEFAULT_SOCKET_PATH: LazyLock<String> = LazyLock::new(|| {
+    macos_launch_agent_socket_path()
+        .display()
+        .to_string()
+});
+
+#[cfg(target_os = "macos")]
+pub fn macos_launch_agent_socket_path() -> PathBuf {
+    dirs::config_local_dir()
+        .unwrap_or_else(|| ".".into())
+        .join("playit_gg")
+        .join("playitd.sock")
 }
 
 async fn try_connect(socket_path: &str) -> Result<Stream, IpcError> {
