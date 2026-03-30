@@ -189,7 +189,7 @@
           The product icon is the graphic that appears in the Add/Remove
           Programs control panel for the application.
         -->
-        <Icon Id="ProductICO" SourceFile="packages\agent_cli\wix\Product.ico"/>
+        <Icon Id="ProductICO" SourceFile="packages\playit-cli\wix\Product.ico"/>
         <Property Id="ARPPRODUCTICON" Value="ProductICO" />
 
         <!--
@@ -237,7 +237,7 @@
 
           The banner BMP dimensions are 493 x 58 pixels.
         -->
-        <WixVariable Id="WixUIBannerBmp" Value="packages\agent_cli\wix\Banner.bmp"/>
+        <WixVariable Id="WixUIBannerBmp" Value="packages\playit-cli\wix\Banner.bmp"/>
 
 
         <!--

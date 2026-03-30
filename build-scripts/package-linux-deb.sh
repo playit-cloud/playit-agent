@@ -21,7 +21,7 @@ cd "${TEMP_DIR_NAME}"
 INSTALL_FOLDER="/opt/playit"
 
 ROOT_CARGO_FILE="${SCRIPT_DIR}/../Cargo.toml"
-CARGO_FILE="${SCRIPT_DIR}/../packages/agent_cli/Cargo.toml"
+CARGO_FILE="${SCRIPT_DIR}/../packages/playit-cli/Cargo.toml"
 VERSION=$(toml get "${ROOT_CARGO_FILE}" workspace.package.version | sed "s/\"//g")
 
 DEB_PACKAGE="playit_${DEB_ARCH}"

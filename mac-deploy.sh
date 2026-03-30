@@ -1,7 +1,7 @@
 # SHOULD BE RUN ON M1 MAC
 
 FOLDER=$(dirname "$0")
-VERSION="$(toml get "${FOLDER}/packages/agent_cli/Cargo.toml" package.version | sed "s/\"//g")"
+VERSION="$(toml get "${FOLDER}/packages/playit-cli/Cargo.toml" package.version | sed "s/\"//g")"
 
 bash ${FOLDER}/build-scripts/macos-app.sh
 

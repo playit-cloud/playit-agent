@@ -1,6 +1,8 @@
 [workspace]
 members = [
-    "packages/agent_cli",
+    "packages/playit-cli",
+    "packages/playit-ipc",
+    "packages/playitd",
     "packages/agent_core",
     "packages/agent_proto",
     "packages/api_client",

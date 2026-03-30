@@ -1,0 +1,18 @@
+[package]
+name = "playit-ipc"
+version.workspace = true
+edition = "2024"
+authors = ["Patrick Lorio <patrick@playit.gg>"]
+description = "Shared IPC transport and wire models for playit"
+repository = "https://github.com/playit-cloud/playit-agent"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+dirs = { workspace = true }
+
+interprocess = { version = "2.2", features = ["tokio"] }
+
+[target.'cfg(windows)'.dependencies]
+whoami = "1.5"

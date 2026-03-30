@@ -1,11 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use tokio::sync::broadcast;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
-
-use crate::service::ipc::ServiceEvent;
 
 /// A log entry captured from tracing
 #[derive(Clone, Debug)]
@@ -139,7 +136,7 @@ impl tracing::field::Visit for MessageVisitor {
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "message" {
             self.message = format!("{:?}", value);
-        } else if self.message.is_empty() {
+        } else {
             // Fallback: use any debug value if no message field
             if !self.message.is_empty() {
                 self.message.push_str(", ");
@@ -160,37 +157,3 @@ impl tracing::field::Visit for MessageVisitor {
     }
 }
 
-/// Tracing layer that broadcasts log events via IPC
-pub struct IpcBroadcastLayer {
-    event_tx: broadcast::Sender<ServiceEvent>,
-}
-
-impl IpcBroadcastLayer {
-    pub fn new(event_tx: broadcast::Sender<ServiceEvent>) -> Self {
-        IpcBroadcastLayer { event_tx }
-    }
-}
-
-impl<S: Subscriber> Layer<S> for IpcBroadcastLayer {
-    fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
-        use playit_agent_core::utils::now_milli;
-
-        let metadata = event.metadata();
-        let level = LogLevel::from(metadata.level());
-        let target = metadata.target().to_string();
-
-        // Extract the message from the event
-        let mut visitor = MessageVisitor::default();
-        event.record(&mut visitor);
-
-        let log_event = ServiceEvent::Log {
-            level: level.as_str().to_string(),
-            target,
-            message: visitor.message,
-            timestamp: now_milli(),
-        };
-
-        // Ignore send errors (no subscribers connected)
-        let _ = self.event_tx.send(log_event);
-    }
-}
