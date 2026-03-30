@@ -196,6 +196,24 @@ pub fn default_secret_path() -> PathBuf {
         .join("playit.toml")
 }
 
+#[cfg(target_os = "windows")]
+pub fn windows_service_data_dir() -> PathBuf {
+    std::env::var_os("PROGRAMDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
+        .join("playit_gg")
+}
+
+#[cfg(target_os = "windows")]
+pub fn windows_service_secret_path() -> PathBuf {
+    windows_service_data_dir().join("playit.toml")
+}
+
+#[cfg(target_os = "windows")]
+pub fn windows_service_log_path() -> PathBuf {
+    windows_service_data_dir().join("logs").join("playitd.log")
+}
+
 impl SecretSource {
     fn from_options(options: &DaemonOptions) -> Self {
         match options.secret.clone() {

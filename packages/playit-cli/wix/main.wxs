@@ -97,6 +97,22 @@
                 </Directory>
             </Directory>
 
+            <Directory Id="CommonAppDataFolder">
+                <Directory Id="PlayitCommonDataDirectory" Name="playit_gg">
+                    <Component Id="PlayitCommonDataFolder" Guid="*">
+                        <CreateFolder />
+                        <RegistryValue Root="HKLM" Key="Software\DevelopedMethodsLLC\playit_gg" Name="CommonDataPath" Type="integer" Value="1" KeyPath="yes"/>
+                    </Component>
+
+                    <Directory Id="PlayitCommonDataLogsDirectory" Name="logs">
+                        <Component Id="PlayitCommonDataLogsFolder" Guid="*">
+                            <CreateFolder />
+                            <RegistryValue Root="HKLM" Key="Software\DevelopedMethodsLLC\playit_gg" Name="CommonLogPath" Type="integer" Value="1" KeyPath="yes"/>
+                        </Component>
+                    </Directory>
+                </Directory>
+            </Directory>
+
             <Directory Id="ProgramMenuFolder">
                 <Directory Id="ApplicationProgramsFolder" Name="Playit.gg">
                     <Component Id="ApplicationShortcut">
@@ -139,6 +155,39 @@
                                 Source="$(var.CargoTargetBinDir)\playit-cli.exe"
                                 KeyPath="yes"/>
                         </Component>
+                        <Component Id="binary1" Guid="*">
+                            <File
+                                Id="exe1"
+                                Name="playitd.exe"
+                                DiskId="1"
+                                Source="$(var.CargoTargetDir)\$(var.TargetTriple)\$(var.CargoProfile)\playitd.exe"
+                                KeyPath="yes"/>
+                        </Component>
+                        <Component Id="playitdServiceComponent" Guid="*">
+                            <File
+                                Id="playitdServiceExe"
+                                Name="playitd-service.exe"
+                                DiskId="1"
+                                Source="$(var.CargoTargetDir)\$(var.TargetTriple)\$(var.CargoProfile)\playitd-service.exe"
+                                KeyPath="yes"/>
+                            <ServiceInstall
+                                Id="playitdServiceInstall"
+                                Name="playitd"
+                                DisplayName="playitd"
+                                Description="Runs the playitd background daemon for CLI IPC access."
+                                Type="ownProcess"
+                                Start="auto"
+                                ErrorControl="normal"
+                                Vital="yes"
+                                Account="LocalSystem" />
+                            <ServiceControl
+                                Id="playitdServiceControl"
+                                Name="playitd"
+                                Start="install"
+                                Stop="both"
+                                Remove="uninstall"
+                                Wait="yes" />
+                        </Component>
                     </Directory>
                 </Directory>
             </Directory>
@@ -167,7 +216,11 @@
             Absent="disallow">
 
             <ComponentRef Id="binary0"/>
+            <ComponentRef Id="binary1"/>
+            <ComponentRef Id="playitdServiceComponent"/>
             <ComponentRef Id="PlayitLocalAppDataFolder"/>
+            <ComponentRef Id="PlayitCommonDataFolder"/>
+            <ComponentRef Id="PlayitCommonDataLogsFolder"/>
             <ComponentRef Id="ApplicationShortcut"/>
             <ComponentRef Id="ApplicationShortcutDesktop"/>
 

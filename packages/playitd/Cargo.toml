@@ -31,3 +31,10 @@ serde_yaml = "0.9.34"
 [[bin]]
 name = "playitd"
 path = "src/bin/playitd.rs"
+
+[[bin]]
+name = "playitd-service"
+path = "src/bin/playitd-service.rs"
+
+[target."cfg(windows)".dependencies]
+windows-service = "0.8.0"

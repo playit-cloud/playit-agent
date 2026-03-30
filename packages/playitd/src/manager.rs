@@ -2,6 +2,12 @@ use service_manager::{ServiceLabel, ServiceManager, ServiceStartCtx, ServiceStop
 
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 
+#[cfg(target_os = "windows")]
+pub const INSTALLED_SERVICE_LABEL: &str = "playitd";
+
+#[cfg(not(target_os = "windows"))]
+pub const INSTALLED_SERVICE_LABEL: &str = "gg.playit.playitd";
+
 #[derive(Debug)]
 pub enum ServiceManagerError {
     NotAvailable(String),
@@ -37,7 +43,7 @@ pub struct ServiceController {
 }
 
 impl ServiceController {
-    const SERVICE_LABEL: &'static str = "gg.playit.playitd";
+    const SERVICE_LABEL: &'static str = INSTALLED_SERVICE_LABEL;
 
     #[cfg(not(target_os = "linux"))]
     pub fn new() -> Result<Self, ServiceManagerError> {
