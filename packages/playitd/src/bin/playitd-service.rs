@@ -69,16 +69,29 @@ mod windows_service_host {
             }
         };
 
-        if !wait_for_ipc_ready(START_TIMEOUT) {
-            let exit_code = terminate_child(&mut child);
-            set_service_status(
-                &status_handle,
-                ServiceState::Stopped,
-                ServiceControlAccept::empty(),
-                ServiceExitCode::Win32(exit_code),
-                Duration::default(),
-            )?;
-            return Ok(());
+        match wait_for_startup_ready(&mut child, START_TIMEOUT) {
+            StartupState::Ready => {}
+            StartupState::Exited(exit_code) => {
+                set_service_status(
+                    &status_handle,
+                    ServiceState::Stopped,
+                    ServiceControlAccept::empty(),
+                    ServiceExitCode::Win32(exit_code),
+                    Duration::default(),
+                )?;
+                return Ok(());
+            }
+            StartupState::TimedOut => {
+                let exit_code = terminate_child(&mut child);
+                set_service_status(
+                    &status_handle,
+                    ServiceState::Stopped,
+                    ServiceControlAccept::empty(),
+                    ServiceExitCode::Win32(exit_code),
+                    Duration::default(),
+                )?;
+                return Ok(());
+            }
         }
 
         set_service_status(
@@ -154,24 +167,38 @@ mod windows_service_host {
             .spawn()
     }
 
-    fn wait_for_ipc_ready(timeout: Duration) -> bool {
+    enum StartupState {
+        Ready,
+        Exited(u32),
+        TimedOut,
+    }
+
+    fn wait_for_startup_ready(child: &mut Child, timeout: Duration) -> StartupState {
         let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
         else {
-            return false;
+            return StartupState::TimedOut;
         };
 
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
+            match child.try_wait() {
+                Ok(Some(exit_status)) => {
+                    return StartupState::Exited(exit_code_from_status(exit_status.code()));
+                }
+                Ok(None) => {}
+                Err(_) => return StartupState::Exited(1),
+            }
+
             if runtime.block_on(IpcClient::is_running(get_default_socket_path())) {
-                return true;
+                return StartupState::Ready;
             }
 
             std::thread::sleep(Duration::from_millis(200));
         }
 
-        false
+        StartupState::TimedOut
     }
 
     fn request_child_shutdown() {
