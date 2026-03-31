@@ -179,7 +179,14 @@
                                 Start="demand"
                                 ErrorControl="normal"
                                 Vital="yes"
-                                Account="LocalSystem" />
+                                Account="LocalSystem">
+                                <util:PermissionEx
+                                    User="Authenticated Users"
+                                    ServiceStart="yes"
+                                    ServiceStop="yes"
+                                    ServiceQueryStatus="yes"
+                                    ServiceInterrogate="yes" />
+                            </ServiceInstall>
                             <ServiceControl
                                 Id="playitdServiceControl"
                                 Name="playitd"

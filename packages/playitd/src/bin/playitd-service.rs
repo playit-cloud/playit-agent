@@ -155,11 +155,11 @@ mod windows_service_host {
 
         let daemon_path = std::env::current_exe()?.with_file_name("playitd.exe");
         Command::new(daemon_path)
-            .arg("--socket_path")
+            .arg("--socket-path")
             .arg(get_default_socket_path())
-            .arg("--secret_path")
+            .arg("--secret-path")
             .arg(secret_path)
-            .arg("--log_path")
+            .arg("--log-path")
             .arg(log_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -233,14 +233,16 @@ mod windows_service_host {
             }
         }
 
-        child.wait()
+        child
+            .wait()
             .map(|exit_status| exit_code_from_status(exit_status.code()))
             .unwrap_or(1)
     }
 
     fn terminate_child(child: &mut Child) -> u32 {
         let _ = child.kill();
-        child.wait()
+        child
+            .wait()
             .map(|exit_status| exit_code_from_status(exit_status.code()))
             .unwrap_or(1)
     }
