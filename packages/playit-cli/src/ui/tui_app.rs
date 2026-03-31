@@ -1,26 +1,26 @@
-use std::io::{self, stdout, Stdout};
+use std::io::{self, Stdout, Write, stdin, stdout};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Frame, Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
-    Frame, Terminal,
 };
 
+use super::UISettings;
 use super::log_capture::{LogCapture, LogEntry, LogLevel};
 use super::widgets::{render_header, render_help_bar, render_stats_bar};
-use super::UISettings;
-use crate::signal_handle::get_signal_handle;
 use crate::CliError;
+use crate::signal_handle::get_signal_handle;
 
 /// Data about the running agent
 #[derive(Clone, Default)]
@@ -118,7 +118,9 @@ impl TuiApp {
             log_capture: LogCapture::new(500),
             agent_data: AgentData::default(),
             stats: ConnectionStats::default(),
-            mode: TuiMode::Setup { message: "Initializing...".to_string() },
+            mode: TuiMode::Setup {
+                message: "Initializing...".to_string(),
+            },
             focused_panel: FocusedPanel::Tunnels,
             tunnel_list_state: ListState::default(),
             log_scroll: 0,
@@ -491,7 +493,10 @@ impl TuiApp {
                         prefix, tunnel.display_address, reason
                     )
                 } else {
-                    format!("{}{} => {}", prefix, tunnel.display_address, tunnel.destination)
+                    format!(
+                        "{}{} => {}",
+                        prefix, tunnel.display_address, tunnel.destination
+                    )
                 };
 
                 ListItem::new(content).style(style)
@@ -541,10 +546,7 @@ impl TuiApp {
 
         let inner_height = area.height.saturating_sub(2) as usize;
         let start = scroll.min(log_entries.len().saturating_sub(inner_height));
-        let visible_entries = log_entries
-            .iter()
-            .skip(start)
-            .take(inner_height);
+        let visible_entries = log_entries.iter().skip(start).take(inner_height);
 
         let lines: Vec<Line> = visible_entries
             .map(|entry| {
@@ -557,12 +559,12 @@ impl TuiApp {
                 };
 
                 Line::from(vec![
+                    Span::styled(format!("[{}] ", entry.level.as_str()), level_style),
                     Span::styled(
-                        format!("[{}] ", entry.level.as_str()),
-                        level_style,
-                    ),
-                    Span::styled(
-                        format!("{}: ", entry.target.split("::").last().unwrap_or(&entry.target)),
+                        format!(
+                            "{}: ",
+                            entry.target.split("::").last().unwrap_or(&entry.target)
+                        ),
                         Style::default().fg(Color::DarkGray),
                     ),
                     Span::raw(&entry.message),
@@ -600,22 +602,35 @@ impl TuiApp {
                 if line.starts_with("http://") || line.starts_with("https://") {
                     Line::from(Span::styled(
                         line,
-                        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
                     ))
                 } else if line.contains("https://") || line.contains("http://") {
                     // Line contains a URL somewhere
                     let mut spans = Vec::new();
                     let mut remaining = line;
-                    while let Some(pos) = remaining.find("https://").or_else(|| remaining.find("http://")) {
+                    while let Some(pos) = remaining
+                        .find("https://")
+                        .or_else(|| remaining.find("http://"))
+                    {
                         if pos > 0 {
-                            spans.push(Span::styled(&remaining[..pos], Style::default().fg(Color::White)));
+                            spans.push(Span::styled(
+                                &remaining[..pos],
+                                Style::default().fg(Color::White),
+                            ));
                         }
                         // Find end of URL (space or end of string)
                         let url_start = pos;
-                        let url_end = remaining[pos..].find(' ').map(|p| pos + p).unwrap_or(remaining.len());
+                        let url_end = remaining[pos..]
+                            .find(' ')
+                            .map(|p| pos + p)
+                            .unwrap_or(remaining.len());
                         spans.push(Span::styled(
                             &remaining[url_start..url_end],
-                            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
                         ));
                         remaining = &remaining[url_end..];
                     }
@@ -701,18 +716,59 @@ impl TuiApp {
 
     pub async fn yn_question<T: std::fmt::Display + Send + 'static>(
         &mut self,
-        _question: T,
+        question: T,
         default_yes: Option<bool>,
     ) -> Result<bool, CliError> {
-        // For TUI mode, we use the quit confirm mechanism
-        // For now, return the default if available
-        if let Some(default) = default_yes {
-            return Ok(default);
-        }
         if let Some(auto) = self.settings.auto_answer {
             return Ok(auto);
         }
-        Err(CliError::AnswerNotProvided)
+
+        let prompt = question.to_string();
+        let had_terminal = self.terminal.is_some();
+        if had_terminal {
+            self.restore_terminal().map_err(CliError::RenderError)?;
+            self.terminal = None;
+        }
+
+        let answer = tokio::task::spawn_blocking(move || -> Result<bool, CliError> {
+            let prompt_suffix = match default_yes {
+                Some(true) => "Y/n",
+                Some(false) => "y/N",
+                None => "y/n",
+            };
+
+            loop {
+                print!("{prompt} ({prompt_suffix})? ");
+                stdout().flush().map_err(CliError::RenderError)?;
+
+                let mut line = String::new();
+                stdin()
+                    .read_line(&mut line)
+                    .map_err(CliError::RenderError)?;
+                let input = line.trim().to_lowercase();
+
+                if input.is_empty() {
+                    if let Some(default) = default_yes {
+                        return Ok(default);
+                    }
+                }
+
+                match input.as_str() {
+                    "y" | "yes" => return Ok(true),
+                    "n" | "no" => return Ok(false),
+                    _ => println!("Please answer y or n."),
+                }
+            }
+        })
+        .await
+        .map_err(|_| CliError::AnswerNotProvided)??;
+
+        if had_terminal {
+            self.init_terminal().map_err(CliError::RenderError)?;
+            self.draw().map_err(CliError::RenderError)?;
+        }
+
+        Ok(answer)
     }
 }
 

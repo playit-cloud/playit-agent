@@ -6,9 +6,8 @@ use std::time::Duration;
 use clap::{Parser, Subcommand};
 use client::{
     CliTarget, ensure_service_waiting_for_secret, provision_service_secret,
-    run_account_login_url_command, run_attach_command, run_default_attach_command,
-    run_reset_command, run_secret_path_command, run_start_command, run_status_command,
-    run_stop_command,
+    run_account_login_url_command, run_attach_command, run_auto_command, run_reset_command,
+    run_secret_path_command, run_start_command, run_status_command, run_stop_command,
 };
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
@@ -217,7 +216,7 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
 
     match cli.command {
         None => {
-            run_default_attach_command(&mut ui, &target).await?;
+            run_auto_command(&mut ui, &target).await?;
         }
         Some(Commands::Attach { stdout }) => {
             run_attach_command(&mut ui, stdout, &target).await?;
@@ -233,27 +232,7 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
         }
         Some(Commands::Version) => println!("{}", env!("CARGO_PKG_VERSION")),
         Some(Commands::Setup) => {
-            ensure_service_waiting_for_secret(&target).await?;
-
-            let claim_code = claim_generate();
-            ui.write_screen(format!("Visit link to setup {}", claim_url(&claim_code)?))
-                .await;
-
-            let key = claim_exchange(&mut ui, &claim_code, ClaimAgentType::Assignable, 0).await?;
-            provision_service_secret(&target, &key).await?;
-
-            let api = PlayitApi::create(API_BASE.to_string(), Some(key));
-            if let Ok(session) = api.login_guest().await {
-                ui.write_screen(format!(
-                    "Guest login:\nhttps://playit.gg/login/guest-account/{}",
-                    session.session_key
-                ))
-                .await;
-                tokio::time::sleep(Duration::from_secs(10)).await;
-            }
-
-            ui.write_screen("Playit setup complete, secret provisioned to playitd")
-                .await;
+            run_setup_flow(&mut ui, &target).await?;
         }
         Some(Commands::Reset) => {
             run_reset_command(&target).await?;
@@ -282,6 +261,31 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
     }
 
     Ok(std::process::ExitCode::SUCCESS)
+}
+
+pub async fn run_setup_flow(ui: &mut UI, target: &CliTarget) -> Result<(), CliError> {
+    ensure_service_waiting_for_secret(target).await?;
+
+    let claim_code = claim_generate();
+    ui.write_screen(format!("Visit link to setup {}", claim_url(&claim_code)?))
+        .await;
+
+    let key = claim_exchange(ui, &claim_code, ClaimAgentType::Assignable, 0).await?;
+    provision_service_secret(target, &key).await?;
+
+    let api = PlayitApi::create(API_BASE.to_string(), Some(key));
+    if let Ok(session) = api.login_guest().await {
+        ui.write_screen(format!(
+            "Guest login:\nhttps://playit.gg/login/guest-account/{}",
+            session.session_key
+        ))
+        .await;
+        tokio::time::sleep(Duration::from_secs(10)).await;
+    }
+
+    ui.write_screen("Playit setup complete, secret provisioned to playitd")
+        .await;
+    Ok(())
 }
 
 pub fn claim_generate() -> String {
@@ -454,5 +458,3 @@ impl From<SetupError> for CliError {
         CliError::TunnelSetupError(e)
     }
 }
-
-

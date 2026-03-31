@@ -9,16 +9,16 @@ use playit_ipc::model::{
 };
 use playitd::manager::{ensure_installed_service_running, stop_installed_service};
 
+use crate::ui::UI;
 use crate::ui::log_capture::{LogEntry, LogLevel as UiLogLevel};
 use crate::ui::tui_app::{
     AccountStatusInfo, AgentData, ConnectionStats, NoticeInfo, PendingTunnelInfo, TunnelInfo,
 };
-use crate::ui::UI;
-use crate::{CliError, EXE_NAME};
+use crate::{CliError, EXE_NAME, run_setup_flow};
 
 enum AttachErrorContext {
     Standard,
-    DefaultCommand {
+    AutoCommand {
         start_attempt_failed: Option<String>,
     },
 }
@@ -53,10 +53,7 @@ pub async fn run_attach_command(
     run_attach_command_with_context(ui, stdout_mode, target, AttachErrorContext::Standard).await
 }
 
-pub async fn run_default_attach_command(
-    ui: &mut UI,
-    target: &CliTarget,
-) -> Result<(), CliError> {
+pub async fn run_auto_command(ui: &mut UI, target: &CliTarget) -> Result<(), CliError> {
     let start_attempt_failed = match target {
         CliTarget::InstalledService => ensure_installed_service_running()
             .await
@@ -65,15 +62,125 @@ pub async fn run_default_attach_command(
         CliTarget::ExplicitSocket(_) => None,
     };
 
+    let mut client = connect_target(target).await.map_err(|_| {
+        initial_attach_error(
+            target,
+            &AttachErrorContext::AutoCommand {
+                start_attempt_failed: start_attempt_failed.clone(),
+            },
+        )
+    })?;
+
+    match client
+        .lifecycle()
+        .await
+        .map_err(|e| CliError::IpcError(format!("Failed to read playitd lifecycle: {e}")))?
+    {
+        AgentLifecycle::Running(_) | AgentLifecycle::Starting => {}
+        AgentLifecycle::WaitingForSecret => {
+            run_setup_flow(ui, target).await?;
+        }
+        AgentLifecycle::HasInvalidSecret(error) => {
+            let should_reset = ui
+                .yn_question(
+                    format!(
+                        "playitd has an invalid secret configuration: {}.\nReset the secret and run setup again?",
+                        error.message
+                    ),
+                    Some(false),
+                )
+                .await?;
+
+            if !should_reset {
+                return Err(CliError::ServiceError(
+                    "playitd has an invalid secret configuration. Run `playit reset` or rerun `playit` and confirm the reset prompt to reclaim this agent."
+                        .to_string(),
+                ));
+            }
+
+            reset_service_secret_for_setup(target).await?;
+            wait_for_service_waiting_for_secret(target).await?;
+            run_setup_flow(ui, target).await?;
+        }
+        AgentLifecycle::Stopping => {
+            return Err(CliError::ServiceError(
+                "playitd is stopping and cannot be auto-attached right now".to_string(),
+            ));
+        }
+        AgentLifecycle::Error(error) => {
+            return Err(CliError::ServiceError(format!(
+                "playitd reported an error and cannot continue auto mode: {}",
+                error.message
+            )));
+        }
+    }
+
     run_attach_command_with_context(
         ui,
         false,
         target,
-        AttachErrorContext::DefaultCommand {
+        AttachErrorContext::AutoCommand {
             start_attempt_failed,
         },
     )
     .await
+}
+
+async fn reset_service_secret_for_setup(target: &CliTarget) -> Result<(), CliError> {
+    let mut client = connect_target(target).await?;
+    let response = client
+        .reset_secret()
+        .await
+        .map_err(|e| CliError::IpcError(format!("Failed to reset secret: {e}")))?;
+
+    if !response.accepted {
+        return Err(CliError::IpcError(response.message.unwrap_or_else(|| {
+            "playitd rejected the reset request".to_string()
+        })));
+    }
+
+    Ok(())
+}
+
+async fn wait_for_service_waiting_for_secret(target: &CliTarget) -> Result<(), CliError> {
+    for _ in 0..50 {
+        let mut client = match connect_target(target).await {
+            Ok(client) => client,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                continue;
+            }
+        };
+        let lifecycle = client
+            .lifecycle()
+            .await
+            .map_err(|e| CliError::IpcError(format!("Failed to read playitd lifecycle: {e}")))?;
+
+        match lifecycle {
+            AgentLifecycle::WaitingForSecret => return Ok(()),
+            AgentLifecycle::HasInvalidSecret(_)
+            | AgentLifecycle::Running(_)
+            | AgentLifecycle::Starting => {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            AgentLifecycle::Stopping => {
+                return Err(CliError::ServiceError(
+                    "playitd is stopping and did not become ready for setup after reset"
+                        .to_string(),
+                ));
+            }
+            AgentLifecycle::Error(error) => {
+                return Err(CliError::ServiceError(format!(
+                    "playitd reported an error after reset: {}",
+                    error.message
+                )));
+            }
+        }
+    }
+
+    Err(CliError::ServiceError(
+        "Timed out waiting for playitd to become ready for setup after reset".to_string(),
+    ))
 }
 
 async fn run_attach_command_with_context(
@@ -216,11 +323,9 @@ pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
                 .map_err(|e| CliError::IpcError(format!("Failed to stop daemon at {path}: {e}")))?;
 
             if !response.accepted {
-                return Err(CliError::IpcError(
-                    response
-                        .message
-                        .unwrap_or_else(|| format!("playitd rejected stop request for {path}")),
-                ));
+                return Err(CliError::IpcError(response.message.unwrap_or_else(|| {
+                    format!("playitd rejected stop request for {path}")
+                })));
             }
 
             println!("playitd stop requested for socket {path}");
@@ -318,10 +423,7 @@ pub async fn ensure_service_waiting_for_secret(target: &CliTarget) -> Result<(),
     }
 }
 
-pub async fn provision_service_secret(
-    target: &CliTarget,
-    secret: &str,
-) -> Result<(), CliError> {
+pub async fn provision_service_secret(target: &CliTarget, secret: &str) -> Result<(), CliError> {
     if matches!(target, CliTarget::InstalledService) {
         ensure_installed_service_running()
             .await
@@ -354,24 +456,19 @@ pub async fn run_reset_command(target: &CliTarget) -> Result<(), CliError> {
         .map_err(|e| CliError::IpcError(format!("Failed to reset secret: {e}")))?;
 
     if !reset_response.accepted {
-        return Err(CliError::IpcError(
-            reset_response
-                .message
-                .unwrap_or_else(|| "playitd rejected the reset request".to_string()),
-        ));
+        return Err(CliError::IpcError(reset_response.message.unwrap_or_else(
+            || "playitd rejected the reset request".to_string(),
+        )));
     }
 
-    let stop_response = client
-        .stop()
-        .await
-        .map_err(|e| CliError::IpcError(format!("Secret was reset, but failed to stop playitd: {e}")))?;
+    let stop_response = client.stop().await.map_err(|e| {
+        CliError::IpcError(format!("Secret was reset, but failed to stop playitd: {e}"))
+    })?;
 
     if !stop_response.accepted {
-        return Err(CliError::IpcError(
-            stop_response
-                .message
-                .unwrap_or_else(|| "Secret was reset, but playitd rejected the stop request".to_string()),
-        ));
+        return Err(CliError::IpcError(stop_response.message.unwrap_or_else(
+            || "Secret was reset, but playitd rejected the stop request".to_string(),
+        )));
     }
 
     let reset_message = reset_response
@@ -395,8 +492,7 @@ pub async fn run_secret_path_command(target: &CliTarget) -> Result<(), CliError>
 
     let Some(secret_path) = response.secret_path else {
         return Err(CliError::IpcError(
-            "playitd is using an inline --secret, so no secret file path is available"
-                .to_string(),
+            "playitd is using an inline --secret, so no secret file path is available".to_string(),
         ));
     };
 
@@ -422,26 +518,28 @@ async fn connect_target(target: &CliTarget) -> Result<IpcClient, CliError> {
 }
 
 fn ipc_connection_error() -> CliError {
-    CliError::IpcError("Failed to connect to playitd over IPC. Start playitd and try again.".to_string())
+    CliError::IpcError(
+        "Failed to connect to playitd over IPC. Start playitd and try again.".to_string(),
+    )
 }
 
 fn initial_attach_error(target: &CliTarget, error_context: &AttachErrorContext) -> CliError {
     match error_context {
         AttachErrorContext::Standard => ipc_connection_error(),
-        AttachErrorContext::DefaultCommand { start_attempt_failed } => {
-            default_attach_error(target, start_attempt_failed.as_deref())
-        }
+        AttachErrorContext::AutoCommand {
+            start_attempt_failed,
+        } => auto_attach_error(target, start_attempt_failed.as_deref()),
     }
 }
 
-fn default_attach_error(target: &CliTarget, start_attempt_failed: Option<&str>) -> CliError {
+fn auto_attach_error(target: &CliTarget, start_attempt_failed: Option<&str>) -> CliError {
     match target {
         CliTarget::InstalledService => match start_attempt_failed {
             Some(error) => CliError::IpcError(format!(
-                "Failed to connect to playitd over IPC. playit-cli also tried starting playitd first, but that start attempt failed: {error}"
+                "Failed to connect to playitd over IPC. playit-cli auto mode also tried starting playitd first, but that start attempt failed: {error}"
             )),
             None => CliError::IpcError(
-                "Failed to connect to playitd over IPC. playit-cli tried starting playitd first, but it is still not reachable."
+                "Failed to connect to playitd over IPC. playit-cli auto mode prepared the service first, but it is still not reachable."
                     .to_string(),
             ),
         },
@@ -451,9 +549,9 @@ fn default_attach_error(target: &CliTarget, start_attempt_failed: Option<&str>) 
 
 fn attach_lost_message(target: &CliTarget, error: &str) -> String {
     match target {
-        CliTarget::InstalledService => format!(
-            "Connection to playitd lost: {error}. Run \"playit attach\" to reconnect."
-        ),
+        CliTarget::InstalledService => {
+            format!("Connection to playitd lost: {error}. Run \"playit attach\" to reconnect.")
+        }
         CliTarget::ExplicitSocket(path) => format!(
             "Connection to playitd lost: {error}. Reattach with \"playit attach --socket-path {}\" once the daemon is reachable again.",
             path
@@ -507,7 +605,8 @@ async fn apply_lifecycle(ui: &mut UI, lifecycle: AgentLifecycle) {
     match lifecycle {
         AgentLifecycle::Running(state) => ui.update_agent_data(state.into()),
         AgentLifecycle::WaitingForSecret => {
-            ui.write_screen("playitd is waiting for a secret to be provisioned").await;
+            ui.write_screen("playitd is waiting for a secret to be provisioned")
+                .await;
         }
         AgentLifecycle::HasInvalidSecret(error) => {
             ui.write_screen(format!(
@@ -544,8 +643,11 @@ async fn apply_status(ui: &mut UI, status: ServiceStatus, stdout_mode: bool) {
         return;
     }
 
-    ui.write_screen(format!("playitd status: {}", format_service_phase(&status.phase)))
-        .await;
+    ui.write_screen(format!(
+        "playitd status: {}",
+        format_service_phase(&status.phase)
+    ))
+    .await;
 }
 
 fn format_timestamp_millis(millis: u64) -> String {
