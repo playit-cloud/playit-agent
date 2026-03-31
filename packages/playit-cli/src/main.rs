@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use client::{
-    CliTarget, provision_service_secret, run_account_login_url_command, run_attach_command,
-    run_default_attach_command, run_reset_command, run_secret_path_command, run_start_command,
-    run_status_command, run_stop_command,
+    CliTarget, ensure_service_waiting_for_secret, provision_service_secret,
+    run_account_login_url_command, run_attach_command, run_default_attach_command,
+    run_reset_command, run_secret_path_command, run_start_command, run_status_command,
+    run_stop_command,
 };
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
@@ -88,8 +89,7 @@ enum Commands {
     /// Shows the file path where the playit secret can be found
     SecretPath,
 
-    #[cfg(target_os = "linux")]
-    /// Setup playit for Linux service
+    /// Setup playit by provisioning a new secret to playitd
     Setup,
 
     /// Account management commands
@@ -232,8 +232,9 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
             run_status_command(&target).await?;
         }
         Some(Commands::Version) => println!("{}", env!("CARGO_PKG_VERSION")),
-        #[cfg(target_os = "linux")]
         Some(Commands::Setup) => {
+            ensure_service_waiting_for_secret(&target).await?;
+
             let claim_code = claim_generate();
             ui.write_screen(format!("Visit link to setup {}", claim_url(&claim_code)?))
                 .await;

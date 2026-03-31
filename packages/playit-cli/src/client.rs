@@ -282,6 +282,42 @@ pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
     Ok(())
 }
 
+pub async fn ensure_service_waiting_for_secret(target: &CliTarget) -> Result<(), CliError> {
+    if matches!(target, CliTarget::InstalledService) {
+        ensure_installed_service_running()
+            .await
+            .map_err(|e| CliError::ServiceError(format!("Failed to start service: {e}")))?;
+    }
+
+    let mut client = connect_target(target).await?;
+    let lifecycle = client
+        .lifecycle()
+        .await
+        .map_err(|e| CliError::IpcError(format!("Failed to read playitd lifecycle: {e}")))?;
+
+    match lifecycle {
+        AgentLifecycle::WaitingForSecret => Ok(()),
+        AgentLifecycle::HasInvalidSecret(error) => Err(CliError::ServiceError(format!(
+            "playitd is not waiting for setup because it has an invalid secret configuration: {}. Reset the daemon secret first.",
+            error.message
+        ))),
+        AgentLifecycle::Starting => Err(CliError::ServiceError(
+            "playitd is starting and is not waiting for setup".to_string(),
+        )),
+        AgentLifecycle::Running(_) => Err(CliError::ServiceError(
+            "playitd already has a configured secret and is not waiting for setup. Run `playit reset` before claiming a new agent."
+                .to_string(),
+        )),
+        AgentLifecycle::Stopping => Err(CliError::ServiceError(
+            "playitd is stopping and is not waiting for setup".to_string(),
+        )),
+        AgentLifecycle::Error(error) => Err(CliError::ServiceError(format!(
+            "playitd reported an error and is not waiting for setup: {}",
+            error.message
+        ))),
+    }
+}
+
 pub async fn provision_service_secret(
     target: &CliTarget,
     secret: &str,

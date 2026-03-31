@@ -271,6 +271,19 @@ impl IpcServer {
                                     .await?;
                                 }
                                 ServiceRequest::SetSecret { secret } => {
+                                    let lifecycle = self.state_cache.lifecycle().await;
+                                    if !matches!(lifecycle, AgentLifecycle::WaitingForSecret) {
+                                        self.send_response(
+                                            &mut writer,
+                                            request.request_id,
+                                            ServiceResponse::Error(
+                                                secret_provisioning_state_error(&lifecycle),
+                                            ),
+                                        )
+                                        .await?;
+                                        continue;
+                                    }
+
                                     let Some(secret_provision_tx) = &self.secret_provision_tx else {
                                         self.send_response(
                                             &mut writer,
@@ -282,12 +295,24 @@ impl IpcServer {
                                     };
 
                                     let (response_tx, response_rx) = oneshot::channel();
-                                    secret_provision_tx
+                                    if secret_provision_tx
                                         .send(SecretProvisionRequest { secret, response_tx })
                                         .await
-                                        .map_err(|_| IpcError::ProtocolError(
-                                            "daemon cannot accept secret provisioning right now".to_string()
-                                        ))?;
+                                        .is_err()
+                                    {
+                                        self.send_response(
+                                            &mut writer,
+                                            request.request_id,
+                                            ServiceResponse::Error(protocol_error(
+                                                ServiceErrorCode::ProvisioningUnavailable,
+                                                "playitd is no longer waiting for secret provisioning"
+                                                    .to_string(),
+                                                true,
+                                            )),
+                                        )
+                                        .await?;
+                                        continue;
+                                    }
 
                                     match response_rx.await {
                                         Ok(Ok(())) => {
@@ -318,8 +343,9 @@ impl IpcServer {
                                                 &mut writer,
                                                 request.request_id,
                                                 ServiceResponse::Error(protocol_error(
-                                                    ServiceErrorCode::Internal,
-                                                    "daemon dropped secret provisioning response".to_string(),
+                                                    ServiceErrorCode::ProvisioningUnavailable,
+                                                    "playitd is no longer waiting for secret provisioning"
+                                                        .to_string(),
                                                     true,
                                                 )),
                                             )
@@ -529,5 +555,76 @@ fn protocol_error(code: ServiceErrorCode, message: String, retryable: bool) -> S
         message,
         retryable,
         details: None,
+    }
+}
+
+fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
+    match lifecycle {
+        AgentLifecycle::WaitingForSecret => protocol_error(
+            ServiceErrorCode::ProvisioningUnavailable,
+            "playitd is not ready for secret provisioning".to_string(),
+            true,
+        ),
+        AgentLifecycle::HasInvalidSecret(error) => protocol_error(
+            ServiceErrorCode::ProvisioningUnavailable,
+            format!(
+                "playitd is not waiting for a new secret because its current secret is invalid: {}",
+                error.message
+            ),
+            false,
+        ),
+        AgentLifecycle::Starting => protocol_error(
+            ServiceErrorCode::ProvisioningUnavailable,
+            "playitd is starting and not waiting for secret provisioning".to_string(),
+            true,
+        ),
+        AgentLifecycle::Running(_) => protocol_error(
+            ServiceErrorCode::ProvisioningUnavailable,
+            "playitd already has a configured secret and is not waiting for provisioning"
+                .to_string(),
+            false,
+        ),
+        AgentLifecycle::Stopping => protocol_error(
+            ServiceErrorCode::ProvisioningUnavailable,
+            "playitd is stopping and cannot accept secret provisioning".to_string(),
+            true,
+        ),
+        AgentLifecycle::Error(error) => protocol_error(
+            ServiceErrorCode::ProvisioningUnavailable,
+            format!(
+                "playitd reported an error and is not waiting for secret provisioning: {}",
+                error.message
+            ),
+            true,
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::secret_provisioning_state_error;
+    use playit_ipc::model::{AgentLifecycle, ServiceError, ServiceErrorCode};
+
+    #[test]
+    fn provisioning_rejects_running_daemon() {
+        let error = secret_provisioning_state_error(&AgentLifecycle::Running(Default::default()));
+        assert!(matches!(error.code, ServiceErrorCode::ProvisioningUnavailable));
+        assert!(!error.retryable);
+        assert!(error.message.contains("already has a configured secret"));
+    }
+
+    #[test]
+    fn provisioning_rejects_invalid_secret_state() {
+        let error = secret_provisioning_state_error(&AgentLifecycle::HasInvalidSecret(
+            ServiceError {
+                code: ServiceErrorCode::InvalidSecret,
+                message: "bad secret".to_string(),
+                retryable: true,
+                details: None,
+            },
+        ));
+        assert!(matches!(error.code, ServiceErrorCode::ProvisioningUnavailable));
+        assert!(!error.retryable);
+        assert!(error.message.contains("bad secret"));
     }
 }
