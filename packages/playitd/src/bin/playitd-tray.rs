@@ -221,8 +221,10 @@ mod windows_tray {
             WM_NCCREATE => {
                 let create_struct = lparam as *const CREATESTRUCTW;
                 if !create_struct.is_null() {
-                    let state = (*create_struct).lpCreateParams as *mut AppState;
-                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize);
+                    let state = unsafe { (*create_struct).lpCreateParams as *mut AppState };
+                    unsafe {
+                        SetWindowLongPtrW(hwnd, GWLP_USERDATA, state as isize as _);
+                    }
                 }
                 return 1;
             }
@@ -230,7 +232,9 @@ mod windows_tray {
             INIT_TRAY_MESSAGE => {
                 if let Err(error) = initialize_tray(hwnd) {
                     show_error("Failed to initialize playit tray", &error);
-                    let _ = DestroyWindow(hwnd);
+                    unsafe {
+                        let _ = DestroyWindow(hwnd);
+                    }
                 }
                 return 0;
             }
@@ -245,30 +249,36 @@ mod windows_tray {
                 return 0;
             }
             WM_DESTROY => {
-                let _ = KillTimer(hwnd, POLL_TIMER_ID);
+                unsafe {
+                    let _ = KillTimer(hwnd, POLL_TIMER_ID);
+                }
                 TrayIconEvent::set_event_handler::<fn(TrayIconEvent)>(None);
                 MenuEvent::set_event_handler::<fn(MenuEvent)>(None);
-                if let Some(state) = get_state(hwnd).as_mut() {
+                if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
                     state.tray = None;
                 }
-                PostQuitMessage(0);
+                unsafe {
+                    PostQuitMessage(0);
+                }
                 return 0;
             }
             WM_NCDESTROY => {
                 let state = take_state(hwnd);
                 if !state.is_null() {
-                    drop(Box::from_raw(state));
+                    unsafe {
+                        drop(Box::from_raw(state));
+                    }
                 }
-                return DefWindowProcW(hwnd, message, wparam, lparam);
+                return unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
             }
             _ => {}
         }
 
-        DefWindowProcW(hwnd, message, wparam, lparam)
+        unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
     }
 
-    unsafe fn initialize_tray(hwnd: HWND) -> Result<(), String> {
-        let Some(state) = get_state(hwnd).as_mut() else {
+    fn initialize_tray(hwnd: HWND) -> Result<(), String> {
+        let Some(state) = (unsafe { get_state(hwnd).as_mut() }) else {
             return Err("tray state is missing".to_string());
         };
 
@@ -286,7 +296,7 @@ mod windows_tray {
         state.tray = Some(tray);
         apply_service_state(state, state.service_running)?;
 
-        let timer = SetTimer(hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, None);
+        let timer = unsafe { SetTimer(hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, None) };
         if timer == 0 {
             return Err(last_error("failed to start tray status timer"));
         }
@@ -295,6 +305,7 @@ mod windows_tray {
     }
 
     fn install_event_handlers(hwnd: HWND, event_queue: Arc<Mutex<VecDeque<AppEvent>>>) {
+        let hwnd_bits = hwnd as usize;
         let tray_queue = event_queue.clone();
         TrayIconEvent::set_event_handler(Some(move |event| {
             if let tray_icon::TrayIconEvent::Click {
@@ -311,18 +322,19 @@ mod windows_tray {
                 }
 
                 unsafe {
-                    let _ = PostMessageW(hwnd, PROCESS_EVENTS_MESSAGE, 0, 0);
+                    let _ = PostMessageW(hwnd_bits as HWND, PROCESS_EVENTS_MESSAGE, 0, 0);
                 }
             }
         }));
 
+        let hwnd_bits = hwnd as usize;
         MenuEvent::set_event_handler(Some(move |event| {
             if let Ok(mut queue) = event_queue.lock() {
                 queue.push_back(AppEvent::MenuActivated(event));
             }
 
             unsafe {
-                let _ = PostMessageW(hwnd, PROCESS_EVENTS_MESSAGE, 0, 0);
+                let _ = PostMessageW(hwnd_bits as HWND, PROCESS_EVENTS_MESSAGE, 0, 0);
             }
         }));
     }
@@ -573,13 +585,15 @@ mod windows_tray {
         format!("{context} (Win32 error {})", unsafe { GetLastError() })
     }
 
-    unsafe fn get_state(hwnd: HWND) -> *mut AppState {
-        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState
+    fn get_state(hwnd: HWND) -> *mut AppState {
+        unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState }
     }
 
-    unsafe fn take_state(hwnd: HWND) -> *mut AppState {
+    fn take_state(hwnd: HWND) -> *mut AppState {
         let state = get_state(hwnd);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        unsafe {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        }
         state
     }
 }
