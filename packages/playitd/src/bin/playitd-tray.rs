@@ -537,9 +537,9 @@ mod windows_tray {
         let cli_path = playit_cli_path()?;
         Command::new(cli_path)
             .creation_flags(CREATE_NEW_CONSOLE)
-            .arg("attach")
+            .arg("auto")
             .spawn()
-            .map_err(|error| format!("Failed to launch playit.exe attach: {error}"))?;
+            .map_err(|error| format!("Failed to launch playit.exe auto: {error}"))?;
         Ok(())
     }
 
