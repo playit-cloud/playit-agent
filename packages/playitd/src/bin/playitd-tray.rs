@@ -3,33 +3,39 @@
 #[cfg(target_os = "windows")]
 mod windows_tray {
     use std::ffi::c_void;
+    use std::fs;
     use std::mem::{size_of, zeroed};
+    use std::os::windows::ffi::OsStringExt;
     use std::os::windows::process::CommandExt;
     use std::path::PathBuf;
     use std::process::Command;
     use std::ptr::{null, null_mut};
 
-    use playitd::manager::{INSTALLED_SERVICE_LABEL, stop_installed_service};
+    use playitd::manager::{
+        ensure_installed_service_running, stop_installed_service, INSTALLED_SERVICE_LABEL,
+    };
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM,
     };
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Services::{
         CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_MANAGER_CONNECT,
         SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_STATUS_PROCESS,
     };
-    use windows_sys::Win32::System::Threading::{CREATE_NEW_CONSOLE, CreateMutexW};
+    use windows_sys::Win32::System::Threading::{CreateMutexW, CREATE_NEW_CONSOLE};
     use windows_sys::Win32::UI::Shell::{
-        NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW, Shell_NotifyIconW,
+        FOLDERID_CommonStartup, SHGetKnownFolderPath, Shell_NotifyIconW, KF_FLAG_DEFAULT, NIF_ICON,
+        NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CREATESTRUCTW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu,
-        DispatchMessageW, GWLP_USERDATA, GetCursorPos, GetMessageW, GetWindowLongPtrW, HICON,
-        IDI_APPLICATION, KillTimer, LoadIconW, MB_ICONERROR, MB_OK, MF_STRING, MSG, MessageBoxW,
-        PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer, SetWindowLongPtrW,
-        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu, TranslateMessage, WM_APP,
-        WM_COMMAND, WM_CREATE, WM_DESTROY, WM_LBUTTONUP, WM_NCCREATE, WM_NCDESTROY, WM_NULL,
-        WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+        AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
+        DispatchMessageW, GetCursorPos, GetMessageW, GetWindowLongPtrW, KillTimer, LoadIconW,
+        MessageBoxW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer,
+        SetWindowLongPtrW, TrackPopupMenu, TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, HICON,
+        IDI_APPLICATION, MB_ICONERROR, MB_OK, MF_DISABLED, MF_GRAYED, MF_STRING, MSG,
+        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY,
+        WM_LBUTTONUP, WM_NCCREATE, WM_NCDESTROY, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
     };
 
     const TRAY_CALLBACK_MESSAGE: u32 = WM_APP + 1;
@@ -37,7 +43,10 @@ mod windows_tray {
     const POLL_TIMER_ID: usize = 1;
     const POLL_INTERVAL_MS: u32 = 2_000;
     const MENU_OPEN_STATUS: usize = 1001;
-    const MENU_STOP_SERVICE: usize = 1002;
+    const MENU_START_SERVICE: usize = 1002;
+    const MENU_STOP_SERVICE: usize = 1003;
+    const MENU_REMOVE_TRAY_ICON: usize = 1004;
+    const TRAY_SHORTCUT_NAME: &str = "Playit Tray.lnk";
 
     pub fn run() -> Result<(), String> {
         let _instance_guard = match SingleInstanceGuard::new("Local\\playitd-tray")? {
@@ -65,8 +74,9 @@ mod windows_tray {
         }
 
         let state = Box::new(AppState {
-            tray_visible: false,
+            tray_added: false,
             tray_icon: unsafe { LoadIconW(null_mut(), IDI_APPLICATION) },
+            service_running: query_service_running(),
         });
         let state_ptr = Box::into_raw(state);
 
@@ -114,8 +124,9 @@ mod windows_tray {
     }
 
     struct AppState {
-        tray_visible: bool,
+        tray_added: bool,
         tray_icon: HICON,
+        service_running: bool,
     }
 
     struct SingleInstanceGuard {
@@ -169,13 +180,15 @@ mod windows_tray {
                 return 1;
             }
             WM_CREATE => {
-                let _ = SetTimer(hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, None);
-                refresh_tray_visibility(hwnd);
+                if let Err(error) = initialize_tray(hwnd) {
+                    show_error("Failed to initialize playit tray", &error);
+                    let _ = DestroyWindow(hwnd);
+                }
                 return 0;
             }
             WM_TIMER => {
                 if wparam == POLL_TIMER_ID {
-                    refresh_tray_visibility(hwnd);
+                    refresh_tray_status(hwnd);
                 }
                 return 0;
             }
@@ -186,11 +199,25 @@ mod windows_tray {
                             show_error("Failed to open playit status", &error);
                         }
                     }
+                    MENU_START_SERVICE => {
+                        if let Err(error) = start_service() {
+                            show_error("Failed to start playit service", &error);
+                        }
+                        refresh_tray_status(hwnd);
+                    }
                     MENU_STOP_SERVICE => {
                         if let Err(error) = stop_installed_service()
                             .map_err(|error| format!("Failed to stop playitd service: {error}"))
                         {
                             show_error("Failed to stop playit service", &error);
+                        }
+                        refresh_tray_status(hwnd);
+                    }
+                    MENU_REMOVE_TRAY_ICON => {
+                        if let Err(error) = remove_startup_shortcut() {
+                            show_error("Failed to remove tray startup entry", &error);
+                        } else {
+                            let _ = DestroyWindow(hwnd);
                         }
                     }
                     _ => {}
@@ -228,39 +255,84 @@ mod windows_tray {
         DefWindowProcW(hwnd, message, wparam, lparam)
     }
 
-    unsafe fn refresh_tray_visibility(hwnd: HWND) {
+    unsafe fn initialize_tray(hwnd: HWND) -> Result<(), String> {
+        let state = get_state(hwnd);
+        if state.is_null() {
+            return Err("tray state is missing".to_string());
+        }
+
+        let state = &mut *state;
+        add_tray_icon(hwnd, state.tray_icon, state.service_running)?;
+        state.tray_added = true;
+
+        let timer = SetTimer(hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, None);
+        if timer == 0 {
+            return Err(last_error("failed to start tray status timer"));
+        }
+
+        Ok(())
+    }
+
+    unsafe fn refresh_tray_status(hwnd: HWND) {
         let state = get_state(hwnd);
         if state.is_null() {
             return;
         }
 
         let state = &mut *state;
-        let service_running = is_service_running();
+        let service_running = query_service_running();
 
-        if service_running && !state.tray_visible {
-            if add_tray_icon(hwnd, state.tray_icon) {
-                state.tray_visible = true;
+        if !state.tray_added {
+            if add_tray_icon(hwnd, state.tray_icon, service_running).is_ok() {
+                state.tray_added = true;
             }
-        } else if !service_running && state.tray_visible {
-            remove_tray_icon(hwnd);
-            state.tray_visible = false;
+        } else if service_running != state.service_running {
+            let _ = update_tray_icon(hwnd, state.tray_icon, service_running);
         }
+
+        state.service_running = service_running;
     }
 
-    unsafe fn add_tray_icon(hwnd: HWND, tray_icon: HICON) -> bool {
+    unsafe fn add_tray_icon(
+        hwnd: HWND,
+        tray_icon: HICON,
+        service_running: bool,
+    ) -> Result<(), String> {
         let mut icon_data = zeroed::<NOTIFYICONDATAW>();
-        icon_data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
-        icon_data.hWnd = hwnd;
-        icon_data.uID = TRAY_ICON_ID;
-        icon_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-        icon_data.uCallbackMessage = TRAY_CALLBACK_MESSAGE;
-        icon_data.hIcon = tray_icon;
-        copy_wide("Playit service is running", &mut icon_data.szTip);
+        populate_icon_data(&mut icon_data, hwnd, tray_icon, service_running);
 
-        Shell_NotifyIconW(NIM_ADD, &icon_data) != 0
+        if Shell_NotifyIconW(NIM_ADD, &icon_data) == 0 {
+            return Err(last_error("failed to add tray icon"));
+        }
+
+        Ok(())
+    }
+
+    unsafe fn update_tray_icon(
+        hwnd: HWND,
+        tray_icon: HICON,
+        service_running: bool,
+    ) -> Result<(), String> {
+        let mut icon_data = zeroed::<NOTIFYICONDATAW>();
+        populate_icon_data(&mut icon_data, hwnd, tray_icon, service_running);
+
+        if Shell_NotifyIconW(NIM_MODIFY, &icon_data) == 0 {
+            return Err(last_error("failed to update tray icon"));
+        }
+
+        Ok(())
     }
 
     unsafe fn remove_tray_icon(hwnd: HWND) {
+        let state = get_state(hwnd);
+        if !state.is_null() {
+            let state = &mut *state;
+            if !state.tray_added {
+                return;
+            }
+            state.tray_added = false;
+        }
+
         let mut icon_data = zeroed::<NOTIFYICONDATAW>();
         icon_data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
         icon_data.hWnd = hwnd;
@@ -269,6 +341,7 @@ mod windows_tray {
     }
 
     unsafe fn show_context_menu(hwnd: HWND) {
+        let service_running = query_service_running();
         let menu = CreatePopupMenu();
         if menu.is_null() {
             show_error(
@@ -279,10 +352,29 @@ mod windows_tray {
         }
 
         let open_label = wide("Open Status");
+        let start_label = wide("Start Service");
         let stop_label = wide("Stop Service");
+        let remove_label = wide("Remove Tray Icon");
 
         let _ = AppendMenuW(menu, MF_STRING, MENU_OPEN_STATUS, open_label.as_ptr());
-        let _ = AppendMenuW(menu, MF_STRING, MENU_STOP_SERVICE, stop_label.as_ptr());
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | menu_enabled_flags(!service_running),
+            MENU_START_SERVICE,
+            start_label.as_ptr(),
+        );
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING | menu_enabled_flags(service_running),
+            MENU_STOP_SERVICE,
+            stop_label.as_ptr(),
+        );
+        let _ = AppendMenuW(
+            menu,
+            MF_STRING,
+            MENU_REMOVE_TRAY_ICON,
+            remove_label.as_ptr(),
+        );
 
         let mut cursor = POINT { x: 0, y: 0 };
         if GetCursorPos(&mut cursor) == 0 {
@@ -322,6 +414,14 @@ mod windows_tray {
         wparam & 0xFFFF
     }
 
+    fn menu_enabled_flags(enabled: bool) -> u32 {
+        if enabled {
+            0
+        } else {
+            MF_DISABLED | MF_GRAYED
+        }
+    }
+
     fn launch_status_window() -> Result<(), String> {
         let cli_path = playit_cli_path()?;
         Command::new(cli_path)
@@ -332,39 +432,126 @@ mod windows_tray {
         Ok(())
     }
 
+    fn start_service() -> Result<(), String> {
+        if query_service_running() {
+            return Ok(());
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("Failed to create tray runtime: {error}"))?;
+
+        runtime
+            .block_on(ensure_installed_service_running())
+            .map_err(|error| format!("Failed waiting for playitd service startup: {error}"))
+    }
+
     fn playit_cli_path() -> Result<PathBuf, String> {
         std::env::current_exe()
             .map(|path| path.with_file_name("playit.exe"))
             .map_err(|error| format!("Failed to resolve playit.exe path: {error}"))
     }
 
-    unsafe fn is_service_running() -> bool {
-        let manager = OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT);
-        if manager.is_null() {
-            return false;
+    fn remove_startup_shortcut() -> Result<(), String> {
+        let shortcut_path = startup_shortcut_path()?;
+
+        if !shortcut_path.exists() {
+            return Ok(());
         }
 
-        let service_name = wide(INSTALLED_SERVICE_LABEL);
-        let service = OpenServiceW(manager, service_name.as_ptr(), SERVICE_QUERY_STATUS);
-        if service.is_null() {
+        fs::remove_file(&shortcut_path).map_err(|error| {
+            format!(
+                "Failed to delete startup shortcut at {}: {error}",
+                shortcut_path.display()
+            )
+        })
+    }
+
+    fn startup_shortcut_path() -> Result<PathBuf, String> {
+        unsafe {
+            let mut wide_path = null_mut();
+            let result = SHGetKnownFolderPath(
+                &FOLDERID_CommonStartup,
+                KF_FLAG_DEFAULT as u32,
+                null_mut(),
+                &mut wide_path,
+            );
+
+            if result < 0 {
+                return Err(format!(
+                    "Failed to resolve the common Startup folder (HRESULT {result:#x})"
+                ));
+            }
+
+            if wide_path.is_null() {
+                return Err("Common Startup folder path was empty".to_string());
+            }
+
+            let mut len = 0usize;
+            while *wide_path.add(len) != 0 {
+                len += 1;
+            }
+
+            let path = std::ffi::OsString::from_wide(std::slice::from_raw_parts(wide_path, len));
+            CoTaskMemFree(wide_path.cast::<c_void>());
+
+            Ok(PathBuf::from(path).join(TRAY_SHORTCUT_NAME))
+        }
+    }
+
+    fn query_service_running() -> bool {
+        unsafe {
+            let manager = OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT);
+            if manager.is_null() {
+                return false;
+            }
+
+            let service_name = wide(INSTALLED_SERVICE_LABEL);
+            let service = OpenServiceW(manager, service_name.as_ptr(), SERVICE_QUERY_STATUS);
+            if service.is_null() {
+                let _ = CloseServiceHandle(manager);
+                return false;
+            }
+
+            let mut status = zeroed::<SERVICE_STATUS_PROCESS>();
+            let mut bytes_needed = 0;
+            let running = QueryServiceStatusEx(
+                service,
+                SC_STATUS_PROCESS_INFO,
+                (&mut status as *mut SERVICE_STATUS_PROCESS).cast::<u8>(),
+                size_of::<SERVICE_STATUS_PROCESS>() as u32,
+                &mut bytes_needed,
+            ) != 0
+                && status.dwCurrentState == SERVICE_RUNNING;
+
+            let _ = CloseServiceHandle(service);
             let _ = CloseServiceHandle(manager);
-            return false;
+            running
         }
+    }
 
-        let mut status = zeroed::<SERVICE_STATUS_PROCESS>();
-        let mut bytes_needed = 0;
-        let running = QueryServiceStatusEx(
-            service,
-            SC_STATUS_PROCESS_INFO,
-            (&mut status as *mut SERVICE_STATUS_PROCESS).cast::<u8>(),
-            size_of::<SERVICE_STATUS_PROCESS>() as u32,
-            &mut bytes_needed,
-        ) != 0
-            && status.dwCurrentState == SERVICE_RUNNING;
+    unsafe fn populate_icon_data(
+        icon_data: &mut NOTIFYICONDATAW,
+        hwnd: HWND,
+        tray_icon: HICON,
+        service_running: bool,
+    ) {
+        icon_data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
+        icon_data.hWnd = hwnd;
+        icon_data.uID = TRAY_ICON_ID;
+        icon_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+        icon_data.uCallbackMessage = TRAY_CALLBACK_MESSAGE;
+        icon_data.hIcon = tray_icon;
+        copy_wide(tray_tooltip(service_running), &mut icon_data.szTip);
+    }
 
-        let _ = CloseServiceHandle(service);
-        let _ = CloseServiceHandle(manager);
-        running
+    fn tray_tooltip(service_running: bool) -> &'static str {
+        if service_running {
+            "Playit service is running"
+        } else {
+            "Playit service is stopped"
+        }
     }
 
     pub fn show_error(title: &str, message: &str) {
@@ -381,12 +568,9 @@ mod windows_tray {
     }
 
     fn copy_wide(value: &str, buffer: &mut [u16]) {
-        let encoded = value.encode_utf16();
-        for (slot, value) in buffer.iter_mut().zip(encoded) {
+        buffer.fill(0);
+        for (slot, value) in buffer.iter_mut().zip(value.encode_utf16()) {
             *slot = value;
-        }
-        if let Some(last) = buffer.last_mut() {
-            *last = 0;
         }
     }
 
