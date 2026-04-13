@@ -403,8 +403,8 @@ mod windows_tray {
         Ok(())
     }
 
-    unsafe fn refresh_tray_status(hwnd: HWND) -> Result<(), String> {
-        let Some(state) = get_state(hwnd).as_mut() else {
+    fn refresh_tray_status(hwnd: HWND) -> Result<(), String> {
+        let Some(state) = (unsafe { get_state(hwnd).as_mut() }) else {
             return Ok(());
         };
 
