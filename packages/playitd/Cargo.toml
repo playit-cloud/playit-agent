@@ -53,3 +53,6 @@ windows-sys = { version = "0.59.0", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[target."cfg(windows)".build-dependencies]
+winres = "0.1"

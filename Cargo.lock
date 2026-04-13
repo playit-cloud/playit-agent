@@ -1442,6 +1442,7 @@ dependencies = [
  "tracing-subscriber",
  "windows-service",
  "windows-sys 0.59.0",
+ "winres",
 ]
 
 [[package]]

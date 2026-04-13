@@ -75,7 +75,7 @@ mod windows_tray {
 
         let state = Box::new(AppState {
             tray_added: false,
-            tray_icon: unsafe { LoadIconW(null_mut(), IDI_APPLICATION) },
+            tray_icon: load_tray_icon(hinstance),
             service_running: query_service_running(),
         });
         let state_ptr = Box::into_raw(state);
@@ -552,6 +552,21 @@ mod windows_tray {
         } else {
             "Playit service is stopped"
         }
+    }
+
+    fn load_tray_icon(hinstance: *mut c_void) -> HICON {
+        unsafe {
+            let icon = LoadIconW(hinstance, make_int_resource(1));
+            if !icon.is_null() {
+                return icon;
+            }
+
+            LoadIconW(null_mut(), IDI_APPLICATION)
+        }
+    }
+
+    fn make_int_resource(id: u16) -> *const u16 {
+        id as usize as *const u16
     }
 
     pub fn show_error(title: &str, message: &str) {
