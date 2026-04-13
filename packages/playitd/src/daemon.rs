@@ -4,6 +4,8 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
+use crate::logging::IpcBroadcastLayer;
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use playit_agent_core::network::origin_lookup::{OriginLookup, OriginResource, OriginTarget};
@@ -17,8 +19,8 @@ use playit_api_client::api::{AccountStatus, Platform};
 use playit_ipc::ipc::{IpcError, get_default_socket_path, protocol_info};
 use playit_ipc::model::{
     AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ConnectionStats,
-    NoticeState, PendingTunnelState, ServiceError, ServiceErrorCode, ServicePhase,
-    ServiceStatus, ServiceUpdate, TunnelState,
+    NoticeState, PendingTunnelState, ServiceError, ServiceErrorCode, ServicePhase, ServiceStatus,
+    ServiceUpdate, TunnelState,
 };
 use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
@@ -27,8 +29,6 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use crate::logging::IpcBroadcastLayer;
-use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
 
 pub const DEFAULT_VARIANT_ID: &str = "308943e8-faef-4835-a2ba-270351f72aa3";
 
@@ -159,9 +159,12 @@ impl From<IpcError> for DaemonError {
 }
 
 pub async fn load_version_overrides(path: &Path) -> Result<VersionOverrideFile, String> {
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|error| format!("Failed to read version override file {}: {error}", path.display()))?;
+    let content = tokio::fs::read_to_string(path).await.map_err(|error| {
+        format!(
+            "Failed to read version override file {}: {error}",
+            path.display()
+        )
+    })?;
 
     match path
         .extension()
@@ -273,9 +276,9 @@ impl SecretSource {
         match self {
             Self::Inline { secret } => match validate_secret(secret.trim()) {
                 Ok(secret) => LoadedSecret::Ready(secret),
-                Err(error) => LoadedSecret::Invalid(format!(
-                    "Invalid secret passed via --secret: {error}"
-                )),
+                Err(error) => {
+                    LoadedSecret::Invalid(format!("Invalid secret passed via --secret: {error}"))
+                }
             },
             Self::File { path } => load_secret_from_path(path).await,
         }
@@ -338,8 +341,13 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     let log_filter =
         EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     let use_ansi = matches!(platform, Platform::Linux | Platform::Docker);
-    let _log_guard = init_tracing(log_filter, use_ansi, event_tx.clone(), options.log_path.as_deref())
-        .map_err(DaemonError::SetupError)?;
+    let _log_guard = init_tracing(
+        log_filter,
+        use_ansi,
+        event_tx.clone(),
+        options.log_path.as_deref(),
+    )
+    .map_err(DaemonError::SetupError)?;
 
     register_platform(platform);
 
@@ -369,8 +377,8 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
             secret_source.secret_provision_error(),
             secret_source.secret_reset_error(),
         )
-            .await
-            .map_err(DaemonError::Ipc)?,
+        .await
+        .map_err(DaemonError::Ipc)?,
     );
     let listener = ipc_server.bind_listener().await.map_err(DaemonError::Ipc)?;
     let state_cache = ipc_server.state_cache();
@@ -416,8 +424,8 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
                     .expect("file-backed secret mode must enable provisioning"),
                 &cancel_token,
             )
-                .await
-                .map_err(DaemonError::SecretError)?
+            .await
+            .map_err(DaemonError::SecretError)?
             {
                 Some(secret) => {
                     publish_runtime_state(
@@ -530,11 +538,7 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
             publish_runtime_state(
                 &state_cache,
                 &event_tx,
-                status_context.status(
-                    ServicePhase::Error,
-                    true,
-                    Some(service_error.clone()),
-                ),
+                status_context.status(ServicePhase::Error, true, Some(service_error.clone())),
                 AgentLifecycle::Error(service_error),
             )
             .await;
@@ -748,7 +752,7 @@ async fn load_secret_from_path(path: &Path) -> LoadedSecret {
             return LoadedSecret::Invalid(format!(
                 "Failed to read secret file {}: {error}",
                 path.display()
-            ))
+            ));
         }
     };
 
@@ -802,17 +806,28 @@ async fn wait_for_secret_provisioning(
 async fn persist_secret_file(path: &Path, secret: &str) -> Result<(), String> {
     let secret = validate_secret(secret.trim())?;
 
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|error| format!("Failed to create secret directory {}: {error}", parent.display()))?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        tokio::fs::create_dir_all(parent).await.map_err(|error| {
+            format!(
+                "Failed to create secret directory {}: {error}",
+                parent.display()
+            )
+        })?;
     }
 
     let content = if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
         toml::to_string(&SecretConfig {
             secret_key: secret.clone(),
         })
-        .map_err(|error| format!("Failed to serialize secret file {}: {error}", path.display()))?
+        .map_err(|error| {
+            format!(
+                "Failed to serialize secret file {}: {error}",
+                path.display()
+            )
+        })?
     } else {
         secret
     };
@@ -905,8 +920,12 @@ fn init_tracing(
     match log_path {
         Some(path) => {
             let parent = path.parent().unwrap_or_else(|| Path::new("."));
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("Failed to create log directory {}: {error}", parent.display()))?;
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "Failed to create log directory {}: {error}",
+                    parent.display()
+                )
+            })?;
             let file_name = path
                 .file_name()
                 .and_then(|file| file.to_str())

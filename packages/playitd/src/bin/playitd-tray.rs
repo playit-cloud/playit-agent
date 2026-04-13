@@ -16,7 +16,7 @@ mod windows_tray {
 
     use image::ImageFormat;
     use playitd::manager::{
-        ensure_installed_service_running, stop_installed_service, INSTALLED_SERVICE_LABEL,
+        INSTALLED_SERVICE_LABEL, ensure_installed_service_running, stop_installed_service,
     };
     use tray_icon::menu::{Menu, MenuEvent, MenuItem};
     use tray_icon::{
@@ -27,23 +27,24 @@ mod windows_tray {
     };
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::System::Console::{
-        AllocConsole, AttachConsole, GetStdHandle, SetConsoleOutputCP, WriteConsoleW,
-        ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE,
+        ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE,
+        SetConsoleOutputCP, WriteConsoleW,
     };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Services::{
         CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_MANAGER_CONNECT,
         SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_STATUS_PROCESS,
     };
-    use windows_sys::Win32::System::Threading::{CreateMutexW, CREATE_NEW_CONSOLE};
+    use windows_sys::Win32::System::Threading::{CREATE_NEW_CONSOLE, CreateMutexW};
     use windows_sys::Win32::UI::Shell::{
-        FOLDERID_CommonStartup, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+        FOLDERID_CommonStartup, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-        GetWindowLongPtrW, KillTimer, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
-        SetTimer, SetWindowLongPtrW, TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, MB_ICONERROR,
-        MB_OK, MSG, WM_APP, WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_TIMER, WNDCLASSW,
+        CREATESTRUCTW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+        GWLP_USERDATA, GetMessageW, GetWindowLongPtrW, KillTimer, MB_ICONERROR, MB_OK, MSG,
+        MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW, SetTimer, SetWindowLongPtrW,
+        TranslateMessage, WM_APP, WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_TIMER,
+        WNDCLASSW,
     };
 
     const INIT_TRAY_MESSAGE: u32 = WM_APP + 1;
@@ -179,6 +180,8 @@ mod windows_tray {
         stop_service: MenuItem,
         remove_tray_icon: MenuItem,
         service_running: bool,
+        menu_visible: bool,
+        tooltip_dirty: bool,
         event_queue: Arc<Mutex<VecDeque<AppEvent>>>,
     }
 
@@ -206,6 +209,8 @@ mod windows_tray {
                 stop_service,
                 remove_tray_icon,
                 service_running: query_service_running(),
+                menu_visible: false,
+                tooltip_dirty: false,
                 event_queue,
             })
         }
@@ -379,14 +384,16 @@ mod windows_tray {
     }
 
     fn process_pending_events(hwnd: HWND) {
-        let Some(state) = (unsafe { get_state(hwnd).as_mut() }) else {
-            return;
-        };
-
         loop {
-            let next_event = match state.event_queue.lock() {
-                Ok(mut queue) => queue.pop_front(),
-                Err(_) => None,
+            let next_event = {
+                let Some(state) = (unsafe { get_state(hwnd).as_mut() }) else {
+                    return;
+                };
+
+                match state.event_queue.lock() {
+                    Ok(mut queue) => queue.pop_front(),
+                    Err(_) => None,
+                }
             };
 
             let Some(event) = next_event else {
@@ -398,6 +405,7 @@ mod windows_tray {
                     button: MouseButton::Left,
                     button_state: MouseButtonState::Up,
                 } => {
+                    debug_log("tray: left click");
                     if let Err(error) = launch_status_window() {
                         show_error("Failed to open playit status", &error);
                     }
@@ -406,15 +414,30 @@ mod windows_tray {
                     button: MouseButton::Right,
                     button_state: MouseButtonState::Up,
                 } => {
+                    debug_log("tray: right click");
+
+                    if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
+                        state.menu_visible = true;
+                    }
+
+                    // `show_menu` pumps a modal menu loop on Windows, so do not
+                    // keep a mutable borrow of the app state alive across it.
+                    if let Some(tray) =
+                        unsafe { get_state(hwnd).as_ref() }.and_then(|state| state.tray.as_ref())
+                    {
+                        tray.show_menu();
+                    }
+
+                    if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
+                        state.menu_visible = false;
+                    }
+
                     if let Err(error) = refresh_tray_status(hwnd) {
                         show_error("Failed to refresh playit tray", &error);
                     }
-                    if let Some(tray) = state.tray.as_ref() {
-                        tray.show_menu();
-                    }
                 }
                 AppEvent::MenuActivated(menu_event) => {
-                    if let Err(error) = handle_menu_event(hwnd, state, menu_event) {
+                    if let Err(error) = handle_menu_event(hwnd, menu_event) {
                         show_error("Playit tray action failed", &error);
                     }
                 }
@@ -423,36 +446,57 @@ mod windows_tray {
         }
     }
 
-    fn handle_menu_event(
-        hwnd: HWND,
-        state: &mut AppState,
-        menu_event: MenuEvent,
-    ) -> Result<(), String> {
-        if menu_event.id == *state.open_status.id() {
-            debug_log("menu: open status");
-            launch_status_window()?;
-            return Ok(());
+    fn handle_menu_event(hwnd: HWND, menu_event: MenuEvent) -> Result<(), String> {
+        enum MenuAction {
+            OpenStatus,
+            StartService,
+            StopService,
+            RemoveTrayIcon,
+            Ignore,
         }
 
-        if menu_event.id == *state.start_service.id() {
-            debug_log("menu: start service");
-            start_service()?;
-            return refresh_tray_status(hwnd);
-        }
+        let action = {
+            let Some(state) = (unsafe { get_state(hwnd).as_ref() }) else {
+                return Ok(());
+            };
 
-        if menu_event.id == *state.stop_service.id() {
-            debug_log("menu: stop service");
-            stop_installed_service()
-                .map_err(|error| format!("Failed to stop playitd service: {error}"))?;
-            return refresh_tray_status(hwnd);
-        }
-
-        if menu_event.id == *state.remove_tray_icon.id() {
-            debug_log("menu: remove tray icon");
-            remove_startup_shortcut()?;
-            unsafe {
-                let _ = DestroyWindow(hwnd);
+            if menu_event.id == *state.open_status.id() {
+                MenuAction::OpenStatus
+            } else if menu_event.id == *state.start_service.id() {
+                MenuAction::StartService
+            } else if menu_event.id == *state.stop_service.id() {
+                MenuAction::StopService
+            } else if menu_event.id == *state.remove_tray_icon.id() {
+                MenuAction::RemoveTrayIcon
+            } else {
+                MenuAction::Ignore
             }
+        };
+
+        match action {
+            MenuAction::OpenStatus => {
+                debug_log("menu: open status");
+                launch_status_window()?;
+            }
+            MenuAction::StartService => {
+                debug_log("menu: start service");
+                start_service()?;
+                refresh_tray_status(hwnd)?;
+            }
+            MenuAction::StopService => {
+                debug_log("menu: stop service");
+                stop_installed_service()
+                    .map_err(|error| format!("Failed to stop playitd service: {error}"))?;
+                refresh_tray_status(hwnd)?;
+            }
+            MenuAction::RemoveTrayIcon => {
+                debug_log("menu: remove tray icon");
+                remove_startup_shortcut()?;
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+            }
+            MenuAction::Ignore => {}
         }
 
         Ok(())
@@ -467,14 +511,23 @@ mod windows_tray {
     }
 
     fn apply_service_state(state: &mut AppState, service_running: bool) -> Result<(), String> {
+        let state_changed = state.service_running != service_running;
         state.service_running = service_running;
 
         state.start_service.set_enabled(!service_running);
         state.stop_service.set_enabled(service_running);
 
-        if let Some(tray) = state.tray.as_ref() {
+        if state.menu_visible {
+            state.tooltip_dirty |= state_changed;
+            return Ok(());
+        }
+
+        if (state_changed || state.tooltip_dirty)
+            && let Some(tray) = state.tray.as_ref()
+        {
             tray.set_tooltip(Some(tray_tooltip(service_running)))
                 .map_err(|error| format!("Failed to update tray tooltip: {error}"))?;
+            state.tooltip_dirty = false;
         }
 
         Ok(())
