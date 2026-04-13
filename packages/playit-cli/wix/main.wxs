@@ -163,6 +163,14 @@
                                 Source="$(var.CargoTargetDir)\$(var.TargetTriple)\$(var.CargoProfile)\playitd.exe"
                                 KeyPath="yes"/>
                         </Component>
+                        <Component Id="binary2" Guid="*">
+                            <File
+                                Id="exe2"
+                                Name="playitd-tray.exe"
+                                DiskId="1"
+                                Source="$(var.CargoTargetDir)\$(var.TargetTriple)\$(var.CargoProfile)\playitd-tray.exe"
+                                KeyPath="yes"/>
+                        </Component>
                         <Component Id="playitdServiceComponent" Guid="*">
                             <File
                                 Id="playitdServiceExe"
@@ -209,6 +217,20 @@
                     <RegistryValue Root="HKCU" Key="Software\DevelopedMethodsLLC\playit_gg" Name="ShortcutAdded" Type="integer" Value="1" KeyPath="yes" />
                 </Component>
             </Directory>
+
+            <Directory Id="CommonStartupFolder">
+                <Component Id="TrayStartupShortcut" Guid="*">
+                    <Shortcut
+                        Id="TrayStartupShortcutLink"
+                        Name="Playit Tray"
+                        Description="Shows the Playit tray icon when the background service is running."
+                        Icon="ProductICO"
+                        Target="[APPLICATIONFOLDER]bin\playitd-tray.exe"
+                        WorkingDirectory="Bin"
+                    />
+                    <RegistryValue Root="HKLM" Key="Software\DevelopedMethodsLLC\playit_gg" Name="TrayStartupShortcut" Type="integer" Value="1" KeyPath="yes" />
+                </Component>
+            </Directory>
         </Directory>
 
         <Feature
@@ -223,12 +245,14 @@
 
             <ComponentRef Id="binary0"/>
             <ComponentRef Id="binary1"/>
+            <ComponentRef Id="binary2"/>
             <ComponentRef Id="playitdServiceComponent"/>
             <ComponentRef Id="PlayitLocalAppDataFolder"/>
             <ComponentRef Id="PlayitCommonDataFolder"/>
             <ComponentRef Id="PlayitCommonDataLogsFolder"/>
             <ComponentRef Id="ApplicationShortcut"/>
             <ComponentRef Id="ApplicationShortcutDesktop"/>
+            <ComponentRef Id="TrayStartupShortcut"/>
 
             <Feature
                 Id="Environment"
