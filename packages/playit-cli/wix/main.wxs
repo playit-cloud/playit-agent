@@ -265,6 +265,17 @@
         </Feature>
 
         <SetProperty Id="ARPINSTALLLOCATION" Value="[APPLICATIONFOLDER]" After="CostFinalize"/>
+        <Property Id="WixShellExecTarget" Value="[#exe2]" />
+        <CustomAction
+            Id="LaunchTrayApplication"
+            BinaryKey="WixCA"
+            DllEntry="WixShellExec"
+            Impersonate="yes"
+            Return="asyncNoWait" />
+
+        <InstallExecuteSequence>
+            <Custom Action="LaunchTrayApplication" After="InstallFinalize">NOT Installed AND UILevel &gt;= 5</Custom>
+        </InstallExecuteSequence>
 
         <!--
           Uncomment the following `Icon` and `Property` tags to change the product icon.
