@@ -2,20 +2,27 @@
 
 #[cfg(target_os = "windows")]
 mod windows_tray {
+    use std::collections::VecDeque;
     use std::ffi::c_void;
     use std::fs;
-    use std::mem::{size_of, zeroed};
+    use std::mem::zeroed;
     use std::os::windows::ffi::OsStringExt;
     use std::os::windows::process::CommandExt;
     use std::path::PathBuf;
     use std::process::Command;
     use std::ptr::{null, null_mut};
+    use std::sync::{Arc, Mutex};
 
+    use image::ImageFormat;
     use playitd::manager::{
         ensure_installed_service_running, stop_installed_service, INSTALLED_SERVICE_LABEL,
     };
+    use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+    use tray_icon::{
+        Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
+    };
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM,
+        CloseHandle, GetLastError, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
     };
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
@@ -25,28 +32,21 @@ mod windows_tray {
     };
     use windows_sys::Win32::System::Threading::{CreateMutexW, CREATE_NEW_CONSOLE};
     use windows_sys::Win32::UI::Shell::{
-        FOLDERID_CommonStartup, SHGetKnownFolderPath, Shell_NotifyIconW, KF_FLAG_DEFAULT, NIF_ICON,
-        NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+        FOLDERID_CommonStartup, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyMenu, DestroyWindow,
-        DispatchMessageW, GetCursorPos, GetMessageW, GetWindowLongPtrW, KillTimer, LoadIconW,
-        MessageBoxW, PostQuitMessage, RegisterClassW, SetForegroundWindow, SetTimer,
-        SetWindowLongPtrW, TrackPopupMenu, TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, HICON,
-        IDI_APPLICATION, MB_ICONERROR, MB_OK, MF_DISABLED, MF_GRAYED, MF_STRING, MSG,
-        TPM_BOTTOMALIGN, TPM_LEFTALIGN, TPM_RIGHTBUTTON, WM_APP, WM_COMMAND, WM_CREATE, WM_DESTROY,
-        WM_LBUTTONUP, WM_NCCREATE, WM_NCDESTROY, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
+        GetWindowLongPtrW, KillTimer, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassW,
+        SetTimer, SetWindowLongPtrW, TranslateMessage, CREATESTRUCTW, GWLP_USERDATA, MB_ICONERROR,
+        MB_OK, MSG, WM_APP, WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_TIMER, WNDCLASSW,
     };
 
-    const TRAY_CALLBACK_MESSAGE: u32 = WM_APP + 1;
-    const TRAY_ICON_ID: u32 = 1;
+    const INIT_TRAY_MESSAGE: u32 = WM_APP + 1;
+    const PROCESS_EVENTS_MESSAGE: u32 = WM_APP + 2;
     const POLL_TIMER_ID: usize = 1;
     const POLL_INTERVAL_MS: u32 = 2_000;
-    const MENU_OPEN_STATUS: usize = 1001;
-    const MENU_START_SERVICE: usize = 1002;
-    const MENU_STOP_SERVICE: usize = 1003;
-    const MENU_REMOVE_TRAY_ICON: usize = 1004;
     const TRAY_SHORTCUT_NAME: &str = "Playit Tray.lnk";
+    const PLAYIT_ICON_BYTES: &[u8] = include_bytes!("../../../playit-cli/wix/Product.ico");
 
     pub fn run() -> Result<(), String> {
         let _instance_guard = match SingleInstanceGuard::new("Local\\playitd-tray")? {
@@ -54,14 +54,14 @@ mod windows_tray {
             None => return Ok(()),
         };
 
-        let class_name = wide("PlayitTrayWindowClass");
-        let window_title = wide("playit tray");
-
+        let event_queue = Arc::new(Mutex::new(VecDeque::new()));
         let hinstance = unsafe { GetModuleHandleW(null()) };
         if hinstance.is_null() {
             return Err(last_error("failed to get module handle"));
         }
 
+        let class_name = wide("PlayitTrayWindowClass");
+        let window_title = wide("playit tray");
         let wnd_class = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
             hInstance: hinstance,
@@ -73,11 +73,7 @@ mod windows_tray {
             return Err(last_error("failed to register tray window class"));
         }
 
-        let state = Box::new(AppState {
-            tray_added: false,
-            tray_icon: load_tray_icon(hinstance),
-            service_running: query_service_running(),
-        });
+        let state = Box::new(AppState::new(event_queue.clone())?);
         let state_ptr = Box::into_raw(state);
 
         let hwnd = unsafe {
@@ -104,6 +100,10 @@ mod windows_tray {
             return Err(last_error("failed to create tray window"));
         }
 
+        unsafe {
+            let _ = PostMessageW(hwnd, INIT_TRAY_MESSAGE, 0, 0);
+        }
+
         let mut message = unsafe { zeroed::<MSG>() };
         loop {
             let result = unsafe { GetMessageW(&mut message, null_mut(), 0, 0) };
@@ -118,15 +118,62 @@ mod windows_tray {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
+
+            if message.message != WM_NCDESTROY {
+                process_pending_events(hwnd);
+            }
         }
 
         Ok(())
     }
 
+    #[derive(Clone, Debug)]
+    enum AppEvent {
+        TrayClick {
+            button: MouseButton,
+            button_state: MouseButtonState,
+        },
+        MenuActivated(MenuEvent),
+    }
+
     struct AppState {
-        tray_added: bool,
-        tray_icon: HICON,
+        _menu: Menu,
+        tray: Option<TrayIcon>,
+        open_status: MenuItem,
+        start_service: MenuItem,
+        stop_service: MenuItem,
+        remove_tray_icon: MenuItem,
         service_running: bool,
+        event_queue: Arc<Mutex<VecDeque<AppEvent>>>,
+    }
+
+    impl AppState {
+        fn new(event_queue: Arc<Mutex<VecDeque<AppEvent>>>) -> Result<Self, String> {
+            let open_status = MenuItem::new("Open Status", true, None);
+            let start_service = MenuItem::new("Start Service", true, None);
+            let stop_service = MenuItem::new("Stop Service", true, None);
+            let remove_tray_icon = MenuItem::new("Remove Tray Icon", true, None);
+
+            let menu = Menu::new();
+            menu.append_items(&[
+                &open_status,
+                &start_service,
+                &stop_service,
+                &remove_tray_icon,
+            ])
+            .map_err(|error| format!("Failed to build tray menu: {error}"))?;
+
+            Ok(Self {
+                _menu: menu,
+                tray: None,
+                open_status,
+                start_service,
+                stop_service,
+                remove_tray_icon,
+                service_running: query_service_running(),
+                event_queue,
+            })
+        }
     }
 
     struct SingleInstanceGuard {
@@ -179,66 +226,31 @@ mod windows_tray {
                 }
                 return 1;
             }
-            WM_CREATE => {
+            WM_CREATE => return 0,
+            INIT_TRAY_MESSAGE => {
                 if let Err(error) = initialize_tray(hwnd) {
                     show_error("Failed to initialize playit tray", &error);
                     let _ = DestroyWindow(hwnd);
                 }
                 return 0;
             }
+            PROCESS_EVENTS_MESSAGE => {
+                process_pending_events(hwnd);
+                return 0;
+            }
             WM_TIMER => {
-                if wparam == POLL_TIMER_ID {
-                    refresh_tray_status(hwnd);
-                }
-                return 0;
-            }
-            WM_COMMAND => {
-                match menu_id(wparam) {
-                    MENU_OPEN_STATUS => {
-                        if let Err(error) = launch_status_window() {
-                            show_error("Failed to open playit status", &error);
-                        }
-                    }
-                    MENU_START_SERVICE => {
-                        if let Err(error) = start_service() {
-                            show_error("Failed to start playit service", &error);
-                        }
-                        refresh_tray_status(hwnd);
-                    }
-                    MENU_STOP_SERVICE => {
-                        if let Err(error) = stop_installed_service()
-                            .map_err(|error| format!("Failed to stop playitd service: {error}"))
-                        {
-                            show_error("Failed to stop playit service", &error);
-                        }
-                        refresh_tray_status(hwnd);
-                    }
-                    MENU_REMOVE_TRAY_ICON => {
-                        if let Err(error) = remove_startup_shortcut() {
-                            show_error("Failed to remove tray startup entry", &error);
-                        } else {
-                            let _ = DestroyWindow(hwnd);
-                        }
-                    }
-                    _ => {}
-                }
-                return 0;
-            }
-            TRAY_CALLBACK_MESSAGE => {
-                match lparam as u32 {
-                    WM_LBUTTONUP => {
-                        if let Err(error) = launch_status_window() {
-                            show_error("Failed to open playit status", &error);
-                        }
-                    }
-                    WM_RBUTTONUP => show_context_menu(hwnd),
-                    _ => {}
+                if let Err(error) = refresh_tray_status(hwnd) {
+                    show_error("Failed to refresh playit tray", &error);
                 }
                 return 0;
             }
             WM_DESTROY => {
                 let _ = KillTimer(hwnd, POLL_TIMER_ID);
-                remove_tray_icon(hwnd);
+                TrayIconEvent::set_event_handler::<fn(TrayIconEvent)>(None);
+                MenuEvent::set_event_handler::<fn(MenuEvent)>(None);
+                if let Some(state) = get_state(hwnd).as_mut() {
+                    state.tray = None;
+                }
                 PostQuitMessage(0);
                 return 0;
             }
@@ -256,14 +268,23 @@ mod windows_tray {
     }
 
     unsafe fn initialize_tray(hwnd: HWND) -> Result<(), String> {
-        let state = get_state(hwnd);
-        if state.is_null() {
+        let Some(state) = get_state(hwnd).as_mut() else {
             return Err("tray state is missing".to_string());
-        }
+        };
 
-        let state = &mut *state;
-        add_tray_icon(hwnd, state.tray_icon, state.service_running)?;
-        state.tray_added = true;
+        let icon = load_tray_icon()?;
+        let tray = TrayIconBuilder::new()
+            .with_menu(Box::new(state._menu.clone()))
+            .with_tooltip(tray_tooltip(state.service_running))
+            .with_icon(icon)
+            .with_menu_on_left_click(false)
+            .with_menu_on_right_click(false)
+            .build()
+            .map_err(|error| format!("Failed to build tray icon: {error}"))?;
+
+        install_event_handlers(hwnd, state.event_queue.clone());
+        state.tray = Some(tray);
+        apply_service_state(state, state.service_running)?;
 
         let timer = SetTimer(hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, None);
         if timer == 0 {
@@ -273,153 +294,141 @@ mod windows_tray {
         Ok(())
     }
 
-    unsafe fn refresh_tray_status(hwnd: HWND) {
-        let state = get_state(hwnd);
-        if state.is_null() {
-            return;
-        }
+    fn install_event_handlers(hwnd: HWND, event_queue: Arc<Mutex<VecDeque<AppEvent>>>) {
+        let tray_queue = event_queue.clone();
+        TrayIconEvent::set_event_handler(Some(move |event| {
+            if let tray_icon::TrayIconEvent::Click {
+                button,
+                button_state,
+                ..
+            } = event
+            {
+                if let Ok(mut queue) = tray_queue.lock() {
+                    queue.push_back(AppEvent::TrayClick {
+                        button,
+                        button_state,
+                    });
+                }
 
-        let state = &mut *state;
-        let service_running = query_service_running();
-
-        if !state.tray_added {
-            if add_tray_icon(hwnd, state.tray_icon, service_running).is_ok() {
-                state.tray_added = true;
+                unsafe {
+                    let _ = PostMessageW(hwnd, PROCESS_EVENTS_MESSAGE, 0, 0);
+                }
             }
-        } else if service_running != state.service_running {
-            let _ = update_tray_icon(hwnd, state.tray_icon, service_running);
+        }));
+
+        MenuEvent::set_event_handler(Some(move |event| {
+            if let Ok(mut queue) = event_queue.lock() {
+                queue.push_back(AppEvent::MenuActivated(event));
+            }
+
+            unsafe {
+                let _ = PostMessageW(hwnd, PROCESS_EVENTS_MESSAGE, 0, 0);
+            }
+        }));
+    }
+
+    fn process_pending_events(hwnd: HWND) {
+        let Some(state) = (unsafe { get_state(hwnd).as_mut() }) else {
+            return;
+        };
+
+        loop {
+            let next_event = match state.event_queue.lock() {
+                Ok(mut queue) => queue.pop_front(),
+                Err(_) => None,
+            };
+
+            let Some(event) = next_event else {
+                break;
+            };
+
+            match event {
+                AppEvent::TrayClick {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                } => {
+                    if let Err(error) = launch_status_window() {
+                        show_error("Failed to open playit status", &error);
+                    }
+                }
+                AppEvent::TrayClick {
+                    button: MouseButton::Right,
+                    button_state: MouseButtonState::Up,
+                } => {
+                    if let Err(error) = refresh_tray_status(hwnd) {
+                        show_error("Failed to refresh playit tray", &error);
+                    }
+                    if let Some(tray) = state.tray.as_ref() {
+                        tray.show_menu();
+                    }
+                }
+                AppEvent::MenuActivated(menu_event) => {
+                    if let Err(error) = handle_menu_event(hwnd, state, menu_event) {
+                        show_error("Playit tray action failed", &error);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn handle_menu_event(
+        hwnd: HWND,
+        state: &mut AppState,
+        menu_event: MenuEvent,
+    ) -> Result<(), String> {
+        if menu_event.id == *state.open_status.id() {
+            launch_status_window()?;
+            return Ok(());
         }
 
+        if menu_event.id == *state.start_service.id() {
+            start_service()?;
+            return refresh_tray_status(hwnd);
+        }
+
+        if menu_event.id == *state.stop_service.id() {
+            stop_installed_service()
+                .map_err(|error| format!("Failed to stop playitd service: {error}"))?;
+            return refresh_tray_status(hwnd);
+        }
+
+        if menu_event.id == *state.remove_tray_icon.id() {
+            remove_startup_shortcut()?;
+            unsafe {
+                let _ = DestroyWindow(hwnd);
+            }
+        }
+
+        Ok(())
+    }
+
+    unsafe fn refresh_tray_status(hwnd: HWND) -> Result<(), String> {
+        let Some(state) = get_state(hwnd).as_mut() else {
+            return Ok(());
+        };
+
+        apply_service_state(state, query_service_running())
+    }
+
+    fn apply_service_state(state: &mut AppState, service_running: bool) -> Result<(), String> {
         state.service_running = service_running;
-    }
 
-    unsafe fn add_tray_icon(
-        hwnd: HWND,
-        tray_icon: HICON,
-        service_running: bool,
-    ) -> Result<(), String> {
-        let mut icon_data = zeroed::<NOTIFYICONDATAW>();
-        populate_icon_data(&mut icon_data, hwnd, tray_icon, service_running);
-
-        if Shell_NotifyIconW(NIM_ADD, &icon_data) == 0 {
-            return Err(last_error("failed to add tray icon"));
-        }
-
-        Ok(())
-    }
-
-    unsafe fn update_tray_icon(
-        hwnd: HWND,
-        tray_icon: HICON,
-        service_running: bool,
-    ) -> Result<(), String> {
-        let mut icon_data = zeroed::<NOTIFYICONDATAW>();
-        populate_icon_data(&mut icon_data, hwnd, tray_icon, service_running);
-
-        if Shell_NotifyIconW(NIM_MODIFY, &icon_data) == 0 {
-            return Err(last_error("failed to update tray icon"));
-        }
-
-        Ok(())
-    }
-
-    unsafe fn remove_tray_icon(hwnd: HWND) {
-        let state = get_state(hwnd);
-        if !state.is_null() {
-            let state = &mut *state;
-            if !state.tray_added {
-                return;
-            }
-            state.tray_added = false;
-        }
-
-        let mut icon_data = zeroed::<NOTIFYICONDATAW>();
-        icon_data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
-        icon_data.hWnd = hwnd;
-        icon_data.uID = TRAY_ICON_ID;
-        let _ = Shell_NotifyIconW(NIM_DELETE, &icon_data);
-    }
-
-    unsafe fn show_context_menu(hwnd: HWND) {
-        let service_running = query_service_running();
-        let menu = CreatePopupMenu();
-        if menu.is_null() {
-            show_error(
-                "Failed to show tray menu",
-                &last_error("failed to create tray menu"),
-            );
-            return;
-        }
-
-        let open_label = wide("Open Status");
-        let start_label = wide("Start Service");
-        let stop_label = wide("Stop Service");
-        let remove_label = wide("Remove Tray Icon");
-
-        let _ = AppendMenuW(menu, MF_STRING, MENU_OPEN_STATUS, open_label.as_ptr());
-        let _ = AppendMenuW(
-            menu,
-            MF_STRING | menu_enabled_flags(!service_running),
-            MENU_START_SERVICE,
-            start_label.as_ptr(),
-        );
-        let _ = AppendMenuW(
-            menu,
-            MF_STRING | menu_enabled_flags(service_running),
-            MENU_STOP_SERVICE,
-            stop_label.as_ptr(),
-        );
-        let _ = AppendMenuW(
-            menu,
-            MF_STRING,
-            MENU_REMOVE_TRAY_ICON,
-            remove_label.as_ptr(),
-        );
-
-        let mut cursor = POINT { x: 0, y: 0 };
-        if GetCursorPos(&mut cursor) == 0 {
-            let _ = DestroyMenu(menu);
-            show_error(
-                "Failed to show tray menu",
-                &last_error("failed to read cursor position"),
-            );
-            return;
-        }
-
-        let _ = SetForegroundWindow(hwnd);
-        let _ = TrackPopupMenu(
-            menu,
-            TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RIGHTBUTTON,
-            cursor.x,
-            cursor.y,
-            0,
-            hwnd,
-            null(),
-        );
-        let _ = DestroyMenu(menu);
-        let _ = DefWindowProcW(hwnd, WM_NULL, 0, 0);
-    }
-
-    unsafe fn get_state(hwnd: HWND) -> *mut AppState {
-        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState
-    }
-
-    unsafe fn take_state(hwnd: HWND) -> *mut AppState {
-        let state = get_state(hwnd);
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         state
-    }
+            .start_service
+            .set_enabled(!service_running)
+            .map_err(|error| format!("Failed to update Start Service menu item: {error}"))?;
+        state
+            .stop_service
+            .set_enabled(service_running)
+            .map_err(|error| format!("Failed to update Stop Service menu item: {error}"))?;
 
-    fn menu_id(wparam: WPARAM) -> usize {
-        wparam & 0xFFFF
-    }
-
-    fn menu_enabled_flags(enabled: bool) -> u32 {
-        if enabled {
-            0
-        } else {
-            MF_DISABLED | MF_GRAYED
+        if let Some(tray) = state.tray.as_ref() {
+            tray.set_tooltip(Some(tray_tooltip(service_running)))
+                .map_err(|error| format!("Failed to update tray tooltip: {error}"))?;
         }
+
+        Ok(())
     }
 
     fn launch_status_window() -> Result<(), String> {
@@ -520,7 +529,7 @@ mod windows_tray {
                 service,
                 SC_STATUS_PROCESS_INFO,
                 (&mut status as *mut SERVICE_STATUS_PROCESS).cast::<u8>(),
-                size_of::<SERVICE_STATUS_PROCESS>() as u32,
+                std::mem::size_of::<SERVICE_STATUS_PROCESS>() as u32,
                 &mut bytes_needed,
             ) != 0
                 && status.dwCurrentState == SERVICE_RUNNING;
@@ -531,19 +540,14 @@ mod windows_tray {
         }
     }
 
-    unsafe fn populate_icon_data(
-        icon_data: &mut NOTIFYICONDATAW,
-        hwnd: HWND,
-        tray_icon: HICON,
-        service_running: bool,
-    ) {
-        icon_data.cbSize = size_of::<NOTIFYICONDATAW>() as u32;
-        icon_data.hWnd = hwnd;
-        icon_data.uID = TRAY_ICON_ID;
-        icon_data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-        icon_data.uCallbackMessage = TRAY_CALLBACK_MESSAGE;
-        icon_data.hIcon = tray_icon;
-        copy_wide(tray_tooltip(service_running), &mut icon_data.szTip);
+    fn load_tray_icon() -> Result<Icon, String> {
+        let image = image::load_from_memory_with_format(PLAYIT_ICON_BYTES, ImageFormat::Ico)
+            .map_err(|error| format!("Failed to decode embedded Playit icon: {error}"))?
+            .into_rgba8();
+        let (width, height) = image.dimensions();
+
+        Icon::from_rgba(image.into_raw(), width, height)
+            .map_err(|error| format!("Failed to construct tray icon image: {error}"))
     }
 
     fn tray_tooltip(service_running: bool) -> &'static str {
@@ -552,21 +556,6 @@ mod windows_tray {
         } else {
             "Playit service is stopped"
         }
-    }
-
-    fn load_tray_icon(hinstance: *mut c_void) -> HICON {
-        unsafe {
-            let icon = LoadIconW(hinstance, make_int_resource(1));
-            if !icon.is_null() {
-                return icon;
-            }
-
-            LoadIconW(null_mut(), IDI_APPLICATION)
-        }
-    }
-
-    fn make_int_resource(id: u16) -> *const u16 {
-        id as usize as *const u16
     }
 
     pub fn show_error(title: &str, message: &str) {
@@ -582,19 +571,22 @@ mod windows_tray {
         }
     }
 
-    fn copy_wide(value: &str, buffer: &mut [u16]) {
-        buffer.fill(0);
-        for (slot, value) in buffer.iter_mut().zip(value.encode_utf16()) {
-            *slot = value;
-        }
-    }
-
     fn wide(value: &str) -> Vec<u16> {
         value.encode_utf16().chain(std::iter::once(0)).collect()
     }
 
     fn last_error(context: &str) -> String {
         format!("{context} (Win32 error {})", unsafe { GetLastError() })
+    }
+
+    unsafe fn get_state(hwnd: HWND) -> *mut AppState {
+        GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState
+    }
+
+    unsafe fn take_state(hwnd: HWND) -> *mut AppState {
+        let state = get_state(hwnd);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        state
     }
 }
 

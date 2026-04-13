@@ -41,6 +41,8 @@ name = "playitd-tray"
 path = "src/bin/playitd-tray.rs"
 
 [target."cfg(windows)".dependencies]
+image = { version = "0.25", default-features = false, features = ["ico"] }
+tray-icon = "0.22"
 windows-service = "0.8.0"
 windows-sys = { version = "0.59.0", features = [
     "Win32_Foundation",
@@ -53,6 +55,3 @@ windows-sys = { version = "0.59.0", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
-
-[target."cfg(windows)".build-dependencies]
-winres = "0.1"
