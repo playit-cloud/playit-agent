@@ -414,14 +414,8 @@ mod windows_tray {
     fn apply_service_state(state: &mut AppState, service_running: bool) -> Result<(), String> {
         state.service_running = service_running;
 
-        state
-            .start_service
-            .set_enabled(!service_running)
-            .map_err(|error| format!("Failed to update Start Service menu item: {error}"))?;
-        state
-            .stop_service
-            .set_enabled(service_running)
-            .map_err(|error| format!("Failed to update Stop Service menu item: {error}"))?;
+        state.start_service.set_enabled(!service_running);
+        state.stop_service.set_enabled(service_running);
 
         if let Some(tray) = state.tray.as_ref() {
             tray.set_tooltip(Some(tray_tooltip(service_running)))
