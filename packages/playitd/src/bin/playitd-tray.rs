@@ -11,6 +11,7 @@ mod windows_tray {
     use std::path::PathBuf;
     use std::process::Command;
     use std::ptr::{null, null_mut};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
     use image::ImageFormat;
@@ -22,9 +23,13 @@ mod windows_tray {
         Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
     };
     use windows_sys::Win32::Foundation::{
-        CloseHandle, GetLastError, HANDLE, HWND, LPARAM, LRESULT, WPARAM,
+        CloseHandle, GetLastError, HANDLE, HWND, INVALID_HANDLE_VALUE, LPARAM, LRESULT, WPARAM,
     };
     use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::System::Console::{
+        AllocConsole, AttachConsole, GetStdHandle, SetConsoleOutputCP, WriteConsoleW,
+        ATTACH_PARENT_PROCESS, STD_OUTPUT_HANDLE,
+    };
     use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
     use windows_sys::Win32::System::Services::{
         CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_MANAGER_CONNECT,
@@ -47,11 +52,39 @@ mod windows_tray {
     const POLL_INTERVAL_MS: u32 = 2_000;
     const TRAY_SHORTCUT_NAME: &str = "Playit Tray.lnk";
     const PLAYIT_ICON_BYTES: &[u8] = include_bytes!("../../../playit-cli/wix/Product.ico");
+    static DEBUG_CONSOLE: AtomicBool = AtomicBool::new(false);
+
+    pub fn init_debug_console_from_args() {
+        let enabled = std::env::args_os().any(|arg| arg == "--debug-console");
+        if !enabled {
+            return;
+        }
+
+        DEBUG_CONSOLE.store(true, Ordering::Relaxed);
+
+        unsafe {
+            if AttachConsole(ATTACH_PARENT_PROCESS) == 0 {
+                let _ = AllocConsole();
+            }
+            let _ = SetConsoleOutputCP(65001);
+        }
+
+        std::panic::set_hook(Box::new(|panic_info| {
+            debug_log(&format!("panic: {panic_info}"));
+        }));
+
+        debug_log("debug console enabled");
+    }
 
     pub fn run() -> Result<(), String> {
+        debug_log("starting tray process");
+
         let _instance_guard = match SingleInstanceGuard::new("Local\\playitd-tray")? {
             Some(guard) => guard,
-            None => return Ok(()),
+            None => {
+                debug_log("another tray instance is already running");
+                return Ok(());
+            }
         };
 
         let event_queue = Arc::new(Mutex::new(VecDeque::new()));
@@ -72,6 +105,7 @@ mod windows_tray {
         if unsafe { RegisterClassW(&wnd_class) } == 0 {
             return Err(last_error("failed to register tray window class"));
         }
+        debug_log("registered tray window class");
 
         let state = Box::new(AppState::new(event_queue.clone())?);
         let state_ptr = Box::into_raw(state);
@@ -99,6 +133,7 @@ mod windows_tray {
             }
             return Err(last_error("failed to create tray window"));
         }
+        debug_log("created tray window");
 
         unsafe {
             let _ = PostMessageW(hwnd, INIT_TRAY_MESSAGE, 0, 0);
@@ -278,6 +313,8 @@ mod windows_tray {
     }
 
     fn initialize_tray(hwnd: HWND) -> Result<(), String> {
+        debug_log("initializing tray icon");
+
         let Some(state) = (unsafe { get_state(hwnd).as_mut() }) else {
             return Err("tray state is missing".to_string());
         };
@@ -300,6 +337,8 @@ mod windows_tray {
         if timer == 0 {
             return Err(last_error("failed to start tray status timer"));
         }
+
+        debug_log("tray icon initialized");
 
         Ok(())
     }
@@ -390,22 +429,26 @@ mod windows_tray {
         menu_event: MenuEvent,
     ) -> Result<(), String> {
         if menu_event.id == *state.open_status.id() {
+            debug_log("menu: open status");
             launch_status_window()?;
             return Ok(());
         }
 
         if menu_event.id == *state.start_service.id() {
+            debug_log("menu: start service");
             start_service()?;
             return refresh_tray_status(hwnd);
         }
 
         if menu_event.id == *state.stop_service.id() {
+            debug_log("menu: stop service");
             stop_installed_service()
                 .map_err(|error| format!("Failed to stop playitd service: {error}"))?;
             return refresh_tray_status(hwnd);
         }
 
         if menu_event.id == *state.remove_tray_icon.id() {
+            debug_log("menu: remove tray icon");
             remove_startup_shortcut()?;
             unsafe {
                 let _ = DestroyWindow(hwnd);
@@ -449,17 +492,26 @@ mod windows_tray {
 
     fn start_service() -> Result<(), String> {
         if query_service_running() {
+            debug_log("start requested but service is already running");
             return Ok(());
         }
+
+        debug_log("starting service");
 
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|error| format!("Failed to create tray runtime: {error}"))?;
 
-        runtime
+        let result = runtime
             .block_on(ensure_installed_service_running())
-            .map_err(|error| format!("Failed waiting for playitd service startup: {error}"))
+            .map_err(|error| format!("Failed waiting for playitd service startup: {error}"));
+
+        if result.is_ok() {
+            debug_log("service started");
+        }
+
+        result
     }
 
     fn playit_cli_path() -> Result<PathBuf, String> {
@@ -565,6 +617,7 @@ mod windows_tray {
     }
 
     pub fn show_error(title: &str, message: &str) {
+        debug_log(&format!("{title}: {message}"));
         let title = wide(title);
         let message = wide(message);
         unsafe {
@@ -585,6 +638,29 @@ mod windows_tray {
         format!("{context} (Win32 error {})", unsafe { GetLastError() })
     }
 
+    fn debug_log(message: &str) {
+        if !DEBUG_CONSOLE.load(Ordering::Relaxed) {
+            return;
+        }
+
+        let handle = unsafe { GetStdHandle(STD_OUTPUT_HANDLE) };
+        if handle.is_null() || handle == INVALID_HANDLE_VALUE {
+            return;
+        }
+
+        let line = wide(&format!("{message}\r\n"));
+        let mut written = 0u32;
+        unsafe {
+            let _ = WriteConsoleW(
+                handle,
+                line.as_ptr(),
+                line.len().saturating_sub(1) as u32,
+                &mut written,
+                null(),
+            );
+        }
+    }
+
     fn get_state(hwnd: HWND) -> *mut AppState {
         unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut AppState }
     }
@@ -600,6 +676,7 @@ mod windows_tray {
 
 #[cfg(target_os = "windows")]
 fn main() {
+    windows_tray::init_debug_console_from_args();
     if let Err(error) = windows_tray::run() {
         windows_tray::show_error("Failed to start playit tray", &error);
         std::process::exit(1);
