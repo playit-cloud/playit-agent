@@ -218,21 +218,22 @@ impl Worker {
                         }
                     };
 
-                    let Some(origin_addr) = found.resolve_local(details.port_offset) else {
-                        tracing::error!(
-                            port_offset = details.port_offset,
-                            tunnel_id = details.tunnel_id,
-                            "port offset not valid for tunnel"
-                        );
-                        tcp_errors().new_client_invalid_port_offset.inc();
-                        continue;
-                    };
-
                     let setting_tcp_no_delay = self.settings.tcp_no_delay;
 
                     let event_tx = self.events_tx.clone();
                     let stats = self.stats.clone();
                     tokio::spawn(async move {
+                        let Some(origin_addr) = found.resolve_local(details.port_offset).await
+                        else {
+                            tracing::error!(
+                                port_offset = details.port_offset,
+                                tunnel_id = details.tunnel_id,
+                                "port offset not valid for tunnel"
+                            );
+                            tcp_errors().new_client_invalid_port_offset.inc();
+                            return;
+                        };
+
                         /* connect to tunnel server */
 
                         let conn_res = tokio::time::timeout(
