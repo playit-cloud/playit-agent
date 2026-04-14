@@ -16,16 +16,17 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_NCDESTROY, WM_TIMER, WNDCLASSW,
 };
 
-use super::actions::{
-    background_action_error_title, launch_playit, launch_status_window, query_service_running,
-    remove_startup_shortcut,
+use super::backend::{PROCESS_BACKEND_RESPONSES_MESSAGE, TrayBackend};
+use super::backend_actions::{
+    launch_playit, launch_status_window, query_service_running_sync, remove_startup_shortcut,
+    response_error_title,
 };
-use super::runtime::TrayRuntime;
-use super::state::{AppEvent, AppState, BackgroundAction};
+use super::protocol::{BackendRequest, BackendResponse};
+use super::state::{AppState, UiEvent};
 use super::util::{SingleInstanceGuard, debug_log, last_error, show_error, wide};
 
 const INIT_TRAY_MESSAGE: u32 = WM_APP + 1;
-const PROCESS_EVENTS_MESSAGE: u32 = WM_APP + 2;
+const PROCESS_UI_EVENTS_MESSAGE: u32 = WM_APP + 2;
 const POLL_TIMER_ID: usize = 1;
 const POLL_INTERVAL_MS: u32 = 2_000;
 const PLAYIT_ICON_BYTES: &[u8] = include_bytes!("../../../playit-cli/wix/Product.ico");
@@ -41,7 +42,9 @@ pub(super) fn run() -> Result<(), String> {
         }
     };
 
-    let event_queue = Arc::new(Mutex::new(VecDeque::new()));
+    let ui_event_queue = Arc::new(Mutex::new(VecDeque::new()));
+    let backend = TrayBackend::new()?;
+    let response_rx = backend.response_rx();
     let hinstance = unsafe { GetModuleHandleW(null()) };
     if hinstance.is_null() {
         return Err(last_error("failed to get module handle"));
@@ -61,11 +64,11 @@ pub(super) fn run() -> Result<(), String> {
     }
     debug_log("registered tray window class");
 
-    let runtime = TrayRuntime::new(event_queue.clone())?;
     let state = Box::new(AppState::new(
-        event_queue.clone(),
-        runtime,
-        query_service_running(),
+        ui_event_queue.clone(),
+        backend,
+        response_rx,
+        query_service_running_sync(),
     )?);
     let state_ptr = Box::into_raw(state);
 
@@ -95,7 +98,7 @@ pub(super) fn run() -> Result<(), String> {
     debug_log("created tray window");
 
     unsafe {
-        (*state_ptr).runtime.set_hwnd(hwnd);
+        (*state_ptr).backend.set_hwnd(hwnd);
         let _ = PostMessageW(hwnd, INIT_TRAY_MESSAGE, 0, 0);
     }
 
@@ -112,10 +115,6 @@ pub(super) fn run() -> Result<(), String> {
         unsafe {
             TranslateMessage(&message);
             DispatchMessageW(&message);
-        }
-
-        if message.message != WM_NCDESTROY {
-            process_pending_events(hwnd);
         }
     }
 
@@ -149,12 +148,16 @@ unsafe extern "system" fn window_proc(
             }
             return 0;
         }
-        PROCESS_EVENTS_MESSAGE => {
-            process_pending_events(hwnd);
+        PROCESS_UI_EVENTS_MESSAGE => {
+            process_ui_events(hwnd);
+            return 0;
+        }
+        PROCESS_BACKEND_RESPONSES_MESSAGE => {
+            process_backend_responses(hwnd);
             return 0;
         }
         WM_TIMER => {
-            if let Err(error) = dispatch_background_action(hwnd, BackgroundAction::RefreshStatus) {
+            if let Err(error) = dispatch_request(hwnd, BackendRequest::RefreshStatus) {
                 show_error("Failed to refresh playit tray", &error);
             }
             return 0;
@@ -167,6 +170,7 @@ unsafe extern "system" fn window_proc(
             MenuEvent::set_event_handler::<fn(MenuEvent)>(None);
             if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
                 state.tray = None;
+                let _ = state.backend.try_send_request(BackendRequest::Shutdown);
             }
             unsafe {
                 PostQuitMessage(0);
@@ -205,10 +209,10 @@ fn initialize_tray(hwnd: HWND) -> Result<(), String> {
         .build()
         .map_err(|error| format!("Failed to build tray icon: {error}"))?;
 
-    install_event_handlers(hwnd, state.event_queue.clone());
+    install_event_handlers(hwnd, state.ui_event_queue.clone());
     state.tray = Some(tray);
     apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
-    dispatch_background_action(hwnd, BackgroundAction::RefreshStatus)?;
+    dispatch_request(hwnd, BackendRequest::RefreshStatus)?;
 
     let timer = unsafe { SetTimer(hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, None) };
     if timer == 0 {
@@ -220,9 +224,9 @@ fn initialize_tray(hwnd: HWND) -> Result<(), String> {
     Ok(())
 }
 
-fn install_event_handlers(hwnd: HWND, event_queue: Arc<Mutex<VecDeque<AppEvent>>>) {
+fn install_event_handlers(hwnd: HWND, ui_event_queue: Arc<Mutex<VecDeque<UiEvent>>>) {
     let hwnd_bits = hwnd as usize;
-    let tray_queue = event_queue.clone();
+    let tray_queue = ui_event_queue.clone();
     TrayIconEvent::set_event_handler(Some(move |event| {
         if let tray_icon::TrayIconEvent::Click {
             button,
@@ -231,38 +235,38 @@ fn install_event_handlers(hwnd: HWND, event_queue: Arc<Mutex<VecDeque<AppEvent>>
         } = event
         {
             if let Ok(mut queue) = tray_queue.lock() {
-                queue.push_back(AppEvent::TrayClick {
+                queue.push_back(UiEvent::TrayClick {
                     button,
                     button_state,
                 });
             }
 
             unsafe {
-                let _ = PostMessageW(hwnd_bits as HWND, PROCESS_EVENTS_MESSAGE, 0, 0);
+                let _ = PostMessageW(hwnd_bits as HWND, PROCESS_UI_EVENTS_MESSAGE, 0, 0);
             }
         }
     }));
 
     let hwnd_bits = hwnd as usize;
     MenuEvent::set_event_handler(Some(move |event| {
-        if let Ok(mut queue) = event_queue.lock() {
-            queue.push_back(AppEvent::MenuActivated(event));
+        if let Ok(mut queue) = ui_event_queue.lock() {
+            queue.push_back(UiEvent::MenuActivated(event));
         }
 
         unsafe {
-            let _ = PostMessageW(hwnd_bits as HWND, PROCESS_EVENTS_MESSAGE, 0, 0);
+            let _ = PostMessageW(hwnd_bits as HWND, PROCESS_UI_EVENTS_MESSAGE, 0, 0);
         }
     }));
 }
 
-fn process_pending_events(hwnd: HWND) {
+fn process_ui_events(hwnd: HWND) {
     loop {
         let next_event = {
             let Some(state) = (unsafe { get_state(hwnd).as_mut() }) else {
                 return;
             };
 
-            match state.event_queue.lock() {
+            match state.ui_event_queue.lock() {
                 Ok(mut queue) => queue.pop_front(),
                 Err(_) => None,
             }
@@ -273,7 +277,7 @@ fn process_pending_events(hwnd: HWND) {
         };
 
         match event {
-            AppEvent::TrayClick {
+            UiEvent::TrayClick {
                 button: MouseButton::Left,
                 button_state: MouseButtonState::Up,
             } => {
@@ -282,7 +286,7 @@ fn process_pending_events(hwnd: HWND) {
                     show_error("Failed to open playit", &error);
                 }
             }
-            AppEvent::TrayClick {
+            UiEvent::TrayClick {
                 button: MouseButton::Right,
                 button_state: MouseButtonState::Up,
             } => {
@@ -302,34 +306,68 @@ fn process_pending_events(hwnd: HWND) {
                     state.menu_visible = false;
                 }
 
-                if let Err(error) =
-                    dispatch_background_action(hwnd, BackgroundAction::RefreshStatus)
-                {
+                if let Err(error) = dispatch_request(hwnd, BackendRequest::RefreshStatus) {
                     show_error("Failed to refresh playit tray", &error);
                 }
             }
-            AppEvent::MenuActivated(menu_event) => {
+            UiEvent::MenuActivated(menu_event) => {
                 if let Err(error) = handle_menu_event(hwnd, menu_event) {
                     show_error("Playit tray action failed", &error);
                 }
             }
-            AppEvent::BackgroundActionFinished { action, result } => {
+            UiEvent::TrayClick { .. } => {}
+        }
+    }
+}
+
+fn process_backend_responses(hwnd: HWND) {
+    loop {
+        let next_response = {
+            let Some(state) = (unsafe { get_state(hwnd).as_ref() }) else {
+                return;
+            };
+
+            match state.response_rx.try_recv() {
+                Ok(response) => Some(response),
+                Err(_) => None,
+            }
+        };
+
+        let Some(response) = next_response else {
+            break;
+        };
+
+        match response {
+            Some(BackendResponse::RequestCompleted {
+                request,
+                snapshot,
+                error,
+            }) => {
                 if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
                     state.background_busy = false;
-                    if let Err(error) = apply_service_state(
+                    if let Err(apply_error) = apply_service_state(
                         state,
-                        result.snapshot.service_running,
-                        result.snapshot.reset_agent_enabled,
+                        snapshot.service_running,
+                        snapshot.reset_agent_enabled,
                     ) {
-                        show_error("Failed to refresh playit tray", &error);
+                        show_error("Failed to refresh playit tray", &apply_error);
+                    }
+
+                    if state.refresh_after_current {
+                        state.refresh_after_current = false;
+                        if let Err(dispatch_error) =
+                            dispatch_request(hwnd, BackendRequest::RefreshStatus)
+                        {
+                            show_error("Failed to refresh playit tray", &dispatch_error);
+                        }
                     }
                 }
 
-                if let Some(error) = result.error {
-                    show_error(background_action_error_title(&action), &error);
+                if let Some(error) = error {
+                    show_error(response_error_title(request), &error);
                 }
             }
-            AppEvent::TrayClick { .. } => {}
+            None => break,
         }
     }
 }
@@ -371,15 +409,15 @@ fn handle_menu_event(hwnd: HWND, menu_event: MenuEvent) -> Result<(), String> {
         }
         MenuAction::StartService => {
             debug_log("menu: start service");
-            dispatch_background_action(hwnd, BackgroundAction::StartService)?;
+            dispatch_request(hwnd, BackendRequest::StartService)?;
         }
         MenuAction::StopService => {
             debug_log("menu: stop service");
-            dispatch_background_action(hwnd, BackgroundAction::StopService)?;
+            dispatch_request(hwnd, BackendRequest::StopService)?;
         }
         MenuAction::ResetAgent => {
             debug_log("menu: reset agent");
-            dispatch_background_action(hwnd, BackgroundAction::ResetAgent)?;
+            dispatch_request(hwnd, BackendRequest::ResetAgent)?;
         }
         MenuAction::RemoveTrayIcon => {
             debug_log("menu: remove tray icon");
@@ -431,25 +469,38 @@ fn apply_service_state(
     Ok(())
 }
 
-fn dispatch_background_action(hwnd: HWND, action: BackgroundAction) -> Result<(), String> {
+fn dispatch_request(hwnd: HWND, request: BackendRequest) -> Result<(), String> {
     let Some(state) = (unsafe { get_state(hwnd).as_mut() }) else {
         return Ok(());
     };
 
+    let is_refresh = matches!(request, BackendRequest::RefreshStatus);
     if state.background_busy {
+        if is_refresh {
+            state.refresh_after_current = true;
+        }
         return Ok(());
     }
 
     state.background_busy = true;
     apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
 
-    if let Err(error) = state.runtime.dispatch_background_action(action) {
-        state.background_busy = false;
-        apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
-        return Err(error);
+    match state.backend.try_send_request(request) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            state.background_busy = false;
+            if is_refresh {
+                state.refresh_after_current = true;
+            }
+            apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
+            Ok(())
+        }
+        Err(error) => {
+            state.background_busy = false;
+            apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
+            Err(error)
+        }
     }
-
-    Ok(())
 }
 
 fn load_tray_icon() -> Result<Icon, String> {

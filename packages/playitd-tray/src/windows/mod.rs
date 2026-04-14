@@ -1,6 +1,7 @@
-mod actions;
-mod app;
-mod runtime;
+mod backend;
+mod backend_actions;
+mod frontend;
+mod protocol;
 mod state;
 mod util;
 
@@ -9,7 +10,7 @@ pub(crate) fn init_debug_console_from_args() {
 }
 
 pub(crate) fn run() -> Result<(), String> {
-    app::run()
+    frontend::run()
 }
 
 pub(crate) fn show_error(title: &str, message: &str) {

@@ -1,42 +1,20 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use kanal::Receiver;
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon};
 
-use super::runtime::TrayRuntime;
+use super::backend::TrayBackend;
+use super::protocol::BackendResponse;
 
 #[derive(Clone, Debug)]
-pub(super) enum AppEvent {
+pub(super) enum UiEvent {
     TrayClick {
         button: MouseButton,
         button_state: MouseButtonState,
     },
     MenuActivated(MenuEvent),
-    BackgroundActionFinished {
-        action: BackgroundAction,
-        result: BackgroundActionResult,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub(super) enum BackgroundAction {
-    RefreshStatus,
-    StartService,
-    StopService,
-    ResetAgent,
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct BackgroundActionResult {
-    pub(super) snapshot: ServiceStateSnapshot,
-    pub(super) error: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ServiceStateSnapshot {
-    pub(super) service_running: bool,
-    pub(super) reset_agent_enabled: bool,
 }
 
 pub(super) struct AppState {
@@ -52,14 +30,17 @@ pub(super) struct AppState {
     pub(super) background_busy: bool,
     pub(super) menu_visible: bool,
     pub(super) tooltip_dirty: bool,
-    pub(super) runtime: TrayRuntime,
-    pub(super) event_queue: Arc<Mutex<VecDeque<AppEvent>>>,
+    pub(super) refresh_after_current: bool,
+    pub(super) backend: TrayBackend,
+    pub(super) response_rx: Receiver<BackendResponse>,
+    pub(super) ui_event_queue: Arc<Mutex<VecDeque<UiEvent>>>,
 }
 
 impl AppState {
     pub(super) fn new(
-        event_queue: Arc<Mutex<VecDeque<AppEvent>>>,
-        runtime: TrayRuntime,
+        ui_event_queue: Arc<Mutex<VecDeque<UiEvent>>>,
+        backend: TrayBackend,
+        response_rx: Receiver<BackendResponse>,
         service_running: bool,
     ) -> Result<Self, String> {
         let open_status = MenuItem::new("Open Status", true, None);
@@ -91,8 +72,10 @@ impl AppState {
             background_busy: false,
             menu_visible: false,
             tooltip_dirty: false,
-            runtime,
-            event_queue,
+            refresh_after_current: false,
+            backend,
+            response_rx,
+            ui_event_queue,
         })
     }
 }

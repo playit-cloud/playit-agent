@@ -23,10 +23,35 @@ use windows_sys::Win32::UI::Shell::{
     FOLDERID_CommonStartup, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
 };
 
-use super::state::{BackgroundAction, BackgroundActionResult, ServiceStateSnapshot};
+use super::protocol::{BackendRequest, BackendRequestKind, BackendResponse, ServiceStateSnapshot};
 use super::util::{debug_log, wide};
 
 const TRAY_SHORTCUT_NAME: &str = "Playit Tray.lnk";
+
+pub(super) async fn handle_request(request: BackendRequest) -> Option<BackendResponse> {
+    let (request_kind, error) = match request {
+        BackendRequest::RefreshStatus => (BackendRequestKind::RefreshStatus, None),
+        BackendRequest::StartService => (
+            BackendRequestKind::StartService,
+            start_service_async().await.err(),
+        ),
+        BackendRequest::StopService => (
+            BackendRequestKind::StopService,
+            stop_service_async().await.err(),
+        ),
+        BackendRequest::ResetAgent => (
+            BackendRequestKind::ResetAgent,
+            reset_agent_async().await.err(),
+        ),
+        BackendRequest::Shutdown => return None,
+    };
+
+    Some(BackendResponse::RequestCompleted {
+        request: request_kind,
+        snapshot: query_service_state_snapshot_async().await,
+        error,
+    })
+}
 
 pub(super) fn launch_playit() -> Result<(), String> {
     let cli_path = playit_cli_path()?;
@@ -47,7 +72,16 @@ pub(super) fn launch_status_window() -> Result<(), String> {
     Ok(())
 }
 
-pub(super) async fn start_service_async() -> Result<(), String> {
+pub(super) fn response_error_title(request: BackendRequestKind) -> &'static str {
+    match request {
+        BackendRequestKind::RefreshStatus => "Failed to refresh playit tray",
+        BackendRequestKind::StartService => "Failed to start playitd service",
+        BackendRequestKind::StopService => "Failed to stop playitd service",
+        BackendRequestKind::ResetAgent => "Failed to reset playit agent",
+    }
+}
+
+async fn start_service_async() -> Result<(), String> {
     if query_service_running_async().await {
         debug_log("start requested but service is already running");
         return Ok(());
@@ -66,7 +100,7 @@ pub(super) async fn start_service_async() -> Result<(), String> {
     result
 }
 
-pub(super) async fn stop_service_async() -> Result<(), String> {
+async fn stop_service_async() -> Result<(), String> {
     if !query_service_running_async().await {
         debug_log("stop requested but service is already stopped");
         return Ok(());
@@ -109,31 +143,6 @@ pub(super) async fn stop_service_async() -> Result<(), String> {
     } else {
         debug_log("service stopped");
         Ok(())
-    }
-}
-
-pub(super) async fn run_background_action_async(
-    action: BackgroundAction,
-) -> BackgroundActionResult {
-    let error = match action {
-        BackgroundAction::RefreshStatus => None,
-        BackgroundAction::StartService => start_service_async().await.err(),
-        BackgroundAction::StopService => stop_service_async().await.err(),
-        BackgroundAction::ResetAgent => reset_agent_async().await.err(),
-    };
-
-    BackgroundActionResult {
-        snapshot: query_service_state_snapshot_async().await,
-        error,
-    }
-}
-
-pub(super) fn background_action_error_title(action: &BackgroundAction) -> &'static str {
-    match action {
-        BackgroundAction::RefreshStatus => "Failed to refresh playit tray",
-        BackgroundAction::StartService => "Failed to start playitd service",
-        BackgroundAction::StopService => "Failed to stop playitd service",
-        BackgroundAction::ResetAgent => "Failed to reset playit agent",
     }
 }
 
@@ -217,7 +226,7 @@ pub(super) fn remove_startup_shortcut() -> Result<(), String> {
     })
 }
 
-pub(super) fn query_service_running() -> bool {
+pub(super) fn query_service_running_sync() -> bool {
     unsafe {
         let manager = OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT);
         if manager.is_null() {
@@ -249,7 +258,7 @@ pub(super) fn query_service_running() -> bool {
 }
 
 async fn query_service_running_async() -> bool {
-    match task::spawn_blocking(query_service_running).await {
+    match task::spawn_blocking(query_service_running_sync).await {
         Ok(service_running) => service_running,
         Err(error) => {
             debug_log(&format!("failed to query playitd service state: {error}"));
