@@ -11,9 +11,9 @@ use playit_agent_proto::{
 use crate::utils::now_milli;
 
 use super::{
+    AuthResource, PacketIO,
     errors::{ControlError, SetupError},
     established_control::{EstablishedControl, MtuData},
-    AuthResource, PacketIO,
 };
 
 #[derive(Debug)]

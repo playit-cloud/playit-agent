@@ -9,7 +9,7 @@ use playit_agent_proto::{
 
 use crate::utils::now_milli;
 
-use super::{connected_control::ConnectedControl, errors::SetupError, PacketIO};
+use super::{PacketIO, connected_control::ConnectedControl, errors::SetupError};
 
 pub struct AddressSelector<IO: PacketIO> {
     options: Vec<SocketAddr>,

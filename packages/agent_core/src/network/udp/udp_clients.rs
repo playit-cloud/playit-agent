@@ -91,7 +91,12 @@ fn unpack_slot(id: u64) -> usize {
 }
 
 impl UdpClients {
-    pub fn new(settings: UdpSettings, lookup: Arc<OriginLookup>, packets: Packets, stats: AgentStats) -> Self {
+    pub fn new(
+        settings: UdpSettings,
+        lookup: Arc<OriginLookup>,
+        packets: Packets,
+        stats: AgentStats,
+    ) -> Self {
         let (origin_tx, origin_rx) = channel(2048);
 
         UdpClients {
@@ -364,8 +369,10 @@ impl UdpClients {
             udp_errors().origin_send_io_error.inc();
         }
 
-        self.virtual_client_lookup
-            .insert(key, usize::try_from(slot).expect("udp client slot overflow"));
+        self.virtual_client_lookup.insert(
+            key,
+            usize::try_from(slot).expect("udp client slot overflow"),
+        );
         entry.insert(client);
 
         // Update active UDP count for new client

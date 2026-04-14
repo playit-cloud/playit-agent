@@ -16,7 +16,11 @@ impl TcpClient {
         Self::create_with_stats(tunn, origin, None).await
     }
 
-    pub async fn create_with_stats(tunn: TcpStream, origin: TcpStream, stats: Option<AgentStats>) -> Self {
+    pub async fn create_with_stats(
+        tunn: TcpStream,
+        origin: TcpStream,
+        stats: Option<AgentStats>,
+    ) -> Self {
         let (tunn_read, tunn_write) = tunn.into_split();
         let (origin_read, origin_write) = origin.into_split();
 
