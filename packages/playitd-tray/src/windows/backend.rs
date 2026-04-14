@@ -22,7 +22,7 @@ pub(super) struct TrayBackend {
 
 impl TrayBackend {
     pub(super) fn new() -> Result<Self, String> {
-        let (request_tx, request_rx) = kanal::bounded_async::<BackendRequest>(1);
+        let (request_tx, request_rx) = kanal::bounded_async::<BackendRequest>(8);
         let (response_tx, response_rx) = kanal::bounded_async::<BackendResponse>(4);
         let hwnd_bits = Arc::new(AtomicUsize::new(0));
         let backend_hwnd_bits = hwnd_bits.clone();

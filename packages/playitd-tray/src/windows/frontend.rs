@@ -355,7 +355,9 @@ fn process_backend_responses(hwnd: HWND) {
                 error,
             }) => {
                 if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
-                    state.background_busy = false;
+                    if matches!(request, super::protocol::BackendRequestKind::RefreshStatus) {
+                        state.refresh_inflight = false;
+                    }
                     if let Err(apply_error) = apply_service_state(
                         state,
                         snapshot.service_running,
@@ -364,7 +366,9 @@ fn process_backend_responses(hwnd: HWND) {
                         show_error("Failed to refresh playit tray", &apply_error);
                     }
 
-                    if state.refresh_after_current {
+                    if matches!(request, super::protocol::BackendRequestKind::RefreshStatus)
+                        && state.refresh_after_current
+                    {
                         state.refresh_after_current = false;
                         if let Err(dispatch_error) =
                             dispatch_request(hwnd, BackendRequest::RefreshStatus)
@@ -452,17 +456,10 @@ fn apply_service_state(
     state.service_running = service_running;
     state.reset_agent_enabled = reset_agent_enabled;
 
-    let controls_enabled = !state.background_busy;
-    state
-        .start_service
-        .set_enabled(!service_running && controls_enabled);
-    state
-        .stop_service
-        .set_enabled(service_running && controls_enabled);
-    state
-        .reset_agent
-        .set_enabled(reset_agent_enabled && controls_enabled);
-    state.remove_tray_icon.set_enabled(!state.background_busy);
+    state.start_service.set_enabled(!service_running);
+    state.stop_service.set_enabled(service_running);
+    state.reset_agent.set_enabled(reset_agent_enabled);
+    state.remove_tray_icon.set_enabled(true);
 
     if state.menu_visible {
         state.tooltip_dirty |= state_changed;
@@ -487,37 +484,36 @@ fn dispatch_request(hwnd: HWND, request: BackendRequest) -> Result<(), String> {
 
     let is_refresh = matches!(request, BackendRequest::RefreshStatus);
     debug_log(&format!(
-        "frontend: dispatch_request {request:?} busy={} refresh_after_current={}",
-        state.background_busy, state.refresh_after_current
+        "frontend: dispatch_request {request:?} refresh_inflight={} refresh_after_current={}",
+        state.refresh_inflight, state.refresh_after_current
     ));
-    if state.background_busy {
-        if is_refresh {
-            debug_log("frontend: coalescing refresh request because backend is busy");
-            state.refresh_after_current = true;
-        } else {
-            debug_log(&format!(
-                "frontend: dropping user action {request:?} because backend is busy"
-            ));
-        }
+
+    if is_refresh && state.refresh_inflight {
+        debug_log("frontend: coalescing refresh request because another refresh is in flight");
+        state.refresh_after_current = true;
         return Ok(());
     }
 
-    state.background_busy = true;
-    apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
-
     match state.backend.try_send_request(request) {
-        Ok(true) => Ok(()),
-        Ok(false) => {
-            state.background_busy = false;
+        Ok(true) => {
             if is_refresh {
-                state.refresh_after_current = true;
+                state.refresh_inflight = true;
             }
-            apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
             Ok(())
         }
+        Ok(false) => {
+            if is_refresh {
+                debug_log("frontend: backend queue full for refresh, scheduling deferred refresh");
+                state.refresh_after_current = true;
+                return Ok(());
+            }
+
+            Err("playit tray backend queue is full".to_string())
+        }
         Err(error) => {
-            state.background_busy = false;
-            apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
+            if is_refresh {
+                state.refresh_inflight = false;
+            }
             Err(error)
         }
     }
