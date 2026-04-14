@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
@@ -626,7 +627,8 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     )
     .await;
 
-    let agent_handle = tokio::spawn(runner.run());
+    let agent_keep_running = runner.keep_running();
+    let mut agent_handle = tokio::spawn(runner.run());
     let stats_handle = {
         let event_tx = event_tx.clone();
         let token = cancel_token.clone();
@@ -651,10 +653,11 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => tracing::info!("Received Ctrl+C, shutting down"),
         _ = cancel_token.cancelled() => tracing::info!("Shutdown requested via IPC"),
-        _ = agent_handle => tracing::info!("Agent task completed"),
+        _ = &mut agent_handle => tracing::info!("Agent task completed"),
     }
 
     cancel_token.cancel();
+    agent_keep_running.store(false, Ordering::SeqCst);
     publish_runtime_state(
         &state_cache,
         &event_tx,
@@ -664,6 +667,7 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     .await;
 
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        let _ = (&mut agent_handle).await;
         let _ = ipc_handle.await;
         let _ = stats_handle.await;
         let _ = state_handle.await;
