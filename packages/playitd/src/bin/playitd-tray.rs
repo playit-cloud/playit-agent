@@ -13,6 +13,7 @@ mod windows_tray {
     use std::ptr::{null, null_mut};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::thread;
 
     use image::ImageFormat;
     use playit_ipc::ipc::IpcClient;
@@ -172,6 +173,30 @@ mod windows_tray {
             button_state: MouseButtonState,
         },
         MenuActivated(MenuEvent),
+        BackgroundActionFinished {
+            action: BackgroundAction,
+            result: BackgroundActionResult,
+        },
+    }
+
+    #[derive(Clone, Debug)]
+    enum BackgroundAction {
+        RefreshStatus,
+        StartService,
+        StopService,
+        ResetAgent,
+    }
+
+    #[derive(Clone, Debug)]
+    struct BackgroundActionResult {
+        snapshot: ServiceStateSnapshot,
+        error: Option<String>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    struct ServiceStateSnapshot {
+        service_running: bool,
+        reset_agent_enabled: bool,
     }
 
     struct AppState {
@@ -184,6 +209,7 @@ mod windows_tray {
         remove_tray_icon: MenuItem,
         service_running: bool,
         reset_agent_enabled: bool,
+        background_busy: bool,
         menu_visible: bool,
         tooltip_dirty: bool,
         event_queue: Arc<Mutex<VecDeque<AppEvent>>>,
@@ -217,6 +243,7 @@ mod windows_tray {
                 remove_tray_icon,
                 service_running: query_service_running(),
                 reset_agent_enabled: false,
+                background_busy: false,
                 menu_visible: false,
                 tooltip_dirty: false,
                 event_queue,
@@ -291,7 +318,7 @@ mod windows_tray {
                 return 0;
             }
             WM_TIMER => {
-                if let Err(error) = refresh_tray_status(hwnd) {
+                if let Err(error) = start_background_action(hwnd, BackgroundAction::RefreshStatus) {
                     show_error("Failed to refresh playit tray", &error);
                 }
                 return 0;
@@ -344,11 +371,8 @@ mod windows_tray {
 
         install_event_handlers(hwnd, state.event_queue.clone());
         state.tray = Some(tray);
-        apply_service_state(
-            state,
-            state.service_running,
-            query_reset_agent_enabled(state.service_running),
-        )?;
+        apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
+        start_background_action(hwnd, BackgroundAction::RefreshStatus)?;
 
         let timer = unsafe { SetTimer(hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, None) };
         if timer == 0 {
@@ -444,13 +468,31 @@ mod windows_tray {
                         state.menu_visible = false;
                     }
 
-                    if let Err(error) = refresh_tray_status(hwnd) {
+                    if let Err(error) =
+                        start_background_action(hwnd, BackgroundAction::RefreshStatus)
+                    {
                         show_error("Failed to refresh playit tray", &error);
                     }
                 }
                 AppEvent::MenuActivated(menu_event) => {
                     if let Err(error) = handle_menu_event(hwnd, menu_event) {
                         show_error("Playit tray action failed", &error);
+                    }
+                }
+                AppEvent::BackgroundActionFinished { action, result } => {
+                    if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
+                        state.background_busy = false;
+                        if let Err(error) = apply_service_state(
+                            state,
+                            result.snapshot.service_running,
+                            result.snapshot.reset_agent_enabled,
+                        ) {
+                            show_error("Failed to refresh playit tray", &error);
+                        }
+                    }
+
+                    if let Some(error) = result.error {
+                        show_error(background_action_error_title(&action), &error);
                     }
                 }
                 _ => {}
@@ -495,19 +537,15 @@ mod windows_tray {
             }
             MenuAction::StartService => {
                 debug_log("menu: start service");
-                start_service()?;
-                refresh_tray_status(hwnd)?;
+                start_background_action(hwnd, BackgroundAction::StartService)?;
             }
             MenuAction::StopService => {
                 debug_log("menu: stop service");
-                stop_installed_service()
-                    .map_err(|error| format!("Failed to stop playitd service: {error}"))?;
-                refresh_tray_status(hwnd)?;
+                start_background_action(hwnd, BackgroundAction::StopService)?;
             }
             MenuAction::ResetAgent => {
                 debug_log("menu: reset agent");
-                reset_agent()?;
-                refresh_tray_status(hwnd)?;
+                start_background_action(hwnd, BackgroundAction::ResetAgent)?;
             }
             MenuAction::RemoveTrayIcon => {
                 debug_log("menu: remove tray icon");
@@ -522,16 +560,6 @@ mod windows_tray {
         Ok(())
     }
 
-    fn refresh_tray_status(hwnd: HWND) -> Result<(), String> {
-        let Some(state) = (unsafe { get_state(hwnd).as_mut() }) else {
-            return Ok(());
-        };
-
-        let service_running = query_service_running();
-        let reset_agent_enabled = query_reset_agent_enabled(service_running);
-        apply_service_state(state, service_running, reset_agent_enabled)
-    }
-
     fn apply_service_state(
         state: &mut AppState,
         service_running: bool,
@@ -541,9 +569,17 @@ mod windows_tray {
         state.service_running = service_running;
         state.reset_agent_enabled = reset_agent_enabled;
 
-        state.start_service.set_enabled(!service_running);
-        state.stop_service.set_enabled(service_running);
-        state.reset_agent.set_enabled(reset_agent_enabled);
+        let controls_enabled = !state.background_busy;
+        state
+            .start_service
+            .set_enabled(!service_running && controls_enabled);
+        state
+            .stop_service
+            .set_enabled(service_running && controls_enabled);
+        state
+            .reset_agent
+            .set_enabled(reset_agent_enabled && controls_enabled);
+        state.remove_tray_icon.set_enabled(!state.background_busy);
 
         if state.menu_visible {
             state.tooltip_dirty |= state_changed;
@@ -603,6 +639,60 @@ mod windows_tray {
         result
     }
 
+    fn start_background_action(hwnd: HWND, action: BackgroundAction) -> Result<(), String> {
+        let Some(state) = (unsafe { get_state(hwnd).as_mut() }) else {
+            return Ok(());
+        };
+
+        if state.background_busy {
+            return Ok(());
+        }
+
+        state.background_busy = true;
+        apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
+
+        let event_queue = state.event_queue.clone();
+        let hwnd_bits = hwnd as usize;
+        thread::spawn(move || {
+            let result = run_background_action(&action);
+
+            if let Ok(mut queue) = event_queue.lock() {
+                queue.push_back(AppEvent::BackgroundActionFinished { action, result });
+            }
+
+            unsafe {
+                let _ = PostMessageW(hwnd_bits as HWND, PROCESS_EVENTS_MESSAGE, 0, 0);
+            }
+        });
+
+        Ok(())
+    }
+
+    fn run_background_action(action: &BackgroundAction) -> BackgroundActionResult {
+        let error = match action {
+            BackgroundAction::RefreshStatus => None,
+            BackgroundAction::StartService => start_service().err(),
+            BackgroundAction::StopService => stop_installed_service()
+                .map_err(|error| format!("Failed to stop playitd service: {error}"))
+                .err(),
+            BackgroundAction::ResetAgent => reset_agent().err(),
+        };
+
+        BackgroundActionResult {
+            snapshot: query_service_state_snapshot(),
+            error,
+        }
+    }
+
+    fn background_action_error_title(action: &BackgroundAction) -> &'static str {
+        match action {
+            BackgroundAction::RefreshStatus => "Failed to refresh playit tray",
+            BackgroundAction::StartService => "Failed to start playitd service",
+            BackgroundAction::StopService => "Failed to stop playitd service",
+            BackgroundAction::ResetAgent => "Failed to reset playit agent",
+        }
+    }
+
     fn reset_agent() -> Result<(), String> {
         if !query_service_running() {
             return Err("playitd is not running, so Reset Agent is unavailable".to_string());
@@ -652,6 +742,15 @@ mod windows_tray {
         })?;
 
         launch_playit_setup()
+    }
+
+    fn query_service_state_snapshot() -> ServiceStateSnapshot {
+        let service_running = query_service_running();
+
+        ServiceStateSnapshot {
+            service_running,
+            reset_agent_enabled: query_reset_agent_enabled(service_running),
+        }
     }
 
     fn query_reset_agent_enabled(service_running: bool) -> bool {
