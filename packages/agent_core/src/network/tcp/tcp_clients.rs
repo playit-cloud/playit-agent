@@ -218,7 +218,7 @@ impl Worker {
                         }
                     };
 
-                    let Some(origin_addr) = found.resolve_local(details.port_offset) else {
+                    let Some(origin_addr) = found.resolve_local(details.port_offset).await else {
                         tracing::error!(
                             port_offset = details.port_offset,
                             tunnel_id = details.tunnel_id,

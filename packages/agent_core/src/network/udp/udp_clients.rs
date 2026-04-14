@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    net::{IpAddr, SocketAddr, SocketAddrV4},
+    net::{SocketAddr, SocketAddrV4},
     num::NonZeroU32,
     sync::{
         Arc,
@@ -17,9 +17,7 @@ use tokio::{
 };
 
 use crate::network::{
-    lan_address::LanAddress,
-    origin_lookup::{OriginLookup, OriginTarget},
-    proxy_protocol::ProxyProtocolHeader,
+    lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
 };
 use crate::stats::AgentStats;
 use playit_agent_proto::udp_proto::UdpFlow;
@@ -48,6 +46,8 @@ struct Client {
     id: u64,
     key: UdpClientKey,
     socket: Arc<UdpSocket>,
+    target_addr: SocketAddrV4,
+    port_offset: u16,
     flow: UdpFlow,
 
     /* when dropped, rx task get killed */
@@ -166,39 +166,17 @@ impl UdpClients {
             return None;
         }
 
-        let Some(tunnel) = self.lookup.lookup(client.key.tunnel_id, false).await else {
-            udp_errors().origin_tunnel_not_found.inc();
-            return None;
-        };
-
         let SocketAddr::V4(source) = packet.from else {
             udp_errors().origin_source_not_ip4.inc();
             return None;
         };
 
-        let OriginTarget::Port {
-            ip: local_ip,
-            port: port_start,
-        } = &tunnel.target
-        else {
-            return None;
-        };
-
-        if *local_ip != IpAddr::V4(*source.ip()) {
+        if source != client.target_addr {
             udp_errors().origin_reject_addr_differ.inc();
             return None;
         }
 
-        if source.port() < *port_start {
-            udp_errors().origin_reject_port_too_low.inc();
-            return None;
-        }
-
-        let port_offset = source.port() - *port_start;
-        if tunnel.resolve_local(port_offset) != Some(packet.from) {
-            udp_errors().origin_reject_port_too_high.inc();
-            return None;
-        }
+        let port_offset = client.port_offset;
 
         client.from_origin_ts = now_ms;
 
@@ -243,7 +221,7 @@ impl UdpClients {
             tunnel_id: extension.tunnel_id.get(),
         };
 
-        let Some(target_addr) = origin.resolve_local(extension.port_offset) else {
+        let Some(target_addr) = origin.resolve_local(extension.port_offset).await else {
             return;
         };
         let SocketAddr::V4(target_addr) = target_addr else {
@@ -337,6 +315,8 @@ impl UdpClients {
             id,
             key: key.clone(),
             socket,
+            target_addr,
+            port_offset: extension.port_offset,
             receiver,
             flow: client_flow,
             from_tunnel_ts: now_ms,

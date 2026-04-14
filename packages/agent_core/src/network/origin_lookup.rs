@@ -6,6 +6,7 @@ use std::{
 
 use playit_agent_proto::PortProto;
 use playit_api_client::api::{AgentRunDataV1, AgentTunnelV1, PortType, ProxyProtocol, TunnelType};
+use tokio::net::lookup_host;
 use tokio::sync::RwLock;
 
 #[derive(Default)]
@@ -95,19 +96,64 @@ pub struct OriginResource {
 }
 
 #[derive(Debug, Clone)]
+pub enum OriginIp {
+    IpAddress(IpAddr),
+    Hostname(String),
+}
+
+impl OriginIp {
+    async fn resolve(&self, port: u16) -> Option<SocketAddr> {
+        match self {
+            OriginIp::IpAddress(ip) => Some(SocketAddr::new(*ip, port)),
+            OriginIp::Hostname(hostname) => {
+                let mut addrs = match lookup_host((hostname.as_str(), port)).await {
+                    Ok(addrs) => addrs,
+                    Err(error) => {
+                        tracing::error!(
+                            ?error,
+                            %hostname,
+                            port,
+                            "failed to resolve origin hostname"
+                        );
+                        return None;
+                    }
+                };
+
+                addrs.next()
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum OriginTarget {
     Https {
-        ip: IpAddr,
+        ip: OriginIp,
         http_port: u16,
         https_port: u16,
     },
     Port {
-        ip: IpAddr,
+        ip: OriginIp,
         port: u16,
     },
 }
 
 impl OriginResource {
+    fn parse_origin_ip(tunn: &AgentTunnelV1) -> OriginIp {
+        tunn.agent_config
+            .fields
+            .iter()
+            .find(|f| f.name.eq("local_ip"))
+            .map(|v| v.value.trim())
+            .filter(|v| !v.is_empty())
+            .map(|value| {
+                IpAddr::from_str(value)
+                    .map(OriginIp::IpAddress)
+                    .unwrap_or_else(|_| OriginIp::Hostname(value.to_owned()))
+            })
+            .unwrap_or_else(|| OriginIp::IpAddress("127.0.0.1".parse().unwrap()))
+    }
+
     pub fn from_agent_tunnel(tunn: &AgentTunnelV1) -> Option<Self> {
         let tunnel_type = tunn
             .tunnel_type
@@ -126,13 +172,7 @@ impl OriginResource {
 
         let target = match tunnel_type {
             Some(TunnelType::Https) => OriginTarget::Https {
-                ip: tunn
-                    .agent_config
-                    .fields
-                    .iter()
-                    .find(|f| f.name.eq("local_ip"))
-                    .and_then(|v| IpAddr::from_str(&v.value).ok())
-                    .unwrap_or_else(|| "127.0.0.1".parse().unwrap()),
+                ip: Self::parse_origin_ip(tunn),
                 http_port: tunn
                     .agent_config
                     .fields
@@ -165,13 +205,7 @@ impl OriginResource {
                     })?;
 
                 OriginTarget::Port {
-                    ip: tunn
-                        .agent_config
-                        .fields
-                        .iter()
-                        .find(|f| f.name.eq("local_ip"))
-                        .and_then(|v| IpAddr::from_str(&v.value).ok())
-                        .unwrap_or_else(|| "127.0.0.1".parse().unwrap()),
+                    ip: Self::parse_origin_ip(tunn),
                     port: local_port,
                 }
             }
@@ -190,7 +224,7 @@ impl OriginResource {
         })
     }
 
-    pub fn resolve_local(&self, port_offset: u16) -> Option<SocketAddr> {
+    pub async fn resolve_local(&self, port_offset: u16) -> Option<SocketAddr> {
         match &self.target {
             OriginTarget::Https {
                 ip,
@@ -198,24 +232,102 @@ impl OriginResource {
                 https_port,
             } => {
                 if port_offset == 0 {
-                    Some(SocketAddr::new(*ip, *http_port))
+                    ip.resolve(*http_port).await
                 } else if port_offset == 1 {
-                    Some(SocketAddr::new(*ip, *https_port))
+                    ip.resolve(*https_port).await
                 } else {
                     None
                 }
             }
             OriginTarget::Port { ip, port } => {
                 if self.port_count == 0 {
-                    return Some(SocketAddr::new(*ip, *port));
+                    return ip.resolve(*port).await;
                 }
 
                 if self.port_count <= port_offset {
                     return None;
                 }
 
-                Some(SocketAddr::new(*ip, *port + port_offset))
+                let resolved_port = port.checked_add(port_offset)?;
+                ip.resolve(resolved_port).await
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use playit_api_client::api::{AgentTunnelAttr, AgentTunnelConfig};
+    use uuid::Uuid;
+
+    fn build_tunnel(
+        tunnel_type: Option<&str>,
+        local_ip: &str,
+        local_port: Option<&str>,
+        port_type: PortType,
+        port_count: u16,
+    ) -> AgentTunnelV1 {
+        let mut fields = vec![AgentTunnelAttr {
+            name: "local_ip".to_owned(),
+            value: local_ip.to_owned(),
+        }];
+
+        if let Some(local_port) = local_port {
+            fields.push(AgentTunnelAttr {
+                name: "local_port".to_owned(),
+                value: local_port.to_owned(),
+            });
+        }
+
+        AgentTunnelV1 {
+            id: Uuid::nil(),
+            internal_id: 7,
+            name: "test".to_owned(),
+            display_address: "public.example:25565".to_owned(),
+            port_type,
+            port_count,
+            tunnel_type: tunnel_type.map(str::to_owned),
+            tunnel_type_display: "test".to_owned(),
+            agent_config: AgentTunnelConfig { fields },
+            disabled_reason: None,
+        }
+    }
+
+    #[test]
+    fn from_agent_tunnel_preserves_hostname_target() {
+        let tunnel = build_tunnel(None, "origin.internal", Some("25565"), PortType::Tcp, 0);
+
+        let resource = OriginResource::from_agent_tunnel(&tunnel).expect("resource");
+
+        match resource.target {
+            OriginTarget::Port {
+                ip: OriginIp::Hostname(hostname),
+                port,
+            } => {
+                assert_eq!(hostname, "origin.internal");
+                assert_eq!(port, 25565);
+            }
+            target => panic!("unexpected target: {target:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_local_supports_hostname_lookup() {
+        let resource = OriginResource {
+            tunnel_id: 1,
+            proto: PortProto::Tcp,
+            target: OriginTarget::Port {
+                ip: OriginIp::Hostname("localhost".to_owned()),
+                port: 8080,
+            },
+            port_count: 0,
+            proxy_protocol: None,
+        };
+
+        let resolved = resource.resolve_local(0).await.expect("resolved");
+
+        assert_eq!(resolved.port(), 8080);
+        assert!(resolved.ip().is_loopback());
     }
 }
