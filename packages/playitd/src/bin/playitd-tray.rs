@@ -16,7 +16,7 @@ mod windows_tray {
     use std::thread;
 
     use image::ImageFormat;
-    use playit_ipc::ipc::IpcClient;
+    use playit_ipc::ipc::{IpcClient, get_default_socket_path};
     use playit_ipc::model::AgentLifecycle;
     use playitd::manager::{
         INSTALLED_SERVICE_LABEL, ensure_installed_service_running, stop_installed_service,
@@ -640,6 +640,59 @@ mod windows_tray {
         result
     }
 
+    fn stop_service() -> Result<(), String> {
+        if !query_service_running() {
+            debug_log("stop requested but service is already stopped");
+            return Ok(());
+        }
+
+        debug_log("stopping service");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("Failed to create tray runtime: {error}"))?;
+
+        runtime.block_on(async {
+            match IpcClient::connect().await {
+                Ok(mut client) => match client.stop().await {
+                    Ok(response) if response.accepted => {
+                        debug_log("service stop requested over IPC");
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                    Ok(response) => {
+                        debug_log(&format!(
+                            "service stop request over IPC was rejected: {}",
+                            response
+                                .message
+                                .unwrap_or_else(|| "service rejected stop request".to_string())
+                        ));
+                    }
+                    Err(error) => {
+                        debug_log(&format!("failed to send stop over IPC: {error}"));
+                    }
+                },
+                Err(error) => {
+                    debug_log(&format!("failed to connect to playitd over IPC: {error}"));
+                }
+            }
+
+            if let Err(error) = stop_installed_service() {
+                debug_log(&format!(
+                    "failed to stop installed service directly: {error}"
+                ));
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            if IpcClient::is_running(get_default_socket_path()).await {
+                Err("playitd service may still be running".to_string())
+            } else {
+                debug_log("service stopped");
+                Ok(())
+            }
+        })
+    }
+
     fn start_background_action(hwnd: HWND, action: BackgroundAction) -> Result<(), String> {
         let Some(state) = (unsafe { get_state(hwnd).as_mut() }) else {
             return Ok(());
@@ -673,9 +726,7 @@ mod windows_tray {
         let error = match action {
             BackgroundAction::RefreshStatus => None,
             BackgroundAction::StartService => start_service().err(),
-            BackgroundAction::StopService => stop_installed_service()
-                .map_err(|error| format!("Failed to stop playitd service: {error}"))
-                .err(),
+            BackgroundAction::StopService => stop_service().err(),
             BackgroundAction::ResetAgent => reset_agent().err(),
         };
 
@@ -728,20 +779,11 @@ mod windows_tray {
                     .message
                     .unwrap_or_else(|| "playitd rejected the reset request".to_string()));
             }
-
-            let stop_response = client.stop().await.map_err(|error| {
-                format!("Secret was reset, but failed to stop playitd over IPC: {error}")
-            })?;
-
-            if !stop_response.accepted {
-                return Err(stop_response.message.unwrap_or_else(|| {
-                    "Secret was reset, but playitd rejected the stop request".to_string()
-                }));
-            }
-
+            debug_log("agent secret reset requested over IPC");
             Ok(())
         })?;
 
+        stop_service()?;
         launch_playit()
     }
 
