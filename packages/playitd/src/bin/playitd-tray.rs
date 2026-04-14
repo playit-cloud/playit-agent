@@ -16,6 +16,7 @@ mod windows_tray {
 
     use image::ImageFormat;
     use playit_ipc::ipc::IpcClient;
+    use playit_ipc::model::AgentLifecycle;
     use playitd::manager::{
         INSTALLED_SERVICE_LABEL, ensure_installed_service_running, stop_installed_service,
     };
@@ -182,6 +183,7 @@ mod windows_tray {
         reset_agent: MenuItem,
         remove_tray_icon: MenuItem,
         service_running: bool,
+        reset_agent_enabled: bool,
         menu_visible: bool,
         tooltip_dirty: bool,
         event_queue: Arc<Mutex<VecDeque<AppEvent>>>,
@@ -214,6 +216,7 @@ mod windows_tray {
                 reset_agent,
                 remove_tray_icon,
                 service_running: query_service_running(),
+                reset_agent_enabled: false,
                 menu_visible: false,
                 tooltip_dirty: false,
                 event_queue,
@@ -341,7 +344,11 @@ mod windows_tray {
 
         install_event_handlers(hwnd, state.event_queue.clone());
         state.tray = Some(tray);
-        apply_service_state(state, state.service_running)?;
+        apply_service_state(
+            state,
+            state.service_running,
+            query_reset_agent_enabled(state.service_running),
+        )?;
 
         let timer = unsafe { SetTimer(hwnd, POLL_TIMER_ID, POLL_INTERVAL_MS, None) };
         if timer == 0 {
@@ -520,16 +527,23 @@ mod windows_tray {
             return Ok(());
         };
 
-        apply_service_state(state, query_service_running())
+        let service_running = query_service_running();
+        let reset_agent_enabled = query_reset_agent_enabled(service_running);
+        apply_service_state(state, service_running, reset_agent_enabled)
     }
 
-    fn apply_service_state(state: &mut AppState, service_running: bool) -> Result<(), String> {
+    fn apply_service_state(
+        state: &mut AppState,
+        service_running: bool,
+        reset_agent_enabled: bool,
+    ) -> Result<(), String> {
         let state_changed = state.service_running != service_running;
         state.service_running = service_running;
+        state.reset_agent_enabled = reset_agent_enabled;
 
         state.start_service.set_enabled(!service_running);
         state.stop_service.set_enabled(service_running);
-        state.reset_agent.set_enabled(service_running);
+        state.reset_agent.set_enabled(reset_agent_enabled);
 
         if state.menu_visible {
             state.tooltip_dirty |= state_changed;
@@ -594,6 +608,15 @@ mod windows_tray {
             return Err("playitd is not running, so Reset Agent is unavailable".to_string());
         }
 
+        if matches!(
+            query_service_lifecycle(),
+            Ok(AgentLifecycle::WaitingForSecret)
+        ) {
+            return Err(
+                "playitd is already waiting for setup, so Reset Agent is unavailable".to_string(),
+            );
+        }
+
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -629,6 +652,35 @@ mod windows_tray {
         })?;
 
         launch_playit_setup()
+    }
+
+    fn query_reset_agent_enabled(service_running: bool) -> bool {
+        if !service_running {
+            return false;
+        }
+
+        match query_service_lifecycle() {
+            Ok(AgentLifecycle::WaitingForSecret) | Ok(AgentLifecycle::Stopping) => false,
+            Ok(_) | Err(_) => true,
+        }
+    }
+
+    fn query_service_lifecycle() -> Result<AgentLifecycle, String> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("Failed to create tray runtime: {error}"))?;
+
+        runtime.block_on(async {
+            let mut client = IpcClient::connect()
+                .await
+                .map_err(|error| format!("Failed to connect to playitd over IPC: {error}"))?;
+
+            client
+                .lifecycle()
+                .await
+                .map_err(|error| format!("Failed to read playitd lifecycle over IPC: {error}"))
+        })
     }
 
     fn playit_cli_path() -> Result<PathBuf, String> {
