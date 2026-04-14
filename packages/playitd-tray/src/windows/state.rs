@@ -4,6 +4,8 @@ use std::sync::{Arc, Mutex};
 use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon};
 
+use super::runtime::TrayRuntime;
+
 #[derive(Clone, Debug)]
 pub(super) enum AppEvent {
     TrayClick {
@@ -50,12 +52,14 @@ pub(super) struct AppState {
     pub(super) background_busy: bool,
     pub(super) menu_visible: bool,
     pub(super) tooltip_dirty: bool,
+    pub(super) runtime: TrayRuntime,
     pub(super) event_queue: Arc<Mutex<VecDeque<AppEvent>>>,
 }
 
 impl AppState {
     pub(super) fn new(
         event_queue: Arc<Mutex<VecDeque<AppEvent>>>,
+        runtime: TrayRuntime,
         service_running: bool,
     ) -> Result<Self, String> {
         let open_status = MenuItem::new("Open Status", true, None);
@@ -87,6 +91,7 @@ impl AppState {
             background_busy: false,
             menu_visible: false,
             tooltip_dirty: false,
+            runtime,
             event_queue,
         })
     }

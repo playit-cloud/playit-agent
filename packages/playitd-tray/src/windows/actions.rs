@@ -12,6 +12,7 @@ use playit_ipc::model::AgentLifecycle;
 use playitd::manager::{
     INSTALLED_SERVICE_LABEL, ensure_installed_service_running, stop_installed_service,
 };
+use tokio::task;
 use windows_sys::Win32::System::Com::CoTaskMemFree;
 use windows_sys::Win32::System::Services::{
     CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_MANAGER_CONNECT,
@@ -22,7 +23,7 @@ use windows_sys::Win32::UI::Shell::{
     FOLDERID_CommonStartup, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
 };
 
-use super::state::{BackgroundActionResult, ServiceStateSnapshot};
+use super::state::{BackgroundAction, BackgroundActionResult, ServiceStateSnapshot};
 use super::util::{debug_log, wide};
 
 const TRAY_SHORTCUT_NAME: &str = "Playit Tray.lnk";
@@ -46,16 +47,16 @@ pub(super) fn launch_status_window() -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn start_service() -> Result<(), String> {
-    if query_service_running() {
+pub(super) async fn start_service_async() -> Result<(), String> {
+    if query_service_running_async().await {
         debug_log("start requested but service is already running");
         return Ok(());
     }
 
     debug_log("starting service");
 
-    let result = new_runtime()?
-        .block_on(ensure_installed_service_running())
+    let result = ensure_installed_service_running()
+        .await
         .map_err(|error| format!("Failed waiting for playitd service startup: {error}"));
 
     if result.is_ok() {
@@ -65,88 +66,84 @@ pub(super) fn start_service() -> Result<(), String> {
     result
 }
 
-pub(super) fn stop_service() -> Result<(), String> {
-    if !query_service_running() {
+pub(super) async fn stop_service_async() -> Result<(), String> {
+    if !query_service_running_async().await {
         debug_log("stop requested but service is already stopped");
         return Ok(());
     }
 
     debug_log("stopping service");
 
-    new_runtime()?.block_on(async {
-        match IpcClient::connect().await {
-            Ok(mut client) => match client.stop().await {
-                Ok(response) if response.accepted => {
-                    debug_log("service stop requested over IPC");
-                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                }
-                Ok(response) => {
-                    debug_log(&format!(
-                        "service stop request over IPC was rejected: {}",
-                        response
-                            .message
-                            .unwrap_or_else(|| "service rejected stop request".to_string())
-                    ));
-                }
-                Err(error) => {
-                    debug_log(&format!("failed to send stop over IPC: {error}"));
-                }
-            },
-            Err(error) => {
-                debug_log(&format!("failed to connect to playitd over IPC: {error}"));
+    match IpcClient::connect().await {
+        Ok(mut client) => match client.stop().await {
+            Ok(response) if response.accepted => {
+                debug_log("service stop requested over IPC");
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
+            Ok(response) => {
+                debug_log(&format!(
+                    "service stop request over IPC was rejected: {}",
+                    response
+                        .message
+                        .unwrap_or_else(|| "service rejected stop request".to_string())
+                ));
+            }
+            Err(error) => {
+                debug_log(&format!("failed to send stop over IPC: {error}"));
+            }
+        },
+        Err(error) => {
+            debug_log(&format!("failed to connect to playitd over IPC: {error}"));
         }
+    }
 
-        if let Err(error) = stop_installed_service() {
-            debug_log(&format!(
-                "failed to stop installed service directly: {error}"
-            ));
-        }
+    if let Err(error) = stop_installed_service_async().await {
+        debug_log(&format!(
+            "failed to stop installed service directly: {error}"
+        ));
+    }
 
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-        if IpcClient::is_running(get_default_socket_path()).await {
-            Err("playitd service may still be running".to_string())
-        } else {
-            debug_log("service stopped");
-            Ok(())
-        }
-    })
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    if IpcClient::is_running(get_default_socket_path()).await {
+        Err("playitd service may still be running".to_string())
+    } else {
+        debug_log("service stopped");
+        Ok(())
+    }
 }
 
-pub(super) fn run_background_action(
-    action: &super::state::BackgroundAction,
+pub(super) async fn run_background_action_async(
+    action: BackgroundAction,
 ) -> BackgroundActionResult {
     let error = match action {
-        super::state::BackgroundAction::RefreshStatus => None,
-        super::state::BackgroundAction::StartService => start_service().err(),
-        super::state::BackgroundAction::StopService => stop_service().err(),
-        super::state::BackgroundAction::ResetAgent => reset_agent().err(),
+        BackgroundAction::RefreshStatus => None,
+        BackgroundAction::StartService => start_service_async().await.err(),
+        BackgroundAction::StopService => stop_service_async().await.err(),
+        BackgroundAction::ResetAgent => reset_agent_async().await.err(),
     };
 
     BackgroundActionResult {
-        snapshot: query_service_state_snapshot(),
+        snapshot: query_service_state_snapshot_async().await,
         error,
     }
 }
 
-pub(super) fn background_action_error_title(
-    action: &super::state::BackgroundAction,
-) -> &'static str {
+pub(super) fn background_action_error_title(action: &BackgroundAction) -> &'static str {
     match action {
-        super::state::BackgroundAction::RefreshStatus => "Failed to refresh playit tray",
-        super::state::BackgroundAction::StartService => "Failed to start playitd service",
-        super::state::BackgroundAction::StopService => "Failed to stop playitd service",
-        super::state::BackgroundAction::ResetAgent => "Failed to reset playit agent",
+        BackgroundAction::RefreshStatus => "Failed to refresh playit tray",
+        BackgroundAction::StartService => "Failed to start playitd service",
+        BackgroundAction::StopService => "Failed to stop playitd service",
+        BackgroundAction::ResetAgent => "Failed to reset playit agent",
     }
 }
 
-fn reset_agent() -> Result<(), String> {
-    if !query_service_running() {
+async fn reset_agent_async() -> Result<(), String> {
+    if !query_service_running_async().await {
         return Err("playitd is not running, so Reset Agent is unavailable".to_string());
     }
 
     if matches!(
-        query_service_lifecycle(),
+        query_service_lifecycle_async().await,
         Ok(AgentLifecycle::WaitingForSecret)
     ) {
         return Err(
@@ -154,60 +151,55 @@ fn reset_agent() -> Result<(), String> {
         );
     }
 
-    new_runtime()?.block_on(async {
-        let mut client = IpcClient::connect()
-            .await
-            .map_err(|error| format!("Failed to connect to playitd over IPC: {error}"))?;
+    let mut client = IpcClient::connect()
+        .await
+        .map_err(|error| format!("Failed to connect to playitd over IPC: {error}"))?;
 
-        let reset_response = client
-            .reset_secret()
-            .await
-            .map_err(|error| format!("Failed to reset agent over IPC: {error}"))?;
+    let reset_response = client
+        .reset_secret()
+        .await
+        .map_err(|error| format!("Failed to reset agent over IPC: {error}"))?;
 
-        if !reset_response.accepted {
-            return Err(reset_response
-                .message
-                .unwrap_or_else(|| "playitd rejected the reset request".to_string()));
-        }
-        debug_log("agent secret reset requested over IPC");
-        Ok(())
-    })?;
+    if !reset_response.accepted {
+        return Err(reset_response
+            .message
+            .unwrap_or_else(|| "playitd rejected the reset request".to_string()));
+    }
+    debug_log("agent secret reset requested over IPC");
 
-    stop_service()?;
+    stop_service_async().await?;
     launch_playit()
 }
 
-pub(super) fn query_service_state_snapshot() -> ServiceStateSnapshot {
-    let service_running = query_service_running();
+async fn query_service_state_snapshot_async() -> ServiceStateSnapshot {
+    let service_running = query_service_running_async().await;
 
     ServiceStateSnapshot {
         service_running,
-        reset_agent_enabled: query_reset_agent_enabled(service_running),
+        reset_agent_enabled: query_reset_agent_enabled_async(service_running).await,
     }
 }
 
-fn query_reset_agent_enabled(service_running: bool) -> bool {
+async fn query_reset_agent_enabled_async(service_running: bool) -> bool {
     if !service_running {
         return false;
     }
 
-    match query_service_lifecycle() {
+    match query_service_lifecycle_async().await {
         Ok(AgentLifecycle::WaitingForSecret) | Ok(AgentLifecycle::Stopping) => false,
         Ok(_) | Err(_) => true,
     }
 }
 
-fn query_service_lifecycle() -> Result<AgentLifecycle, String> {
-    new_runtime()?.block_on(async {
-        let mut client = IpcClient::connect()
-            .await
-            .map_err(|error| format!("Failed to connect to playitd over IPC: {error}"))?;
+async fn query_service_lifecycle_async() -> Result<AgentLifecycle, String> {
+    let mut client = IpcClient::connect()
+        .await
+        .map_err(|error| format!("Failed to connect to playitd over IPC: {error}"))?;
 
-        client
-            .lifecycle()
-            .await
-            .map_err(|error| format!("Failed to read playitd lifecycle over IPC: {error}"))
-    })
+    client
+        .lifecycle()
+        .await
+        .map_err(|error| format!("Failed to read playitd lifecycle over IPC: {error}"))
 }
 
 pub(super) fn remove_startup_shortcut() -> Result<(), String> {
@@ -256,11 +248,21 @@ pub(super) fn query_service_running() -> bool {
     }
 }
 
-fn new_runtime() -> Result<tokio::runtime::Runtime, String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| format!("Failed to create tray runtime: {error}"))
+async fn query_service_running_async() -> bool {
+    match task::spawn_blocking(query_service_running).await {
+        Ok(service_running) => service_running,
+        Err(error) => {
+            debug_log(&format!("failed to query playitd service state: {error}"));
+            false
+        }
+    }
+}
+
+async fn stop_installed_service_async() -> Result<(), String> {
+    task::spawn_blocking(stop_installed_service)
+        .await
+        .map_err(|error| format!("Failed to join installed service stop task: {error}"))?
+        .map_err(|error| error.to_string())
 }
 
 fn playit_cli_path() -> Result<PathBuf, String> {
