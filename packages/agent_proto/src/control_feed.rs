@@ -76,7 +76,9 @@ impl MessageEncoding for ControlFeed {
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         match read.read_u32::<BigEndian>()? {
             1 => Ok(ControlFeed::Response(ControlRpcMessage::read_from(read)?)),
-            2 => Ok(ControlFeed::NewClient(NewClientOld::read_from(read)?.into())),
+            2 => Ok(ControlFeed::NewClient(
+                NewClientOld::read_from(read)?.into(),
+            )),
             3 => Ok(ControlFeed::NewClient(NewClient::read_from(read)?)),
             _ => Err(Error::new(ErrorKind::Other, "invalid ControlFeed id")),
         }
@@ -151,7 +153,10 @@ impl MessageEncoding for ClaimInstructions {
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
-        Ok(ClaimInstructions { address: SocketAddr::read_from(read)?, token: Vec::read_from(read)? })
+        Ok(ClaimInstructions {
+            address: SocketAddr::read_from(read)?,
+            token: Vec::read_from(read)?,
+        })
     }
 }
 

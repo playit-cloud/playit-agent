@@ -5,9 +5,9 @@ use std::ops::Not;
 use std::sync::Arc;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use message_encoding::{MessageEncoding, m_max, m_max_list, m_opt_sum, m_static};
-use serde::Serialize;
+use message_encoding::{m_max, m_max_list, m_opt_sum, m_static, MessageEncoding};
 use serde::ser::SerializeStruct;
+use serde::Serialize;
 
 use crate::hmac::HmacSha256;
 use crate::{AgentSessionId, PortRange};
@@ -72,8 +72,9 @@ impl MessageEncoding for ControlRequestId {
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         let v = u32::read_from(read)?;
-        ControlRequestId::from_num(v)
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid request id"))
+        ControlRequestId::from_num(v).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid request id")
+        })
     }
 }
 
@@ -129,24 +130,32 @@ impl MessageEncoding for ControlRequest {
             ControlRequestId::AgentRegisterV1 => Ok(ControlRequest::AgentRegister(
                 AgentRegisterV1::read_from(read)?.upgrade(),
             )),
-            ControlRequestId::AgentRegisterV2 => Ok(ControlRequest::AgentRegister(AgentRegister::read_from(read)?)),
-            ControlRequestId::AgentKeepAliveV1 => Ok(ControlRequest::AgentKeepAlive(AgentSessionId::read_from(read)?)),
-            ControlRequestId::SetupUdpChannelV1 => {
-                Ok(ControlRequest::SetupUdpChannel(AgentSessionId::read_from(read)?))
-            }
+            ControlRequestId::AgentRegisterV2 => Ok(ControlRequest::AgentRegister(
+                AgentRegister::read_from(read)?,
+            )),
+            ControlRequestId::AgentKeepAliveV1 => Ok(ControlRequest::AgentKeepAlive(
+                AgentSessionId::read_from(read)?,
+            )),
+            ControlRequestId::SetupUdpChannelV1 => Ok(ControlRequest::SetupUdpChannel(
+                AgentSessionId::read_from(read)?,
+            )),
             ControlRequestId::AgentCheckPortMappingV1 => Ok(ControlRequest::AgentCheckPortMapping(
                 AgentCheckPortMapping::read_from(read)?,
             )),
-            ControlRequestId::CheckMtuReceivedV1 => {
-                Ok(ControlRequest::CheckMtuReceived(CheckMtuReceived::read_from(read)?))
+            ControlRequestId::CheckMtuReceivedV1 => Ok(ControlRequest::CheckMtuReceived(
+                CheckMtuReceived::read_from(read)?,
+            )),
+            ControlRequestId::SendMtuTestV1 => {
+                Ok(ControlRequest::SendMtuTest(SendMtuTest::read_from(read)?))
             }
-            ControlRequestId::SendMtuTestV1 => Ok(ControlRequest::SendMtuTest(SendMtuTest::read_from(read)?)),
             ControlRequestId::_PingV1 => Ok(ControlRequest::Ping(Ping {
                 now: u64::read_from(read)?,
                 session_id: None,
                 current_ping: None,
             })),
-            _ => Err(std::io::Error::other("old control request no longer supported")),
+            _ => Err(std::io::Error::other(
+                "old control request no longer supported",
+            )),
         }
     }
 }
@@ -236,7 +245,8 @@ pub struct Ping {
 }
 
 impl MessageEncoding for Ping {
-    const STATIC_SIZE: Option<usize> = Some(8 + m_static::<Option<u32>>() + m_static::<Option<AgentSessionId>>());
+    const STATIC_SIZE: Option<usize> =
+        Some(8 + m_static::<Option<u32>>() + m_static::<Option<AgentSessionId>>());
 
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
@@ -315,7 +325,8 @@ impl MessageEncoding for AgentRegister {
 
             sum += self.account_id.write_to(out)?;
         } else {
-            if (self.proto_version & ENCODING_INCLUDES_VERSION_BIT) == ENCODING_INCLUDES_VERSION_BIT {
+            if (self.proto_version & ENCODING_INCLUDES_VERSION_BIT) == ENCODING_INCLUDES_VERSION_BIT
+            {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidInput,
                     "invalid proto version",
@@ -503,13 +514,21 @@ impl MessageEncoding for ControlResponse {
             3 => Ok(ControlResponse::Unauthorized),
             4 => Ok(ControlResponse::RequestQueued),
             5 => Ok(ControlResponse::TryAgainLater),
-            6 => Ok(ControlResponse::AgentRegistered(AgentRegistered::read_from(read)?)),
-            7 => Ok(ControlResponse::AgentPortMapping(AgentPortMapping::read_from(read)?)),
-            8 => Ok(ControlResponse::UdpChannelDetails(UdpChannelDetails::read_from(read)?)),
-            9 => Ok(ControlResponse::CheckMtuReceivedAck(CheckMtuReceivedAck::read_from(
+            6 => Ok(ControlResponse::AgentRegistered(
+                AgentRegistered::read_from(read)?,
+            )),
+            7 => Ok(ControlResponse::AgentPortMapping(
+                AgentPortMapping::read_from(read)?,
+            )),
+            8 => Ok(ControlResponse::UdpChannelDetails(
+                UdpChannelDetails::read_from(read)?,
+            )),
+            9 => Ok(ControlResponse::CheckMtuReceivedAck(
+                CheckMtuReceivedAck::read_from(read)?,
+            )),
+            10 => Ok(ControlResponse::MtuTestPacket(MtuTestPacket::read_from(
                 read,
             )?)),
-            10 => Ok(ControlResponse::MtuTestPacket(MtuTestPacket::read_from(read)?)),
             11 => Ok(ControlResponse::MtuTestFail(MtuTestFail::read_from(read)?)),
             _ => Err(std::io::Error::other("invalid ControlResponse id")),
         }
@@ -561,7 +580,10 @@ impl MessageEncoding for MtuTestPacket {
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
-        Ok(MtuTestPacket { data_center_id: u32::read_from(read)?, udp_payload_length: u32::read_from(read)? })
+        Ok(MtuTestPacket {
+            data_center_id: u32::read_from(read)?,
+            udp_payload_length: u32::read_from(read)?,
+        })
     }
 }
 
@@ -603,7 +625,9 @@ impl MessageEncoding for MtuTestFail {
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
-        Ok(MtuTestFail { error_code: MtuTestFailCode::read_from(read)? })
+        Ok(MtuTestFail {
+            error_code: MtuTestFailCode::read_from(read)?,
+        })
     }
 }
 
@@ -642,7 +666,8 @@ pub struct AgentPortMapping {
 }
 
 impl MessageEncoding for AgentPortMapping {
-    const MAX_SIZE: Option<usize> = Some(m_max::<PortRange>() + m_max::<Option<AgentPortMappingFound>>());
+    const MAX_SIZE: Option<usize> =
+        Some(m_max::<PortRange>() + m_max::<Option<AgentPortMappingFound>>());
 
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
@@ -682,7 +707,9 @@ impl MessageEncoding for AgentPortMappingFound {
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         match read.read_u32::<BigEndian>()? {
-            1 => Ok(AgentPortMappingFound::ToAgent(AgentSessionId::read_from(read)?)),
+            1 => Ok(AgentPortMappingFound::ToAgent(AgentSessionId::read_from(
+                read,
+            )?)),
             _ => Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "unknown AgentPortMappingFound id",
@@ -727,7 +754,10 @@ impl MessageEncoding for UdpChannelDetails {
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
-        Ok(UdpChannelDetails { tunnel_addr: SocketAddr::read_from(read)?, token: Arc::new(Vec::read_from(read)?) })
+        Ok(UdpChannelDetails {
+            tunnel_addr: SocketAddr::read_from(read)?,
+            token: Arc::new(Vec::read_from(read)?),
+        })
     }
 }
 
@@ -743,8 +773,12 @@ pub struct Pong {
 }
 
 impl MessageEncoding for Pong {
-    const MAX_SIZE: Option<usize> =
-        Some(m_static::<u64>() * 3 + m_static::<u32>() + m_max::<SocketAddr>() * 2 + m_static::<Option<u64>>());
+    const MAX_SIZE: Option<usize> = Some(
+        m_static::<u64>() * 3
+            + m_static::<u32>()
+            + m_max::<SocketAddr>() * 2
+            + m_static::<Option<u64>>(),
+    );
 
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
@@ -788,7 +822,10 @@ impl MessageEncoding for AgentRegistered {
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
-        Ok(AgentRegistered { id: AgentSessionId::read_from(read)?, expires_at: read.read_u64::<BigEndian>()? })
+        Ok(AgentRegistered {
+            id: AgentSessionId::read_from(read)?,
+            expires_at: read.read_u64::<BigEndian>()?,
+        })
     }
 }
 
@@ -797,10 +834,10 @@ mod test {
     use std::fmt::Debug;
     use std::net::{IpAddr, Ipv4Addr};
 
-    use rand::{Rng, RngCore, rng};
+    use rand::{rng, Rng, RngCore};
 
-    use crate::PortProto;
     use crate::rpc::ControlRpcMessage;
+    use crate::PortProto;
 
     use super::*;
 
@@ -841,7 +878,9 @@ mod test {
         };
 
         let mut out = Vec::new();
-        ControlRequestId::AgentRegisterV1.write_to(&mut out).unwrap();
+        ControlRequestId::AgentRegisterV1
+            .write_to(&mut out)
+            .unwrap();
         reg.write_to(&mut out).unwrap();
 
         let mut reader = &out[..];
@@ -873,7 +912,10 @@ mod test {
 
         for _ in 0..1000 {
             test_encoding(
-                ControlRpcMessage { request_id: rng.next_u64(), content: rng_control_request(&mut rng) },
+                ControlRpcMessage {
+                    request_id: rng.next_u64(),
+                    content: rng_control_request(&mut rng),
+                },
                 &mut buffer,
             );
         }
@@ -891,7 +933,10 @@ mod test {
 
         for _ in 0..1000 {
             test_encoding(
-                ControlRpcMessage { request_id: rng.next_u64(), content: rng_control_response(&mut rng) },
+                ControlRpcMessage {
+                    request_id: rng.next_u64(),
+                    content: rng_control_response(&mut rng),
+                },
                 &mut buffer,
             );
         }
@@ -1081,7 +1126,9 @@ mod test {
                 data_center_id: rng.next_u32(),
                 udp_payload_length: rng.next_u32(),
             }),
-            10 => ControlResponse::MtuTestFail(MtuTestFail { error_code: MtuTestFailCode::InvalidUdpPayloadLength }),
+            10 => ControlResponse::MtuTestFail(MtuTestFail {
+                error_code: MtuTestFailCode::InvalidUdpPayloadLength,
+            }),
             _ => unreachable!(),
         }
     }
@@ -1167,7 +1214,11 @@ mod test {
             msg,
             ControlRpcMessage {
                 request_id: 1,
-                content: ControlRequest::Ping(Ping { now: 0, current_ping: None, session_id: None }),
+                content: ControlRequest::Ping(Ping {
+                    now: 0,
+                    current_ping: None,
+                    session_id: None
+                }),
             }
         );
         println!("Got msg: {msg:?}");
@@ -1177,29 +1228,41 @@ mod test {
     fn check_mtu_received_round_trip_test() {
         let mut buffer = [0u8; 256];
         test_encoding(
-            ControlRequest::CheckMtuReceived(CheckMtuReceived { id: 42, message_size: 13 }),
+            ControlRequest::CheckMtuReceived(CheckMtuReceived {
+                id: 42,
+                message_size: 13,
+            }),
             &mut buffer,
         );
 
         let mut out = Vec::new();
 
         out.clear();
-        ControlRequest::CheckMtuReceived(CheckMtuReceived { id: 42, message_size: 0 })
-            .write_to(&mut out)
-            .unwrap();
+        ControlRequest::CheckMtuReceived(CheckMtuReceived {
+            id: 42,
+            message_size: 0,
+        })
+        .write_to(&mut out)
+        .unwrap();
 
         let zero_size = out.len();
 
         out.clear();
-        ControlRequest::CheckMtuReceived(CheckMtuReceived { id: 42, message_size: 13 })
-            .write_to(&mut out)
-            .unwrap();
+        ControlRequest::CheckMtuReceived(CheckMtuReceived {
+            id: 42,
+            message_size: 13,
+        })
+        .write_to(&mut out)
+        .unwrap();
         assert_eq!(out.len(), zero_size + 13);
 
         out.clear();
-        ControlRequest::CheckMtuReceived(CheckMtuReceived { id: 42, message_size: 50 })
-            .write_to(&mut out)
-            .unwrap();
+        ControlRequest::CheckMtuReceived(CheckMtuReceived {
+            id: 42,
+            message_size: 50,
+        })
+        .write_to(&mut out)
+        .unwrap();
         assert_eq!(out.len(), zero_size + 50);
 
         *out.last_mut().unwrap() = 0xFF;
@@ -1210,7 +1273,9 @@ mod test {
     #[test]
     fn check_mtu_received_invalid_pattern_test() {
         let mut buffer = Vec::new();
-        ControlRequestId::CheckMtuReceivedV1.write_to(&mut buffer).unwrap();
+        ControlRequestId::CheckMtuReceivedV1
+            .write_to(&mut buffer)
+            .unwrap();
         77u64.write_to(&mut buffer).unwrap();
         4u32.write_to(&mut buffer).unwrap();
         buffer.extend_from_slice(&[0x0a, 0x0b, 0x00, 0x0d]);
@@ -1223,7 +1288,11 @@ mod test {
     fn send_mtu_test_round_trip_test() {
         let mut buffer = [0u8; 256];
         test_encoding(
-            ControlRequest::SendMtuTest(SendMtuTest { id: 99, data_center_id: 3, udp_payload_length: 512 }),
+            ControlRequest::SendMtuTest(SendMtuTest {
+                id: 99,
+                data_center_id: 3,
+                udp_payload_length: 512,
+            }),
             &mut buffer,
         );
     }
@@ -1243,12 +1312,17 @@ mod test {
         );
 
         test_encoding(
-            ControlResponse::MtuTestPacket(MtuTestPacket { data_center_id: 12344, udp_payload_length: 256 }),
+            ControlResponse::MtuTestPacket(MtuTestPacket {
+                data_center_id: 12344,
+                udp_payload_length: 256,
+            }),
             &mut buffer,
         );
 
         test_encoding(
-            ControlResponse::MtuTestFail(MtuTestFail { error_code: MtuTestFailCode::InvalidUdpPayloadLength }),
+            ControlResponse::MtuTestFail(MtuTestFail {
+                error_code: MtuTestFailCode::InvalidUdpPayloadLength,
+            }),
             &mut buffer,
         );
     }

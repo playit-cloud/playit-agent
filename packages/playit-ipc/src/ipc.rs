@@ -156,11 +156,8 @@ pub fn get_default_socket_path() -> &'static str {
 }
 
 #[cfg(target_os = "macos")]
-static MACOS_DEFAULT_SOCKET_PATH: LazyLock<String> = LazyLock::new(|| {
-    macos_launch_agent_socket_path()
-        .display()
-        .to_string()
-});
+static MACOS_DEFAULT_SOCKET_PATH: LazyLock<String> =
+    LazyLock::new(|| macos_launch_agent_socket_path().display().to_string());
 
 #[cfg(target_os = "macos")]
 pub fn macos_launch_agent_socket_path() -> PathBuf {

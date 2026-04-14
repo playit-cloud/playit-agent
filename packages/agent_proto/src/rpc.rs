@@ -27,6 +27,9 @@ impl<T: MessageEncoding> MessageEncoding for ControlRpcMessage<T> {
     }
 
     fn read_from<I: Read>(read: &mut I) -> std::io::Result<Self> {
-        Ok(ControlRpcMessage { request_id: read.read_u64::<BigEndian>()?, content: T::read_from(read)? })
+        Ok(ControlRpcMessage {
+            request_id: read.read_u64::<BigEndian>()?,
+            content: T::read_from(read)?,
+        })
     }
 }

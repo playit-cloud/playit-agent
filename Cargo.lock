@@ -1980,7 +1980,6 @@ dependencies = [
  "dirs 6.0.0",
  "dotenv",
  "hex",
- "image",
  "interprocess",
  "playit-agent-core",
  "playit-api-client",
@@ -1995,8 +1994,18 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "tray-icon",
  "windows-service",
+]
+
+[[package]]
+name = "playitd-tray"
+version = "0.17.1"
+dependencies = [
+ "image",
+ "playit-ipc",
+ "playitd",
+ "tokio",
+ "tray-icon",
  "windows-sys 0.59.0",
 ]
 
