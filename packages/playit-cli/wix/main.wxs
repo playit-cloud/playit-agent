@@ -80,6 +80,7 @@
 
         <MajorUpgrade
             Schedule="afterInstallInitialize"
+            AllowSameVersionUpgrades="yes"
             AllowDowngrades="no"
             DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit."/>
 
