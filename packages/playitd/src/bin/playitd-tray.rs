@@ -442,8 +442,8 @@ mod windows_tray {
                     button_state: MouseButtonState::Up,
                 } => {
                     debug_log("tray: left click");
-                    if let Err(error) = launch_status_window() {
-                        show_error("Failed to open playit status", &error);
+                    if let Err(error) = launch_playit() {
+                        show_error("Failed to open playit", &error);
                     }
                 }
                 AppEvent::TrayClick {
@@ -597,21 +597,22 @@ mod windows_tray {
         Ok(())
     }
 
-    fn launch_status_window() -> Result<(), String> {
-        let cli_path = playit_cli_path()?;
-        Command::new(cli_path)
-            .creation_flags(CREATE_NEW_CONSOLE)
-            .spawn()
-            .map_err(|error| format!("Failed to launch playit.exe {error}"))?;
-        Ok(())
-    }
-
-    fn launch_playit_setup() -> Result<(), String> {
+    fn launch_playit() -> Result<(), String> {
         let cli_path = playit_cli_path()?;
         Command::new(cli_path)
             .creation_flags(CREATE_NEW_CONSOLE)
             .spawn()
             .map_err(|error| format!("Failed to launch playit.exe: {error}"))?;
+        Ok(())
+    }
+
+    fn launch_status_window() -> Result<(), String> {
+        let cli_path = playit_cli_path()?;
+        Command::new(cli_path)
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .arg("attach")
+            .spawn()
+            .map_err(|error| format!("Failed to launch playit.exe attach: {error}"))?;
         Ok(())
     }
 
@@ -741,7 +742,7 @@ mod windows_tray {
             Ok(())
         })?;
 
-        launch_playit_setup()
+        launch_playit()
     }
 
     fn query_service_state_snapshot() -> ServiceStateSnapshot {
