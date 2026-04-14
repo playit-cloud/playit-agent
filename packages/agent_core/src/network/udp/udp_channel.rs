@@ -1,8 +1,8 @@
 use std::{
     net::SocketAddr,
     sync::{
-        atomic::{AtomicU64, Ordering},
         Arc, RwLock,
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -10,7 +10,7 @@ use tokio::time::Instant;
 
 use playit_agent_proto::{
     control_messages::UdpChannelDetails,
-    udp_proto::{UdpFlow, UDP_CHANNEL_ESTABLISH_ID},
+    udp_proto::{UDP_CHANNEL_ESTABLISH_ID, UdpFlow},
 };
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 
@@ -177,7 +177,9 @@ impl SendTask {
                 if old != details {
                     true
                 } else {
-                    5_000 < now_milli().saturating_sub(self.shared.establish_rx_epoch.load(Ordering::Relaxed))
+                    5_000
+                        < now_milli()
+                            .saturating_sub(self.shared.establish_rx_epoch.load(Ordering::Relaxed))
                 }
             }
         };

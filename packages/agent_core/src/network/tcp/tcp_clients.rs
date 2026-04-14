@@ -7,7 +7,7 @@ use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
-    sync::mpsc::{channel, Receiver, Sender},
+    sync::mpsc::{Receiver, Sender, channel},
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
@@ -210,7 +210,9 @@ impl Worker {
                             }
                         }
                         _ => {
-                            tracing::error!("Tunnel server provide miss match protol versions for peer and connect addr");
+                            tracing::error!(
+                                "Tunnel server provide miss match protol versions for peer and connect addr"
+                            );
                             tcp_errors().invalid_proto_match.inc();
                             continue;
                         }
@@ -369,7 +371,9 @@ impl Worker {
                             }
                         }
 
-                        let tcp_client = TcpClient::create_with_stats(tunn_stream, origin_stream, Some(stats)).await;
+                        let tcp_client =
+                            TcpClient::create_with_stats(tunn_stream, origin_stream, Some(stats))
+                                .await;
                         let _ = event_tx
                             .send(Event::ConnectedClient(Client {
                                 id: client_id,

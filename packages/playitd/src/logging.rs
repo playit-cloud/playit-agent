@@ -1,5 +1,5 @@
-use tokio::sync::broadcast;
 use playit_ipc::model::{LogEntry, LogLevel, ServiceUpdate};
+use tokio::sync::broadcast;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::Layer;
 use tracing_subscriber::layer::Context;
@@ -19,7 +19,8 @@ impl tracing::field::Visit for MessageVisitor {
         if !self.message.is_empty() {
             self.message.push_str(", ");
         }
-        self.message.push_str(&format!("{}={value:?}", field.name()));
+        self.message
+            .push_str(&format!("{}={value:?}", field.name()));
     }
 
     fn record_str(&mut self, field: &tracing::field::Field, value: &str) {

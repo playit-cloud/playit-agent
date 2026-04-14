@@ -17,9 +17,9 @@ use playit_ipc::ipc::{
     ServiceRequest, ServiceResponse, get_default_socket_path, protocol_info,
 };
 use playit_ipc::model::{
-    AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ConnectionStats,
-    SecretPathResponse, ServiceError, ServiceErrorCode, ServiceStatus, ServiceUpdate,
-    SubscribeResponse, SubscriptionSnapshot,
+    AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ConnectionStats, SecretPathResponse,
+    ServiceError, ServiceErrorCode, ServiceStatus, ServiceUpdate, SubscribeResponse,
+    SubscriptionSnapshot,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
@@ -172,7 +172,9 @@ impl IpcServer {
         if self.socket_path.starts_with('@') {
             let name = self.socket_path[1..]
                 .to_ns_name::<GenericNamespaced>()
-                .map_err(|e| IpcError::BindFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)))?;
+                .map_err(|e| {
+                    IpcError::BindFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+                })?;
             let listener = ListenerOptions::new().name(name);
             #[cfg(target_os = "windows")]
             let listener = listener.security_descriptor(world_access_security_descriptor()?);
@@ -182,7 +184,9 @@ impl IpcServer {
                 .socket_path
                 .clone()
                 .to_fs_name::<GenericFilePath>()
-                .map_err(|e| IpcError::BindFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)))?;
+                .map_err(|e| {
+                    IpcError::BindFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+                })?;
             let listener = ListenerOptions::new().name(name);
             #[cfg(target_os = "windows")]
             let listener = listener.security_descriptor(world_access_security_descriptor()?);
@@ -365,6 +369,9 @@ impl IpcServer {
                                                 }),
                                             )
                                             .await?;
+
+                                            tracing::info!("Secret reset, initiating shutdown");
+                                            self.cancel_token.cancel();
                                         }
                                         Err(error) => {
                                             self.send_response(
@@ -539,13 +546,19 @@ async fn try_connect(socket_path: &str) -> Result<Stream, IpcError> {
     if socket_path.starts_with('@') {
         let name = socket_path[1..]
             .to_ns_name::<GenericNamespaced>()
-            .map_err(|e| IpcError::ConnectionFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)))?;
-        Stream::connect(name).await.map_err(IpcError::ConnectionFailed)
+            .map_err(|e| {
+                IpcError::ConnectionFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+            })?;
+        Stream::connect(name)
+            .await
+            .map_err(IpcError::ConnectionFailed)
     } else {
-        let name = socket_path
-            .to_fs_name::<GenericFilePath>()
-            .map_err(|e| IpcError::ConnectionFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e)))?;
-        Stream::connect(name).await.map_err(IpcError::ConnectionFailed)
+        let name = socket_path.to_fs_name::<GenericFilePath>().map_err(|e| {
+            IpcError::ConnectionFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
+        })?;
+        Stream::connect(name)
+            .await
+            .map_err(IpcError::ConnectionFailed)
     }
 }
 
@@ -608,22 +621,27 @@ mod tests {
     #[test]
     fn provisioning_rejects_running_daemon() {
         let error = secret_provisioning_state_error(&AgentLifecycle::Running(Default::default()));
-        assert!(matches!(error.code, ServiceErrorCode::ProvisioningUnavailable));
+        assert!(matches!(
+            error.code,
+            ServiceErrorCode::ProvisioningUnavailable
+        ));
         assert!(!error.retryable);
         assert!(error.message.contains("already has a configured secret"));
     }
 
     #[test]
     fn provisioning_rejects_invalid_secret_state() {
-        let error = secret_provisioning_state_error(&AgentLifecycle::HasInvalidSecret(
-            ServiceError {
+        let error =
+            secret_provisioning_state_error(&AgentLifecycle::HasInvalidSecret(ServiceError {
                 code: ServiceErrorCode::InvalidSecret,
                 message: "bad secret".to_string(),
                 retryable: true,
                 details: None,
-            },
+            }));
+        assert!(matches!(
+            error.code,
+            ServiceErrorCode::ProvisioningUnavailable
         ));
-        assert!(matches!(error.code, ServiceErrorCode::ProvisioningUnavailable));
         assert!(!error.retryable);
         assert!(error.message.contains("bad secret"));
     }

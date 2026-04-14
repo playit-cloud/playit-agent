@@ -60,7 +60,7 @@ pub trait TryTimeoutHelper {
     type Error;
 
     fn try_timeout(self, max: Duration)
-        -> impl Future<Output = Result<Self::Success, Self::Error>>;
+    -> impl Future<Output = Result<Self::Success, Self::Error>>;
 }
 
 impl<F: Future> TimeoutHelper for F {

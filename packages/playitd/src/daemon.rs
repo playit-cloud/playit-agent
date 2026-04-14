@@ -2,8 +2,12 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
+use crate::logging::IpcBroadcastLayer;
+use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use playit_agent_core::network::origin_lookup::{OriginLookup, OriginResource, OriginTarget};
@@ -13,12 +17,12 @@ use playit_agent_core::playit_agent::{PlayitAgent, PlayitAgentSettings};
 use playit_agent_core::stats::AgentStats;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
-use playit_api_client::api::{AccountStatus, Platform};
+use playit_api_client::api::{AccountStatus, ApiResponseError, AuthError, Platform};
 use playit_ipc::ipc::{IpcError, get_default_socket_path, protocol_info};
 use playit_ipc::model::{
     AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ConnectionStats,
-    NoticeState, PendingTunnelState, ServiceError, ServiceErrorCode, ServicePhase,
-    ServiceStatus, ServiceUpdate, TunnelState,
+    NoticeState, PendingTunnelState, ServiceError, ServiceErrorCode, ServicePhase, ServiceStatus,
+    ServiceUpdate, TunnelState,
 };
 use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
@@ -27,8 +31,6 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use crate::logging::IpcBroadcastLayer;
-use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
 
 pub const DEFAULT_VARIANT_ID: &str = "308943e8-faef-4835-a2ba-270351f72aa3";
 
@@ -159,9 +161,12 @@ impl From<IpcError> for DaemonError {
 }
 
 pub async fn load_version_overrides(path: &Path) -> Result<VersionOverrideFile, String> {
-    let content = tokio::fs::read_to_string(path)
-        .await
-        .map_err(|error| format!("Failed to read version override file {}: {error}", path.display()))?;
+    let content = tokio::fs::read_to_string(path).await.map_err(|error| {
+        format!(
+            "Failed to read version override file {}: {error}",
+            path.display()
+        )
+    })?;
 
     match path
         .extension()
@@ -273,9 +278,9 @@ impl SecretSource {
         match self {
             Self::Inline { secret } => match validate_secret(secret.trim()) {
                 Ok(secret) => LoadedSecret::Ready(secret),
-                Err(error) => LoadedSecret::Invalid(format!(
-                    "Invalid secret passed via --secret: {error}"
-                )),
+                Err(error) => {
+                    LoadedSecret::Invalid(format!("Invalid secret passed via --secret: {error}"))
+                }
             },
             Self::File { path } => load_secret_from_path(path).await,
         }
@@ -338,8 +343,13 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     let log_filter =
         EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     let use_ansi = matches!(platform, Platform::Linux | Platform::Docker);
-    let _log_guard = init_tracing(log_filter, use_ansi, event_tx.clone(), options.log_path.as_deref())
-        .map_err(DaemonError::SetupError)?;
+    let _log_guard = init_tracing(
+        log_filter,
+        use_ansi,
+        event_tx.clone(),
+        options.log_path.as_deref(),
+    )
+    .map_err(DaemonError::SetupError)?;
 
     register_platform(platform);
 
@@ -369,8 +379,8 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
             secret_source.secret_provision_error(),
             secret_source.secret_reset_error(),
         )
-            .await
-            .map_err(DaemonError::Ipc)?,
+        .await
+        .map_err(DaemonError::Ipc)?,
     );
     let listener = ipc_server.bind_listener().await.map_err(DaemonError::Ipc)?;
     let state_cache = ipc_server.state_cache();
@@ -416,8 +426,8 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
                     .expect("file-backed secret mode must enable provisioning"),
                 &cancel_token,
             )
-                .await
-                .map_err(DaemonError::SecretError)?
+            .await
+            .map_err(DaemonError::SecretError)?
             {
                 Some(secret) => {
                     publish_runtime_state(
@@ -504,41 +514,108 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
         }
     };
 
-    let api = PlayitApi::create(api_base(), Some(secret_code.clone()));
-    ipc_server.set_api(api.clone()).await;
-
     let lookup = Arc::new(OriginLookup::default());
-    if let Ok(data) = api.v1_agents_rundata().await {
-        lookup.update_from_run_data(&data).await;
-    }
+    let (api, runner, stats) = {
+        let mut secret_code = secret_code;
 
-    let settings = PlayitAgentSettings {
-        udp_settings: UdpSettings::default(),
-        tcp_settings: TcpSettings::default(),
-        api_url: api_base(),
-        secret_key: secret_code,
-    };
+        loop {
+            let api = PlayitApi::create(api_base(), Some(secret_code.clone()));
+            ipc_server.set_api(api.clone()).await;
 
-    let (runner, stats) = match PlayitAgent::new(settings, lookup.clone()).await {
-        Ok(runner) => {
-            let stats = runner.stats();
-            (runner, stats)
-        }
-        Err(error) => {
-            let message = format!("Failed to create agent: {error:?}");
-            let service_error = daemon_error(ServiceErrorCode::Internal, message.clone(), true);
-            publish_runtime_state(
-                &state_cache,
-                &event_tx,
-                status_context.status(
-                    ServicePhase::Error,
-                    true,
-                    Some(service_error.clone()),
-                ),
-                AgentLifecycle::Error(service_error),
-            )
-            .await;
-            return Err(DaemonError::SetupError(message));
+            if let Ok(data) = api.v1_agents_rundata().await {
+                lookup.update_from_run_data(&data).await;
+            }
+
+            let settings = PlayitAgentSettings {
+                udp_settings: UdpSettings::default(),
+                tcp_settings: TcpSettings::default(),
+                api_url: api_base(),
+                secret_key: secret_code.clone(),
+            };
+
+            match PlayitAgent::new(settings, lookup.clone()).await {
+                Ok(runner) => {
+                    let stats = runner.stats();
+                    break (api, runner, stats);
+                }
+                Err(error)
+                    if secret_source.allows_ipc_provisioning()
+                        && is_invalid_agent_secret_error(&error) =>
+                {
+                    tracing::warn!(?error, "configured agent secret is no longer valid");
+
+                    let service_error = daemon_error(
+                        ServiceErrorCode::InvalidSecret,
+                        "The configured playit secret is no longer valid. Run setup to provision a new secret.".to_string(),
+                        true,
+                    );
+                    publish_runtime_state(
+                        &state_cache,
+                        &event_tx,
+                        status_context.status(
+                            ServicePhase::WaitingForSecret,
+                            false,
+                            Some(service_error),
+                        ),
+                        AgentLifecycle::WaitingForSecret,
+                    )
+                    .await;
+
+                    let secret_path = secret_source
+                        .secret_path()
+                        .expect("file-backed secret mode must provide a secret path");
+                    match wait_for_secret_provisioning(
+                        secret_path,
+                        secret_rx
+                            .as_mut()
+                            .expect("file-backed secret mode must enable provisioning"),
+                        &cancel_token,
+                    )
+                    .await
+                    .map_err(DaemonError::SecretError)?
+                    {
+                        Some(secret) => {
+                            publish_runtime_state(
+                                &state_cache,
+                                &event_tx,
+                                status_context.status(ServicePhase::Starting, true, None),
+                                AgentLifecycle::Starting,
+                            )
+                            .await;
+                            secret_code = secret;
+                        }
+                        None => {
+                            publish_runtime_state(
+                                &state_cache,
+                                &event_tx,
+                                status_context.status(ServicePhase::Stopping, false, None),
+                                AgentLifecycle::Stopping,
+                            )
+                            .await;
+                            let _ = ipc_handle.await;
+                            tracing::info!("playitd shutdown before reprovisioning completed");
+                            return Ok(());
+                        }
+                    }
+                }
+                Err(error) => {
+                    let message = format!("Failed to create agent: {error:?}");
+                    let service_error =
+                        daemon_error(ServiceErrorCode::Internal, message.clone(), true);
+                    publish_runtime_state(
+                        &state_cache,
+                        &event_tx,
+                        status_context.status(
+                            ServicePhase::Error,
+                            true,
+                            Some(service_error.clone()),
+                        ),
+                        AgentLifecycle::Error(service_error),
+                    )
+                    .await;
+                    return Err(DaemonError::SetupError(message));
+                }
+            }
         }
     };
 
@@ -550,7 +627,8 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     )
     .await;
 
-    let agent_handle = tokio::spawn(runner.run());
+    let agent_keep_running = runner.keep_running();
+    let mut agent_handle = tokio::spawn(runner.run());
     let stats_handle = {
         let event_tx = event_tx.clone();
         let token = cancel_token.clone();
@@ -575,10 +653,11 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => tracing::info!("Received Ctrl+C, shutting down"),
         _ = cancel_token.cancelled() => tracing::info!("Shutdown requested via IPC"),
-        _ = agent_handle => tracing::info!("Agent task completed"),
+        _ = &mut agent_handle => tracing::info!("Agent task completed"),
     }
 
     cancel_token.cancel();
+    agent_keep_running.store(false, Ordering::SeqCst);
     publish_runtime_state(
         &state_cache,
         &event_tx,
@@ -588,6 +667,7 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     .await;
 
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
+        let _ = (&mut agent_handle).await;
         let _ = ipc_handle.await;
         let _ = stats_handle.await;
         let _ = state_handle.await;
@@ -748,7 +828,7 @@ async fn load_secret_from_path(path: &Path) -> LoadedSecret {
             return LoadedSecret::Invalid(format!(
                 "Failed to read secret file {}: {error}",
                 path.display()
-            ))
+            ));
         }
     };
 
@@ -802,17 +882,28 @@ async fn wait_for_secret_provisioning(
 async fn persist_secret_file(path: &Path, secret: &str) -> Result<(), String> {
     let secret = validate_secret(secret.trim())?;
 
-    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|error| format!("Failed to create secret directory {}: {error}", parent.display()))?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        tokio::fs::create_dir_all(parent).await.map_err(|error| {
+            format!(
+                "Failed to create secret directory {}: {error}",
+                parent.display()
+            )
+        })?;
     }
 
     let content = if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
         toml::to_string(&SecretConfig {
             secret_key: secret.clone(),
         })
-        .map_err(|error| format!("Failed to serialize secret file {}: {error}", path.display()))?
+        .map_err(|error| {
+            format!(
+                "Failed to serialize secret file {}: {error}",
+                path.display()
+            )
+        })?
     } else {
         secret
     };
@@ -896,6 +987,15 @@ fn daemon_error(code: ServiceErrorCode, message: String, retryable: bool) -> Ser
     }
 }
 
+fn is_invalid_agent_secret_error(error: &SetupError) -> bool {
+    matches!(
+        error,
+        SetupError::ApiError(ApiResponseError::Auth(
+            AuthError::InvalidAgentKey | AuthError::NoLongerValid
+        ))
+    )
+}
+
 fn init_tracing(
     log_filter: EnvFilter,
     use_ansi: bool,
@@ -905,8 +1005,12 @@ fn init_tracing(
     match log_path {
         Some(path) => {
             let parent = path.parent().unwrap_or_else(|| Path::new("."));
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("Failed to create log directory {}: {error}", parent.display()))?;
+            std::fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "Failed to create log directory {}: {error}",
+                    parent.display()
+                )
+            })?;
             let file_name = path
                 .file_name()
                 .and_then(|file| file.to_str())
@@ -939,5 +1043,30 @@ fn init_tracing(
 
             Ok(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_invalid_agent_secret_error;
+    use playit_agent_core::agent_control::errors::SetupError;
+    use playit_api_client::api::{ApiResponseError, AuthError};
+
+    #[test]
+    fn detects_invalid_agent_secret_errors() {
+        assert!(is_invalid_agent_secret_error(&SetupError::ApiError(
+            ApiResponseError::Auth(AuthError::InvalidAgentKey)
+        )));
+        assert!(is_invalid_agent_secret_error(&SetupError::ApiError(
+            ApiResponseError::Auth(AuthError::NoLongerValid)
+        )));
+    }
+
+    #[test]
+    fn ignores_non_secret_setup_errors() {
+        assert!(!is_invalid_agent_secret_error(&SetupError::ApiError(
+            ApiResponseError::Auth(AuthError::AuthRequired)
+        )));
+        assert!(!is_invalid_agent_secret_error(&SetupError::FailedToConnect));
     }
 }

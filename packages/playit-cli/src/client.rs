@@ -71,12 +71,8 @@ pub async fn run_auto_command(ui: &mut UI, target: &CliTarget) -> Result<(), Cli
         )
     })?;
 
-    match client
-        .lifecycle()
-        .await
-        .map_err(|e| CliError::IpcError(format!("Failed to read playitd lifecycle: {e}")))?
-    {
-        AgentLifecycle::Running(_) | AgentLifecycle::Starting => {}
+    match wait_for_auto_lifecycle(&mut client).await? {
+        AgentLifecycle::Running(_) => {}
         AgentLifecycle::WaitingForSecret => {
             run_setup_flow(ui, target).await?;
         }
@@ -102,6 +98,11 @@ pub async fn run_auto_command(ui: &mut UI, target: &CliTarget) -> Result<(), Cli
             wait_for_service_waiting_for_secret(target).await?;
             run_setup_flow(ui, target).await?;
         }
+        AgentLifecycle::Starting => {
+            return Err(CliError::ServiceError(
+                "Timed out waiting for playitd to finish starting".to_string(),
+            ));
+        }
         AgentLifecycle::Stopping => {
             return Err(CliError::ServiceError(
                 "playitd is stopping and cannot be auto-attached right now".to_string(),
@@ -124,6 +125,23 @@ pub async fn run_auto_command(ui: &mut UI, target: &CliTarget) -> Result<(), Cli
         },
     )
     .await
+}
+
+async fn wait_for_auto_lifecycle(client: &mut IpcClient) -> Result<AgentLifecycle, CliError> {
+    for _ in 0..50 {
+        let lifecycle = client
+            .lifecycle()
+            .await
+            .map_err(|e| CliError::IpcError(format!("Failed to read playitd lifecycle: {e}")))?;
+
+        if !matches!(lifecycle, AgentLifecycle::Starting) {
+            return Ok(lifecycle);
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    Ok(AgentLifecycle::Starting)
 }
 
 async fn reset_service_secret_for_setup(target: &CliTarget) -> Result<(), CliError> {

@@ -20,12 +20,20 @@ impl LanAddress {
 
             match socket.bind(SocketAddrV4::new(local_ip, 0).into()) {
                 Err(e) => {
-                    tracing::warn!("Failed to bind connection to special local address to support IP based banning: {:?}", e);
+                    tracing::warn!(
+                        "Failed to bind connection to special local address to support IP based banning: {:?}",
+                        e
+                    );
                 }
                 Ok(_) => {
                     match socket.connect(host).await {
                         Err(e) => {
-                            tracing::warn!("Failed to establish connection using special lan {} for flow {:?} {:?}", local_ip, (peer, host), e);
+                            tracing::warn!(
+                                "Failed to establish connection using special lan {} for flow {:?} {:?}",
+                                local_ip,
+                                (peer, host),
+                                e
+                            );
                         }
                         v => return v,
                     };
@@ -70,12 +78,19 @@ impl LanAddress {
                 Err(bad_port_error) => {
                     match UdpSocket::bind(SocketAddrV4::new(local_ip, 0)).await {
                         Ok(v) => {
-                            tracing::warn!("Failed to bind UDP port to {} to have connections survive agent restart: {:?}", local_port, bad_port_error);
+                            tracing::warn!(
+                                "Failed to bind UDP port to {} to have connections survive agent restart: {:?}",
+                                local_port,
+                                bad_port_error
+                            );
                             Ok(v)
                         }
                         Err(bad_local_ip_err) => {
                             let v = UdpSocket::bind(SocketAddrV4::new(0.into(), 0)).await?;
-                            tracing::warn!("Failed to bind UDP to special local address, in-game ip banning will not work: {:?}", bad_local_ip_err);
+                            tracing::warn!(
+                                "Failed to bind UDP to special local address, in-game ip banning will not work: {:?}",
+                                bad_local_ip_err
+                            );
                             Ok(v)
                         }
                     }

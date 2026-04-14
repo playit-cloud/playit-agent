@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use tracing::{Event, Subscriber};
-use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
+use tracing_subscriber::layer::Context;
 
 /// A log entry captured from tracing
 #[derive(Clone, Debug)]
@@ -141,7 +141,8 @@ impl tracing::field::Visit for MessageVisitor {
             if !self.message.is_empty() {
                 self.message.push_str(", ");
             }
-            self.message.push_str(&format!("{}={:?}", field.name(), value));
+            self.message
+                .push_str(&format!("{}={:?}", field.name(), value));
         }
     }
 
@@ -152,8 +153,8 @@ impl tracing::field::Visit for MessageVisitor {
             if !self.message.is_empty() {
                 self.message.push_str(", ");
             }
-            self.message.push_str(&format!("{}={}", field.name(), value));
+            self.message
+                .push_str(&format!("{}={}", field.name(), value));
         }
     }
 }
-

@@ -1,6 +1,6 @@
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -86,11 +86,7 @@ impl TcpPipe {
     pub fn last_activity(&self) -> u64 {
         let value = self.shared.last_activity.load(Ordering::Acquire);
 
-        if value == u64::MAX {
-            0
-        } else {
-            value
-        }
+        if value == u64::MAX { 0 } else { value }
     }
 
     pub fn is_closed(&self) -> bool {

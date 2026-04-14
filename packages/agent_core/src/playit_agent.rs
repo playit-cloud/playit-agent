@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::mpsc::channel;
@@ -54,8 +54,12 @@ impl PlayitAgent {
             .map_err(SetupError::IoError)?;
 
         let stats = AgentStats::new();
-        let udp_clients =
-            UdpClients::new(settings.udp_settings, lookup.clone(), origin_packets, stats.clone());
+        let udp_clients = UdpClients::new(
+            settings.udp_settings,
+            lookup.clone(),
+            origin_packets,
+            stats.clone(),
+        );
         let tcp_clients = TcpClients::new(settings.tcp_settings, lookup.clone(), stats.clone());
 
         Ok(PlayitAgent {
@@ -85,7 +89,7 @@ impl PlayitAgent {
         let udp_session_should_renew = Arc::new(AtomicBool::new(false));
 
         let should_renew_udp = udp_session_should_renew.clone();
-        let tunnel_task = tokio::spawn(async move {
+        let mut tunnel_task = tokio::spawn(async move {
             let mut last_control_addr_check = now_milli();
 
             while tunnel_run.load(Ordering::SeqCst) {
@@ -130,7 +134,7 @@ impl PlayitAgent {
         let mut udp_channel = self.udp_channel;
         let mut udp_clients = self.udp_clients;
 
-        let udp_task = tokio::spawn(async move {
+        let mut udp_task = tokio::spawn(async move {
             let mut next_clear = Instant::now() + Duration::from_secs(16);
 
             while udp_run.load(Ordering::SeqCst) {
@@ -168,7 +172,30 @@ impl PlayitAgent {
             }
         }.instrument(tracing::info_span!("udp_session")));
 
-        tunnel_task.await.unwrap();
-        udp_task.await.unwrap();
+        loop {
+            tokio::select! {
+                result = &mut tunnel_task => {
+                    result.unwrap();
+                    break;
+                }
+                result = &mut udp_task => {
+                    result.unwrap();
+                    break;
+                }
+                _ = tokio::time::sleep(Duration::from_millis(100)), if !self.keep_running.load(Ordering::SeqCst) => {
+                    break;
+                }
+            }
+        }
+
+        if !tunnel_task.is_finished() {
+            tunnel_task.abort();
+        }
+        if !udp_task.is_finished() {
+            udp_task.abort();
+        }
+
+        let _ = tunnel_task.await;
+        let _ = udp_task.await;
     }
 }
