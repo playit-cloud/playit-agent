@@ -15,6 +15,7 @@ pub(super) enum UiEvent {
         button_state: MouseButtonState,
     },
     MenuActivated(MenuEvent),
+    RefreshAfterMenu,
 }
 
 pub(super) struct AppState {

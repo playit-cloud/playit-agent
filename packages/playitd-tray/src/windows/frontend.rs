@@ -306,13 +306,24 @@ fn process_ui_events(hwnd: HWND) {
                     state.menu_visible = false;
                 }
 
-                if let Err(error) = dispatch_request(hwnd, BackendRequest::RefreshStatus) {
-                    show_error("Failed to refresh playit tray", &error);
+                if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
+                    if let Ok(mut queue) = state.ui_event_queue.lock() {
+                        queue.push_back(UiEvent::RefreshAfterMenu);
+                    }
+                }
+                unsafe {
+                    let _ = PostMessageW(hwnd, PROCESS_UI_EVENTS_MESSAGE, 0, 0);
                 }
             }
             UiEvent::MenuActivated(menu_event) => {
                 if let Err(error) = handle_menu_event(hwnd, menu_event) {
                     show_error("Playit tray action failed", &error);
+                }
+            }
+            UiEvent::RefreshAfterMenu => {
+                debug_log("tray: processing deferred refresh after menu close");
+                if let Err(error) = dispatch_request(hwnd, BackendRequest::RefreshStatus) {
+                    show_error("Failed to refresh playit tray", &error);
                 }
             }
             UiEvent::TrayClick { .. } => {}
@@ -475,9 +486,18 @@ fn dispatch_request(hwnd: HWND, request: BackendRequest) -> Result<(), String> {
     };
 
     let is_refresh = matches!(request, BackendRequest::RefreshStatus);
+    debug_log(&format!(
+        "frontend: dispatch_request {request:?} busy={} refresh_after_current={}",
+        state.background_busy, state.refresh_after_current
+    ));
     if state.background_busy {
         if is_refresh {
+            debug_log("frontend: coalescing refresh request because backend is busy");
             state.refresh_after_current = true;
+        } else {
+            debug_log(&format!(
+                "frontend: dropping user action {request:?} because backend is busy"
+            ));
         }
         return Ok(());
     }
