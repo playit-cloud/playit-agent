@@ -369,6 +369,9 @@ impl IpcServer {
                                                 }),
                                             )
                                             .await?;
+
+                                            tracing::info!("Secret reset, initiating shutdown");
+                                            self.cancel_token.cancel();
                                         }
                                         Err(error) => {
                                             self.send_response(
