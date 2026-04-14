@@ -8,6 +8,9 @@ pub const INSTALLED_SERVICE_LABEL: &str = "playitd";
 #[cfg(not(target_os = "windows"))]
 pub const INSTALLED_SERVICE_LABEL: &str = "gg.playit.playitd";
 
+#[cfg(target_os = "linux")]
+const SYSTEMD_SERVICE_NAME: &str = "playit";
+
 #[derive(Debug)]
 pub enum ServiceManagerError {
     NotAvailable(String),
@@ -81,12 +84,22 @@ impl ServiceController {
 
 #[cfg(target_os = "linux")]
 fn start_systemd_service() -> Result<(), ServiceManagerError> {
-    run_systemctl(&["start", "playitd"], ServiceManagerError::StartFailed)
+    run_systemctl(&systemd_start_args(), ServiceManagerError::StartFailed)
 }
 
 #[cfg(target_os = "linux")]
 pub fn stop_systemd_service() -> Result<(), ServiceManagerError> {
-    run_systemctl(&["stop", "playitd"], ServiceManagerError::StopFailed)
+    run_systemctl(&systemd_stop_args(), ServiceManagerError::StopFailed)
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_start_args() -> [&'static str; 2] {
+    ["start", SYSTEMD_SERVICE_NAME]
+}
+
+#[cfg(target_os = "linux")]
+fn systemd_stop_args() -> [&'static str; 2] {
+    ["stop", SYSTEMD_SERVICE_NAME]
 }
 
 #[cfg(target_os = "linux")]
@@ -156,4 +169,19 @@ async fn wait_for_installed_service() -> Result<(), ServiceManagerError> {
     Err(ServiceManagerError::StartFailed(
         "Service did not start within timeout".to_string(),
     ))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::{systemd_start_args, systemd_stop_args};
+
+    #[test]
+    fn linux_start_targets_playit_unit() {
+        assert_eq!(systemd_start_args(), ["start", "playit"]);
+    }
+
+    #[test]
+    fn linux_stop_targets_playit_unit() {
+        assert_eq!(systemd_stop_args(), ["stop", "playit"]);
+    }
 }
