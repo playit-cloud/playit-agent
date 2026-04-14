@@ -556,6 +556,15 @@ mod windows_tray {
         Ok(())
     }
 
+    fn launch_playit_setup() -> Result<(), String> {
+        let cli_path = playit_cli_path()?;
+        Command::new(cli_path)
+            .creation_flags(CREATE_NEW_CONSOLE)
+            .spawn()
+            .map_err(|error| format!("Failed to launch playit.exe: {error}"))?;
+        Ok(())
+    }
+
     fn start_service() -> Result<(), String> {
         if query_service_running() {
             debug_log("start requested but service is already running");
@@ -617,7 +626,9 @@ mod windows_tray {
             }
 
             Ok(())
-        })
+        })?;
+
+        launch_playit_setup()
     }
 
     fn playit_cli_path() -> Result<PathBuf, String> {
