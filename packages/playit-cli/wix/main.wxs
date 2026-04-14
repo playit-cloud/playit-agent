@@ -271,7 +271,7 @@
             BinaryKey="WixCA"
             DllEntry="WixShellExec"
             Impersonate="yes"
-            Return="asyncNoWait" />
+            Return="check" />
 
         <InstallExecuteSequence>
             <Custom Action="LaunchTrayApplication" After="InstallFinalize">NOT Installed AND UILevel &gt;= 5</Custom>

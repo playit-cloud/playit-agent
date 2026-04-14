@@ -15,6 +15,7 @@ mod windows_tray {
     use std::sync::{Arc, Mutex};
 
     use image::ImageFormat;
+    use playit_ipc::ipc::IpcClient;
     use playitd::manager::{
         INSTALLED_SERVICE_LABEL, ensure_installed_service_running, stop_installed_service,
     };
@@ -178,6 +179,7 @@ mod windows_tray {
         open_status: MenuItem,
         start_service: MenuItem,
         stop_service: MenuItem,
+        reset_agent: MenuItem,
         remove_tray_icon: MenuItem,
         service_running: bool,
         menu_visible: bool,
@@ -190,6 +192,7 @@ mod windows_tray {
             let open_status = MenuItem::new("Open Status", true, None);
             let start_service = MenuItem::new("Start Service", true, None);
             let stop_service = MenuItem::new("Stop Service", true, None);
+            let reset_agent = MenuItem::new("Reset Agent", true, None);
             let remove_tray_icon = MenuItem::new("Remove Tray Icon", true, None);
 
             let menu = Menu::new();
@@ -197,6 +200,7 @@ mod windows_tray {
                 &open_status,
                 &start_service,
                 &stop_service,
+                &reset_agent,
                 &remove_tray_icon,
             ])
             .map_err(|error| format!("Failed to build tray menu: {error}"))?;
@@ -207,6 +211,7 @@ mod windows_tray {
                 open_status,
                 start_service,
                 stop_service,
+                reset_agent,
                 remove_tray_icon,
                 service_running: query_service_running(),
                 menu_visible: false,
@@ -451,6 +456,7 @@ mod windows_tray {
             OpenStatus,
             StartService,
             StopService,
+            ResetAgent,
             RemoveTrayIcon,
             Ignore,
         }
@@ -466,6 +472,8 @@ mod windows_tray {
                 MenuAction::StartService
             } else if menu_event.id == *state.stop_service.id() {
                 MenuAction::StopService
+            } else if menu_event.id == *state.reset_agent.id() {
+                MenuAction::ResetAgent
             } else if menu_event.id == *state.remove_tray_icon.id() {
                 MenuAction::RemoveTrayIcon
             } else {
@@ -487,6 +495,11 @@ mod windows_tray {
                 debug_log("menu: stop service");
                 stop_installed_service()
                     .map_err(|error| format!("Failed to stop playitd service: {error}"))?;
+                refresh_tray_status(hwnd)?;
+            }
+            MenuAction::ResetAgent => {
+                debug_log("menu: reset agent");
+                reset_agent()?;
                 refresh_tray_status(hwnd)?;
             }
             MenuAction::RemoveTrayIcon => {
@@ -516,6 +529,7 @@ mod windows_tray {
 
         state.start_service.set_enabled(!service_running);
         state.stop_service.set_enabled(service_running);
+        state.reset_agent.set_enabled(service_running);
 
         if state.menu_visible {
             state.tooltip_dirty |= state_changed;
@@ -565,6 +579,46 @@ mod windows_tray {
         }
 
         result
+    }
+
+    fn reset_agent() -> Result<(), String> {
+        if !query_service_running() {
+            return Err("playitd is not running, so Reset Agent is unavailable".to_string());
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| format!("Failed to create tray runtime: {error}"))?;
+
+        runtime.block_on(async {
+            let mut client = IpcClient::connect()
+                .await
+                .map_err(|error| format!("Failed to connect to playitd over IPC: {error}"))?;
+
+            let reset_response = client
+                .reset_secret()
+                .await
+                .map_err(|error| format!("Failed to reset agent over IPC: {error}"))?;
+
+            if !reset_response.accepted {
+                return Err(reset_response
+                    .message
+                    .unwrap_or_else(|| "playitd rejected the reset request".to_string()));
+            }
+
+            let stop_response = client.stop().await.map_err(|error| {
+                format!("Secret was reset, but failed to stop playitd over IPC: {error}")
+            })?;
+
+            if !stop_response.accepted {
+                return Err(stop_response.message.unwrap_or_else(|| {
+                    "Secret was reset, but playitd rejected the stop request".to_string()
+                }));
+            }
+
+            Ok(())
+        })
     }
 
     fn playit_cli_path() -> Result<PathBuf, String> {
