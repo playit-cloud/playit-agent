@@ -221,16 +221,8 @@ impl UdpClients {
             tunnel_id: extension.tunnel_id.get(),
         };
 
-        let Some(target_addr) = origin.resolve_local(extension.port_offset).await else {
-            return;
-        };
-        let SocketAddr::V4(target_addr) = target_addr else {
-            return;
-        };
-
         // Track bytes coming in (from tunnel to origin)
         let packet_len = packet.len() as u64;
-        self.stats.add_bytes_in(packet_len);
 
         if let Some(&slot) = self.virtual_client_lookup.get(&key) {
             let receiver_closed = self
@@ -245,12 +237,14 @@ impl UdpClients {
                 client.from_tunnel_ts = now_ms;
                 if client
                     .socket
-                    .send_to(packet.as_ref(), target_addr)
+                    .send_to(packet.as_ref(), client.target_addr)
                     .await
                     .is_err()
                 {
                     udp_errors().origin_send_io_error.inc();
                 }
+
+                self.stats.add_bytes_in(packet_len);
                 return;
             }
 
@@ -265,6 +259,14 @@ impl UdpClients {
             udp_errors().new_client_ratelimit.inc();
             return;
         }
+
+        let Some(target_addr) = origin.resolve_local(extension.port_offset).await else {
+            return;
+        };
+
+        let SocketAddr::V4(target_addr) = target_addr else {
+            return;
+        };
 
         let special_lan = target_addr.ip().is_loopback() && origin.proxy_protocol.is_none();
 
