@@ -4,8 +4,41 @@ START_DIR="$(pwd)"
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-SRC_PATH="$1"
-DEB_ARCH="$2"
+if [[ $# -ne 2 && $# -ne 3 ]]; then
+  echo "usage: $0 <playit-cli-binary> [playitd-binary] <deb-arch>" >&2
+  exit 1
+fi
+
+resolve_input_path() {
+  if [[ "$1" = /* ]]; then
+    printf '%s\n' "$1"
+  else
+    printf '%s/%s\n' "${START_DIR}" "$1"
+  fi
+}
+
+CLI_SRC_PATH="$1"
+
+if [[ $# -eq 3 ]]; then
+  DAEMON_SRC_PATH="$2"
+  DEB_ARCH="$3"
+else
+  DAEMON_SRC_PATH="$(dirname "${CLI_SRC_PATH}")/playitd"
+  DEB_ARCH="$2"
+fi
+
+CLI_BIN="$(resolve_input_path "${CLI_SRC_PATH}")"
+DAEMON_BIN="$(resolve_input_path "${DAEMON_SRC_PATH}")"
+
+if [[ ! -f "${CLI_BIN}" ]]; then
+  echo "playit CLI binary not found: ${CLI_BIN}" >&2
+  exit 1
+fi
+
+if [[ ! -f "${DAEMON_BIN}" ]]; then
+  echo "playit daemon binary not found: ${DAEMON_BIN}" >&2
+  exit 1
+fi
 
 TEMP_DIR_NAME="temp-build-${DEB_ARCH}"
 
@@ -33,7 +66,9 @@ WK_DIR=$(pwd)
 echo "PREPARE BINARY AND RUN SCRIPT"
 mkdir -p "${WK_DIR}${INSTALL_FOLDER}"
 
-cp "${START_DIR}/${SRC_PATH}" "${WK_DIR}${INSTALL_FOLDER}/agent"
+cp "${CLI_BIN}" "${WK_DIR}${INSTALL_FOLDER}/agent"
+cp "${DAEMON_BIN}" "${WK_DIR}${INSTALL_FOLDER}/playitd"
+chmod 0755 "${WK_DIR}${INSTALL_FOLDER}/agent" "${WK_DIR}${INSTALL_FOLDER}/playitd"
 
 # Create run script
 echo "#!/bin/bash
@@ -65,11 +100,23 @@ Depends: logrotate
 # setup script
 cat <<EOF > "${WK_DIR}/DEBIAN/postinst"
 #!/bin/bash
-ln -s ${INSTALL_FOLDER}/playit /usr/local/bin/playit
+set -e
+
+mkdir -p /usr/local/bin
+ln -sfn ${INSTALL_FOLDER}/playit /usr/local/bin/playit
 mkdir -p /var/log/playit # make logs folder
 chmod 0766 -R /var/log/playit
 mkdir -p /etc/playit
 chmod 0777 /etc/playit
+
+if ! command -v systemctl >/dev/null 2>&1; then
+  echo "systemctl is required to install playit" >&2
+  exit 1
+fi
+
+systemctl daemon-reload
+systemctl enable playit
+systemctl restart playit || systemctl start playit
 EOF
 chmod 0555 "${WK_DIR}/DEBIAN/postinst"
 
