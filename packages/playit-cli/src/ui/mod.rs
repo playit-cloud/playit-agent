@@ -3,8 +3,8 @@ use std::sync::Arc;
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use playit_agent_core::utils::now_milli;
 
-use crate::signal_handle::get_signal_handle;
 use crate::CliError;
+use crate::signal_handle::get_signal_handle;
 
 pub mod log_capture;
 pub mod tui_app;

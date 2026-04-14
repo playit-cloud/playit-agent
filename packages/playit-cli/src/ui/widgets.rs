@@ -1,10 +1,10 @@
 use playit_agent_core::utils::now_milli;
 use ratatui::{
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
-    Frame,
 };
 
 use super::tui_app::{AccountStatusInfo, AgentData, ConnectionStats};
@@ -131,7 +131,10 @@ pub fn render_stats_bar(frame: &mut Frame, area: Rect, stats: &ConnectionStats) 
     // Bytes In
     let bytes_in = Paragraph::new(Line::from(vec![
         Span::styled("↓ In: ", Style::default().fg(Color::Green)),
-        Span::styled(format_bytes(stats.bytes_in), Style::default().fg(Color::White)),
+        Span::styled(
+            format_bytes(stats.bytes_in),
+            Style::default().fg(Color::White),
+        ),
     ]))
     .alignment(Alignment::Center);
     frame.render_widget(bytes_in, chunks[0]);
@@ -139,7 +142,10 @@ pub fn render_stats_bar(frame: &mut Frame, area: Rect, stats: &ConnectionStats) 
     // Bytes Out
     let bytes_out = Paragraph::new(Line::from(vec![
         Span::styled("↑ Out: ", Style::default().fg(Color::Blue)),
-        Span::styled(format_bytes(stats.bytes_out), Style::default().fg(Color::White)),
+        Span::styled(
+            format_bytes(stats.bytes_out),
+            Style::default().fg(Color::White),
+        ),
     ]))
     .alignment(Alignment::Center);
     frame.render_widget(bytes_out, chunks[1]);
@@ -147,7 +153,10 @@ pub fn render_stats_bar(frame: &mut Frame, area: Rect, stats: &ConnectionStats) 
     // TCP Connections
     let tcp = Paragraph::new(Line::from(vec![
         Span::styled("TCP: ", Style::default().fg(Color::Cyan)),
-        Span::styled(stats.active_tcp.to_string(), Style::default().fg(Color::White)),
+        Span::styled(
+            stats.active_tcp.to_string(),
+            Style::default().fg(Color::White),
+        ),
     ]))
     .alignment(Alignment::Center);
     frame.render_widget(tcp, chunks[2]);
@@ -155,7 +164,10 @@ pub fn render_stats_bar(frame: &mut Frame, area: Rect, stats: &ConnectionStats) 
     // UDP Flows
     let udp = Paragraph::new(Line::from(vec![
         Span::styled("UDP: ", Style::default().fg(Color::Magenta)),
-        Span::styled(stats.active_udp.to_string(), Style::default().fg(Color::White)),
+        Span::styled(
+            stats.active_udp.to_string(),
+            Style::default().fg(Color::White),
+        ),
     ]))
     .alignment(Alignment::Center);
     frame.render_widget(udp, chunks[3]);
@@ -173,13 +185,33 @@ pub fn render_help_bar(frame: &mut Frame, area: Rect, quit_confirm: bool) {
         ])
     } else {
         Line::from(vec![
-            Span::styled("j/k", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "j/k",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Scroll  "),
-            Span::styled("Tab", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Tab",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Switch Panel  "),
-            Span::styled("g/G", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "g/G",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Top/Bottom  "),
-            Span::styled("q", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "q",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::raw(" Quit"),
         ])
     };
