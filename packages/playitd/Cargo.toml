@@ -36,23 +36,5 @@ path = "src/bin/playitd.rs"
 name = "playitd-service"
 path = "src/bin/playitd-service.rs"
 
-[[bin]]
-name = "playitd-tray"
-path = "src/bin/playitd-tray.rs"
-
 [target."cfg(windows)".dependencies]
-image = { version = "0.25", default-features = false, features = ["ico"] }
-tray-icon = "0.22"
 windows-service = "0.8.0"
-windows-sys = { version = "0.59.0", features = [
-    "Win32_Foundation",
-    "Win32_Graphics_Gdi",
-    "Win32_System_Console",
-    "Win32_System_Com",
-    "Win32_System_LibraryLoader",
-    "Win32_Security",
-    "Win32_System_Services",
-    "Win32_System_Threading",
-    "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
-] }

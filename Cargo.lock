@@ -1473,6 +1473,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kanal"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e3953adf0cd667798b396c2fa13552d6d9b3269d7dd1154c4c416442d1ff574"
+dependencies = [
+ "futures-core",
+ "lock_api",
+]
+
+[[package]]
 name = "keyboard-types"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1980,7 +1990,6 @@ dependencies = [
  "dirs 6.0.0",
  "dotenv",
  "hex",
- "image",
  "interprocess",
  "playit-agent-core",
  "playit-api-client",
@@ -1995,8 +2004,19 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "tray-icon",
  "windows-service",
+]
+
+[[package]]
+name = "playitd-tray"
+version = "0.17.1"
+dependencies = [
+ "image",
+ "kanal",
+ "playit-ipc",
+ "playitd",
+ "tokio",
+ "tray-icon",
  "windows-sys 0.59.0",
 ]
 

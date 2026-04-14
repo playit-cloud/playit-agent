@@ -80,8 +80,19 @@
 
         <MajorUpgrade
             Schedule="afterInstallInitialize"
+            AllowSameVersionUpgrades="yes"
             AllowDowngrades="no"
             DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit."/>
+
+        <util:CloseApplication
+            Id="ClosePlayitTray"
+            Target="playitd-tray.exe"
+            Description="The Playit tray application must be closed before setup can continue."
+            CloseMessage="yes"
+            EndSessionMessage="yes"
+            RebootPrompt="no"
+            TerminateProcess="0"
+            Timeout="10" />
 
         <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" DiskPrompt="CD-ROM #1"/>
         <Property Id="DiskPrompt" Value="Playit Installation"/>
