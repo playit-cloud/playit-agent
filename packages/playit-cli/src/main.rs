@@ -197,7 +197,7 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
             run_attach_command(&target, attach_mode).await?;
         }
         Some(Commands::Start) => {
-            run_start_command(&target).await?;
+            run_start_command(&mut console, &target).await?;
         }
         Some(Commands::Stop) => {
             run_stop_command(&target).await?;
@@ -254,7 +254,7 @@ fn init_stdout_tracing() -> tracing_appender::non_blocking::WorkerGuard {
 }
 
 pub async fn run_setup_flow(console: &mut ConsoleUi, target: &CliTarget) -> Result<(), CliError> {
-    ensure_service_waiting_for_secret(target).await?;
+    ensure_service_waiting_for_secret(console, target).await?;
 
     let claim_code = claim_generate();
     console
@@ -262,7 +262,7 @@ pub async fn run_setup_flow(console: &mut ConsoleUi, target: &CliTarget) -> Resu
         .await;
 
     let key = claim_exchange(console, &claim_code, ClaimAgentType::Assignable, 0).await?;
-    provision_service_secret(target, &key).await?;
+    provision_service_secret(console, target, &key).await?;
 
     let api = PlayitApi::create(API_BASE.to_string(), Some(key));
     if let Ok(session) = api.login_guest().await {

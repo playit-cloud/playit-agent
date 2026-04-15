@@ -5,6 +5,8 @@ use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 use playit_ipc::model::{
     AgentLifecycle, LogLevel as ServiceLogLevel, ServicePhase, ServiceUpdate, SubscribeResponse,
 };
+#[cfg(target_os = "linux")]
+use playitd::manager::is_systemd_service_active;
 use playitd::manager::{ensure_installed_service_running, stop_installed_service};
 
 use crate::ui::{ConnectionStats, ConsoleUi, TuiApp};
@@ -21,6 +23,12 @@ enum AttachErrorContext {
     AutoCommand {
         start_attempt_failed: Option<String>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InstalledServiceStartState {
+    AlreadyRunning,
+    Started,
 }
 
 #[derive(Debug, Clone)]
@@ -55,7 +63,7 @@ pub async fn run_auto_command(
     attach_mode: AttachMode,
 ) -> Result<(), CliError> {
     let start_attempt_failed = match target {
-        CliTarget::InstalledService => ensure_installed_service_running()
+        CliTarget::InstalledService => ensure_installed_service_running_for_cli(Some(console))
             .await
             .err()
             .map(|error| error.to_string()),
@@ -315,18 +323,22 @@ fn print_detach_message() {
     println!("Use '{} stop' to stop the service.", *EXE_NAME);
 }
 
-pub async fn run_start_command(target: &CliTarget) -> Result<(), CliError> {
+pub async fn run_start_command(
+    console: &mut ConsoleUi,
+    target: &CliTarget,
+) -> Result<(), CliError> {
     if let CliTarget::ExplicitSocket(path) = target {
         return Err(CliError::ServiceError(format!(
             "The start command only manages the installed playitd service and cannot be used with --socket-path ({path})."
         )));
     }
 
-    ensure_installed_service_running()
-        .await
-        .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
-
-    println!("playitd service started");
+    match ensure_installed_service_running_for_cli(Some(console)).await? {
+        InstalledServiceStartState::AlreadyRunning => {
+            println!("playitd service is already running")
+        }
+        InstalledServiceStartState::Started => println!("playitd service started"),
+    }
     println!("Run \"playit attach\" to see the playit program.");
     Ok(())
 }
@@ -447,11 +459,12 @@ pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
     Ok(())
 }
 
-pub async fn ensure_service_waiting_for_secret(target: &CliTarget) -> Result<(), CliError> {
+pub async fn ensure_service_waiting_for_secret(
+    console: &mut ConsoleUi,
+    target: &CliTarget,
+) -> Result<(), CliError> {
     if matches!(target, CliTarget::InstalledService) {
-        ensure_installed_service_running()
-            .await
-            .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
+        ensure_installed_service_running_for_cli(Some(console)).await?;
     }
 
     let mut client = connect_target(target).await?;
@@ -482,11 +495,13 @@ pub async fn ensure_service_waiting_for_secret(target: &CliTarget) -> Result<(),
     }
 }
 
-pub async fn provision_service_secret(target: &CliTarget, secret: &str) -> Result<(), CliError> {
+pub async fn provision_service_secret(
+    console: &mut ConsoleUi,
+    target: &CliTarget,
+    secret: &str,
+) -> Result<(), CliError> {
     if matches!(target, CliTarget::InstalledService) {
-        ensure_installed_service_running()
-            .await
-            .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
+        ensure_installed_service_running_for_cli(Some(console)).await?;
     }
 
     let mut client = connect_target(target).await?;
@@ -576,6 +591,63 @@ async fn connect_target(target: &CliTarget) -> Result<IpcClient, CliError> {
         .map_err(|_| ipc_connection_error())
 }
 
+async fn ensure_installed_service_running_for_cli(
+    console: Option<&mut ConsoleUi>,
+) -> Result<InstalledServiceStartState, CliError> {
+    if IpcClient::is_running(get_default_socket_path()).await {
+        return Ok(InstalledServiceStartState::AlreadyRunning);
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        if is_systemd_service_active().map_err(|error| {
+            CliError::ServiceError(format!("Failed to check service status: {error}"))
+        })? {
+            return Ok(InstalledServiceStartState::AlreadyRunning);
+        }
+
+        if let Some(console) = console {
+            let should_start = console
+                .yn_question(
+                    linux_service_start_prompt(current_user_is_root()),
+                    Some(true),
+                )
+                .await?;
+
+            if !should_start {
+                return Err(CliError::ServiceError(
+                    "The playit service is not running. Start it with `systemctl start playit` and try again."
+                        .to_string(),
+                ));
+            }
+        }
+    }
+
+    ensure_installed_service_running()
+        .await
+        .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
+
+    Ok(InstalledServiceStartState::Started)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_service_start_prompt(is_root: bool) -> String {
+    let mut prompt = String::from(
+        "The playit service is not running.\nWould you like us to start it?\n\nCommand: systemctl start playit",
+    );
+
+    if !is_root {
+        prompt.push_str("\nThis will ask you for your password.");
+    }
+
+    prompt
+}
+
+#[cfg(target_os = "linux")]
+fn current_user_is_root() -> bool {
+    unsafe { libc::geteuid() == 0 }
+}
+
 fn ipc_connection_error() -> CliError {
     CliError::IpcError(
         "Failed to connect to playitd over IPC. Start playitd and try again.".to_string(),
@@ -642,5 +714,24 @@ fn format_log_level(level: &ServiceLogLevel) -> &'static str {
         ServiceLogLevel::Info => "INFO",
         ServiceLogLevel::Warn => "WARN",
         ServiceLogLevel::Error => "ERROR",
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::linux_service_start_prompt;
+
+    #[test]
+    fn linux_start_prompt_includes_command() {
+        let prompt = linux_service_start_prompt(true);
+        assert!(prompt.contains("The playit service is not running."));
+        assert!(prompt.contains("Command: systemctl start playit"));
+        assert!(!prompt.contains("password"));
+    }
+
+    #[test]
+    fn linux_start_prompt_warns_non_root_about_password() {
+        let prompt = linux_service_start_prompt(false);
+        assert!(prompt.contains("This will ask you for your password."));
     }
 }
