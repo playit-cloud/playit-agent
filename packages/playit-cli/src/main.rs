@@ -23,7 +23,6 @@ use playit_api_client::http_client::HttpClientError;
 use playit_api_client::{PlayitApi, api::*};
 
 use crate::signal_handle::get_signal_handle;
-use crate::ui::log_capture::LogCaptureLayer;
 use crate::ui::{UI, UISettings};
 
 pub static API_BASE: LazyLock<String> =
@@ -179,7 +178,6 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
     // Use log-only mode if stdout flag is set or if attach --stdout was requested.
     let use_log_only = log_only || attach_stdout;
 
-    // Create UI first so we can get its log capture
     let mut ui = UI::new(UISettings {
         auto_answer: None,
         log_only: use_log_only,
@@ -202,14 +200,7 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
             Some(guard)
         }
         false => {
-            // TUI mode - set up log capture layer with filter
-            if let Some(log_capture) = ui.log_capture() {
-                let capture_layer = LogCaptureLayer::new(log_capture);
-                tracing_subscriber::registry()
-                    .with(log_filter)
-                    .with(capture_layer)
-                    .init();
-            }
+            tracing_subscriber::registry().with(log_filter).init();
             None
         }
     };
