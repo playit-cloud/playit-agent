@@ -127,7 +127,7 @@ jobs:
           targets: ${{ matrix.platform.arch }}
 
       - run: cargo install cargo-wix
-      - run: cargo build --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd
+      - run: cargo build --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd --package playitd-tray
       - run: cargo wix --target ${{ matrix.platform.arch }} --package playit-cli --nocapture --output=target/wix/${{ matrix.platform.artifact }}.msi
 
       - name: Upload .exe
