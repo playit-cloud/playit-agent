@@ -591,6 +591,14 @@ fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
             ),
             false,
         ),
+        AgentLifecycle::DisabledOverLimit(error) => protocol_error(
+            ServiceErrorCode::ProvisioningUnavailable,
+            format!(
+                "playitd is not waiting for secret provisioning because the account is over the agent limit: {}",
+                error.message
+            ),
+            false,
+        ),
         AgentLifecycle::Starting => protocol_error(
             ServiceErrorCode::ProvisioningUnavailable,
             "playitd is starting and not waiting for secret provisioning".to_string(),

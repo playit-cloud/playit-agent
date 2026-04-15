@@ -43,6 +43,7 @@ pub struct ProtocolInfo {
 pub enum ServicePhase {
     WaitingForSecret,
     HasInvalidSecret,
+    DisabledOverLimit,
     #[default]
     Starting,
     Running,
@@ -57,6 +58,7 @@ pub enum ServiceErrorCode {
     Internal,
     UnsupportedProtocol,
     InvalidRequest,
+    AgentDisabledOverLimit,
     InvalidSecret,
     SecretPinned,
     ProvisioningUnavailable,
@@ -115,6 +117,7 @@ pub struct AgentState {
 pub enum AgentLifecycle {
     WaitingForSecret,
     HasInvalidSecret(ServiceError),
+    DisabledOverLimit(ServiceError),
     #[default]
     Starting,
     Running(AgentState),

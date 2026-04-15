@@ -12,6 +12,9 @@ use crate::linux;
 use crate::ui::{ConnectionStats, ConsoleUi, TuiApp};
 use crate::{CliError, EXE_NAME, run_setup_flow};
 
+const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
+const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachMode {
     Interactive,
@@ -106,6 +109,12 @@ pub async fn run_auto_command(
             wait_for_service_waiting_for_secret(target).await?;
             run_setup_flow(console, target).await?;
         }
+        AgentLifecycle::DisabledOverLimit(_) => {
+            return Err(CliError::ServiceError(format!(
+                "playitd cannot start because this account is over the agent limit. {}",
+                agent_over_limit_guidance()
+            )));
+        }
         AgentLifecycle::Starting => {
             return Err(CliError::ServiceError(
                 "Timed out waiting for playitd to finish starting".to_string(),
@@ -183,6 +192,7 @@ async fn wait_for_service_waiting_for_secret(target: &CliTarget) -> Result<(), C
         match lifecycle {
             AgentLifecycle::WaitingForSecret => return Ok(()),
             AgentLifecycle::HasInvalidSecret(_)
+            | AgentLifecycle::DisabledOverLimit(_)
             | AgentLifecycle::Running(_)
             | AgentLifecycle::Starting => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
@@ -449,6 +459,9 @@ pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
             if !status.protocol.capabilities.is_empty() {
                 println!("  Capabilities: {:?}", status.protocol.capabilities);
             }
+            if matches!(status.phase, ServicePhase::DisabledOverLimit) {
+                println!("  Action: {}", agent_over_limit_guidance());
+            }
             if let Some(error) = status.last_error {
                 println!("  Last error: {}", error.message);
             }
@@ -477,6 +490,10 @@ pub async fn ensure_service_waiting_for_secret(
         AgentLifecycle::HasInvalidSecret(error) => Err(CliError::ServiceError(format!(
             "playitd is not waiting for setup because it has an invalid secret configuration: {}. Reset the daemon secret first.",
             error.message
+        ))),
+        AgentLifecycle::DisabledOverLimit(_) => Err(CliError::ServiceError(format!(
+            "playitd is not waiting for setup because this account is over the agent limit. {}",
+            agent_over_limit_guidance()
         ))),
         AgentLifecycle::Starting => Err(CliError::ServiceError(
             "playitd is starting and is not waiting for setup".to_string(),
@@ -674,11 +691,18 @@ fn format_service_phase(phase: &ServicePhase) -> &'static str {
     match phase {
         ServicePhase::WaitingForSecret => "waiting_for_secret",
         ServicePhase::HasInvalidSecret => "has_invalid_secret",
+        ServicePhase::DisabledOverLimit => "disabled_over_limit",
         ServicePhase::Starting => "starting",
         ServicePhase::Running => "running",
         ServicePhase::Stopping => "stopping",
         ServicePhase::Error => "error",
     }
+}
+
+fn agent_over_limit_guidance() -> String {
+    format!(
+        "Visit {ACCOUNT_AGENTS_URL} to delete unused agents, or upgrade at {ACCOUNT_UPGRADE_URL} to increase the limit from 2 agents to 10."
+    )
 }
 
 fn format_log_level(level: &ServiceLogLevel) -> &'static str {

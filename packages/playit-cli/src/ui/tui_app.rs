@@ -25,6 +25,8 @@ use crate::CliError;
 use crate::signal_handle::get_signal_handle;
 
 const SERVICE_LOG_CAPACITY: usize = 500;
+const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
+const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
 
 /// Data about the running agent
 #[derive(Clone, Default)]
@@ -162,6 +164,10 @@ impl TuiApp {
             AgentLifecycle::HasInvalidSecret(error) => self.set_message(format!(
                 "playitd has an invalid secret configuration: {}",
                 error.message
+            )),
+            AgentLifecycle::DisabledOverLimit(_) => self.set_message(format!(
+                "playitd is disabled because this account is over the agent limit. {}",
+                agent_over_limit_guidance()
             )),
             AgentLifecycle::Starting => {
                 self.set_message("playitd is starting the agent");
@@ -623,6 +629,16 @@ impl TuiApp {
 }
 
 fn status_message(status: &ServiceStatus) -> Option<String> {
+    if matches!(
+        status.phase,
+        playit_ipc::model::ServicePhase::DisabledOverLimit
+    ) {
+        return Some(format!(
+            "playitd status: disabled_over_limit ({})",
+            agent_over_limit_guidance()
+        ));
+    }
+
     if let Some(error) = &status.last_error {
         return Some(format!(
             "playitd status: {} ({})",
@@ -642,11 +658,18 @@ fn service_phase_label(status: &ServiceStatus) -> &'static str {
     match status.phase {
         playit_ipc::model::ServicePhase::WaitingForSecret => "waiting_for_secret",
         playit_ipc::model::ServicePhase::HasInvalidSecret => "has_invalid_secret",
+        playit_ipc::model::ServicePhase::DisabledOverLimit => "disabled_over_limit",
         playit_ipc::model::ServicePhase::Starting => "starting",
         playit_ipc::model::ServicePhase::Running => "running",
         playit_ipc::model::ServicePhase::Stopping => "stopping",
         playit_ipc::model::ServicePhase::Error => "error",
     }
+}
+
+fn agent_over_limit_guidance() -> String {
+    format!(
+        "Visit {ACCOUNT_AGENTS_URL} to delete unused agents, or upgrade at {ACCOUNT_UPGRADE_URL} to increase the limit from 2 agents to 10."
+    )
 }
 
 fn level_label(level: &LogLevel) -> &'static str {
@@ -805,6 +828,25 @@ mod tests {
             app.mode,
             TuiMode::Message {
                 message: "playitd status: error (boom)".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn disabled_over_limit_status_shows_recovery_guidance() {
+        let mut app = TuiApp::new();
+        app.apply_status(ServiceStatus {
+            phase: ServicePhase::DisabledOverLimit,
+            ..Default::default()
+        });
+
+        assert_eq!(
+            app.mode,
+            TuiMode::Message {
+                message: format!(
+                    "playitd status: disabled_over_limit ({})",
+                    agent_over_limit_guidance()
+                )
             }
         );
     }

@@ -16,7 +16,9 @@ use playit_agent_core::playit_agent::{PlayitAgent, PlayitAgentSettings};
 use playit_agent_core::stats::AgentStats;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
-use playit_api_client::api::{AccountStatus, ApiResponseError, AuthError, Platform};
+use playit_api_client::api::{
+    AccountStatus, ApiResponseError, AuthError, Platform, ProtoRegisterError,
+};
 use playit_ipc::ipc::{IpcError, get_default_socket_path, protocol_info};
 use playit_ipc::model::{
     AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ConnectionStats,
@@ -32,6 +34,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub const DEFAULT_VARIANT_ID: &str = "308943e8-faef-4835-a2ba-270351f72aa3";
+const AGENT_LIMIT_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 pub struct DaemonOptions {
@@ -597,6 +600,45 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
                         }
                     }
                 }
+                Err(error) if is_agent_disabled_over_limit_error(&error) => {
+                    tracing::warn!(
+                        ?error,
+                        "agent disabled because the account is over the agent limit"
+                    );
+
+                    let service_error = daemon_error(
+                        ServiceErrorCode::AgentDisabledOverLimit,
+                        agent_disabled_over_limit_message(),
+                        true,
+                    );
+                    publish_runtime_state(
+                        &state_cache,
+                        &event_tx,
+                        status_context.status(
+                            ServicePhase::DisabledOverLimit,
+                            true,
+                            Some(service_error.clone()),
+                        ),
+                        AgentLifecycle::DisabledOverLimit(service_error),
+                    )
+                    .await;
+
+                    tokio::select! {
+                        _ = cancel_token.cancelled() => {
+                            publish_runtime_state(
+                                &state_cache,
+                                &event_tx,
+                                status_context.status(ServicePhase::Stopping, true, None),
+                                AgentLifecycle::Stopping,
+                            )
+                            .await;
+                            let _ = ipc_handle.await;
+                            tracing::info!("playitd shutdown while waiting for the account agent limit to be resolved");
+                            return Ok(());
+                        }
+                        _ = tokio::time::sleep(AGENT_LIMIT_RETRY_INTERVAL) => {}
+                    }
+                }
                 Err(error) => {
                     let message = format!("Failed to create agent: {error:?}");
                     let service_error =
@@ -986,12 +1028,30 @@ fn daemon_error(code: ServiceErrorCode, message: String, retryable: bool) -> Ser
     }
 }
 
+fn agent_disabled_over_limit_message() -> String {
+    "This playit account has reached its agent limit.".to_string()
+}
+
 fn is_invalid_agent_secret_error(error: &SetupError) -> bool {
     matches!(
         error,
         SetupError::ApiError(ApiResponseError::Auth(
             AuthError::InvalidAgentKey | AuthError::NoLongerValid
         ))
+    )
+}
+
+fn parse_proto_register_error(error: &SetupError) -> Option<ProtoRegisterError> {
+    match error {
+        SetupError::ApiFail(payload) => serde_json::from_str(payload).ok(),
+        _ => None,
+    }
+}
+
+fn is_agent_disabled_over_limit_error(error: &SetupError) -> bool {
+    matches!(
+        parse_proto_register_error(error),
+        Some(ProtoRegisterError::AgentDisabledOverLimit)
     )
 }
 
@@ -1047,9 +1107,9 @@ fn init_tracing(
 
 #[cfg(test)]
 mod tests {
-    use super::is_invalid_agent_secret_error;
+    use super::{is_agent_disabled_over_limit_error, is_invalid_agent_secret_error};
     use playit_agent_core::agent_control::errors::SetupError;
-    use playit_api_client::api::{ApiResponseError, AuthError};
+    use playit_api_client::api::{ApiResponseError, AuthError, ProtoRegisterError};
 
     #[test]
     fn detects_invalid_agent_secret_errors() {
@@ -1067,5 +1127,21 @@ mod tests {
             ApiResponseError::Auth(AuthError::AuthRequired)
         )));
         assert!(!is_invalid_agent_secret_error(&SetupError::FailedToConnect));
+    }
+
+    #[test]
+    fn detects_agent_disabled_over_limit_errors() {
+        let payload = serde_json::to_string(&ProtoRegisterError::AgentDisabledOverLimit).unwrap();
+        assert!(is_agent_disabled_over_limit_error(&SetupError::ApiFail(
+            payload
+        )));
+    }
+
+    #[test]
+    fn ignores_other_proto_register_failures() {
+        let payload = serde_json::to_string(&ProtoRegisterError::DisabledByUser).unwrap();
+        assert!(!is_agent_disabled_over_limit_error(&SetupError::ApiFail(
+            payload
+        )));
     }
 }
