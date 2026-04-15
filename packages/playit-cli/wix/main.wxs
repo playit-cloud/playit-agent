@@ -419,59 +419,321 @@ End If
         -->
         <!--<Property Id="ARPHELPLINK" Value="ChangeMe"/>-->
 
-        <UI>
-            <UIRef Id="WixUI_FeatureTree"/>
+        <UI Id="PlayitUI_FeatureTree">
+            <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+            <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+            <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
 
-            <Dialog Id="PlayitCloseRunningDlg" Width="370" Height="270" Title="[ProductName] Setup" TrackDiskSpace="yes">
-                <Control Id="Continue" Type="PushButton" X="212" Y="243" Width="80" Height="17" Default="yes" Text="Continue">
-                    <Publish Property="PLAYITD_CLOSE_APPROVED" Value="1" Order="1">1</Publish>
-                    <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2">1</Publish>
+            <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
+            <Property Id="WixUI_Mode" Value="FeatureTree" />
+
+            <DialogRef Id="ErrorDlg" />
+            <DialogRef Id="FatalError" />
+            <DialogRef Id="FilesInUse" />
+            <DialogRef Id="MsiRMFilesInUse" />
+            <DialogRef Id="PrepareDlg" />
+            <DialogRef Id="ProgressDlg" />
+            <DialogRef Id="ResumeDlg" />
+            <DialogRef Id="UserExit" />
+            <DialogRef Id="WelcomeDlg" />
+            <DialogRef Id="CustomizeDlg" />
+            <DialogRef Id="MaintenanceWelcomeDlg" />
+            <DialogRef Id="MaintenanceTypeDlg" />
+
+            <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999">1</Publish>
+
+            <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="CustomizeDlg">NOT Installed</Publish>
+            <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="PlayitVerifyReadyDlg">Installed AND PATCH</Publish>
+
+            <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="1">Installed</Publish>
+            <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="2">NOT Installed</Publish>
+            <Publish Dialog="CustomizeDlg" Control="Next" Event="NewDialog" Value="PlayitVerifyReadyDlg">1</Publish>
+
+            <Publish Dialog="PlayitVerifyReadyDlg" Control="Back" Event="NewDialog" Value="CustomizeDlg" Order="1">NOT Installed OR WixUI_InstallMode = "Change"</Publish>
+            <Publish Dialog="PlayitVerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2">Installed AND NOT PATCH</Publish>
+            <Publish Dialog="PlayitVerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="3">Installed AND PATCH</Publish>
+
+            <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg">1</Publish>
+
+            <Publish Dialog="MaintenanceTypeDlg" Control="ChangeButton" Event="NewDialog" Value="CustomizeDlg">1</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="PlayitVerifyReadyDlg">1</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="PlayitVerifyReadyDlg">1</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg">1</Publish>
+
+            <Dialog Id="PlayitVerifyReadyDlg" Width="370" Height="270" Title="!(loc.VerifyReadyDlg_Title)" TrackDiskSpace="yes">
+                <Control Id="Install" Type="PushButton" ElevationShield="yes" X="212" Y="243" Width="80" Height="17" Default="yes" Hidden="yes" Disabled="yes" Text="!(loc.VerifyReadyDlgInstall)">
+                    <Condition Action="show">NOT Installed AND ALLUSERS</Condition>
+                    <Condition Action="enable">NOT Installed</Condition>
+                    <Condition Action="default">NOT Installed</Condition>
+                    <Publish Event="DoAction" Value="DetectRunningPlayit" Order="1">1</Publish>
+                    <Publish Event="NewDialog" Value="PlayitCloseRunningDlg" Order="2">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="3"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="4"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="5"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="6"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="7"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND ((OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F"))]]></Publish>
                 </Control>
-                <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
-                    <Publish Event="NewDialog" Value="CustomizeDlg" Order="1">PLAYITD_CLOSE_RETURN_DIALOG = "CustomizeDlg"</Publish>
-                    <Publish Event="NewDialog" Value="MaintenanceTypeDlg" Order="2">PLAYITD_CLOSE_RETURN_DIALOG = "MaintenanceTypeDlg"</Publish>
-                    <Publish Event="NewDialog" Value="WelcomeDlg" Order="3">PLAYITD_CLOSE_RETURN_DIALOG = "WelcomeDlg"</Publish>
+                <Control Id="InstallNoShield" Type="PushButton" ElevationShield="no" X="212" Y="243" Width="80" Height="17" Default="yes" Hidden="yes" Disabled="yes" Text="!(loc.VerifyReadyDlgInstall)">
+                    <Condition Action="show">NOT Installed AND NOT ALLUSERS</Condition>
+                    <Condition Action="enable">NOT Installed</Condition>
+                    <Condition Action="default">NOT Installed</Condition>
+                    <Publish Event="DoAction" Value="DetectRunningPlayit" Order="1">1</Publish>
+                    <Publish Event="NewDialog" Value="PlayitCloseRunningDlg" Order="2">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="3"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="4"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="5"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="6"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="7"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND ((OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F"))]]></Publish>
                 </Control>
-                <Control Id="Title" Type="Text" X="15" Y="15" Width="320" Height="30" Transparent="yes" NoPrefix="yes" Text="Playit must be closed before setup continues" />
-                <Control Id="Description" Type="Text" X="25" Y="70" Width="320" Height="40" NoPrefix="yes" Text="Setup needs to close the Playit tray icon and stop the Playit service before it can update files." />
-                <Control Id="RestartInfo" Type="Text" X="25" Y="112" Width="320" Height="28" NoPrefix="yes" Text="If the Playit service is running now, setup will start it again after the install finishes." />
-                <Control Id="ServiceLine" Type="Text" X="25" Y="148" Width="320" Height="20" Hidden="yes" NoPrefix="yes" Text="The Playit service is currently running.">
-                    <Condition Action="show">PLAYITD_SERVICE_RUNNING</Condition>
+                <Control Id="Change" Type="PushButton" ElevationShield="yes" X="212" Y="243" Width="80" Height="17" Default="yes" Hidden="yes" Disabled="yes" Text="!(loc.VerifyReadyDlgChange)">
+                    <Condition Action="show">WixUI_InstallMode = "Change" AND ALLUSERS AND (ADDLOCAL OR REMOVE)</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Change"</Condition>
+                    <Condition Action="default">WixUI_InstallMode = "Change"</Condition>
+                    <Publish Event="DoAction" Value="DetectRunningPlayit" Order="1">1</Publish>
+                    <Publish Event="NewDialog" Value="PlayitCloseRunningDlg" Order="2">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="3"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="4"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="5"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="6"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="7"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND ((OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F"))]]></Publish>
                 </Control>
-                <Control Id="TrayLine" Type="Text" X="25" Y="170" Width="320" Height="20" Hidden="yes" NoPrefix="yes" Text="The Playit tray icon is currently running.">
-                    <Condition Action="show">PLAYITD_TRAY_RUNNING</Condition>
+                <Control Id="ChangeNoShield" Type="PushButton" ElevationShield="no" X="212" Y="243" Width="80" Height="17" Default="yes" Hidden="yes" Disabled="yes" Text="!(loc.VerifyReadyDlgChange)">
+                    <Condition Action="show">WixUI_InstallMode = "Change" AND (NOT ALLUSERS OR (NOT ADDLOCAL AND NOT REMOVE))</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Change"</Condition>
+                    <Condition Action="default">WixUI_InstallMode = "Change"</Condition>
+                    <Publish Event="DoAction" Value="DetectRunningPlayit" Order="1">1</Publish>
+                    <Publish Event="NewDialog" Value="PlayitCloseRunningDlg" Order="2">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="3"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="4"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="5"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="6"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="7"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND ((OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F"))]]></Publish>
                 </Control>
-                <Control Id="Question" Type="Text" X="25" Y="198" Width="320" Height="20" NoPrefix="yes" Text="Select Continue to let setup close Playit, or Cancel to go back." />
+                <Control Id="Repair" Type="PushButton" X="212" Y="243" Width="80" Height="17" Default="yes" Hidden="yes" Disabled="yes" Text="!(loc.VerifyReadyDlgRepair)">
+                    <Condition Action="show">WixUI_InstallMode = "Repair"</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Repair"</Condition>
+                    <Condition Action="default">WixUI_InstallMode = "Repair"</Condition>
+                    <Publish Event="DoAction" Value="DetectRunningPlayit" Order="1">1</Publish>
+                    <Publish Event="NewDialog" Value="PlayitCloseRunningDlg" Order="2">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+                    <Publish Event="ReinstallMode" Value="ecmus" Order="3"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="Reinstall" Value="All" Order="4"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="5"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="6"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="7"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="8"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="9"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND ((OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F"))]]></Publish>
+                </Control>
+                <Control Id="Remove" Type="PushButton" ElevationShield="yes" X="212" Y="243" Width="80" Height="17" Hidden="yes" Disabled="yes" Text="!(loc.VerifyReadyDlgRemove)">
+                    <Condition Action="show">WixUI_InstallMode = "Remove" AND ALLUSERS</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Remove"</Condition>
+                    <Publish Event="DoAction" Value="DetectRunningPlayit" Order="1">1</Publish>
+                    <Publish Event="NewDialog" Value="PlayitCloseRunningDlg" Order="2">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+                    <Publish Event="Remove" Value="All" Order="3"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="4"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="5"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="6"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="7"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="8"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND ((OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F"))]]></Publish>
+                </Control>
+                <Control Id="RemoveNoShield" Type="PushButton" ElevationShield="no" X="212" Y="243" Width="80" Height="17" Hidden="yes" Disabled="yes" Text="!(loc.VerifyReadyDlgRemove)">
+                    <Condition Action="show">WixUI_InstallMode = "Remove" AND NOT ALLUSERS</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Remove"</Condition>
+                    <Publish Event="DoAction" Value="DetectRunningPlayit" Order="1">1</Publish>
+                    <Publish Event="NewDialog" Value="PlayitCloseRunningDlg" Order="2">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+                    <Publish Event="Remove" Value="All" Order="3"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="4"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="5"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="6"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="7"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="8"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND ((OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F"))]]></Publish>
+                </Control>
+                <Control Id="Update" Type="PushButton" ElevationShield="yes" X="212" Y="243" Width="80" Height="17" Hidden="yes" Disabled="yes" Text="!(loc.VerifyReadyDlgUpdate)">
+                    <Condition Action="show">WixUI_InstallMode = "Update" AND ALLUSERS</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Update"</Condition>
+                    <Publish Event="DoAction" Value="DetectRunningPlayit" Order="1">1</Publish>
+                    <Publish Event="NewDialog" Value="PlayitCloseRunningDlg" Order="2">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="3"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="4"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="5"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="6"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="7"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND ((OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F"))]]></Publish>
+                </Control>
+                <Control Id="UpdateNoShield" Type="PushButton" ElevationShield="no" X="212" Y="243" Width="80" Height="17" Hidden="yes" Disabled="yes" Text="!(loc.VerifyReadyDlgUpdate)">
+                    <Condition Action="show">WixUI_InstallMode = "Update" AND NOT ALLUSERS</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Update"</Condition>
+                    <Publish Event="DoAction" Value="DetectRunningPlayit" Order="1">1</Publish>
+                    <Publish Event="NewDialog" Value="PlayitCloseRunningDlg" Order="2">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="3"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="4"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="5"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="6"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="7"><![CDATA[(PLAYITD_CLOSE_APPROVED OR NOT (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)) AND ((OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F"))]]></Publish>
+                </Control>
+
+                <Control Id="InstallTitle" Type="Text" X="15" Y="15" Width="300" Height="15" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="!(loc.VerifyReadyDlgInstallTitle)">
+                    <Condition Action="show">NOT Installed</Condition>
+                </Control>
+                <Control Id="InstallText" Type="Text" X="25" Y="70" Width="320" Height="80" Hidden="yes" Text="!(loc.VerifyReadyDlgInstallText)">
+                    <Condition Action="show">NOT Installed</Condition>
+                </Control>
+                <Control Id="ChangeTitle" Type="Text" X="15" Y="15" Width="300" Height="15" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="!(loc.VerifyReadyDlgChangeTitle)">
+                    <Condition Action="show">WixUI_InstallMode = "Change"</Condition>
+                </Control>
+                <Control Id="ChangeText" Type="Text" X="25" Y="70" Width="320" Height="80" Hidden="yes" Text="!(loc.VerifyReadyDlgChangeText)">
+                    <Condition Action="show">WixUI_InstallMode = "Change"</Condition>
+                </Control>
+                <Control Id="RepairTitle" Type="Text" X="15" Y="15" Width="300" Height="15" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="!(loc.VerifyReadyDlgRepairTitle)">
+                    <Condition Action="show">WixUI_InstallMode = "Repair"</Condition>
+                </Control>
+                <Control Id="RepairText" Type="Text" X="25" Y="70" Width="320" Height="80" Hidden="yes" NoPrefix="yes" Text="!(loc.VerifyReadyDlgRepairText)">
+                    <Condition Action="show">WixUI_InstallMode = "Repair"</Condition>
+                </Control>
+                <Control Id="RemoveTitle" Type="Text" X="15" Y="15" Width="300" Height="15" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="!(loc.VerifyReadyDlgRemoveTitle)">
+                    <Condition Action="show">WixUI_InstallMode = "Remove"</Condition>
+                </Control>
+                <Control Id="RemoveText" Type="Text" X="25" Y="70" Width="320" Height="80" Hidden="yes" NoPrefix="yes" Text="!(loc.VerifyReadyDlgRemoveText)">
+                    <Condition Action="show">WixUI_InstallMode = "Remove"</Condition>
+                </Control>
+                <Control Id="UpdateTitle" Type="Text" X="15" Y="15" Width="300" Height="15" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="!(loc.VerifyReadyDlgUpdateTitle)">
+                    <Condition Action="show">WixUI_InstallMode = "Update"</Condition>
+                </Control>
+                <Control Id="UpdateText" Type="Text" X="25" Y="70" Width="320" Height="80" Hidden="yes" NoPrefix="yes" Text="!(loc.VerifyReadyDlgUpdateText)">
+                    <Condition Action="show">WixUI_InstallMode = "Update"</Condition>
+                </Control>
+
+                <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="!(loc.WixUICancel)">
+                    <Publish Event="SpawnDialog" Value="CancelDlg">1</Publish>
+                </Control>
+                <Control Id="Back" Type="PushButton" X="156" Y="243" Width="56" Height="17" Text="!(loc.WixUIBack)">
+                    <Condition Action="default">WixUI_InstallMode = "Remove"</Condition>
+                </Control>
                 <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.VerifyReadyDlgBannerBitmap)" />
                 <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
                 <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
             </Dialog>
 
-            <!--
-              Enabling the EULA dialog in the installer is a three step process:
+            <Dialog Id="PlayitCloseRunningDlg" Width="370" Height="270" Title="[ProductName] Setup" TrackDiskSpace="yes">
+                <Control Id="ContinueInstall" Type="PushButton" ElevationShield="yes" X="212" Y="243" Width="80" Height="17" Default="yes" Hidden="yes" Disabled="yes" Text="Continue">
+                    <Condition Action="show">NOT Installed AND ALLUSERS</Condition>
+                    <Condition Action="enable">NOT Installed</Condition>
+                    <Condition Action="default">NOT Installed</Condition>
+                    <Publish Property="PLAYITD_CLOSE_APPROVED" Value="1" Order="1">1</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="2"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="3">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="4">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="5">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="6">(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F")</Publish>
+                </Control>
+                <Control Id="ContinueInstallNoShield" Type="PushButton" ElevationShield="no" X="212" Y="243" Width="80" Height="17" Default="yes" Hidden="yes" Disabled="yes" Text="Continue">
+                    <Condition Action="show">NOT Installed AND NOT ALLUSERS</Condition>
+                    <Condition Action="enable">NOT Installed</Condition>
+                    <Condition Action="default">NOT Installed</Condition>
+                    <Publish Property="PLAYITD_CLOSE_APPROVED" Value="1" Order="1">1</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="2"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="3">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="4">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="5">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="6">(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F")</Publish>
+                </Control>
+                <Control Id="ContinueChange" Type="PushButton" ElevationShield="yes" X="212" Y="243" Width="80" Height="17" Default="yes" Hidden="yes" Disabled="yes" Text="Continue">
+                    <Condition Action="show">WixUI_InstallMode = "Change" AND ALLUSERS AND (ADDLOCAL OR REMOVE)</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Change"</Condition>
+                    <Condition Action="default">WixUI_InstallMode = "Change"</Condition>
+                    <Publish Property="PLAYITD_CLOSE_APPROVED" Value="1" Order="1">1</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="2"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="3">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="4">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="5">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="6">(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F")</Publish>
+                </Control>
+                <Control Id="ContinueChangeNoShield" Type="PushButton" ElevationShield="no" X="212" Y="243" Width="80" Height="17" Default="yes" Hidden="yes" Disabled="yes" Text="Continue">
+                    <Condition Action="show">WixUI_InstallMode = "Change" AND (NOT ALLUSERS OR (NOT ADDLOCAL AND NOT REMOVE))</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Change"</Condition>
+                    <Condition Action="default">WixUI_InstallMode = "Change"</Condition>
+                    <Publish Property="PLAYITD_CLOSE_APPROVED" Value="1" Order="1">1</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="2"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="3">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="4">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="5">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="6">(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F")</Publish>
+                </Control>
+                <Control Id="ContinueRepair" Type="PushButton" X="212" Y="243" Width="80" Height="17" Default="yes" Hidden="yes" Disabled="yes" Text="Continue">
+                    <Condition Action="show">WixUI_InstallMode = "Repair"</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Repair"</Condition>
+                    <Condition Action="default">WixUI_InstallMode = "Repair"</Condition>
+                    <Publish Property="PLAYITD_CLOSE_APPROVED" Value="1" Order="1">1</Publish>
+                    <Publish Event="ReinstallMode" Value="ecmus" Order="2"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="Reinstall" Value="All" Order="3"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="4"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="5">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="6">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="7">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="8">(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F")</Publish>
+                </Control>
+                <Control Id="ContinueRemove" Type="PushButton" ElevationShield="yes" X="212" Y="243" Width="80" Height="17" Hidden="yes" Disabled="yes" Text="Continue">
+                    <Condition Action="show">WixUI_InstallMode = "Remove" AND ALLUSERS</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Remove"</Condition>
+                    <Publish Property="PLAYITD_CLOSE_APPROVED" Value="1" Order="1">1</Publish>
+                    <Publish Event="Remove" Value="All" Order="2"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="3"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="4">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="5">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="6">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="7">(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F")</Publish>
+                </Control>
+                <Control Id="ContinueRemoveNoShield" Type="PushButton" ElevationShield="no" X="212" Y="243" Width="80" Height="17" Hidden="yes" Disabled="yes" Text="Continue">
+                    <Condition Action="show">WixUI_InstallMode = "Remove" AND NOT ALLUSERS</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Remove"</Condition>
+                    <Publish Property="PLAYITD_CLOSE_APPROVED" Value="1" Order="1">1</Publish>
+                    <Publish Event="Remove" Value="All" Order="2"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="3"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="4">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="5">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="6">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="7">(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F")</Publish>
+                </Control>
+                <Control Id="ContinueUpdate" Type="PushButton" ElevationShield="yes" X="212" Y="243" Width="80" Height="17" Hidden="yes" Disabled="yes" Text="Continue">
+                    <Condition Action="show">WixUI_InstallMode = "Update" AND ALLUSERS</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Update"</Condition>
+                    <Publish Property="PLAYITD_CLOSE_APPROVED" Value="1" Order="1">1</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="2"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="3">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="4">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="5">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="6">(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F")</Publish>
+                </Control>
+                <Control Id="ContinueUpdateNoShield" Type="PushButton" ElevationShield="no" X="212" Y="243" Width="80" Height="17" Hidden="yes" Disabled="yes" Text="Continue">
+                    <Condition Action="show">WixUI_InstallMode = "Update" AND NOT ALLUSERS</Condition>
+                    <Condition Action="enable">WixUI_InstallMode = "Update"</Condition>
+                    <Publish Property="PLAYITD_CLOSE_APPROVED" Value="1" Order="1">1</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="2"><![CDATA[OutOfDiskSpace <> 1]]></Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfRbDiskDlg" Order="3">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND (PROMPTROLLBACKCOST="P" OR NOT PROMPTROLLBACKCOST)</Publish>
+                    <Publish Event="EndDialog" Value="Return" Order="4">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="EnableRollback" Value="False" Order="5">OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 0 AND PROMPTROLLBACKCOST="D"</Publish>
+                    <Publish Event="SpawnDialog" Value="OutOfDiskDlg" Order="6">(OutOfDiskSpace = 1 AND OutOfNoRbDiskSpace = 1) OR (OutOfDiskSpace = 1 AND PROMPTROLLBACKCOST="F")</Publish>
+                </Control>
 
-                1. Comment out or remove the two `Publish` tags that follow the
-                   `WixVariable` tag.
-                2. Uncomment the `<WixVariable Id="WixUILicenseRtf" Value="Path\to\Eula.rft">` tag futher down
-                3. Replace the `Value` attribute of the `WixVariable` tag with
-                   the path to a RTF file that will be used as the EULA and
-                   displayed in the license agreement dialog.
-            -->
-            <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="CustomizeDlg" Order="99">1</Publish>
-            <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="99">1</Publish>
-            <Publish Dialog="WelcomeDlg" Control="Next" Event="DoAction" Value="DetectRunningPlayit" Order="100">Installed AND PATCH</Publish>
-            <Publish Dialog="WelcomeDlg" Control="Next" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="WelcomeDlg" Order="101">Installed AND PATCH AND NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="102">Installed AND PATCH AND NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="CustomizeDlg" Control="Next" Event="DoAction" Value="DetectRunningPlayit" Order="100">1</Publish>
-            <Publish Dialog="CustomizeDlg" Control="Next" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="CustomizeDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="CustomizeDlg" Control="Next" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="102">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="DoAction" Value="DetectRunningPlayit" Order="100">1</Publish>
-            <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="MaintenanceTypeDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="102">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="DoAction" Value="DetectRunningPlayit" Order="100">1</Publish>
-            <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="MaintenanceTypeDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="102">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+                <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+                    <Publish Event="NewDialog" Value="PlayitVerifyReadyDlg">1</Publish>
+                </Control>
+                <Control Id="Title" Type="Text" X="15" Y="15" Width="320" Height="15" Transparent="yes" NoPrefix="yes" Text="Playit must be closed before setup continues" />
+                <Control Id="Description" Type="Text" X="25" Y="70" Width="320" Height="44" NoPrefix="yes" Text="Setup needs to close the Playit tray icon and stop the Playit service before it can update files." />
+                <Control Id="RestartInfo" Type="Text" X="25" Y="118" Width="320" Height="28" NoPrefix="yes" Text="If the Playit service is running now, setup will start it again after the install finishes." />
+                <Control Id="ServiceLine" Type="Text" X="25" Y="152" Width="320" Height="18" Hidden="yes" NoPrefix="yes" Text="The Playit service is currently running.">
+                    <Condition Action="show">PLAYITD_SERVICE_RUNNING</Condition>
+                </Control>
+                <Control Id="TrayLine" Type="Text" X="25" Y="174" Width="320" Height="18" Hidden="yes" NoPrefix="yes" Text="The Playit tray icon is currently running.">
+                    <Condition Action="show">PLAYITD_TRAY_RUNNING</Condition>
+                </Control>
+                <Control Id="Question" Type="Text" X="25" Y="202" Width="320" Height="18" NoPrefix="yes" Text="Select Continue to let setup close Playit, or Cancel to go back." />
+                <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.VerifyReadyDlgBannerBitmap)" />
+                <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+                <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+            </Dialog>
         </UI>
+
+        <UIRef Id="PlayitUI_FeatureTree" />
+        <UIRef Id="WixUI_Common" />
 
 
         <!--
