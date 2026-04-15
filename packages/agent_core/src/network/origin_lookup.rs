@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     net::{IpAddr, SocketAddr},
     str::FromStr,
@@ -102,6 +103,20 @@ pub enum OriginIp {
 }
 
 impl OriginIp {
+    pub fn display(&self) -> Cow<'_, str> {
+        match self {
+            OriginIp::IpAddress(ip) => Cow::Owned(ip.to_string()),
+            OriginIp::Hostname(hostname) => Cow::Borrowed(hostname.as_str()),
+        }
+    }
+
+    pub fn display_with_port(&self, port: u16) -> String {
+        match self {
+            OriginIp::IpAddress(ip) => SocketAddr::new(*ip, port).to_string(),
+            OriginIp::Hostname(hostname) => format!("{hostname}:{port}"),
+        }
+    }
+
     async fn resolve(&self, port: u16) -> Option<SocketAddr> {
         match self {
             OriginIp::IpAddress(ip) => Some(SocketAddr::new(*ip, port)),
