@@ -1,5 +1,7 @@
 use service_manager::{ServiceLabel, ServiceManager, ServiceStartCtx, ServiceStopCtx};
 
+#[cfg(target_os = "linux")]
+use crate::linux;
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 
 #[cfg(target_os = "windows")]
@@ -7,9 +9,6 @@ pub const INSTALLED_SERVICE_LABEL: &str = "playitd";
 
 #[cfg(not(target_os = "windows"))]
 pub const INSTALLED_SERVICE_LABEL: &str = "gg.playit.playitd";
-
-#[cfg(target_os = "linux")]
-const SYSTEMD_SERVICE_NAME: &str = "playit";
 
 #[derive(Debug)]
 pub enum ServiceManagerError {
@@ -48,16 +47,6 @@ pub struct ServiceController {
 impl ServiceController {
     const SERVICE_LABEL: &'static str = INSTALLED_SERVICE_LABEL;
 
-    #[cfg(not(target_os = "linux"))]
-    pub fn new() -> Result<Self, ServiceManagerError> {
-        let manager = <dyn ServiceManager>::native()
-            .map_err(|e| ServiceManagerError::NotAvailable(e.to_string()))?;
-        let label = Self::SERVICE_LABEL.parse().unwrap();
-
-        Ok(Self { manager, label })
-    }
-
-    #[cfg(target_os = "linux")]
     pub fn new() -> Result<Self, ServiceManagerError> {
         let manager = <dyn ServiceManager>::native()
             .map_err(|e| ServiceManagerError::NotAvailable(e.to_string()))?;
@@ -83,85 +72,8 @@ impl ServiceController {
 }
 
 #[cfg(target_os = "linux")]
-fn start_systemd_service() -> Result<(), ServiceManagerError> {
-    run_systemctl(&systemd_start_args(), ServiceManagerError::StartFailed)
-}
-
-#[cfg(target_os = "linux")]
 pub fn is_systemd_service_active() -> Result<bool, ServiceManagerError> {
-    use std::process::Command;
-
-    let args = systemd_is_active_args();
-    let output = Command::new("systemctl")
-        .args(args)
-        .output()
-        .map_err(|e| ServiceManagerError::NotAvailable(format!("Failed to run systemctl: {e}")))?;
-
-    match output.status.code() {
-        Some(0) => Ok(true),
-        Some(3) | Some(4) => Ok(false),
-        _ => {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let detail = if !stderr.is_empty() {
-                stderr
-            } else if !stdout.is_empty() {
-                stdout
-            } else {
-                format!("exit status {}", output.status)
-            };
-
-            Err(ServiceManagerError::NotAvailable(format!(
-                "systemctl {} failed: {}",
-                args.join(" "),
-                detail
-            )))
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub fn stop_systemd_service() -> Result<(), ServiceManagerError> {
-    run_systemctl(&systemd_stop_args(), ServiceManagerError::StopFailed)
-}
-
-#[cfg(target_os = "linux")]
-fn systemd_start_args() -> [&'static str; 2] {
-    ["start", SYSTEMD_SERVICE_NAME]
-}
-
-#[cfg(target_os = "linux")]
-fn systemd_is_active_args() -> [&'static str; 3] {
-    ["is-active", "--quiet", SYSTEMD_SERVICE_NAME]
-}
-
-#[cfg(target_os = "linux")]
-fn systemd_stop_args() -> [&'static str; 2] {
-    ["stop", SYSTEMD_SERVICE_NAME]
-}
-
-#[cfg(target_os = "linux")]
-fn run_systemctl(
-    args: &[&str],
-    err_builder: fn(String) -> ServiceManagerError,
-) -> Result<(), ServiceManagerError> {
-    use std::process::Command;
-
-    let output = Command::new("systemctl")
-        .args(args)
-        .output()
-        .map_err(|e| err_builder(format!("Failed to run systemctl: {e}")))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(err_builder(format!(
-        "systemctl {} failed: {}",
-        args.join(" "),
-        stderr
-    )))
+    linux::is_systemd_service_active()
 }
 
 pub async fn ensure_installed_service_running() -> Result<(), ServiceManagerError> {
@@ -171,11 +83,11 @@ pub async fn ensure_installed_service_running() -> Result<(), ServiceManagerErro
 
     #[cfg(target_os = "linux")]
     {
-        if is_systemd_service_active()? {
+        if linux::is_systemd_service_active()? {
             return Ok(());
         }
 
-        start_systemd_service()?;
+        linux::start_systemd_service()?;
         return wait_for_installed_service().await;
     }
 
@@ -190,7 +102,7 @@ pub async fn ensure_installed_service_running() -> Result<(), ServiceManagerErro
 pub fn stop_installed_service() -> Result<(), ServiceManagerError> {
     #[cfg(target_os = "linux")]
     {
-        return stop_systemd_service();
+        return linux::stop_systemd_service();
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -211,24 +123,4 @@ async fn wait_for_installed_service() -> Result<(), ServiceManagerError> {
     Err(ServiceManagerError::StartFailed(
         "Service did not start within timeout".to_string(),
     ))
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::{systemd_is_active_args, systemd_start_args, systemd_stop_args};
-
-    #[test]
-    fn linux_start_targets_playit_unit() {
-        assert_eq!(systemd_start_args(), ["start", "playit"]);
-    }
-
-    #[test]
-    fn linux_is_active_targets_playit_unit() {
-        assert_eq!(systemd_is_active_args(), ["is-active", "--quiet", "playit"]);
-    }
-
-    #[test]
-    fn linux_stop_targets_playit_unit() {
-        assert_eq!(systemd_stop_args(), ["stop", "playit"]);
-    }
 }

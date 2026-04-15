@@ -190,8 +190,8 @@ pub fn default_secret_path() -> PathBuf {
     }
 
     #[cfg(target_os = "linux")]
-    if Path::new("/etc/playit/playit.toml").exists() {
-        return PathBuf::from("/etc/playit/playit.toml");
+    if let Some(path) = crate::linux::default_secret_path() {
+        return path;
     }
 
     dirs::config_local_dir()

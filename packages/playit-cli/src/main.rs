@@ -39,6 +39,8 @@ pub static EXE_NAME: LazyLock<String> = LazyLock::new(|| {
 });
 
 mod client;
+#[cfg(target_os = "linux")]
+mod linux;
 pub mod signal_handle;
 pub mod ui;
 pub mod util;

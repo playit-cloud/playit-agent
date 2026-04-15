@@ -21,10 +21,6 @@ use playit_ipc::model::{
     ServiceError, ServiceErrorCode, ServiceStatus, ServiceUpdate, SubscribeResponse,
     SubscriptionSnapshot,
 };
-#[cfg(target_os = "linux")]
-use std::ffi::CString;
-#[cfg(target_os = "linux")]
-use std::os::unix::{ffi::OsStrExt, fs::PermissionsExt};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -89,11 +85,6 @@ pub struct IpcServer {
     guest_login_cache: RwLock<Option<(String, u64)>>,
 }
 
-#[cfg(target_os = "linux")]
-const PLAYIT_SOCKET_GROUP_NAME: &str = "playit";
-#[cfg(target_os = "linux")]
-const PLAYIT_SOCKET_MODE: u32 = 0o660;
-
 impl IpcServer {
     pub async fn new_with_sender(
         socket_path: Option<String>,
@@ -151,7 +142,7 @@ impl IpcServer {
         let listener = self.create_listener()?;
 
         #[cfg(target_os = "linux")]
-        self.configure_linux_socket_permissions()?;
+        crate::linux::configure_socket_permissions(&self.socket_path)?;
 
         Ok(listener)
     }
@@ -206,34 +197,6 @@ impl IpcServer {
             let listener = listener.security_descriptor(world_access_security_descriptor()?);
             listener.create_tokio().map_err(IpcError::BindFailed)
         }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn configure_linux_socket_permissions(&self) -> Result<(), IpcError> {
-        let Some(target) =
-            linux_socket_permission_target(&self.socket_path, unsafe { libc::geteuid() as u32 })
-        else {
-            return Ok(());
-        };
-
-        if !Path::new(&target.path).exists() {
-            return Err(IpcError::BindFailed(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("IPC socket {} was not created", target.path),
-            )));
-        }
-
-        let Some(group_gid) = lookup_group_gid(target.group_name)? else {
-            tracing::warn!(
-                group = target.group_name,
-                socket_path = %target.path,
-                "IPC socket group is missing, leaving default socket permissions in place"
-            );
-            return Ok(());
-        };
-
-        apply_linux_socket_permissions(&target.path, group_gid, target.mode)?;
-        Ok(())
     }
 
     async fn handle_client(&self, stream: Stream) -> Result<(), IpcError> {
@@ -572,111 +535,6 @@ impl IpcServer {
     }
 }
 
-#[cfg(target_os = "linux")]
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LinuxSocketPermissionTarget<'a> {
-    path: &'a str,
-    group_name: &'static str,
-    mode: u32,
-}
-
-#[cfg(target_os = "linux")]
-fn linux_socket_permission_target(
-    socket_path: &str,
-    effective_uid: u32,
-) -> Option<LinuxSocketPermissionTarget<'_>> {
-    if effective_uid != 0 || socket_path.starts_with('@') || socket_path.starts_with(r"\\.\pipe\") {
-        return None;
-    }
-
-    Some(LinuxSocketPermissionTarget {
-        path: socket_path,
-        group_name: PLAYIT_SOCKET_GROUP_NAME,
-        mode: PLAYIT_SOCKET_MODE,
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn lookup_group_gid(group_name: &str) -> Result<Option<u32>, IpcError> {
-    let group_name = CString::new(group_name).map_err(|e| {
-        IpcError::BindFailed(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("invalid group name {group_name:?}: {e}"),
-        ))
-    })?;
-
-    let mut group = std::mem::MaybeUninit::<libc::group>::uninit();
-    let mut result = std::ptr::null_mut();
-    let mut buf_len = 1024usize;
-
-    loop {
-        let mut buf = vec![0u8; buf_len];
-        let status = unsafe {
-            libc::getgrnam_r(
-                group_name.as_ptr(),
-                group.as_mut_ptr(),
-                buf.as_mut_ptr().cast(),
-                buf.len(),
-                &mut result,
-            )
-        };
-
-        if status == 0 {
-            if result.is_null() {
-                return Ok(None);
-            }
-
-            let group = unsafe { group.assume_init() };
-            return Ok(Some(group.gr_gid));
-        }
-
-        if status == libc::ERANGE {
-            buf_len *= 2;
-            continue;
-        }
-
-        return Err(IpcError::BindFailed(std::io::Error::from_raw_os_error(
-            status,
-        )));
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn apply_linux_socket_permissions(
-    socket_path: &str,
-    group_gid: u32,
-    mode: u32,
-) -> Result<(), IpcError> {
-    let path = Path::new(socket_path);
-    let permissions = std::fs::Permissions::from_mode(mode);
-    std::fs::set_permissions(path, permissions).map_err(|e| {
-        IpcError::BindFailed(std::io::Error::new(
-            e.kind(),
-            format!("failed to chmod IPC socket {socket_path} to {mode:o}: {e}"),
-        ))
-    })?;
-
-    let path_cstr = CString::new(path.as_os_str().as_bytes()).map_err(|e| {
-        IpcError::BindFailed(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("invalid IPC socket path {socket_path:?}: {e}"),
-        ))
-    })?;
-
-    let chown_status = unsafe { libc::chown(path_cstr.as_ptr(), u32::MAX, group_gid) };
-    if chown_status != 0 {
-        return Err(IpcError::BindFailed(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            format!(
-                "failed to chown IPC socket {socket_path} to group gid {group_gid}: {}",
-                std::io::Error::last_os_error()
-            ),
-        )));
-    }
-
-    Ok(())
-}
-
 #[cfg(target_os = "windows")]
 fn world_access_security_descriptor() -> Result<SecurityDescriptor, IpcError> {
     let mut descriptor = SecurityDescriptor::new().map_err(IpcError::BindFailed)?;
@@ -791,27 +649,5 @@ mod tests {
         ));
         assert!(!error.retryable);
         assert!(error.message.contains("bad secret"));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_socket_permissions_target_root_filesystem_socket() {
-        let target = super::linux_socket_permission_target("/var/run/playitd.sock", 0)
-            .expect("root filesystem socket should be configured");
-
-        assert_eq!(target.group_name, super::PLAYIT_SOCKET_GROUP_NAME);
-        assert_eq!(target.mode, super::PLAYIT_SOCKET_MODE);
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_socket_permissions_skip_non_root() {
-        assert!(super::linux_socket_permission_target("/var/run/playitd.sock", 1000).is_none());
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_socket_permissions_skip_abstract_namespace() {
-        assert!(super::linux_socket_permission_target("@playitd", 0).is_none());
     }
 }

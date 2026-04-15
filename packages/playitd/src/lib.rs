@@ -1,5 +1,7 @@
 pub mod daemon;
 mod ipc_server;
+#[cfg(target_os = "linux")]
+pub(crate) mod linux;
 pub mod logging;
 pub mod manager;
 
