@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -745,7 +744,7 @@ async fn broadcast_agent_state(
                                             http_port,
                                             https_port,
                                         } => format!("{ip} (http: {http_port}, https: {https_port})"),
-                                        OriginTarget::Port { ip, port } => SocketAddr::new(ip, port).to_string(),
+                                        OriginTarget::Port { ip, port } => format!("{ip}:{port}"),
                                     };
 
                                     Some(TunnelState {

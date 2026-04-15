@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    fmt::Display,
     net::{IpAddr, SocketAddr},
     str::FromStr,
 };
@@ -99,6 +100,15 @@ pub struct OriginResource {
 pub enum OriginIp {
     IpAddress(IpAddr),
     Hostname(String),
+}
+
+impl Display for OriginIp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OriginIp::IpAddress(ip) => write!(f, "{ip}"),
+            OriginIp::Hostname(host) => write!(f, "{host}"),
+        }
+    }
 }
 
 impl OriginIp {
