@@ -26,18 +26,6 @@ use crate::ui::{ConsoleUi, UISettings};
 pub static API_BASE: LazyLock<String> =
     LazyLock::new(|| dotenv::var("API_BASE").unwrap_or("https://api.playit.gg".to_string()));
 
-/// The name of the executable as invoked by the user
-pub static EXE_NAME: LazyLock<String> = LazyLock::new(|| {
-    std::env::args()
-        .next()
-        .and_then(|path| {
-            std::path::Path::new(&path)
-                .file_name()
-                .map(|name| name.to_string_lossy().to_string())
-        })
-        .unwrap_or_else(|| "playit".to_string())
-});
-
 mod client;
 #[cfg(target_os = "linux")]
 mod linux;
@@ -320,7 +308,7 @@ pub async fn claim_exchange(
                 .claim_setup(ReqClaimSetup {
                     code: claim_code.to_string(),
                     agent_type,
-                    version: format!("{} {}", *EXE_NAME, env!("CARGO_PKG_VERSION")),
+                    version: format!("playit {}", env!("CARGO_PKG_VERSION")),
                 })
                 .await;
 

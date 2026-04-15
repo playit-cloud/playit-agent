@@ -79,10 +79,6 @@ fn installed_service_unreachable_message() -> String {
     }
 }
 
-fn socket_access_diagnostic(socket_path: &str) -> Option<String> {
-    socket_access_issue(socket_path).map(|issue| format_socket_access_issue(socket_path, &issue))
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum LinuxSocketAccessIssue {
     MissingSocket,
@@ -366,7 +362,7 @@ mod tests {
     use super::{
         LinuxSocketAccessIssue, format_playit_group_join_message,
         format_playit_group_refresh_message, format_socket_access_issue,
-        is_linux_socket_access_message, service_start_prompt, socket_access_diagnostic,
+        is_linux_socket_access_message, service_start_prompt,
     };
     use crate::{client::CliTarget, client::auto_attach_error};
 
@@ -400,16 +396,6 @@ mod tests {
 
         assert!(error.to_string().contains("sudo usermod -aG playit $USER"));
         assert!(error.to_string().contains("newgrp playit"));
-    }
-
-    #[test]
-    fn linux_socket_diagnostic_reports_missing_socket() {
-        let missing = socket_access_diagnostic("/tmp/playit-socket-that-does-not-exist");
-        assert!(
-            missing
-                .expect("missing socket should produce a diagnostic")
-                .contains("does not exist")
-        );
     }
 
     #[test]

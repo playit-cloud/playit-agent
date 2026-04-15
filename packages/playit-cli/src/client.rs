@@ -10,7 +10,7 @@ use playitd::manager::{ensure_installed_service_running, stop_installed_service}
 #[cfg(target_os = "linux")]
 use crate::linux;
 use crate::ui::{ConnectionStats, ConsoleUi, TuiApp};
-use crate::{CliError, EXE_NAME, run_setup_flow};
+use crate::{CliError, run_setup_flow};
 
 const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
 const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
@@ -331,7 +331,7 @@ fn apply_stdout_update(update: ServiceUpdate) {
 
 fn print_detach_message() {
     println!("Detached from service. Service continues running in background.");
-    println!("Use '{} stop' to stop the service.", *EXE_NAME);
+    println!("Use 'playit stop' to stop the service.");
 }
 
 pub async fn run_start_command(
