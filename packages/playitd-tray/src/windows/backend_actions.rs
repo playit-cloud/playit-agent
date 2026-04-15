@@ -438,6 +438,10 @@ pub(super) fn ensure_startup_shortcut() -> Result<(), String> {
     }
 }
 
+pub(super) fn startup_shortcut_exists() -> Result<bool, String> {
+    Ok(startup_shortcut_path()?.exists())
+}
+
 pub(super) fn query_service_running_sync() -> bool {
     unsafe {
         let manager = OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT);

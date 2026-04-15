@@ -25,8 +25,10 @@ pub(super) struct AppState {
     pub(super) start_service: MenuItem,
     pub(super) stop_service: MenuItem,
     pub(super) reset_agent: MenuItem,
-    pub(super) remove_tray_icon: MenuItem,
+    pub(super) add_tray_icon_to_startup: MenuItem,
+    pub(super) tray_icon_action: MenuItem,
     pub(super) service_running: bool,
+    pub(super) startup_shortcut_present: bool,
     pub(super) reset_agent_enabled: bool,
     pub(super) refresh_inflight: bool,
     pub(super) menu_visible: bool,
@@ -43,12 +45,14 @@ impl AppState {
         backend: TrayBackend,
         response_rx: Receiver<BackendResponse>,
         service_running: bool,
+        startup_shortcut_present: bool,
     ) -> Result<Self, String> {
         let open_status = MenuItem::new("Open Status", true, None);
         let start_service = MenuItem::new("Start Service", true, None);
         let stop_service = MenuItem::new("Stop Service", true, None);
         let reset_agent = MenuItem::new("Reset Agent", true, None);
-        let remove_tray_icon = MenuItem::new("Remove Tray Icon", true, None);
+        let add_tray_icon_to_startup = MenuItem::new("Add Tray Icon To Startup", true, None);
+        let tray_icon_action = MenuItem::new("Close Tray Icon", true, None);
 
         let menu = Menu::new();
         menu.append_items(&[
@@ -56,7 +60,8 @@ impl AppState {
             &start_service,
             &stop_service,
             &reset_agent,
-            &remove_tray_icon,
+            &add_tray_icon_to_startup,
+            &tray_icon_action,
         ])
         .map_err(|error| format!("Failed to build tray menu: {error}"))?;
 
@@ -67,8 +72,10 @@ impl AppState {
             start_service,
             stop_service,
             reset_agent,
-            remove_tray_icon,
+            add_tray_icon_to_startup,
+            tray_icon_action,
             service_running,
+            startup_shortcut_present,
             reset_agent_enabled: false,
             refresh_inflight: false,
             menu_visible: false,

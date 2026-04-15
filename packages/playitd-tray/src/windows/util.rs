@@ -7,7 +7,9 @@ use windows_sys::Win32::System::Console::{
     SetConsoleOutputCP, WriteConsoleW,
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
-use windows_sys::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MessageBoxW};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    IDOK, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_OKCANCEL, MessageBoxW,
+};
 
 static DEBUG_CONSOLE: AtomicBool = AtomicBool::new(false);
 
@@ -80,6 +82,22 @@ pub(super) fn show_error(title: &str, message: &str) {
             MB_OK | MB_ICONERROR,
         );
     }
+}
+
+pub(super) fn confirm_warning(title: &str, message: &str) -> bool {
+    debug_log(&format!("{title}: {message}"));
+    let title = wide(title);
+    let message = wide(message);
+    let result = unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_OKCANCEL | MB_ICONWARNING,
+        )
+    };
+
+    result == IDOK
 }
 
 pub(super) fn wide(value: &str) -> Vec<u16> {

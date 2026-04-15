@@ -19,11 +19,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use super::backend::{PROCESS_BACKEND_RESPONSES_MESSAGE, TrayBackend};
 use super::backend_actions::{
     ensure_startup_shortcut, launch_playit, launch_status_window, query_service_running_sync,
-    remove_startup_shortcut, response_error_title,
+    remove_startup_shortcut, response_error_title, startup_shortcut_exists,
 };
 use super::protocol::{BackendRequest, BackendResponse};
 use super::state::{AppState, UiEvent};
-use super::util::{SingleInstanceGuard, debug_log, last_error, show_error, wide};
+use super::util::{SingleInstanceGuard, confirm_warning, debug_log, last_error, show_error, wide};
 
 const INIT_TRAY_MESSAGE: u32 = WM_APP + 1;
 const PROCESS_UI_EVENTS_MESSAGE: u32 = WM_APP + 2;
@@ -42,15 +42,18 @@ pub(super) fn run() -> Result<(), String> {
         }
     };
 
-    if let Err(error) = ensure_startup_shortcut() {
-        debug_log(&format!(
-            "startup shortcut self-heal failed, continuing tray startup: {error}"
-        ));
-    }
-
     let ui_event_queue = Arc::new(Mutex::new(VecDeque::new()));
     let backend = TrayBackend::new()?;
     let response_rx = backend.response_rx();
+    let startup_shortcut_present = match startup_shortcut_exists() {
+        Ok(value) => value,
+        Err(error) => {
+            debug_log(&format!(
+                "failed to read startup shortcut state, defaulting to not present: {error}"
+            ));
+            false
+        }
+    };
     let hinstance = unsafe { GetModuleHandleW(null()) };
     if hinstance.is_null() {
         return Err(last_error("failed to get module handle"));
@@ -75,6 +78,7 @@ pub(super) fn run() -> Result<(), String> {
         backend,
         response_rx,
         query_service_running_sync(),
+        startup_shortcut_present,
     )?);
     let state_ptr = Box::into_raw(state);
 
@@ -399,7 +403,8 @@ fn handle_menu_event(hwnd: HWND, menu_event: MenuEvent) -> Result<(), String> {
         StartService,
         StopService,
         ResetAgent,
-        RemoveTrayIcon,
+        AddTrayIconToStartup,
+        CloseOrRemoveTrayIcon,
         Ignore,
     }
 
@@ -416,8 +421,10 @@ fn handle_menu_event(hwnd: HWND, menu_event: MenuEvent) -> Result<(), String> {
             MenuAction::StopService
         } else if menu_event.id == *state.reset_agent.id() {
             MenuAction::ResetAgent
-        } else if menu_event.id == *state.remove_tray_icon.id() {
-            MenuAction::RemoveTrayIcon
+        } else if menu_event.id == *state.add_tray_icon_to_startup.id() {
+            MenuAction::AddTrayIconToStartup
+        } else if menu_event.id == *state.tray_icon_action.id() {
+            MenuAction::CloseOrRemoveTrayIcon
         } else {
             MenuAction::Ignore
         }
@@ -440,9 +447,29 @@ fn handle_menu_event(hwnd: HWND, menu_event: MenuEvent) -> Result<(), String> {
             debug_log("menu: reset agent");
             dispatch_request(hwnd, BackendRequest::ResetAgent)?;
         }
-        MenuAction::RemoveTrayIcon => {
-            debug_log("menu: remove tray icon");
-            remove_startup_shortcut()?;
+        MenuAction::AddTrayIconToStartup => {
+            debug_log("menu: add tray icon to startup");
+            ensure_startup_shortcut()?;
+            if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
+                apply_startup_shortcut_state(state, true);
+            }
+        }
+        MenuAction::CloseOrRemoveTrayIcon => {
+            let service_running = query_service_running_sync();
+            let remove_from_startup =
+                unsafe { get_state(hwnd).as_ref() }.map(|state| state.startup_shortcut_present);
+
+            if service_running && !confirm_close_with_running_service(remove_from_startup) {
+                debug_log("menu: tray close cancelled because service is still running");
+                return Ok(());
+            }
+
+            if remove_from_startup.unwrap_or(false) {
+                debug_log("menu: remove tray icon");
+                remove_startup_shortcut()?;
+            } else {
+                debug_log("menu: close tray icon");
+            }
             unsafe {
                 let _ = DestroyWindow(hwnd);
             }
@@ -465,7 +492,7 @@ fn apply_service_state(
     state.start_service.set_enabled(!service_running);
     state.stop_service.set_enabled(service_running);
     state.reset_agent.set_enabled(reset_agent_enabled);
-    state.remove_tray_icon.set_enabled(true);
+    apply_startup_shortcut_state(state, state.startup_shortcut_present);
 
     if state.menu_visible {
         state.tooltip_dirty |= state_changed;
@@ -481,6 +508,35 @@ fn apply_service_state(
     }
 
     Ok(())
+}
+
+fn apply_startup_shortcut_state(state: &mut AppState, startup_shortcut_present: bool) {
+    state.startup_shortcut_present = startup_shortcut_present;
+    state
+        .tray_icon_action
+        .set_text(if startup_shortcut_present {
+            "Remove Tray Icon"
+        } else {
+            "Close Tray Icon"
+        });
+    state
+        .add_tray_icon_to_startup
+        .set_enabled(!startup_shortcut_present);
+}
+
+fn confirm_close_with_running_service(remove_from_startup: Option<bool>) -> bool {
+    let action = if remove_from_startup.unwrap_or(false) {
+        "remove the tray icon"
+    } else {
+        "close the tray icon"
+    };
+
+    confirm_warning(
+        "Playit Service Still Running",
+        &format!(
+            "The playit service will keep running in the background if you {action} now.\n\nSelect Cancel to keep the tray icon open so you can stop the service first, or OK to continue."
+        ),
+    )
 }
 
 fn dispatch_request(hwnd: HWND, request: BackendRequest) -> Result<(), String> {
