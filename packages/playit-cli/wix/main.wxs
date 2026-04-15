@@ -85,6 +85,15 @@
             DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit."/>
 
         <util:CloseApplication
+            Id="ClosePlayitService"
+            Target="playitd-service.exe"
+            Description="The Playit service is currently running and setup must stop it before continuing. Click Retry after stopping it yourself, Ignore to let setup stop it automatically, or Abort to cancel setup."
+            PromptToContinue="yes"
+            RebootPrompt="no"
+            Property="PLAYITD_SERVICE_RUNNING"
+            Sequence="1" />
+
+        <util:CloseApplication
             Id="ClosePlayitTray"
             Target="playitd-tray.exe"
             Description="The Playit tray application must be closed before setup can continue."
@@ -92,6 +101,7 @@
             EndSessionMessage="yes"
             RebootPrompt="no"
             TerminateProcess="0"
+            Sequence="2"
             Timeout="10" />
 
         <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" DiskPrompt="CD-ROM #1"/>
@@ -269,6 +279,28 @@
             Impersonate="yes"
             Return="check" />
         <CustomAction
+            Id="SetStopPlayitdServiceCommand"
+            Property="WixQuietExecCmdLine"
+            Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$svc = Get-Service -Name 'playitd' -ErrorAction SilentlyContinue; if ($null -eq $svc) { exit 0 }; if ($svc.Status -ne 'Stopped') { Stop-Service -Name 'playitd'; $svc = Get-Service -Name 'playitd'; $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20)) }&quot;"
+            Execute="immediate" />
+        <CustomAction
+            Id="StopPlayitdService"
+            BinaryKey="WixCA"
+            DllEntry="WixQuietExec"
+            Execute="immediate"
+            Return="check" />
+        <CustomAction
+            Id="SetStartPlayitdServiceCommand"
+            Property="WixQuietExecCmdLine"
+            Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$svc = Get-Service -Name 'playitd' -ErrorAction SilentlyContinue; if ($null -eq $svc) { exit 0 }; if ($svc.Status -ne 'Running') { Start-Service -Name 'playitd'; $svc = Get-Service -Name 'playitd'; $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(20)) }&quot;"
+            Execute="immediate" />
+        <CustomAction
+            Id="StartPlayitdService"
+            BinaryKey="WixCA"
+            DllEntry="WixQuietExec"
+            Execute="immediate"
+            Return="ignore" />
+        <CustomAction
             Id="EnsureTrayStartupShortcut"
             FileKey="exe2"
             ExeCommand="--ensure-startup-shortcut"
@@ -281,9 +313,20 @@
             Impersonate="yes"
             Return="ignore" />
 
+        <InstallUISequence>
+            <Custom Action="WixCloseApplications" Before="InstallValidate">VersionNT &gt; 400</Custom>
+            <Custom Action="SetStopPlayitdServiceCommand" After="WixCloseApplications">PLAYITD_SERVICE_RUNNING AND UILevel &gt;= 5</Custom>
+            <Custom Action="StopPlayitdService" After="SetStopPlayitdServiceCommand">PLAYITD_SERVICE_RUNNING AND UILevel &gt;= 5</Custom>
+        </InstallUISequence>
+
         <InstallExecuteSequence>
+            <Custom Action="WixCloseApplications" Before="InstallValidate">VersionNT &gt; 400</Custom>
+            <Custom Action="SetStopPlayitdServiceCommand" After="WixCloseApplications">PLAYITD_SERVICE_RUNNING AND UILevel &lt; 5</Custom>
+            <Custom Action="StopPlayitdService" After="SetStopPlayitdServiceCommand">PLAYITD_SERVICE_RUNNING AND UILevel &lt; 5</Custom>
             <Custom Action="RemoveTrayStartupShortcut" Before="RemoveFiles">REMOVE="ALL"</Custom>
             <Custom Action="EnsureTrayStartupShortcut" After="InstallFinalize">NOT REMOVE="ALL"</Custom>
+            <Custom Action="SetStartPlayitdServiceCommand" After="InstallFinalize">PLAYITD_SERVICE_RUNNING AND NOT REMOVE="ALL"</Custom>
+            <Custom Action="StartPlayitdService" After="SetStartPlayitdServiceCommand">PLAYITD_SERVICE_RUNNING AND NOT REMOVE="ALL"</Custom>
             <Custom Action="LaunchTrayApplication" After="InstallFinalize">NOT Installed AND UILevel &gt;= 5</Custom>
         </InstallExecuteSequence>
 
