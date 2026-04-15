@@ -18,8 +18,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use super::backend::{PROCESS_BACKEND_RESPONSES_MESSAGE, TrayBackend};
 use super::backend_actions::{
-    launch_playit, launch_status_window, query_service_running_sync, remove_startup_shortcut,
-    response_error_title,
+    ensure_startup_shortcut, launch_playit, launch_status_window, query_service_running_sync,
+    remove_startup_shortcut, response_error_title,
 };
 use super::protocol::{BackendRequest, BackendResponse};
 use super::state::{AppState, UiEvent};
@@ -41,6 +41,12 @@ pub(super) fn run() -> Result<(), String> {
             return Ok(());
         }
     };
+
+    if let Err(error) = ensure_startup_shortcut() {
+        debug_log(&format!(
+            "startup shortcut self-heal failed, continuing tray startup: {error}"
+        ));
+    }
 
     let ui_event_queue = Arc::new(Mutex::new(VecDeque::new()));
     let backend = TrayBackend::new()?;

@@ -6,8 +6,12 @@ mod windows;
 #[cfg(target_os = "windows")]
 fn main() {
     windows::init_debug_console_from_args();
-    if let Err(error) = windows::run() {
-        windows::show_error("Failed to start playit tray", &error);
+    if let Err(error) = windows::run_from_args() {
+        if error.should_show_dialog() {
+            windows::show_error("Failed to start playit tray", error.message());
+        } else {
+            eprintln!("{}", error.message());
+        }
         std::process::exit(1);
     }
 }

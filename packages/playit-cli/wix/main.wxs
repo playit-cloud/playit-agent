@@ -229,19 +229,6 @@
                 </Component>
             </Directory>
 
-            <Directory Id="CommonStartupFolder">
-                <Component Id="TrayStartupShortcut" Guid="*">
-                    <Shortcut
-                        Id="TrayStartupShortcutLink"
-                        Name="Playit Tray"
-                        Description="Shows the Playit tray icon when the background service is running."
-                        Icon="ProductICO"
-                        Target="[APPLICATIONFOLDER]bin\playitd-tray.exe"
-                        WorkingDirectory="Bin"
-                    />
-                    <RegistryValue Root="HKLM" Key="Software\DevelopedMethodsLLC\playit_gg" Name="TrayStartupShortcut" Type="integer" Value="1" KeyPath="yes" />
-                </Component>
-            </Directory>
         </Directory>
 
         <Feature
@@ -263,8 +250,6 @@
             <ComponentRef Id="PlayitCommonDataLogsFolder"/>
             <ComponentRef Id="ApplicationShortcut"/>
             <ComponentRef Id="ApplicationShortcutDesktop"/>
-            <ComponentRef Id="TrayStartupShortcut"/>
-
             <Feature
                 Id="Environment"
                 Title="PATH Environment Variable"
@@ -283,8 +268,22 @@
             DllEntry="WixShellExec"
             Impersonate="yes"
             Return="check" />
+        <CustomAction
+            Id="EnsureTrayStartupShortcut"
+            FileKey="exe2"
+            ExeCommand="--ensure-startup-shortcut"
+            Impersonate="yes"
+            Return="ignore" />
+        <CustomAction
+            Id="RemoveTrayStartupShortcut"
+            FileKey="exe2"
+            ExeCommand="--remove-startup-shortcut"
+            Impersonate="yes"
+            Return="ignore" />
 
         <InstallExecuteSequence>
+            <Custom Action="RemoveTrayStartupShortcut" Before="RemoveFiles">REMOVE="ALL"</Custom>
+            <Custom Action="EnsureTrayStartupShortcut" After="InstallFinalize">NOT REMOVE="ALL"</Custom>
             <Custom Action="LaunchTrayApplication" After="InstallFinalize">NOT Installed AND UILevel &gt;= 5</Custom>
         </InstallExecuteSequence>
 
