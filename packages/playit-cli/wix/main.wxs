@@ -315,14 +315,12 @@
 
         <InstallUISequence>
             <Custom Action="WixCloseApplications" Before="ExecuteAction">VersionNT &gt; 400</Custom>
-            <Custom Action="SetStopPlayitdServiceCommand" After="WixCloseApplications">PLAYITD_SERVICE_RUNNING AND UILevel &gt;= 5</Custom>
-            <Custom Action="StopPlayitdService" After="SetStopPlayitdServiceCommand">PLAYITD_SERVICE_RUNNING AND UILevel &gt;= 5</Custom>
         </InstallUISequence>
 
         <InstallExecuteSequence>
             <Custom Action="WixCloseApplications" Before="InstallValidate">VersionNT &gt; 400</Custom>
-            <Custom Action="SetStopPlayitdServiceCommand" After="WixCloseApplications">PLAYITD_SERVICE_RUNNING AND UILevel &lt; 5</Custom>
-            <Custom Action="StopPlayitdService" After="SetStopPlayitdServiceCommand">PLAYITD_SERVICE_RUNNING AND UILevel &lt; 5</Custom>
+            <Custom Action="SetStopPlayitdServiceCommand" After="WixCloseApplications">PLAYITD_SERVICE_RUNNING</Custom>
+            <Custom Action="StopPlayitdService" After="SetStopPlayitdServiceCommand">PLAYITD_SERVICE_RUNNING</Custom>
             <Custom Action="RemoveTrayStartupShortcut" Before="RemoveFiles">REMOVE="ALL"</Custom>
             <Custom Action="EnsureTrayStartupShortcut" After="InstallFinalize">NOT REMOVE="ALL"</Custom>
             <Custom Action="SetStartPlayitdServiceCommand" After="InstallFinalize">PLAYITD_SERVICE_RUNNING AND NOT REMOVE="ALL"</Custom>
