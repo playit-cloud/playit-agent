@@ -108,6 +108,7 @@ mkdir -p /var/log/playit # make logs folder
 chmod 0766 -R /var/log/playit
 mkdir -p /etc/playit
 chmod 0777 /etc/playit
+getent group playit >/dev/null || groupadd --system playit
 
 if ! command -v systemctl >/dev/null 2>&1; then
   echo "systemctl is required to install playit" >&2

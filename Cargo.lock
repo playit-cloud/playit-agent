@@ -1991,6 +1991,7 @@ dependencies = [
  "dotenv",
  "hex",
  "interprocess",
+ "libc",
  "playit-agent-core",
  "playit-api-client",
  "playit-ipc",

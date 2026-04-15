@@ -36,5 +36,8 @@ path = "src/bin/playitd.rs"
 name = "playitd-service"
 path = "src/bin/playitd-service.rs"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [target."cfg(windows)".dependencies]
 windows-service = "0.8.0"

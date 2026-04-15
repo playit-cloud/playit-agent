@@ -1,6 +1,7 @@
 use std::time::Duration;
 #[cfg(target_os = "linux")]
 use std::{
+    ffi::CStr,
     fs,
     os::unix::fs::{FileTypeExt, MetadataExt},
     path::Path,
@@ -704,9 +705,16 @@ fn linux_socket_access_diagnostic(socket_path: &str) -> Option<String> {
     let socket_uid = metadata.uid();
     let socket_gid = metadata.gid();
     let socket_mode = metadata.mode() & 0o777;
+    let socket_group_name = lookup_group_name(socket_gid);
 
     if current_user_can_write_socket(&metadata) {
         return None;
+    }
+
+    if socket_group_name.as_deref() == Some("playit") {
+        return Some(format!(
+            "The playit service is running, but its IPC socket at {socket_path} is restricted to the `playit` group. Add this user to that group with `usermod -aG playit <username>` and start a new login session. Current user uid={current_uid}, gid={current_gid}; socket owner uid={socket_uid}, gid={socket_gid}, mode={socket_mode:o}."
+        ));
     }
 
     Some(format!(
@@ -757,6 +765,43 @@ fn current_user_in_group(target_gid: u32) -> bool {
         .into_iter()
         .take(loaded as usize)
         .any(|group| group == target_gid)
+}
+
+#[cfg(target_os = "linux")]
+fn lookup_group_name(group_gid: u32) -> Option<String> {
+    let mut group = std::mem::MaybeUninit::<libc::group>::uninit();
+    let mut result = std::ptr::null_mut();
+    let mut buf_len = 1024usize;
+
+    loop {
+        let mut buf = vec![0u8; buf_len];
+        let status = unsafe {
+            libc::getgrgid_r(
+                group_gid,
+                group.as_mut_ptr(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                &mut result,
+            )
+        };
+
+        if status == 0 {
+            if result.is_null() {
+                return None;
+            }
+
+            let group = unsafe { group.assume_init() };
+            let name = unsafe { CStr::from_ptr(group.gr_name) };
+            return Some(name.to_string_lossy().into_owned());
+        }
+
+        if status == libc::ERANGE {
+            buf_len *= 2;
+            continue;
+        }
+
+        return None;
+    }
 }
 
 fn ipc_connection_error() -> CliError {
@@ -833,7 +878,9 @@ fn format_log_level(level: &ServiceLogLevel) -> &'static str {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::{CliTarget, auto_attach_error, linux_service_start_prompt};
+    use super::{
+        CliTarget, auto_attach_error, linux_service_start_prompt, linux_socket_access_diagnostic,
+    };
 
     #[test]
     fn linux_start_prompt_includes_command() {
@@ -861,6 +908,31 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "The playit service is running, but the current user cannot access its IPC socket at /var/run/playitd.sock."
+        );
+    }
+
+    #[test]
+    fn auto_attach_error_surfaces_playit_group_message() {
+        let error = auto_attach_error(
+            &CliTarget::InstalledService,
+            Some(
+                "The playit service is running, but its IPC socket at /var/run/playitd.sock is restricted to the `playit` group.",
+            ),
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "The playit service is running, but its IPC socket at /var/run/playitd.sock is restricted to the `playit` group."
+        );
+    }
+
+    #[test]
+    fn linux_socket_diagnostic_reports_missing_socket() {
+        let missing = linux_socket_access_diagnostic("/tmp/playit-socket-that-does-not-exist");
+        assert!(
+            missing
+                .expect("missing socket should produce a diagnostic")
+                .contains("does not exist")
         );
     }
 }
