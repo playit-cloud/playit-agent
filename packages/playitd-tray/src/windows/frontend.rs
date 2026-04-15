@@ -489,6 +489,7 @@ fn apply_service_state(
     state.service_running = service_running;
     state.reset_agent_enabled = reset_agent_enabled;
 
+    state.open_status.set_enabled(service_running);
     state.start_service.set_enabled(!service_running);
     state.stop_service.set_enabled(service_running);
     state.reset_agent.set_enabled(reset_agent_enabled);
