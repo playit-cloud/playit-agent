@@ -1,13 +1,16 @@
 #!/usr/bin/env sh
 
+SECRET_KEY="${SECRET_KEY:-}"
+
 if [ -z "${SECRET_KEY}" ]; then
-  echo "SECRET_KEY environment variable missing, using CLI argument";
-  SECRET_KEY="$1"
+  SECRET_KEY="${1:-}"
 
   if [ -z "${SECRET_KEY}" ]; then
-    echo "secret key (first argument) is missing";
-    exit 1;
+    echo "secret key is required via SECRET_KEY or the first argument" >&2
+    exit 1
   fi
+
+  shift
 fi
 
-exec playit -s --secret "${SECRET_KEY}" --platform_docker start
+exec playitd --secret "${SECRET_KEY}" --platform-docker "$@" 2>&1
