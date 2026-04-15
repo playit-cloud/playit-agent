@@ -84,11 +84,13 @@
             AllowDowngrades="no"
             DowngradeErrorMessage="A newer version of [ProductName] is already installed. Setup will now exit."/>
 
+        <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
+        <Property Id="PLAYITD_CLOSE_APPROVED" Value="0" />
+
         <util:CloseApplication
             Id="ClosePlayitService"
             Target="playitd.exe"
-            Description="The Playit service is currently running and setup must stop it before continuing. Click Retry after stopping it yourself, Ignore to let setup stop it automatically, or Abort to cancel setup."
-            PromptToContinue="yes"
+            Description="The Playit service is currently running and setup must stop it before continuing."
             RebootPrompt="no"
             Property="PLAYITD_SERVICE_RUNNING"
             Sequence="1" />
@@ -100,6 +102,7 @@
             CloseMessage="yes"
             EndSessionMessage="yes"
             RebootPrompt="no"
+            Property="PLAYITD_TRAY_RUNNING"
             TerminateProcess="0"
             Sequence="2"
             Timeout="10" />
@@ -271,6 +274,11 @@
         </Feature>
 
         <SetProperty Id="ARPINSTALLLOCATION" Value="[APPLICATIONFOLDER]" After="CostFinalize"/>
+        <SetProperty
+            Id="PLAYITD_CLOSE_APPROVED"
+            Value="1"
+            Before="WixCloseApplications"
+            Sequence="execute">UILevel &lt; 5 AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</SetProperty>
         <Property Id="WixShellExecTarget" Value="[#exe2]" />
         <CustomAction
             Id="LaunchTrayApplication"
@@ -285,6 +293,28 @@
             Execute="immediate" />
         <CustomAction
             Id="StopPlayitdService"
+            BinaryKey="WixCA"
+            DllEntry="WixQuietExec"
+            Execute="immediate"
+            Return="check" />
+        <CustomAction
+            Id="SetValidatePlayitdServiceStoppedCommand"
+            Property="WixQuietExecCmdLine"
+            Value="&quot;[SystemFolder]cmd.exe&quot; /c sc query playitd | find /I &quot;RUNNING&quot; &gt;nul &amp;&amp; exit 1 || exit 0"
+            Execute="immediate" />
+        <CustomAction
+            Id="ValidatePlayitdServiceStopped"
+            BinaryKey="WixCA"
+            DllEntry="WixQuietExec"
+            Execute="immediate"
+            Return="check" />
+        <CustomAction
+            Id="SetValidatePlayitTrayClosedCommand"
+            Property="WixQuietExecCmdLine"
+            Value="&quot;[SystemFolder]cmd.exe&quot; /c tasklist /FI &quot;IMAGENAME eq playitd-tray.exe&quot; | find /I &quot;playitd-tray.exe&quot; &gt;nul &amp;&amp; exit 1 || exit 0"
+            Execute="immediate" />
+        <CustomAction
+            Id="ValidatePlayitTrayClosed"
             BinaryKey="WixCA"
             DllEntry="WixQuietExec"
             Execute="immediate"
@@ -314,8 +344,12 @@
             Return="ignore" />
 
         <InstallExecuteSequence>
-            <Custom Action="SetStopPlayitdServiceCommand" After="WixCloseApplications">PLAYITD_SERVICE_RUNNING</Custom>
-            <Custom Action="StopPlayitdService" After="SetStopPlayitdServiceCommand">PLAYITD_SERVICE_RUNNING</Custom>
+            <Custom Action="SetStopPlayitdServiceCommand" After="WixCloseApplications">PLAYITD_CLOSE_APPROVED AND PLAYITD_SERVICE_RUNNING</Custom>
+            <Custom Action="StopPlayitdService" After="SetStopPlayitdServiceCommand">PLAYITD_CLOSE_APPROVED AND PLAYITD_SERVICE_RUNNING</Custom>
+            <Custom Action="SetValidatePlayitdServiceStoppedCommand" After="StopPlayitdService">PLAYITD_CLOSE_APPROVED AND PLAYITD_SERVICE_RUNNING</Custom>
+            <Custom Action="ValidatePlayitdServiceStopped" After="SetValidatePlayitdServiceStoppedCommand">PLAYITD_CLOSE_APPROVED AND PLAYITD_SERVICE_RUNNING</Custom>
+            <Custom Action="SetValidatePlayitTrayClosedCommand" After="ValidatePlayitdServiceStopped">PLAYITD_CLOSE_APPROVED AND PLAYITD_TRAY_RUNNING</Custom>
+            <Custom Action="ValidatePlayitTrayClosed" After="SetValidatePlayitTrayClosedCommand">PLAYITD_CLOSE_APPROVED AND PLAYITD_TRAY_RUNNING</Custom>
             <Custom Action="RemoveTrayStartupShortcut" Before="RemoveFiles">REMOVE="ALL"</Custom>
             <Custom Action="EnsureTrayStartupShortcut" After="InstallFinalize">NOT REMOVE="ALL"</Custom>
             <Custom Action="SetStartPlayitdServiceCommand" After="InstallFinalize">PLAYITD_SERVICE_RUNNING AND NOT REMOVE="ALL"</Custom>
@@ -346,6 +380,31 @@
         <UI>
             <UIRef Id="WixUI_FeatureTree"/>
 
+            <Dialog Id="PlayitCloseRunningDlg" Width="370" Height="270" Title="[ProductName] Setup" TrackDiskSpace="yes">
+                <Control Id="Continue" Type="PushButton" X="212" Y="243" Width="80" Height="17" Default="yes" Text="Continue">
+                    <Publish Property="PLAYITD_CLOSE_APPROVED" Value="1" Order="1">1</Publish>
+                    <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2">1</Publish>
+                </Control>
+                <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+                    <Publish Event="NewDialog" Value="CustomizeDlg" Order="1">PLAYITD_CLOSE_RETURN_DIALOG = "CustomizeDlg"</Publish>
+                    <Publish Event="NewDialog" Value="MaintenanceTypeDlg" Order="2">PLAYITD_CLOSE_RETURN_DIALOG = "MaintenanceTypeDlg"</Publish>
+                    <Publish Event="NewDialog" Value="WelcomeDlg" Order="3">PLAYITD_CLOSE_RETURN_DIALOG = "WelcomeDlg"</Publish>
+                </Control>
+                <Control Id="Title" Type="Text" X="15" Y="15" Width="320" Height="30" Transparent="yes" NoPrefix="yes" Text="Playit must be closed before setup continues" />
+                <Control Id="Description" Type="Text" X="25" Y="70" Width="320" Height="40" NoPrefix="yes" Text="Setup needs to close the Playit tray icon and stop the Playit service before it can update files." />
+                <Control Id="RestartInfo" Type="Text" X="25" Y="112" Width="320" Height="28" NoPrefix="yes" Text="If the Playit service is running now, setup will start it again after the install finishes." />
+                <Control Id="ServiceLine" Type="Text" X="25" Y="148" Width="320" Height="20" Hidden="yes" NoPrefix="yes" Text="The Playit service is currently running.">
+                    <Condition Action="show">PLAYITD_SERVICE_RUNNING</Condition>
+                </Control>
+                <Control Id="TrayLine" Type="Text" X="25" Y="170" Width="320" Height="20" Hidden="yes" NoPrefix="yes" Text="The Playit tray icon is currently running.">
+                    <Condition Action="show">PLAYITD_TRAY_RUNNING</Condition>
+                </Control>
+                <Control Id="Question" Type="Text" X="25" Y="198" Width="320" Height="20" NoPrefix="yes" Text="Select Continue to let setup close Playit, or Cancel to go back." />
+                <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="no" Text="!(loc.VerifyReadyDlgBannerBitmap)" />
+                <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+                <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+            </Dialog>
+
             <!--
               Enabling the EULA dialog in the installer is a three step process:
 
@@ -358,6 +417,14 @@
             -->
             <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="CustomizeDlg" Order="99">1</Publish>
             <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="99">1</Publish>
+            <Publish Dialog="WelcomeDlg" Control="Next" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="WelcomeDlg" Order="100">Installed AND PATCH AND NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="101">Installed AND PATCH AND NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="CustomizeDlg" Control="Next" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="CustomizeDlg" Order="100">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="CustomizeDlg" Control="Next" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="MaintenanceTypeDlg" Order="100">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="MaintenanceTypeDlg" Order="100">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
         </UI>
 
 
