@@ -86,7 +86,7 @@
 
         <util:CloseApplication
             Id="ClosePlayitService"
-            Target="playitd-service.exe"
+            Target="playitd.exe"
             Description="The Playit service is currently running and setup must stop it before continuing. Click Retry after stopping it yourself, Ignore to let setup stop it automatically, or Abort to cancel setup."
             PromptToContinue="yes"
             RebootPrompt="no"
@@ -281,7 +281,7 @@
         <CustomAction
             Id="SetStopPlayitdServiceCommand"
             Property="WixQuietExecCmdLine"
-            Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$svc = Get-Service -Name 'playitd' -ErrorAction SilentlyContinue; if ($null -eq $svc) { exit 0 }; if ($svc.Status -ne 'Stopped') { Stop-Service -Name 'playitd'; $svc = Get-Service -Name 'playitd'; $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(20)) }&quot;"
+            Value="&quot;[SystemFolder]cmd.exe&quot; /c net stop playitd /y"
             Execute="immediate" />
         <CustomAction
             Id="StopPlayitdService"
@@ -292,7 +292,7 @@
         <CustomAction
             Id="SetStartPlayitdServiceCommand"
             Property="WixQuietExecCmdLine"
-            Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoProfile -ExecutionPolicy Bypass -Command &quot;$svc = Get-Service -Name 'playitd' -ErrorAction SilentlyContinue; if ($null -eq $svc) { exit 0 }; if ($svc.Status -ne 'Running') { Start-Service -Name 'playitd'; $svc = Get-Service -Name 'playitd'; $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds(20)) }&quot;"
+            Value="&quot;[SystemFolder]cmd.exe&quot; /c net start playitd"
             Execute="immediate" />
         <CustomAction
             Id="StartPlayitdService"
