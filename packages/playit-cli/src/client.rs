@@ -10,7 +10,6 @@ use playit_ipc::model::{
 use playitd::manager::{ensure_installed_service_running, stop_installed_service};
 
 use crate::ui::UI;
-use crate::ui::log_capture::{LogEntry, LogLevel as UiLogLevel};
 use crate::ui::tui_app::{
     AccountStatusInfo, AgentData, ConnectionStats, NoticeInfo, PendingTunnelInfo, TunnelInfo,
 };
@@ -599,21 +598,6 @@ async fn apply_update(ui: &mut UI, update: ServiceUpdate, stdout_mode: bool) {
                     entry.target,
                     entry.message
                 );
-            } else if let Some(log_capture) = ui.log_capture() {
-                let level = match entry.level {
-                    ServiceLogLevel::Error => UiLogLevel::Error,
-                    ServiceLogLevel::Warn => UiLogLevel::Warn,
-                    ServiceLogLevel::Info => UiLogLevel::Info,
-                    ServiceLogLevel::Debug => UiLogLevel::Debug,
-                    ServiceLogLevel::Trace => UiLogLevel::Trace,
-                };
-
-                log_capture.push(LogEntry {
-                    level,
-                    target: entry.target,
-                    message: entry.message,
-                    timestamp: entry.timestamp,
-                });
             }
         }
     }

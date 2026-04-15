@@ -1,16 +1,12 @@
-use std::sync::Arc;
-
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use playit_agent_core::utils::now_milli;
 
 use crate::CliError;
 use crate::signal_handle::get_signal_handle;
 
-pub mod log_capture;
 pub mod tui_app;
 pub mod widgets;
 
-pub use log_capture::LogCapture;
 pub use tui_app::{AgentData, ConnectionStats, TuiApp};
 
 /// UI mode - either TUI (interactive) or log-only (stdout)
@@ -72,15 +68,6 @@ impl UI {
     pub fn update_stats(&mut self, stats: ConnectionStats) {
         if let UI::Tui(tui) = self {
             tui.update_stats(stats);
-        }
-    }
-
-    /// Get the log capture for TUI mode
-    pub fn log_capture(&self) -> Option<Arc<LogCapture>> {
-        if let UI::Tui(tui) = self {
-            Some(tui.log_capture())
-        } else {
-            None
         }
     }
 
