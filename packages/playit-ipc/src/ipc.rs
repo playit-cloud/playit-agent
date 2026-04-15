@@ -11,7 +11,7 @@ use interprocess::local_socket::{
     tokio::{Stream, prelude::*},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::model::{
@@ -79,6 +79,13 @@ pub struct RequestEnvelope {
     pub request: ServiceRequest,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct IncomingRequestEnvelope {
+    pub ipc_version: u32,
+    pub request_id: u64,
+    pub request: ServiceRequestOrUnknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServiceRequest {
@@ -90,6 +97,21 @@ pub enum ServiceRequest {
     ResetSecret,
     GetSecretPath,
     GetAccountLoginUrl,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ServiceRequestOrUnknown {
+    Known(ServiceRequest),
+    Unknown(UnknownTaggedMessage),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnknownTaggedMessage {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    #[serde(flatten)]
+    pub rest: Map<String, Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +130,12 @@ pub struct ResponseEnvelope {
 pub struct EventEnvelope {
     pub ipc_version: u32,
     pub event: ServiceUpdate,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IncomingEventEnvelope {
+    pub ipc_version: u32,
+    pub event: ServiceUpdateOrUnknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,16 +160,27 @@ pub enum ServerEnvelope {
     Event(EventEnvelope),
 }
 
-#[derive(Debug, Deserialize)]
-struct RawServerEnvelope {
-    message_kind: String,
-    data: Value,
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "message_kind", content = "data", rename_all = "snake_case")]
+enum IncomingServerEnvelope {
+    Hello(HelloEnvelope),
+    Response(ResponseEnvelope),
+    Event(IncomingEventEnvelope),
 }
 
-#[derive(Debug, Deserialize)]
-struct RawEventEnvelope {
-    ipc_version: u32,
-    event: Value,
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ServiceUpdateOrUnknown {
+    Known(ServiceUpdate),
+    Unknown(UnknownTaggedEvent),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UnknownTaggedEvent {
+    #[serde(rename = "type")]
+    pub type_name: String,
+    #[serde(default)]
+    pub data: Option<Value>,
 }
 
 pub fn protocol_info() -> ProtocolInfo {
@@ -261,21 +300,26 @@ impl IpcClient {
     pub async fn recv_update(&mut self) -> Result<ServiceUpdate, IpcError> {
         loop {
             let line = self.read_line().await?;
-            match decode_stream_update(&line)? {
-                DecodedStreamUpdate::Update(event) => {
+            match decode_incoming_server_envelope(&line)? {
+                IncomingServerEnvelope::Event(event) => {
                     self.ensure_ipc_version(event.ipc_version)?;
-                    return Ok(event.event);
+                    match event.event {
+                        ServiceUpdateOrUnknown::Known(update) => return Ok(update),
+                        ServiceUpdateOrUnknown::Unknown(unknown) => {
+                            tracing::debug!(
+                                "Ignoring unknown IPC event type: {}",
+                                unknown.type_name
+                            );
+                        }
+                    }
                 }
-                DecodedStreamUpdate::IgnoredUnknownEvent(event_type) => {
-                    tracing::debug!("Ignoring unknown IPC event type: {event_type}");
-                }
-                DecodedStreamUpdate::Response(response) => {
+                IncomingServerEnvelope::Response(response) => {
                     return Err(IpcError::ProtocolError(format!(
                         "received RPC response while waiting for stream event: {:?}",
                         response.response
                     )));
                 }
-                DecodedStreamUpdate::Hello => {
+                IncomingServerEnvelope::Hello(_) => {
                     return Err(IpcError::ProtocolError(
                         "received duplicate hello while waiting for stream event".to_string(),
                     ));
@@ -448,50 +492,39 @@ fn decode_server_envelope(line: &str) -> Result<ServerEnvelope, IpcError> {
     Ok(serde_json::from_str(line.trim())?)
 }
 
-enum DecodedStreamUpdate {
-    Hello,
-    Response(ResponseEnvelope),
-    Update(EventEnvelope),
-    IgnoredUnknownEvent(String),
+fn decode_incoming_server_envelope(line: &str) -> Result<IncomingServerEnvelope, IpcError> {
+    let envelope = serde_json::from_str::<IncomingServerEnvelope>(line.trim())?;
+    match &envelope {
+        IncomingServerEnvelope::Hello(hello) => {
+            let _ = hello;
+        }
+        IncomingServerEnvelope::Response(_) => {}
+        IncomingServerEnvelope::Event(event) => {
+            if let ServiceUpdateOrUnknown::Unknown(unknown) = &event.event {
+                if is_known_update_type(&unknown.type_name) {
+                    return Err(IpcError::ProtocolError(format!(
+                        "invalid IPC event payload for {}",
+                        unknown.type_name
+                    )));
+                }
+            }
+        }
+    }
+    Ok(envelope)
 }
 
-fn decode_stream_update(line: &str) -> Result<DecodedStreamUpdate, IpcError> {
-    let raw: RawServerEnvelope = serde_json::from_str(line.trim())?;
-
-    match raw.message_kind.as_str() {
-        "hello" => {
-            let _: HelloEnvelope = serde_json::from_value(raw.data)?;
-            Ok(DecodedStreamUpdate::Hello)
-        }
-        "response" => Ok(DecodedStreamUpdate::Response(serde_json::from_value(
-            raw.data,
-        )?)),
-        "event" => {
-            let event: RawEventEnvelope = serde_json::from_value(raw.data)?;
-            let Some(event_type) = event
-                .event
-                .get("type")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-            else {
-                return Err(IpcError::ProtocolError(
-                    "stream event is missing a type tag".to_string(),
-                ));
-            };
-
-            if !is_known_update_type(event_type.as_str()) {
-                return Ok(DecodedStreamUpdate::IgnoredUnknownEvent(event_type));
-            }
-
-            Ok(DecodedStreamUpdate::Update(EventEnvelope {
-                ipc_version: event.ipc_version,
-                event: serde_json::from_value(event.event)?,
-            }))
-        }
-        other => Err(IpcError::ProtocolError(format!(
-            "unknown server message kind: {other}"
-        ))),
-    }
+pub fn is_known_request_type(type_name: &str) -> bool {
+    matches!(
+        type_name,
+        "subscribe"
+            | "get_status"
+            | "get_state"
+            | "stop"
+            | "set_secret"
+            | "reset_secret"
+            | "get_secret_path"
+            | "get_account_login_url"
+    )
 }
 
 fn is_known_update_type(event_type: &str) -> bool {
@@ -656,6 +689,107 @@ mod tests {
         let mut client = IpcClient::connect_with_path(&socket_path).await.unwrap();
         let update = client.recv_update().await.unwrap();
         assert!(matches!(update, ServiceUpdate::Stats(_)));
+    }
+
+    #[test]
+    fn request_fallback_parses_unknown_type_name() {
+        let request = serde_json::json!({
+            "type": "future_request",
+            "data": { "flag": true }
+        });
+
+        let parsed = serde_json::from_value::<ServiceRequestOrUnknown>(request).unwrap();
+        match parsed {
+            ServiceRequestOrUnknown::Unknown(unknown) => {
+                assert_eq!(unknown.type_name, "future_request");
+                assert_eq!(unknown.rest["data"], serde_json::json!({ "flag": true }));
+            }
+            other => panic!("expected unknown request fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn request_fallback_keeps_known_requests_typed() {
+        let request = serde_json::json!({
+            "type": "get_state"
+        });
+
+        let parsed = serde_json::from_value::<ServiceRequestOrUnknown>(request).unwrap();
+        assert!(matches!(
+            parsed,
+            ServiceRequestOrUnknown::Known(ServiceRequest::GetState)
+        ));
+    }
+
+    #[test]
+    fn event_fallback_parses_unknown_type_name_without_manual_tag_read() {
+        let event = serde_json::json!({
+            "type": "future_event",
+            "data": { "flag": true }
+        });
+
+        let parsed = serde_json::from_value::<ServiceUpdateOrUnknown>(event).unwrap();
+        match parsed {
+            ServiceUpdateOrUnknown::Unknown(unknown) => {
+                assert_eq!(unknown.type_name, "future_event");
+                assert_eq!(unknown.data, Some(serde_json::json!({ "flag": true })));
+            }
+            other => panic!("expected unknown event fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn event_fallback_accepts_missing_data_for_unknown_type() {
+        let event = serde_json::json!({
+            "type": "future_event"
+        });
+
+        let parsed = serde_json::from_value::<ServiceUpdateOrUnknown>(event).unwrap();
+        match parsed {
+            ServiceUpdateOrUnknown::Unknown(unknown) => {
+                assert_eq!(unknown.type_name, "future_event");
+                assert_eq!(unknown.data, None);
+            }
+            other => panic!("expected unknown event fallback, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn event_fallback_keeps_known_events_typed() {
+        let event = serde_json::json!({
+            "type": "stats",
+            "data": {
+                "bytes_in": 1,
+                "bytes_out": 2,
+                "active_tcp": 3,
+                "active_udp": 4
+            }
+        });
+
+        let parsed = serde_json::from_value::<ServiceUpdateOrUnknown>(event).unwrap();
+        assert!(matches!(
+            parsed,
+            ServiceUpdateOrUnknown::Known(ServiceUpdate::Stats(_))
+        ));
+    }
+
+    #[test]
+    fn malformed_known_event_payload_remains_an_error() {
+        let line = serde_json::json!({
+            "message_kind": "event",
+            "data": {
+                "ipc_version": IPC_VERSION,
+                "event": {
+                    "type": "stats",
+                    "data": { "bytes_in": "not-a-number" }
+                }
+            }
+        });
+
+        let error = decode_incoming_server_envelope(&serde_json::to_string(&line).unwrap())
+            .err()
+            .expect("malformed known event should fail");
+        assert!(matches!(error, IpcError::ProtocolError(_)));
     }
 
     #[tokio::test]

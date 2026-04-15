@@ -13,40 +13,22 @@ use interprocess::os::windows::{
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
 use playit_ipc::ipc::{
-    EventEnvelope, HelloEnvelope, IPC_VERSION, IpcError, ResponseEnvelope, ServerEnvelope,
-    ServiceRequest, ServiceResponse, get_default_socket_path, protocol_info,
+    EventEnvelope, HelloEnvelope, IPC_VERSION, IncomingRequestEnvelope, IpcError, ResponseEnvelope,
+    ServerEnvelope, ServiceRequest, ServiceRequestOrUnknown, ServiceResponse,
+    get_default_socket_path, is_known_request_type, protocol_info,
 };
 use playit_ipc::model::{
     AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ConnectionStats, SecretPathResponse,
     ServiceError, ServiceErrorCode, ServiceStatus, ServiceUpdate, SubscribeResponse,
     SubscriptionSnapshot,
 };
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
 const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
-
-#[derive(Debug, Deserialize)]
-struct RawRequestEnvelope {
-    ipc_version: u32,
-    request_id: u64,
-    request: Value,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawRequestType {
-    #[serde(rename = "type")]
-    request_type: String,
-}
-
-enum RequestDecodeError {
-    InvalidRequest(String),
-    InvalidRequestType(String),
-}
 
 #[derive(Default)]
 pub struct StateCache {
@@ -238,7 +220,8 @@ impl IpcServer {
                     match read_result {
                         Ok(0) => break,
                         Ok(_) => {
-                            let request = serde_json::from_str::<RawRequestEnvelope>(line.trim())?;
+                            let request =
+                                serde_json::from_str::<IncomingRequestEnvelope>(line.trim())?;
                             line.clear();
                             let request_id = request.request_id;
 
@@ -259,26 +242,32 @@ impl IpcServer {
                                 continue;
                             }
 
-                            let request = match decode_service_request(request.request) {
-                                Ok(request) => request,
-                                Err(RequestDecodeError::InvalidRequest(message)) => {
+                            let request = match request.request {
+                                ServiceRequestOrUnknown::Known(request) => request,
+                                ServiceRequestOrUnknown::Unknown(unknown) => {
+                                    if is_known_request_type(&unknown.type_name) {
+                                        let message = format!(
+                                            "invalid IPC request payload for {}",
+                                            unknown.type_name
+                                        );
+                                        self.send_response(
+                                            &mut writer,
+                                            request_id,
+                                            ServiceResponse::Error(protocol_error(
+                                                ServiceErrorCode::InvalidRequest,
+                                                message,
+                                                false,
+                                            )),
+                                        )
+                                        .await?;
+                                        continue;
+                                    }
                                     self.send_response(
                                         &mut writer,
                                         request_id,
-                                        ServiceResponse::Error(protocol_error(
-                                            ServiceErrorCode::InvalidRequest,
-                                            message,
-                                            false,
+                                        ServiceResponse::Error(invalid_request_type_error(
+                                            &unknown.type_name,
                                         )),
-                                    )
-                                    .await?;
-                                    continue;
-                                }
-                                Err(RequestDecodeError::InvalidRequestType(request_type)) => {
-                                    self.send_response(
-                                        &mut writer,
-                                        request_id,
-                                        ServiceResponse::Error(invalid_request_type_error(&request_type)),
                                     )
                                     .await?;
                                     continue;
@@ -597,32 +586,6 @@ impl IpcServer {
         );
         *self.guest_login_cache.write().await = Some((link.clone(), now_milli()));
         Ok(link)
-    }
-}
-
-fn decode_service_request(value: Value) -> Result<ServiceRequest, RequestDecodeError> {
-    let request_type = serde_json::from_value::<RawRequestType>(value.clone())
-        .map_err(|error| {
-            RequestDecodeError::InvalidRequest(format!("invalid IPC request envelope: {error}"))
-        })?
-        .request_type;
-
-    match request_type.as_str() {
-        "subscribe"
-        | "get_status"
-        | "get_state"
-        | "stop"
-        | "set_secret"
-        | "reset_secret"
-        | "get_secret_path"
-        | "get_account_login_url" => {
-            serde_json::from_value::<ServiceRequest>(value).map_err(|error| {
-                RequestDecodeError::InvalidRequest(format!(
-                    "invalid IPC request payload for {request_type}: {error}"
-                ))
-            })
-        }
-        _ => Err(RequestDecodeError::InvalidRequestType(request_type)),
     }
 }
 
