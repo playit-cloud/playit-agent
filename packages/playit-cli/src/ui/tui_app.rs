@@ -166,7 +166,8 @@ impl TuiApp {
                 error.message
             )),
             AgentLifecycle::DisabledOverLimit(_) => self.set_message(format!(
-                "playitd is disabled because this account is over the agent limit. {}",
+                "{}\n{}",
+                agent_over_limit_title(),
                 agent_over_limit_guidance()
             )),
             AgentLifecycle::Starting => {
@@ -634,7 +635,8 @@ fn status_message(status: &ServiceStatus) -> Option<String> {
         playit_ipc::model::ServicePhase::DisabledOverLimit
     ) {
         return Some(format!(
-            "playitd status: disabled_over_limit ({})",
+            "{}\n{}",
+            agent_over_limit_title(),
             agent_over_limit_guidance()
         ));
     }
@@ -656,9 +658,9 @@ fn status_message(status: &ServiceStatus) -> Option<String> {
 
 fn service_phase_label(status: &ServiceStatus) -> &'static str {
     match status.phase {
-        playit_ipc::model::ServicePhase::WaitingForSecret => "waiting_for_secret",
-        playit_ipc::model::ServicePhase::HasInvalidSecret => "has_invalid_secret",
-        playit_ipc::model::ServicePhase::DisabledOverLimit => "disabled_over_limit",
+        playit_ipc::model::ServicePhase::WaitingForSecret => "waiting for secret",
+        playit_ipc::model::ServicePhase::HasInvalidSecret => "invalid secret",
+        playit_ipc::model::ServicePhase::DisabledOverLimit => "disabled over limit",
         playit_ipc::model::ServicePhase::Starting => "starting",
         playit_ipc::model::ServicePhase::Running => "running",
         playit_ipc::model::ServicePhase::Stopping => "stopping",
@@ -668,8 +670,12 @@ fn service_phase_label(status: &ServiceStatus) -> &'static str {
 
 fn agent_over_limit_guidance() -> String {
     format!(
-        "Visit {ACCOUNT_AGENTS_URL} to delete unused agents, or upgrade at {ACCOUNT_UPGRADE_URL} to increase the limit from 2 agents to 10."
+        "Visit {ACCOUNT_AGENTS_URL} to delete unused agents\nVisit {ACCOUNT_UPGRADE_URL} to increase your agent limit"
     )
+}
+
+fn agent_over_limit_title() -> &'static str {
+    "The playit service cannot start because this account is over the agent limit."
 }
 
 fn level_label(level: &LogLevel) -> &'static str {
@@ -844,7 +850,8 @@ mod tests {
             app.mode,
             TuiMode::Message {
                 message: format!(
-                    "playitd status: disabled_over_limit ({})",
+                    "{}\n{}",
+                    agent_over_limit_title(),
                     agent_over_limit_guidance()
                 )
             }

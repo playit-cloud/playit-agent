@@ -111,7 +111,8 @@ pub async fn run_auto_command(
         }
         AgentLifecycle::DisabledOverLimit(_) => {
             return Err(CliError::ServiceError(format!(
-                "playitd cannot start because this account is over the agent limit. {}",
+                "{}\n{}",
+                agent_over_limit_title(),
                 agent_over_limit_guidance()
             )));
         }
@@ -460,7 +461,13 @@ pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
                 println!("  Capabilities: {:?}", status.protocol.capabilities);
             }
             if matches!(status.phase, ServicePhase::DisabledOverLimit) {
-                println!("  Action: {}", agent_over_limit_guidance());
+                println!("  Message:");
+                for line in agent_over_limit_title().lines() {
+                    println!("    {line}");
+                }
+                for line in agent_over_limit_guidance().lines() {
+                    println!("    {line}");
+                }
             }
             if let Some(error) = status.last_error {
                 println!("  Last error: {}", error.message);
@@ -492,7 +499,8 @@ pub async fn ensure_service_waiting_for_secret(
             error.message
         ))),
         AgentLifecycle::DisabledOverLimit(_) => Err(CliError::ServiceError(format!(
-            "playitd is not waiting for setup because this account is over the agent limit. {}",
+            "{}\n{}",
+            "Setup is unavailable because this account is over the agent limit.",
             agent_over_limit_guidance()
         ))),
         AgentLifecycle::Starting => Err(CliError::ServiceError(
@@ -689,9 +697,9 @@ fn format_timestamp_millis(millis: u64) -> String {
 
 fn format_service_phase(phase: &ServicePhase) -> &'static str {
     match phase {
-        ServicePhase::WaitingForSecret => "waiting_for_secret",
-        ServicePhase::HasInvalidSecret => "has_invalid_secret",
-        ServicePhase::DisabledOverLimit => "disabled_over_limit",
+        ServicePhase::WaitingForSecret => "waiting for secret",
+        ServicePhase::HasInvalidSecret => "invalid secret",
+        ServicePhase::DisabledOverLimit => "disabled over limit",
         ServicePhase::Starting => "starting",
         ServicePhase::Running => "running",
         ServicePhase::Stopping => "stopping",
@@ -701,8 +709,12 @@ fn format_service_phase(phase: &ServicePhase) -> &'static str {
 
 fn agent_over_limit_guidance() -> String {
     format!(
-        "Visit {ACCOUNT_AGENTS_URL} to delete unused agents, or upgrade at {ACCOUNT_UPGRADE_URL} to increase the limit from 2 agents to 10."
+        "Visit {ACCOUNT_AGENTS_URL} to delete unused agents\nVisit {ACCOUNT_UPGRADE_URL} to increase your agent limit"
     )
+}
+
+fn agent_over_limit_title() -> &'static str {
+    "The playit service cannot start because this account is over the agent limit."
 }
 
 fn format_log_level(level: &ServiceLogLevel) -> &'static str {

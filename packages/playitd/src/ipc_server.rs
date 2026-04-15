@@ -25,6 +25,9 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
+const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
+const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
+
 #[derive(Default)]
 pub struct StateCache {
     lifecycle: RwLock<AgentLifecycle>,
@@ -576,6 +579,12 @@ fn protocol_error(code: ServiceErrorCode, message: String, retryable: bool) -> S
     }
 }
 
+fn over_limit_guidance() -> String {
+    format!(
+        "Visit {ACCOUNT_AGENTS_URL} to delete unused agents\nVisit {ACCOUNT_UPGRADE_URL} to increase your agent limit"
+    )
+}
+
 fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
     match lifecycle {
         AgentLifecycle::WaitingForSecret => protocol_error(
@@ -594,7 +603,8 @@ fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
         AgentLifecycle::DisabledOverLimit(error) => protocol_error(
             ServiceErrorCode::ProvisioningUnavailable,
             format!(
-                "playitd is not waiting for secret provisioning because the account is over the agent limit: {}",
+                "Setup is unavailable because this account is over the agent limit.\n{}\nReason: {}",
+                over_limit_guidance(),
                 error.message
             ),
             false,

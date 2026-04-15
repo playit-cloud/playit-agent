@@ -1029,7 +1029,7 @@ fn daemon_error(code: ServiceErrorCode, message: String, retryable: bool) -> Ser
 }
 
 fn agent_disabled_over_limit_message() -> String {
-    "This playit account has reached its agent limit.".to_string()
+    "This account is over the agent limit.".to_string()
 }
 
 fn is_invalid_agent_secret_error(error: &SetupError) -> bool {
