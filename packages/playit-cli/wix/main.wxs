@@ -314,7 +314,7 @@
             Return="ignore" />
 
         <InstallUISequence>
-            <Custom Action="WixCloseApplications" Before="InstallValidate">VersionNT &gt; 400</Custom>
+            <Custom Action="WixCloseApplications" Before="ExecuteAction">VersionNT &gt; 400</Custom>
             <Custom Action="SetStopPlayitdServiceCommand" After="WixCloseApplications">PLAYITD_SERVICE_RUNNING AND UILevel &gt;= 5</Custom>
             <Custom Action="StopPlayitdService" After="SetStopPlayitdServiceCommand">PLAYITD_SERVICE_RUNNING AND UILevel &gt;= 5</Custom>
         </InstallUISequence>
