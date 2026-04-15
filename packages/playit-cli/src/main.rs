@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use client::{
-    CliTarget, ensure_service_waiting_for_secret, provision_service_secret,
+    AttachMode, CliTarget, ensure_service_waiting_for_secret, provision_service_secret,
     run_account_login_url_command, run_attach_command, run_auto_command, run_reset_command,
     run_secret_path_command, run_start_command, run_status_command, run_stop_command,
 };
@@ -13,8 +13,6 @@ use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use rand::Rng;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
 use uuid::Uuid;
 
 use playit_agent_core::agent_control::errors::SetupError;
@@ -23,8 +21,7 @@ use playit_api_client::http_client::HttpClientError;
 use playit_api_client::{PlayitApi, api::*};
 
 use crate::signal_handle::get_signal_handle;
-use crate::ui::log_capture::LogCaptureLayer;
-use crate::ui::{UI, UISettings};
+use crate::ui::{ConsoleUi, UISettings};
 
 pub static API_BASE: LazyLock<String> =
     LazyLock::new(|| dotenv::var("API_BASE").unwrap_or("https://api.playit.gg".to_string()));
@@ -170,56 +167,34 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
         );
     }
 
-    let log_only = cli.stdout;
     let target = CliTarget::from_socket_path(cli.socket_path.clone());
-
-    // Check if attach has --stdout flag
     let attach_stdout = matches!(&cli.command, Some(Commands::Attach { stdout: true, .. }));
-
-    // Use log-only mode if stdout flag is set or if attach --stdout was requested.
-    let use_log_only = log_only || attach_stdout;
-
-    // Create UI first so we can get its log capture
-    let mut ui = UI::new(UISettings {
-        auto_answer: None,
-        log_only: use_log_only,
-    });
-
-    /* setup logging */
-    // Get log level from PLAYIT_LOG env var, defaulting to "info"
-    let log_filter =
-        EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
-
-    let _guard = match use_log_only {
-        true => {
-            // Log to stdout for `-s` or `attach -s`.
-            let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
-            tracing_subscriber::fmt()
-                .with_ansi(current_platform() == Platform::Linux)
-                .with_writer(non_blocking)
-                .with_env_filter(log_filter)
-                .init();
-            Some(guard)
-        }
-        false => {
-            // TUI mode - set up log capture layer with filter
-            if let Some(log_capture) = ui.log_capture() {
-                let capture_layer = LogCaptureLayer::new(log_capture);
-                tracing_subscriber::registry()
-                    .with(log_filter)
-                    .with(capture_layer)
-                    .init();
-            }
-            None
-        }
+    let stdout_mode = cli.stdout || attach_stdout;
+    let attach_mode = if stdout_mode {
+        AttachMode::Stdout
+    } else {
+        AttachMode::Interactive
     };
+
+    let _guard = if stdout_mode {
+        Some(init_stdout_tracing())
+    } else {
+        None
+    };
+
+    let mut console = ConsoleUi::new(UISettings { auto_answer: None });
 
     match cli.command {
         None => {
-            run_auto_command(&mut ui, &target).await?;
+            run_auto_command(&mut console, &target, attach_mode).await?;
         }
         Some(Commands::Attach { stdout }) => {
-            run_attach_command(&mut ui, stdout, &target).await?;
+            let attach_mode = if cli.stdout || stdout {
+                AttachMode::Stdout
+            } else {
+                AttachMode::Interactive
+            };
+            run_attach_command(&target, attach_mode).await?;
         }
         Some(Commands::Start) => {
             run_start_command(&target).await?;
@@ -232,7 +207,7 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
         }
         Some(Commands::Version) => println!("{}", env!("CARGO_PKG_VERSION")),
         Some(Commands::Setup) => {
-            run_setup_flow(&mut ui, &target).await?;
+            run_setup_flow(&mut console, &target).await?;
         }
         Some(Commands::Reset) => {
             run_reset_command(&target).await?;
@@ -247,15 +222,18 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
         },
         Some(Commands::Claim { command }) => match command {
             ClaimCommands::Generate => {
-                ui.write_screen(claim_generate()).await;
+                console.write_screen(claim_generate()).await;
             }
             ClaimCommands::Url { claim_code, .. } => {
-                ui.write_screen(claim_url(&claim_code)?.to_string()).await;
+                console
+                    .write_screen(claim_url(&claim_code)?.to_string())
+                    .await;
             }
             ClaimCommands::Exchange { claim_code, wait } => {
                 let secret_key =
-                    claim_exchange(&mut ui, &claim_code, ClaimAgentType::SelfManaged, wait).await?;
-                ui.write_screen(secret_key).await;
+                    claim_exchange(&mut console, &claim_code, ClaimAgentType::SelfManaged, wait)
+                        .await?;
+                console.write_screen(secret_key).await;
             }
         },
     }
@@ -263,27 +241,42 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
     Ok(std::process::ExitCode::SUCCESS)
 }
 
-pub async fn run_setup_flow(ui: &mut UI, target: &CliTarget) -> Result<(), CliError> {
+fn init_stdout_tracing() -> tracing_appender::non_blocking::WorkerGuard {
+    let log_filter =
+        EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
+    tracing_subscriber::fmt()
+        .with_ansi(current_platform() == Platform::Linux)
+        .with_writer(non_blocking)
+        .with_env_filter(log_filter)
+        .init();
+    guard
+}
+
+pub async fn run_setup_flow(console: &mut ConsoleUi, target: &CliTarget) -> Result<(), CliError> {
     ensure_service_waiting_for_secret(target).await?;
 
     let claim_code = claim_generate();
-    ui.write_screen(format!("Visit link to setup {}", claim_url(&claim_code)?))
+    console
+        .write_screen(format!("Visit link to setup {}", claim_url(&claim_code)?))
         .await;
 
-    let key = claim_exchange(ui, &claim_code, ClaimAgentType::Assignable, 0).await?;
+    let key = claim_exchange(console, &claim_code, ClaimAgentType::Assignable, 0).await?;
     provision_service_secret(target, &key).await?;
 
     let api = PlayitApi::create(API_BASE.to_string(), Some(key));
     if let Ok(session) = api.login_guest().await {
-        ui.write_screen(format!(
-            "Guest login:\nhttps://playit.gg/login/guest-account/{}",
-            session.session_key
-        ))
-        .await;
+        console
+            .write_screen(format!(
+                "Guest login:\nhttps://playit.gg/login/guest-account/{}",
+                session.session_key
+            ))
+            .await;
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
 
-    ui.write_screen("Playit setup complete, secret provisioned to playitd")
+    console
+        .write_screen("Playit setup complete, secret provisioned to playitd")
         .await;
     Ok(())
 }
@@ -303,7 +296,7 @@ pub fn claim_url(code: &str) -> Result<String, CliError> {
 }
 
 pub async fn claim_exchange(
-    ui: &mut UI,
+    console: &mut ConsoleUi,
     claim_code: &str,
     agent_type: ClaimAgentType,
     wait_sec: u32,
@@ -333,7 +326,8 @@ pub async fn claim_exchange(
                 Ok(v) => v,
                 Err(error) => {
                     tracing::error!(?error, "Failed loading claim setup");
-                    ui.write_screen(format!("{}\n\nError: {:?}", last_message, error))
+                    console
+                        .write_screen(format!("{}\n\nError: {:?}", last_message, error))
                         .await;
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     continue;
@@ -348,18 +342,19 @@ pub async fn claim_exchange(
                     format!("Approve program at {}", claim_url(claim_code)?)
                 }
                 ClaimSetupResponse::UserAccepted => {
-                    ui.write_screen("Program approved :). Secret code being setup.")
+                    console
+                        .write_screen("Program approved :). Secret code being setup.")
                         .await;
                     break;
                 }
                 ClaimSetupResponse::UserRejected => {
-                    ui.write_screen("Program rejected :(").await;
+                    console.write_screen("Program rejected :(").await;
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     return Err(CliError::AgentClaimRejected);
                 }
             };
 
-            ui.write_screen(&last_message).await;
+            console.write_screen(&last_message).await;
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
     }
@@ -374,13 +369,14 @@ pub async fn claim_exchange(
             Ok(res) => break res.secret_key,
             Err(ApiError::Fail(status)) => {
                 let msg = format!("code \"{}\" not ready, {:?}", claim_code, status);
-                ui.write_screen(msg).await;
+                console.write_screen(msg).await;
             }
             Err(error) => return Err(error.into()),
         };
 
         if now_milli() > end_at {
-            ui.write_screen("you took too long to approve the program, closing")
+            console
+                .write_screen("you took too long to approve the program, closing")
                 .await;
             tokio::time::sleep(Duration::from_secs(2)).await;
             return Err(CliError::TimedOut);

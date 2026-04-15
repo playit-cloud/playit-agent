@@ -1,123 +1,28 @@
-use std::sync::Arc;
+use std::io::{Write, stdin, stdout};
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use playit_agent_core::utils::now_milli;
 
 use crate::CliError;
 use crate::signal_handle::get_signal_handle;
 
-pub mod log_capture;
 pub mod tui_app;
 pub mod widgets;
 
-pub use log_capture::LogCapture;
 pub use tui_app::{AgentData, ConnectionStats, TuiApp};
-
-/// UI mode - either TUI (interactive) or log-only (stdout)
-pub enum UI {
-    Tui(Box<TuiApp>),
-    LogOnly(LogOnlyUI),
-}
 
 #[derive(Default, Clone)]
 pub struct UISettings {
     pub auto_answer: Option<bool>,
-    pub log_only: bool,
 }
 
-impl UI {
-    pub fn new(settings: UISettings) -> Self {
-        if settings.log_only {
-            UI::LogOnly(LogOnlyUI::new(settings))
-        } else {
-            UI::Tui(Box::new(TuiApp::new(settings)))
-        }
-    }
-
-    pub async fn write_screen<T: std::fmt::Display>(&mut self, content: T) {
-        match self {
-            UI::Tui(tui) => tui.write_screen(content).await,
-            UI::LogOnly(log_only) => log_only.write_screen(content).await,
-        }
-    }
-
-    pub async fn yn_question<T: std::fmt::Display + Send + 'static>(
-        &mut self,
-        question: T,
-        default_yes: Option<bool>,
-    ) -> Result<bool, CliError> {
-        match self {
-            UI::Tui(tui) => tui.yn_question(question, default_yes).await,
-            UI::LogOnly(log_only) => log_only.yn_question(question, default_yes).await,
-        }
-    }
-
-    pub async fn write_error<M: std::fmt::Display, E: std::fmt::Debug>(
-        &mut self,
-        msg: M,
-        error: E,
-    ) {
-        self.write_screen(format!("Got Error\nMSG: {}\nError: {:?}\n", msg, error))
-            .await
-    }
-
-    /// Update UI with agent data (for TUI mode)
-    pub fn update_agent_data(&mut self, data: AgentData) {
-        if let UI::Tui(tui) = self {
-            tui.update_agent_data(data);
-        }
-    }
-
-    /// Update UI with connection stats (for TUI mode)
-    pub fn update_stats(&mut self, stats: ConnectionStats) {
-        if let UI::Tui(tui) = self {
-            tui.update_stats(stats);
-        }
-    }
-
-    /// Get the log capture for TUI mode
-    pub fn log_capture(&self) -> Option<Arc<LogCapture>> {
-        if let UI::Tui(tui) = self {
-            Some(tui.log_capture())
-        } else {
-            None
-        }
-    }
-
-    /// Run one iteration of the TUI event loop
-    /// Returns Ok(true) if should continue, Ok(false) if should quit
-    pub fn tick_tui(&mut self) -> Result<bool, CliError> {
-        if let UI::Tui(tui) = self {
-            tui.tick()
-        } else {
-            Ok(true)
-        }
-    }
-
-    /// Shutdown the TUI
-    pub fn shutdown_tui(&mut self) -> Result<(), CliError> {
-        if let UI::Tui(tui) = self {
-            tui.shutdown()
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Check if TUI mode is active
-    pub fn is_tui(&self) -> bool {
-        matches!(self, UI::Tui(_))
-    }
-}
-
-/// Log-only UI mode (original behavior)
-pub struct LogOnlyUI {
+pub struct ConsoleUi {
     auto_answer: Option<bool>,
     last_display: Option<(u64, String)>,
 }
 
-impl LogOnlyUI {
+impl ConsoleUi {
     pub fn new(settings: UISettings) -> Self {
-        LogOnlyUI {
+        Self {
             auto_answer: settings.auto_answer,
             last_display: None,
         }
@@ -125,47 +30,35 @@ impl LogOnlyUI {
 
     pub async fn write_screen<T: std::fmt::Display>(&mut self, content: T) {
         let signal = get_signal_handle();
-        let exit_confirm = signal.is_confirming_close();
-
-        if exit_confirm {
+        if signal.is_confirming_close() {
             match self
                 .yn_question(
-                    format!("{}\nClose requested, close program?", content),
+                    format!("{content}\nClose requested, close program?"),
                     Some(true),
                 )
                 .await
             {
-                Ok(close) => {
-                    if close {
-                        std::process::exit(0);
-                    } else {
-                        signal.decline_close();
-                    }
-                }
+                Ok(true) => std::process::exit(0),
+                Ok(false) => signal.decline_close(),
                 Err(error) => {
-                    tracing::error!(%error, "failed to ask close signal question");
+                    eprintln!("failed to ask close signal question: {error}");
                 }
             }
-
             return;
         }
 
-        self.write_screen_inner(content).await
+        self.write_screen_inner(content.to_string());
     }
 
-    async fn write_screen_inner<T: std::fmt::Display>(&mut self, content: T) {
-        {
-            let content = content.to_string();
-
-            if let Some((ts, last_render)) = &self.last_display {
-                if now_milli() - *ts < 10_000 && content.eq(last_render) {
-                    return;
-                }
+    fn write_screen_inner(&mut self, content: String) {
+        if let Some((ts, last_render)) = &self.last_display {
+            if now_milli() - *ts < 10_000 && content == *last_render {
+                return;
             }
-
-            tracing::info!("{}", content.lines().next().unwrap());
-            self.last_display = Some((now_milli(), content));
         }
+
+        println!("{content}");
+        self.last_display = Some((now_milli(), content));
     }
 
     pub async fn yn_question<T: std::fmt::Display + Send + 'static>(
@@ -173,74 +66,51 @@ impl LogOnlyUI {
         question: T,
         default_yes: Option<bool>,
     ) -> Result<bool, CliError> {
-        let mut line = String::new();
-        let mut count = 0;
-
-        'ask_loop: loop {
-            count += 1;
-
-            let pref = if count == 1 {
-                "".to_string()
-            } else {
-                format!("Invalid input: {:?}\n", line)
-            };
-
-            line.clear();
-
-            if let Some(default_yes) = default_yes {
-                if default_yes {
-                    self.write_screen_inner(format!("{}{} (Y/n)? ", pref, question))
-                        .await;
-                } else {
-                    self.write_screen_inner(format!("{}{} (y/N)? ", pref, question))
-                        .await;
-                }
-            } else {
-                self.write_screen_inner(format!("{}{} (y/n)? ", pref, question))
-                    .await;
-            }
-
-            loop {
-                let code = match tokio::task::spawn_blocking(|| event::read()).await.unwrap() {
-                    Ok(Event::Key(KeyEvent { code, .. })) => code,
-                    _ => break 'ask_loop,
-                };
-
-                match code {
-                    KeyCode::Enter => {
-                        let input = line.trim().to_lowercase();
-                        if input.len() == 0 {
-                            if let Some(default_yes) = default_yes {
-                                return Ok(default_yes);
-                            }
-                        }
-
-                        if input.eq("y") || input.eq("yes") {
-                            return Ok(true);
-                        }
-
-                        if input.eq("n") || input.eq("no") {
-                            return Ok(false);
-                        }
-
-                        break;
-                    }
-                    KeyCode::Char(c) => {
-                        line.push(c);
-                    }
-                    _ => {}
-                }
-            }
-        }
-
         if let Some(auto) = self.auto_answer {
             return Ok(auto);
         }
 
-        if let Some(default_yes) = default_yes {
-            return Ok(default_yes);
-        }
+        let prompt = question.to_string();
+        tokio::task::spawn_blocking(move || -> Result<bool, CliError> {
+            let prompt_suffix = match default_yes {
+                Some(true) => "Y/n",
+                Some(false) => "y/N",
+                None => "y/n",
+            };
 
-        Err(CliError::AnswerNotProvided)
+            loop {
+                print!("{prompt} ({prompt_suffix})? ");
+                stdout().flush().map_err(CliError::RenderError)?;
+
+                let mut line = String::new();
+                stdin()
+                    .read_line(&mut line)
+                    .map_err(CliError::RenderError)?;
+                let input = line.trim().to_lowercase();
+
+                if input.is_empty() {
+                    if let Some(default) = default_yes {
+                        return Ok(default);
+                    }
+                }
+
+                match input.as_str() {
+                    "y" | "yes" => return Ok(true),
+                    "n" | "no" => return Ok(false),
+                    _ => println!("Please answer y or n."),
+                }
+            }
+        })
+        .await
+        .map_err(|_| CliError::AnswerNotProvided)?
+    }
+
+    pub async fn write_error<M: std::fmt::Display, E: std::fmt::Debug>(
+        &mut self,
+        msg: M,
+        error: E,
+    ) {
+        self.write_screen(format!("Got Error\nMSG: {msg}\nError: {error:?}\n"))
+            .await;
     }
 }

@@ -1,11 +1,15 @@
-use std::io::{self, Stdout, Write, stdin, stdout};
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::io::{self, Stdout, stdout};
 use std::time::Duration;
 
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, enable_raw_mode},
+};
+use playit_ipc::model::{
+    AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState as ServiceAgentState,
+    ConnectionStats as ServiceConnectionStats, LogEntry, LogLevel, ServiceStatus,
 };
 use ratatui::{
     Frame, Terminal,
@@ -16,11 +20,11 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
 
-use super::UISettings;
-use super::log_capture::{LogCapture, LogEntry, LogLevel};
 use super::widgets::{render_header, render_help_bar, render_stats_bar};
 use crate::CliError;
 use crate::signal_handle::get_signal_handle;
+
+const SERVICE_LOG_CAPACITY: usize = 500;
 
 /// Data about the running agent
 #[derive(Clone, Default)]
@@ -85,16 +89,13 @@ pub enum FocusedPanel {
 /// UI mode for TuiApp
 #[derive(Clone, Debug, PartialEq)]
 pub enum TuiMode {
-    /// Setup mode - showing a message (e.g., claim URL)
-    Setup { message: String },
-    /// Running mode - showing tunnels and stats
+    Message { message: String },
     Running,
 }
 
 /// Main TUI application state
 pub struct TuiApp {
-    settings: UISettings,
-    log_capture: Arc<LogCapture>,
+    service_logs: VecDeque<LogEntry>,
     agent_data: AgentData,
     stats: ConnectionStats,
 
@@ -103,7 +104,7 @@ pub struct TuiApp {
     focused_panel: FocusedPanel,
     tunnel_list_state: ListState,
     log_scroll: usize,
-    log_follow: bool, // Auto-scroll logs when at bottom
+    log_follow: bool,
     should_quit: bool,
     quit_confirm: bool,
 
@@ -112,47 +113,72 @@ pub struct TuiApp {
 }
 
 impl TuiApp {
-    pub fn new(settings: UISettings) -> Self {
-        TuiApp {
-            settings,
-            log_capture: LogCapture::new(500),
+    pub fn new() -> Self {
+        Self {
+            service_logs: VecDeque::with_capacity(SERVICE_LOG_CAPACITY),
             agent_data: AgentData::default(),
             stats: ConnectionStats::default(),
-            mode: TuiMode::Setup {
+            mode: TuiMode::Message {
                 message: "Initializing...".to_string(),
             },
             focused_panel: FocusedPanel::Tunnels,
             tunnel_list_state: ListState::default(),
             log_scroll: 0,
-            log_follow: true, // Start with follow mode enabled
+            log_follow: true,
             should_quit: false,
             quit_confirm: false,
             terminal: None,
         }
     }
 
-    pub fn log_capture(&self) -> Arc<LogCapture> {
-        self.log_capture.clone()
+    pub fn set_message<T: Into<String>>(&mut self, message: T) {
+        self.mode = TuiMode::Message {
+            message: message.into(),
+        };
     }
 
-    pub fn update_agent_data(&mut self, data: AgentData) {
+    pub fn set_agent_data(&mut self, data: AgentData) {
         self.agent_data = data;
-        // Switch to running mode when we get agent data
         self.mode = TuiMode::Running;
     }
 
-    pub fn update_stats(&mut self, stats: ConnectionStats) {
+    pub fn set_stats(&mut self, stats: ConnectionStats) {
         self.stats = stats;
     }
 
-    /// Set the setup message to display
-    pub fn set_setup_message(&mut self, message: String) {
-        self.mode = TuiMode::Setup { message };
+    pub fn push_service_log(&mut self, entry: LogEntry) {
+        if self.service_logs.len() >= SERVICE_LOG_CAPACITY {
+            self.service_logs.pop_front();
+        }
+        self.service_logs.push_back(entry);
     }
 
-    /// Switch to running mode
-    pub fn set_running_mode(&mut self) {
-        self.mode = TuiMode::Running;
+    pub fn apply_lifecycle(&mut self, lifecycle: AgentLifecycle) {
+        match lifecycle {
+            AgentLifecycle::Running(state) => self.set_agent_data(state.into()),
+            AgentLifecycle::WaitingForSecret => {
+                self.set_message("playitd is waiting for a secret to be provisioned");
+            }
+            AgentLifecycle::HasInvalidSecret(error) => self.set_message(format!(
+                "playitd has an invalid secret configuration: {}",
+                error.message
+            )),
+            AgentLifecycle::Starting => {
+                self.set_message("playitd is starting the agent");
+            }
+            AgentLifecycle::Stopping => {
+                self.set_message("playitd is stopping");
+            }
+            AgentLifecycle::Error(error) => {
+                self.set_message(format!("playitd reported an error: {}", error.message));
+            }
+        }
+    }
+
+    pub fn apply_status(&mut self, status: ServiceStatus) {
+        if let Some(message) = status_message(&status) {
+            self.set_message(message);
+        }
     }
 
     /// Initialize the terminal for TUI mode
@@ -167,15 +193,14 @@ impl TuiApp {
 
     /// Restore the terminal to normal mode
     fn restore_terminal(&mut self) -> io::Result<()> {
-        disable_raw_mode()?;
-        if let Some(ref mut terminal) = self.terminal {
+        if let Some(mut terminal) = self.terminal.take() {
+            crossterm::terminal::disable_raw_mode()?;
             execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
             terminal.show_cursor()?;
         }
         Ok(())
     }
 
-    /// Initialize the TUI (call once before tick())
     pub fn init(&mut self) -> Result<(), CliError> {
         if self.terminal.is_none() {
             self.init_terminal().map_err(CliError::RenderError)?;
@@ -183,62 +208,34 @@ impl TuiApp {
         Ok(())
     }
 
-    /// Shutdown the TUI (call when done)
     pub fn shutdown(&mut self) -> Result<(), CliError> {
         self.restore_terminal().map_err(CliError::RenderError)
-    }
-
-    /// Check if the TUI should quit
-    pub fn should_quit(&self) -> bool {
-        self.should_quit
     }
 
     /// Run one iteration of the TUI (draw + handle events)
     /// Returns Ok(true) if should continue, Ok(false) if should quit
     pub fn tick(&mut self) -> Result<bool, CliError> {
-        // Initialize if not already
         if self.terminal.is_none() {
             self.init()?;
         }
 
-        // Draw the UI
         self.draw().map_err(CliError::RenderError)?;
 
-        // Handle events with a short timeout to allow for async updates
         if event::poll(Duration::from_millis(50)).map_err(CliError::RenderError)? {
             if let Event::Key(key) = event::read().map_err(CliError::RenderError)? {
                 self.handle_key_event(key);
             }
         }
 
-        // Check for signal close request
         let signal = get_signal_handle();
         if signal.is_confirming_close() && !self.quit_confirm {
             self.quit_confirm = true;
         }
 
-        // Return whether to continue
         Ok(!self.should_quit)
     }
 
-    /// Run the TUI event loop (blocking)
-    pub async fn run(&mut self) -> Result<(), CliError> {
-        self.init()?;
-
-        loop {
-            if !self.tick()? {
-                break;
-            }
-            // Yield to allow other tasks to run
-            tokio::task::yield_now().await;
-        }
-
-        self.shutdown()?;
-        Ok(())
-    }
-
     fn handle_key_event(&mut self, key: KeyEvent) {
-        // Handle quit confirmation
         if self.quit_confirm {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -254,23 +251,18 @@ impl TuiApp {
         }
 
         match key.code {
-            // Quit
             KeyCode::Char('q') => {
                 self.quit_confirm = true;
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.quit_confirm = true;
             }
-
-            // Navigation
             KeyCode::Tab => {
                 self.focused_panel = match self.focused_panel {
                     FocusedPanel::Tunnels => FocusedPanel::Logs,
                     FocusedPanel::Logs => FocusedPanel::Tunnels,
                 };
             }
-
-            // Scrolling
             KeyCode::Char('j') | KeyCode::Down => self.scroll_down(),
             KeyCode::Char('k') | KeyCode::Up => self.scroll_up(),
             KeyCode::Char('g') => self.scroll_to_top(),
@@ -285,7 +277,6 @@ impl TuiApp {
                     self.scroll_up();
                 }
             }
-
             _ => {}
         }
     }
@@ -295,18 +286,17 @@ impl TuiApp {
             FocusedPanel::Tunnels => {
                 let total = self.agent_data.tunnels.len();
                 if total > 0 {
-                    let i = match self.tunnel_list_state.selected() {
-                        Some(i) => (i + 1).min(total - 1),
+                    let next = match self.tunnel_list_state.selected() {
+                        Some(index) => (index + 1).min(total - 1),
                         None => 0,
                     };
-                    self.tunnel_list_state.select(Some(i));
+                    self.tunnel_list_state.select(Some(next));
                 }
             }
             FocusedPanel::Logs => {
-                let total = self.log_capture.len();
+                let total = self.service_logs.len();
                 if self.log_scroll < total.saturating_sub(1) {
                     self.log_scroll += 1;
-                    // Re-enable follow if we scrolled to the bottom
                     if self.log_scroll >= total.saturating_sub(1) {
                         self.log_follow = true;
                     }
@@ -318,15 +308,14 @@ impl TuiApp {
     fn scroll_up(&mut self) {
         match self.focused_panel {
             FocusedPanel::Tunnels => {
-                let i = match self.tunnel_list_state.selected() {
-                    Some(i) => i.saturating_sub(1),
+                let previous = match self.tunnel_list_state.selected() {
+                    Some(index) => index.saturating_sub(1),
                     None => 0,
                 };
-                self.tunnel_list_state.select(Some(i));
+                self.tunnel_list_state.select(Some(previous));
             }
             FocusedPanel::Logs => {
                 self.log_scroll = self.log_scroll.saturating_sub(1);
-                // Disable follow when scrolling up
                 self.log_follow = false;
             }
         }
@@ -334,12 +323,9 @@ impl TuiApp {
 
     fn scroll_to_top(&mut self) {
         match self.focused_panel {
-            FocusedPanel::Tunnels => {
-                self.tunnel_list_state.select(Some(0));
-            }
+            FocusedPanel::Tunnels => self.tunnel_list_state.select(Some(0)),
             FocusedPanel::Logs => {
                 self.log_scroll = 0;
-                // Disable follow when going to top
                 self.log_follow = false;
             }
         }
@@ -354,9 +340,7 @@ impl TuiApp {
                 }
             }
             FocusedPanel::Logs => {
-                let total = self.log_capture.len();
-                self.log_scroll = total.saturating_sub(1);
-                // Enable follow when going to bottom
+                self.log_scroll = self.service_logs.len().saturating_sub(1);
                 self.log_follow = true;
             }
         }
@@ -371,10 +355,9 @@ impl TuiApp {
         let start_time = agent_data.start_time;
         let focused_panel = self.focused_panel;
         let quit_confirm = self.quit_confirm;
-        let log_entries = self.log_capture.get_entries();
+        let log_entries: Vec<_> = self.service_logs.iter().cloned().collect();
         let log_follow = self.log_follow;
 
-        // Auto-scroll to bottom if following logs
         let log_scroll = if log_follow {
             let total = log_entries.len();
             self.log_scroll = total.saturating_sub(1);
@@ -389,32 +372,26 @@ impl TuiApp {
             let area = frame.area();
 
             match &mode {
-                TuiMode::Setup { message } => {
-                    // Render setup screen with centered message
-                    Self::render_setup_screen(frame, area, message, quit_confirm);
+                TuiMode::Message { message } => {
+                    Self::render_message_screen(frame, area, message, quit_confirm);
                     return;
                 }
-                TuiMode::Running => {
-                    // Normal running mode
-                }
+                TuiMode::Running => {}
             }
 
-            // Main layout: Header, Content, Stats, Logs, Help
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([
-                    Constraint::Length(3),  // Header
-                    Constraint::Min(8),     // Tunnels
-                    Constraint::Length(3),  // Stats
-                    Constraint::Length(10), // Logs
-                    Constraint::Length(1),  // Help bar
+                    Constraint::Length(3),
+                    Constraint::Min(8),
+                    Constraint::Length(3),
+                    Constraint::Length(10),
+                    Constraint::Length(1),
                 ])
                 .split(area);
 
-            // Render header
             render_header(frame, chunks[0], &agent_data, start_time);
 
-            // Render tunnel list
             Self::render_tunnels(
                 frame,
                 chunks[1],
@@ -423,10 +400,8 @@ impl TuiApp {
                 &mut tunnel_list_state,
             );
 
-            // Render stats bar
             render_stats_bar(frame, chunks[2], &stats);
 
-            // Render log panel
             Self::render_logs(
                 frame,
                 chunks[3],
@@ -436,12 +411,10 @@ impl TuiApp {
                 log_follow,
             );
 
-            // Render help bar
             render_help_bar(frame, chunks[4], quit_confirm);
         })?;
 
         self.tunnel_list_state = tunnel_list_state;
-
         Ok(())
     }
 
@@ -534,9 +507,9 @@ impl TuiApp {
         };
 
         let title = if following {
-            format!(" Logs ({}) [following] ", log_entries.len())
+            format!(" Service Logs ({}) [following] ", log_entries.len())
         } else {
-            format!(" Logs ({}) ", log_entries.len())
+            format!(" Service Logs ({}) ", log_entries.len())
         };
 
         let block = Block::default()
@@ -559,7 +532,7 @@ impl TuiApp {
                 };
 
                 Line::from(vec![
-                    Span::styled(format!("[{}] ", entry.level.as_str()), level_style),
+                    Span::styled(format!("[{}] ", level_label(&entry.level)), level_style),
                     Span::styled(
                         format!(
                             "{}: ",
@@ -576,10 +549,9 @@ impl TuiApp {
         frame.render_widget(paragraph, area);
     }
 
-    fn render_setup_screen(frame: &mut Frame, area: Rect, message: &str, quit_confirm: bool) {
+    fn render_message_screen(frame: &mut Frame, area: Rect, message: &str, quit_confirm: bool) {
         use ratatui::layout::Alignment;
 
-        // Create a centered layout
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -589,13 +561,11 @@ impl TuiApp {
             ])
             .split(area);
 
-        // Title block
         let title_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Magenta))
             .title(" playit.gg ");
 
-        // Parse message into lines and style URLs differently
         let lines: Vec<Line> = message
             .lines()
             .map(|line| {
@@ -607,7 +577,6 @@ impl TuiApp {
                             .add_modifier(Modifier::BOLD),
                     ))
                 } else if line.contains("https://") || line.contains("http://") {
-                    // Line contains a URL somewhere
                     let mut spans = Vec::new();
                     let mut remaining = line;
                     while let Some(pos) = remaining
@@ -620,14 +589,13 @@ impl TuiApp {
                                 Style::default().fg(Color::White),
                             ));
                         }
-                        // Find end of URL (space or end of string)
-                        let url_start = pos;
+
                         let url_end = remaining[pos..]
                             .find(' ')
-                            .map(|p| pos + p)
+                            .map(|offset| pos + offset)
                             .unwrap_or(remaining.len());
                         spans.push(Span::styled(
-                            &remaining[url_start..url_end],
+                            &remaining[pos..url_end],
                             Style::default()
                                 .fg(Color::Cyan)
                                 .add_modifier(Modifier::BOLD),
@@ -650,130 +618,194 @@ impl TuiApp {
             .wrap(Wrap { trim: false });
 
         frame.render_widget(paragraph, chunks[1]);
-
-        // Help bar
         render_help_bar(frame, chunks[2], quit_confirm);
     }
+}
 
-    /// Simple screen write for compatibility (used during setup)
-    pub async fn write_screen<T: std::fmt::Display>(&mut self, content: T) {
-        let signal = get_signal_handle();
-        let exit_confirm = signal.is_confirming_close();
-
-        if exit_confirm {
-            match self
-                .yn_question(
-                    format!("{}\nClose requested, close program?", content),
-                    Some(true),
-                )
-                .await
-            {
-                Ok(close) => {
-                    if close {
-                        std::process::exit(0);
-                    } else {
-                        signal.decline_close();
-                    }
-                }
-                Err(error) => {
-                    tracing::error!(%error, "failed to ask close signal question");
-                }
-            }
-            return;
-        }
-
-        // Set the setup message and render
-        let message = content.to_string();
-        tracing::info!("{}", message.lines().next().unwrap_or(""));
-        self.set_setup_message(message);
-
-        // Initialize terminal if not already done
-        if self.terminal.is_none() {
-            if let Err(e) = self.init_terminal() {
-                tracing::error!(?e, "Failed to init terminal");
-                return;
-            }
-        }
-
-        // Draw the screen
-        if let Err(e) = self.draw() {
-            tracing::error!(?e, "Failed to draw screen");
-        }
-
-        // Handle any pending keyboard events (non-blocking)
-        if let Ok(true) = event::poll(Duration::from_millis(10)) {
-            if let Ok(Event::Key(key)) = event::read() {
-                self.handle_key_event(key);
-            }
-        }
-
-        // Check if quit was requested
-        if self.should_quit {
-            let _ = self.restore_terminal();
-            std::process::exit(0);
-        }
+fn status_message(status: &ServiceStatus) -> Option<String> {
+    if let Some(error) = &status.last_error {
+        return Some(format!(
+            "playitd status: {} ({})",
+            service_phase_label(status),
+            error.message
+        ));
     }
 
-    pub async fn yn_question<T: std::fmt::Display + Send + 'static>(
-        &mut self,
-        question: T,
-        default_yes: Option<bool>,
-    ) -> Result<bool, CliError> {
-        if let Some(auto) = self.settings.auto_answer {
-            return Ok(auto);
+    if matches!(status.phase, playit_ipc::model::ServicePhase::Running) {
+        None
+    } else {
+        Some(format!("playitd status: {}", service_phase_label(status)))
+    }
+}
+
+fn service_phase_label(status: &ServiceStatus) -> &'static str {
+    match status.phase {
+        playit_ipc::model::ServicePhase::WaitingForSecret => "waiting_for_secret",
+        playit_ipc::model::ServicePhase::HasInvalidSecret => "has_invalid_secret",
+        playit_ipc::model::ServicePhase::Starting => "starting",
+        playit_ipc::model::ServicePhase::Running => "running",
+        playit_ipc::model::ServicePhase::Stopping => "stopping",
+        playit_ipc::model::ServicePhase::Error => "error",
+    }
+}
+
+fn level_label(level: &LogLevel) -> &'static str {
+    match level {
+        LogLevel::Trace => "TRACE",
+        LogLevel::Debug => "DEBUG",
+        LogLevel::Info => "INFO",
+        LogLevel::Warn => "WARN",
+        LogLevel::Error => "ERROR",
+    }
+}
+
+impl From<ServiceAgentState> for AgentData {
+    fn from(data: ServiceAgentState) -> Self {
+        Self {
+            version: data.version,
+            tunnels: data
+                .tunnels
+                .into_iter()
+                .map(|tunnel| TunnelInfo {
+                    display_address: tunnel.display_address,
+                    destination: tunnel.destination,
+                    is_disabled: tunnel.is_disabled,
+                    disabled_reason: tunnel.disabled_reason,
+                })
+                .collect(),
+            pending_tunnels: data
+                .pending_tunnels
+                .into_iter()
+                .map(|pending| PendingTunnelInfo {
+                    id: pending.id,
+                    status_msg: pending.status_msg,
+                })
+                .collect(),
+            notices: data
+                .notices
+                .into_iter()
+                .map(|notice| NoticeInfo {
+                    priority: notice.priority,
+                    message: notice.message,
+                    resolve_link: notice.resolve_link,
+                })
+                .collect(),
+            account_status: match data.account_status {
+                ServiceAccountStatus::Guest => AccountStatusInfo::Guest,
+                ServiceAccountStatus::EmailNotVerified => AccountStatusInfo::EmailNotVerified,
+                ServiceAccountStatus::Verified => AccountStatusInfo::Verified,
+                ServiceAccountStatus::Unknown => AccountStatusInfo::Unknown,
+            },
+            agent_id: data.agent_id,
+            login_link: data.login_link,
+            start_time: data.start_time,
         }
+    }
+}
 
-        let prompt = question.to_string();
-        let had_terminal = self.terminal.is_some();
-        if had_terminal {
-            self.restore_terminal().map_err(CliError::RenderError)?;
-            self.terminal = None;
+impl From<ServiceConnectionStats> for ConnectionStats {
+    fn from(stats: ServiceConnectionStats) -> Self {
+        Self {
+            bytes_in: stats.bytes_in,
+            bytes_out: stats.bytes_out,
+            active_tcp: stats.active_tcp,
+            active_udp: stats.active_udp,
         }
-
-        let answer = tokio::task::spawn_blocking(move || -> Result<bool, CliError> {
-            let prompt_suffix = match default_yes {
-                Some(true) => "Y/n",
-                Some(false) => "y/N",
-                None => "y/n",
-            };
-
-            loop {
-                print!("{prompt} ({prompt_suffix})? ");
-                stdout().flush().map_err(CliError::RenderError)?;
-
-                let mut line = String::new();
-                stdin()
-                    .read_line(&mut line)
-                    .map_err(CliError::RenderError)?;
-                let input = line.trim().to_lowercase();
-
-                if input.is_empty() {
-                    if let Some(default) = default_yes {
-                        return Ok(default);
-                    }
-                }
-
-                match input.as_str() {
-                    "y" | "yes" => return Ok(true),
-                    "n" | "no" => return Ok(false),
-                    _ => println!("Please answer y or n."),
-                }
-            }
-        })
-        .await
-        .map_err(|_| CliError::AnswerNotProvided)??;
-
-        if had_terminal {
-            self.init_terminal().map_err(CliError::RenderError)?;
-            self.draw().map_err(CliError::RenderError)?;
-        }
-
-        Ok(answer)
     }
 }
 
 impl Drop for TuiApp {
     fn drop(&mut self) {
         let _ = self.restore_terminal();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use playit_ipc::model::{LogEntry, LogLevel, ServiceError, ServicePhase, ServiceStatus};
+
+    use super::*;
+
+    #[test]
+    fn service_log_buffer_drops_oldest_entries() {
+        let mut app = TuiApp::new();
+
+        for index in 0..(SERVICE_LOG_CAPACITY + 5) {
+            app.push_service_log(LogEntry {
+                level: LogLevel::Info,
+                target: "playitd::test".to_string(),
+                message: format!("message {index}"),
+                timestamp: index as u64,
+            });
+        }
+
+        assert_eq!(app.service_logs.len(), SERVICE_LOG_CAPACITY);
+        assert_eq!(app.service_logs.front().unwrap().timestamp, 5);
+        assert_eq!(
+            app.service_logs.back().unwrap().message,
+            format!("message {}", SERVICE_LOG_CAPACITY + 4)
+        );
+    }
+
+    #[test]
+    fn lifecycle_transitions_switch_between_message_and_running() {
+        let mut app = TuiApp::new();
+        app.apply_lifecycle(AgentLifecycle::Starting);
+        assert_eq!(
+            app.mode,
+            TuiMode::Message {
+                message: "playitd is starting the agent".to_string()
+            }
+        );
+
+        app.apply_lifecycle(AgentLifecycle::Running(ServiceAgentState {
+            version: "1.2.3".to_string(),
+            ..Default::default()
+        }));
+
+        assert_eq!(app.mode, TuiMode::Running);
+        assert_eq!(app.agent_data.version, "1.2.3");
+    }
+
+    #[test]
+    fn running_status_does_not_replace_dashboard_mode() {
+        let mut app = TuiApp::new();
+        app.apply_lifecycle(AgentLifecycle::Running(ServiceAgentState::default()));
+        app.apply_status(ServiceStatus {
+            phase: ServicePhase::Running,
+            ..Default::default()
+        });
+
+        assert_eq!(app.mode, TuiMode::Running);
+    }
+
+    #[test]
+    fn non_running_status_and_error_status_show_messages() {
+        let mut app = TuiApp::new();
+        app.apply_status(ServiceStatus {
+            phase: ServicePhase::Starting,
+            ..Default::default()
+        });
+        assert_eq!(
+            app.mode,
+            TuiMode::Message {
+                message: "playitd status: starting".to_string()
+            }
+        );
+
+        app.apply_status(ServiceStatus {
+            phase: ServicePhase::Error,
+            last_error: Some(ServiceError {
+                message: "boom".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            app.mode,
+            TuiMode::Message {
+                message: "playitd status: error (boom)".to_string()
+            }
+        );
     }
 }

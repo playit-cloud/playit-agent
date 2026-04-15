@@ -3,18 +3,18 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 use playit_ipc::model::{
-    AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState as ServiceAgentState,
-    ConnectionStats as ServiceConnectionStats, LogLevel as ServiceLogLevel, ServicePhase,
-    ServiceStatus, ServiceUpdate,
+    AgentLifecycle, LogLevel as ServiceLogLevel, ServicePhase, ServiceUpdate, SubscribeResponse,
 };
 use playitd::manager::{ensure_installed_service_running, stop_installed_service};
 
-use crate::ui::UI;
-use crate::ui::log_capture::{LogEntry, LogLevel as UiLogLevel};
-use crate::ui::tui_app::{
-    AccountStatusInfo, AgentData, ConnectionStats, NoticeInfo, PendingTunnelInfo, TunnelInfo,
-};
+use crate::ui::{ConnectionStats, ConsoleUi, TuiApp};
 use crate::{CliError, EXE_NAME, run_setup_flow};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttachMode {
+    Interactive,
+    Stdout,
+}
 
 enum AttachErrorContext {
     Standard,
@@ -37,7 +37,7 @@ impl CliTarget {
         }
     }
 
-    fn socket_path(&self) -> &str {
+    pub fn socket_path(&self) -> &str {
         match self {
             Self::InstalledService => get_default_socket_path(),
             Self::ExplicitSocket(path) => path.as_str(),
@@ -45,15 +45,15 @@ impl CliTarget {
     }
 }
 
-pub async fn run_attach_command(
-    ui: &mut UI,
-    stdout_mode: bool,
-    target: &CliTarget,
-) -> Result<(), CliError> {
-    run_attach_command_with_context(ui, stdout_mode, target, AttachErrorContext::Standard).await
+pub async fn run_attach_command(target: &CliTarget, mode: AttachMode) -> Result<(), CliError> {
+    run_attach_command_with_context(target, mode, AttachErrorContext::Standard).await
 }
 
-pub async fn run_auto_command(ui: &mut UI, target: &CliTarget) -> Result<(), CliError> {
+pub async fn run_auto_command(
+    console: &mut ConsoleUi,
+    target: &CliTarget,
+    attach_mode: AttachMode,
+) -> Result<(), CliError> {
     let start_attempt_failed = match target {
         CliTarget::InstalledService => ensure_installed_service_running()
             .await
@@ -74,10 +74,10 @@ pub async fn run_auto_command(ui: &mut UI, target: &CliTarget) -> Result<(), Cli
     match wait_for_auto_lifecycle(&mut client).await? {
         AgentLifecycle::Running(_) => {}
         AgentLifecycle::WaitingForSecret => {
-            run_setup_flow(ui, target).await?;
+            run_setup_flow(console, target).await?;
         }
         AgentLifecycle::HasInvalidSecret(error) => {
-            let should_reset = ui
+            let should_reset = console
                 .yn_question(
                     format!(
                         "playitd has an invalid secret configuration: {}.\nReset the secret and run setup again?",
@@ -96,7 +96,7 @@ pub async fn run_auto_command(ui: &mut UI, target: &CliTarget) -> Result<(), Cli
 
             reset_service_secret_for_setup(target).await?;
             wait_for_service_waiting_for_secret(target).await?;
-            run_setup_flow(ui, target).await?;
+            run_setup_flow(console, target).await?;
         }
         AgentLifecycle::Starting => {
             return Err(CliError::ServiceError(
@@ -117,9 +117,8 @@ pub async fn run_auto_command(ui: &mut UI, target: &CliTarget) -> Result<(), Cli
     }
 
     run_attach_command_with_context(
-        ui,
-        false,
         target,
+        attach_mode,
         AttachErrorContext::AutoCommand {
             start_attempt_failed,
         },
@@ -129,10 +128,9 @@ pub async fn run_auto_command(ui: &mut UI, target: &CliTarget) -> Result<(), Cli
 
 async fn wait_for_auto_lifecycle(client: &mut IpcClient) -> Result<AgentLifecycle, CliError> {
     for _ in 0..50 {
-        let lifecycle = client
-            .lifecycle()
-            .await
-            .map_err(|e| CliError::IpcError(format!("Failed to read playitd lifecycle: {e}")))?;
+        let lifecycle = client.lifecycle().await.map_err(|error| {
+            CliError::IpcError(format!("Failed to read playitd lifecycle: {error}"))
+        })?;
 
         if !matches!(lifecycle, AgentLifecycle::Starting) {
             return Ok(lifecycle);
@@ -149,7 +147,7 @@ async fn reset_service_secret_for_setup(target: &CliTarget) -> Result<(), CliErr
     let response = client
         .reset_secret()
         .await
-        .map_err(|e| CliError::IpcError(format!("Failed to reset secret: {e}")))?;
+        .map_err(|error| CliError::IpcError(format!("Failed to reset secret: {error}")))?;
 
     if !response.accepted {
         return Err(CliError::IpcError(response.message.unwrap_or_else(|| {
@@ -169,10 +167,10 @@ async fn wait_for_service_waiting_for_secret(target: &CliTarget) -> Result<(), C
                 continue;
             }
         };
-        let lifecycle = client
-            .lifecycle()
-            .await
-            .map_err(|e| CliError::IpcError(format!("Failed to read playitd lifecycle: {e}")))?;
+
+        let lifecycle = client.lifecycle().await.map_err(|error| {
+            CliError::IpcError(format!("Failed to read playitd lifecycle: {error}"))
+        })?;
 
         match lifecycle {
             AgentLifecycle::WaitingForSecret => return Ok(()),
@@ -202,74 +200,119 @@ async fn wait_for_service_waiting_for_secret(target: &CliTarget) -> Result<(), C
 }
 
 async fn run_attach_command_with_context(
-    ui: &mut UI,
-    stdout_mode: bool,
     target: &CliTarget,
+    mode: AttachMode,
     error_context: AttachErrorContext,
 ) -> Result<(), CliError> {
-    ui.write_screen("Connecting to playitd...").await;
     let mut client = connect_target(target)
         .await
         .map_err(|_| initial_attach_error(target, &error_context))?;
 
-    let snapshot = client
+    let subscribe = client
         .subscribe()
         .await
         .map_err(|_| initial_attach_error(target, &error_context))?;
 
-    if !stdout_mode {
-        apply_status(ui, snapshot.snapshot.status.clone(), false).await;
-        apply_lifecycle(ui, snapshot.snapshot.lifecycle.clone()).await;
-        ui.update_stats(snapshot.snapshot.stats.into());
+    match mode {
+        AttachMode::Interactive => run_attach_tui_session(client, target, subscribe).await,
+        AttachMode::Stdout => run_attach_stdout_session(client, target).await,
     }
+}
+
+async fn run_attach_tui_session(
+    mut client: IpcClient,
+    target: &CliTarget,
+    subscribe: SubscribeResponse,
+) -> Result<(), CliError> {
+    let mut tui = TuiApp::new();
+    tui.apply_status(subscribe.snapshot.status);
+    tui.apply_lifecycle(subscribe.snapshot.lifecycle);
+    tui.set_stats(ConnectionStats::from(subscribe.snapshot.stats));
+
+    let _close_guard = crate::signal_handle::get_signal_handle().close_guard();
 
     loop {
         tokio::select! {
             update_result = client.recv_update() => {
                 match update_result {
-                    Ok(update) => apply_update(ui, update, stdout_mode).await,
+                    Ok(update) => apply_tui_update(&mut tui, update),
                     Err(error) => {
-                        let message = attach_lost_message(target, &error.to_string());
-                        if stdout_mode {
-                            eprintln!("{message}");
-                        } else {
-                            tracing::error!("IPC error: {error}");
-                            ui.write_screen(message).await;
-                        }
-                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        tui.shutdown()?;
+                        println!("{}", attach_lost_message(target, &error.to_string()));
                         break;
                     }
                 }
             }
             _ = tokio::time::sleep(Duration::from_millis(50)) => {
-                if !stdout_mode && ui.is_tui() {
-                    match ui.tick_tui() {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            ui.shutdown_tui()?;
-                            println!("Detached from service. Service continues running in background.");
-                            println!("Use '{} stop' to stop the service.", *EXE_NAME);
-                            break;
-                        }
-                        Err(error) => {
-                            ui.shutdown_tui()?;
-                            return Err(error);
-                        }
+                match tui.tick() {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        tui.shutdown()?;
+                        print_detach_message();
+                        break;
+                    }
+                    Err(error) => {
+                        tui.shutdown()?;
+                        return Err(error);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_attach_stdout_session(
+    mut client: IpcClient,
+    target: &CliTarget,
+) -> Result<(), CliError> {
+    loop {
+        tokio::select! {
+            update_result = client.recv_update() => {
+                match update_result {
+                    Ok(update) => apply_stdout_update(update),
+                    Err(error) => {
+                        eprintln!("{}", attach_lost_message(target, &error.to_string()));
+                        break;
                     }
                 }
             }
             _ = tokio::signal::ctrl_c() => {
-                if !stdout_mode && ui.is_tui() {
-                    ui.shutdown_tui()?;
-                }
-                println!("\nDetached from service. Service continues running in background.");
-                println!("Use '{} stop' to stop the service.", *EXE_NAME);
+                println!();
+                print_detach_message();
                 break;
             }
         }
     }
 
     Ok(())
+}
+
+fn apply_tui_update(tui: &mut TuiApp, update: ServiceUpdate) {
+    match update {
+        ServiceUpdate::Lifecycle(state) => tui.apply_lifecycle(state),
+        ServiceUpdate::Status(status) => tui.apply_status(status),
+        ServiceUpdate::Stats(stats) => tui.set_stats(stats.into()),
+        ServiceUpdate::Log(entry) => tui.push_service_log(entry),
+    }
+}
+
+fn apply_stdout_update(update: ServiceUpdate) {
+    if let ServiceUpdate::Log(entry) = update {
+        println!(
+            "{} {:>5} {}: {}",
+            format_timestamp_millis(entry.timestamp),
+            format_log_level(&entry.level),
+            entry.target,
+            entry.message
+        );
+    }
+}
+
+fn print_detach_message() {
+    println!("Detached from service. Service continues running in background.");
+    println!("Use '{} stop' to stop the service.", *EXE_NAME);
 }
 
 pub async fn run_start_command(target: &CliTarget) -> Result<(), CliError> {
@@ -281,7 +324,7 @@ pub async fn run_start_command(target: &CliTarget) -> Result<(), CliError> {
 
     ensure_installed_service_running()
         .await
-        .map_err(|e| CliError::ServiceError(format!("Failed to start service: {e}")))?;
+        .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
 
     println!("playitd service started");
     println!("Run \"playit attach\" to see the playit program.");
@@ -335,10 +378,9 @@ pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
         }
         CliTarget::ExplicitSocket(path) => {
             let mut client = connect_target(target).await?;
-            let response = client
-                .stop()
-                .await
-                .map_err(|e| CliError::IpcError(format!("Failed to stop daemon at {path}: {e}")))?;
+            let response = client.stop().await.map_err(|error| {
+                CliError::IpcError(format!("Failed to stop daemon at {path}: {error}"))
+            })?;
 
             if !response.accepted {
                 return Err(CliError::IpcError(response.message.unwrap_or_else(|| {
@@ -409,14 +451,13 @@ pub async fn ensure_service_waiting_for_secret(target: &CliTarget) -> Result<(),
     if matches!(target, CliTarget::InstalledService) {
         ensure_installed_service_running()
             .await
-            .map_err(|e| CliError::ServiceError(format!("Failed to start service: {e}")))?;
+            .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
     }
 
     let mut client = connect_target(target).await?;
-    let lifecycle = client
-        .lifecycle()
-        .await
-        .map_err(|e| CliError::IpcError(format!("Failed to read playitd lifecycle: {e}")))?;
+    let lifecycle = client.lifecycle().await.map_err(|error| {
+        CliError::IpcError(format!("Failed to read playitd lifecycle: {error}"))
+    })?;
 
     match lifecycle {
         AgentLifecycle::WaitingForSecret => Ok(()),
@@ -445,15 +486,14 @@ pub async fn provision_service_secret(target: &CliTarget, secret: &str) -> Resul
     if matches!(target, CliTarget::InstalledService) {
         ensure_installed_service_running()
             .await
-            .map_err(|e| CliError::ServiceError(format!("Failed to start service: {e}")))?;
+            .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
     }
 
     let mut client = connect_target(target).await?;
-
     let response = client
         .set_secret(secret)
         .await
-        .map_err(|e| CliError::IpcError(format!("Failed to provision secret: {e}")))?;
+        .map_err(|error| CliError::IpcError(format!("Failed to provision secret: {error}")))?;
 
     if !response.accepted {
         return Err(CliError::IpcError(
@@ -471,7 +511,7 @@ pub async fn run_reset_command(target: &CliTarget) -> Result<(), CliError> {
     let reset_response = client
         .reset_secret()
         .await
-        .map_err(|e| CliError::IpcError(format!("Failed to reset secret: {e}")))?;
+        .map_err(|error| CliError::IpcError(format!("Failed to reset secret: {error}")))?;
 
     if !reset_response.accepted {
         return Err(CliError::IpcError(reset_response.message.unwrap_or_else(
@@ -479,8 +519,10 @@ pub async fn run_reset_command(target: &CliTarget) -> Result<(), CliError> {
         )));
     }
 
-    let stop_response = client.stop().await.map_err(|e| {
-        CliError::IpcError(format!("Secret was reset, but failed to stop playitd: {e}"))
+    let stop_response = client.stop().await.map_err(|error| {
+        CliError::IpcError(format!(
+            "Secret was reset, but failed to stop playitd: {error}"
+        ))
     })?;
 
     if !stop_response.accepted {
@@ -506,7 +548,7 @@ pub async fn run_secret_path_command(target: &CliTarget) -> Result<(), CliError>
     let response = client
         .get_secret_path()
         .await
-        .map_err(|e| CliError::IpcError(format!("Failed to read secret path: {e}")))?;
+        .map_err(|error| CliError::IpcError(format!("Failed to read secret path: {error}")))?;
 
     let Some(secret_path) = response.secret_path else {
         return Err(CliError::IpcError(
@@ -520,10 +562,9 @@ pub async fn run_secret_path_command(target: &CliTarget) -> Result<(), CliError>
 
 pub async fn run_account_login_url_command(target: &CliTarget) -> Result<(), CliError> {
     let mut client = connect_target(target).await?;
-    let response = client
-        .get_account_login_url()
-        .await
-        .map_err(|e| CliError::IpcError(format!("Failed to create account login URL: {e}")))?;
+    let response = client.get_account_login_url().await.map_err(|error| {
+        CliError::IpcError(format!("Failed to create account login URL: {error}"))
+    })?;
 
     println!("{}", response.login_url);
     Ok(())
@@ -577,97 +618,6 @@ fn attach_lost_message(target: &CliTarget, error: &str) -> String {
     }
 }
 
-async fn apply_update(ui: &mut UI, update: ServiceUpdate, stdout_mode: bool) {
-    match update {
-        ServiceUpdate::Lifecycle(state) => {
-            if !stdout_mode {
-                apply_lifecycle(ui, state).await;
-            }
-        }
-        ServiceUpdate::Status(status) => apply_status(ui, status, stdout_mode).await,
-        ServiceUpdate::Stats(stats) => {
-            if !stdout_mode {
-                ui.update_stats(stats.into());
-            }
-        }
-        ServiceUpdate::Log(entry) => {
-            if stdout_mode {
-                println!(
-                    "{} {:>5} {}: {}",
-                    format_timestamp_millis(entry.timestamp),
-                    format_log_level(&entry.level),
-                    entry.target,
-                    entry.message
-                );
-            } else if let Some(log_capture) = ui.log_capture() {
-                let level = match entry.level {
-                    ServiceLogLevel::Error => UiLogLevel::Error,
-                    ServiceLogLevel::Warn => UiLogLevel::Warn,
-                    ServiceLogLevel::Info => UiLogLevel::Info,
-                    ServiceLogLevel::Debug => UiLogLevel::Debug,
-                    ServiceLogLevel::Trace => UiLogLevel::Trace,
-                };
-
-                log_capture.push(LogEntry {
-                    level,
-                    target: entry.target,
-                    message: entry.message,
-                    timestamp: entry.timestamp,
-                });
-            }
-        }
-    }
-}
-
-async fn apply_lifecycle(ui: &mut UI, lifecycle: AgentLifecycle) {
-    match lifecycle {
-        AgentLifecycle::Running(state) => ui.update_agent_data(state.into()),
-        AgentLifecycle::WaitingForSecret => {
-            ui.write_screen("playitd is waiting for a secret to be provisioned")
-                .await;
-        }
-        AgentLifecycle::HasInvalidSecret(error) => {
-            ui.write_screen(format!(
-                "playitd has an invalid secret configuration: {}",
-                error.message
-            ))
-            .await;
-        }
-        AgentLifecycle::Starting => {
-            ui.write_screen("playitd is starting the agent").await;
-        }
-        AgentLifecycle::Stopping => {
-            ui.write_screen("playitd is stopping").await;
-        }
-        AgentLifecycle::Error(error) => {
-            ui.write_screen(format!("playitd reported an error: {}", error.message))
-                .await;
-        }
-    }
-}
-
-async fn apply_status(ui: &mut UI, status: ServiceStatus, stdout_mode: bool) {
-    if stdout_mode {
-        return;
-    }
-
-    if let Some(error) = status.last_error {
-        ui.write_screen(format!(
-            "playitd status: {} ({})",
-            format_service_phase(&status.phase),
-            error.message
-        ))
-        .await;
-        return;
-    }
-
-    ui.write_screen(format!(
-        "playitd status: {}",
-        format_service_phase(&status.phase)
-    ))
-    .await;
-}
-
 fn format_timestamp_millis(millis: u64) -> String {
     DateTime::<Utc>::from_timestamp_millis(millis as i64)
         .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())
@@ -692,60 +642,5 @@ fn format_log_level(level: &ServiceLogLevel) -> &'static str {
         ServiceLogLevel::Info => "INFO",
         ServiceLogLevel::Warn => "WARN",
         ServiceLogLevel::Error => "ERROR",
-    }
-}
-
-impl From<ServiceAgentState> for AgentData {
-    fn from(data: ServiceAgentState) -> Self {
-        Self {
-            version: data.version,
-            tunnels: data
-                .tunnels
-                .into_iter()
-                .map(|t| TunnelInfo {
-                    display_address: t.display_address,
-                    destination: t.destination,
-                    is_disabled: t.is_disabled,
-                    disabled_reason: t.disabled_reason,
-                })
-                .collect(),
-            pending_tunnels: data
-                .pending_tunnels
-                .into_iter()
-                .map(|p| PendingTunnelInfo {
-                    id: p.id,
-                    status_msg: p.status_msg,
-                })
-                .collect(),
-            notices: data
-                .notices
-                .into_iter()
-                .map(|n| NoticeInfo {
-                    priority: n.priority,
-                    message: n.message,
-                    resolve_link: n.resolve_link,
-                })
-                .collect(),
-            account_status: match data.account_status {
-                ServiceAccountStatus::Guest => AccountStatusInfo::Guest,
-                ServiceAccountStatus::EmailNotVerified => AccountStatusInfo::EmailNotVerified,
-                ServiceAccountStatus::Verified => AccountStatusInfo::Verified,
-                ServiceAccountStatus::Unknown => AccountStatusInfo::Unknown,
-            },
-            agent_id: data.agent_id,
-            login_link: data.login_link,
-            start_time: data.start_time,
-        }
-    }
-}
-
-impl From<ServiceConnectionStats> for ConnectionStats {
-    fn from(stats: ServiceConnectionStats) -> Self {
-        Self {
-            bytes_in: stats.bytes_in,
-            bytes_out: stats.bytes_out,
-            active_tcp: stats.active_tcp,
-            active_udp: stats.active_udp,
-        }
     }
 }
