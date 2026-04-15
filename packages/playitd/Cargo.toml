@@ -22,8 +22,8 @@ dotenv = "0.15.0"
 interprocess = { version = "2.2", features = ["tokio"] }
 service-manager = "0.10"
 
-playit-agent-core = { path = "../agent_core", version = "0.17.1" }
-playit-ipc = { path = "../playit-ipc", version = "0.17.1" }
+playit-agent-core = { path = "../agent_core", version = "1.0.0" }
+playit-ipc = { path = "../playit-ipc", version = "1.0.0" }
 playit-api-client = { path = "../api_client", version = "0.2.0" }
 clap = { version = "4.6.0", features = ["derive"] }
 serde_yaml = "0.9.34"
