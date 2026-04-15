@@ -11,14 +11,20 @@ use interprocess::local_socket::{
     tokio::{Stream, prelude::*},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
 use crate::model::{
     AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ProtocolInfo, SecretPathResponse,
-    ServiceCapability, ServiceError, ServiceStatus, ServiceUpdate, SubscribeResponse,
+    ServiceError, ServiceStatus, ServiceUpdate, SubscribeResponse,
 };
 
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const IPC_VERSION: u32 = 2;
+
+const UPDATE_STATUS: &str = "status";
+const UPDATE_LIFECYCLE: &str = "lifecycle";
+const UPDATE_STATS: &str = "stats";
+const UPDATE_LOG: &str = "log";
 
 #[derive(Debug)]
 pub enum IpcError {
@@ -68,7 +74,7 @@ impl From<serde_json::Error> for IpcError {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestEnvelope {
-    pub protocol_version: u32,
+    pub ipc_version: u32,
     pub request_id: u64,
     pub request: ServiceRequest,
 }
@@ -87,15 +93,20 @@ pub enum ServiceRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HelloEnvelope {
+    pub protocol: ProtocolInfo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseEnvelope {
-    pub protocol_version: u32,
+    pub ipc_version: u32,
     pub request_id: u64,
     pub response: ServiceResponse,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope {
-    pub protocol_version: u32,
+    pub ipc_version: u32,
     pub event: ServiceUpdate,
 }
 
@@ -116,19 +127,32 @@ pub enum ServiceResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "message_kind", content = "data", rename_all = "snake_case")]
 pub enum ServerEnvelope {
+    Hello(HelloEnvelope),
     Response(ResponseEnvelope),
     Event(EventEnvelope),
 }
 
+#[derive(Debug, Deserialize)]
+struct RawServerEnvelope {
+    message_kind: String,
+    data: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawEventEnvelope {
+    ipc_version: u32,
+    event: Value,
+}
+
 pub fn protocol_info() -> ProtocolInfo {
     ProtocolInfo {
-        version: PROTOCOL_VERSION,
+        ipc_version: IPC_VERSION,
         capabilities: vec![
-            ServiceCapability::StructuredResponses,
-            ServiceCapability::StreamEvents,
-            ServiceCapability::LifecycleState,
-            ServiceCapability::RichStatus,
-            ServiceCapability::SecretProvisioning,
+            "structured_responses".to_string(),
+            "stream_events".to_string(),
+            "lifecycle_state".to_string(),
+            "rich_status".to_string(),
+            "secret_provisioning".to_string(),
         ],
     }
 }
@@ -191,6 +215,7 @@ pub struct IpcClient {
     reader: BufReader<interprocess::local_socket::tokio::RecvHalf>,
     writer: BufWriter<interprocess::local_socket::tokio::SendHalf>,
     next_request_id: u64,
+    server_protocol: ProtocolInfo,
 }
 
 impl IpcClient {
@@ -201,15 +226,26 @@ impl IpcClient {
     pub async fn connect_with_path(socket_path: &str) -> Result<Self, IpcError> {
         let stream = try_connect(socket_path).await?;
         let (reader, writer) = stream.split();
-        Ok(Self {
+        let mut client = Self {
             reader: BufReader::new(reader),
             writer: BufWriter::new(writer),
             next_request_id: 1,
-        })
+            server_protocol: ProtocolInfo::default(),
+        };
+
+        let hello = client.recv_hello().await?;
+        client.ensure_ipc_version(hello.protocol.ipc_version)?;
+        client.server_protocol = hello.protocol;
+
+        Ok(client)
     }
 
     pub async fn is_running(socket_path: &str) -> bool {
         try_connect(socket_path).await.is_ok()
+    }
+
+    pub fn server_protocol(&self) -> &ProtocolInfo {
+        &self.server_protocol
     }
 
     pub async fn subscribe(&mut self) -> Result<SubscribeResponse, IpcError> {
@@ -223,15 +259,28 @@ impl IpcClient {
     }
 
     pub async fn recv_update(&mut self) -> Result<ServiceUpdate, IpcError> {
-        match self.recv_server_envelope().await? {
-            ServerEnvelope::Event(event) => {
-                self.ensure_protocol_version(event.protocol_version)?;
-                Ok(event.event)
+        loop {
+            let line = self.read_line().await?;
+            match decode_stream_update(&line)? {
+                DecodedStreamUpdate::Update(event) => {
+                    self.ensure_ipc_version(event.ipc_version)?;
+                    return Ok(event.event);
+                }
+                DecodedStreamUpdate::IgnoredUnknownEvent(event_type) => {
+                    tracing::debug!("Ignoring unknown IPC event type: {event_type}");
+                }
+                DecodedStreamUpdate::Response(response) => {
+                    return Err(IpcError::ProtocolError(format!(
+                        "received RPC response while waiting for stream event: {:?}",
+                        response.response
+                    )));
+                }
+                DecodedStreamUpdate::Hello => {
+                    return Err(IpcError::ProtocolError(
+                        "received duplicate hello while waiting for stream event".to_string(),
+                    ));
+                }
             }
-            ServerEnvelope::Response(response) => Err(IpcError::ProtocolError(format!(
-                "received RPC response while waiting for stream event: {:?}",
-                response.response
-            ))),
         }
     }
 
@@ -314,7 +363,7 @@ impl IpcClient {
         let request_id = self.send_request(request).await?;
         let response = self.recv_response().await?;
 
-        self.ensure_protocol_version(response.protocol_version)?;
+        self.ensure_ipc_version(response.ipc_version)?;
         if response.request_id != request_id {
             return Err(IpcError::ProtocolError(format!(
                 "mismatched response id: expected {request_id}, got {}",
@@ -329,7 +378,7 @@ impl IpcClient {
         self.next_request_id += 1;
 
         let json = serde_json::to_string(&RequestEnvelope {
-            protocol_version: PROTOCOL_VERSION,
+            ipc_version: IPC_VERSION,
             request_id,
             request,
         })?;
@@ -339,6 +388,20 @@ impl IpcClient {
         Ok(request_id)
     }
 
+    async fn recv_hello(&mut self) -> Result<HelloEnvelope, IpcError> {
+        match self.recv_server_envelope().await? {
+            ServerEnvelope::Hello(hello) => Ok(hello),
+            ServerEnvelope::Response(response) => Err(IpcError::ProtocolError(format!(
+                "expected hello frame, got RPC response: {:?}",
+                response.response
+            ))),
+            ServerEnvelope::Event(event) => Err(IpcError::ProtocolError(format!(
+                "expected hello frame, got stream event: {:?}",
+                event.event
+            ))),
+        }
+    }
+
     async fn recv_response(&mut self) -> Result<ResponseEnvelope, IpcError> {
         match self.recv_server_envelope().await? {
             ServerEnvelope::Response(response) => Ok(response),
@@ -346,10 +409,18 @@ impl IpcClient {
                 "received stream event while waiting for RPC response: {:?}",
                 event.event
             ))),
+            ServerEnvelope::Hello(_) => Err(IpcError::ProtocolError(
+                "received duplicate hello while waiting for RPC response".to_string(),
+            )),
         }
     }
 
     async fn recv_server_envelope(&mut self) -> Result<ServerEnvelope, IpcError> {
+        let line = self.read_line().await?;
+        decode_server_envelope(&line)
+    }
+
+    async fn read_line(&mut self) -> Result<String, IpcError> {
         let mut line = String::new();
         let bytes_read = self.reader.read_line(&mut line).await?;
         if bytes_read == 0 {
@@ -358,17 +429,271 @@ impl IpcClient {
                 "Connection closed",
             )));
         }
-        Ok(serde_json::from_str(line.trim())?)
+        Ok(line)
     }
 
-    fn ensure_protocol_version(&self, actual: u32) -> Result<(), IpcError> {
-        if actual == PROTOCOL_VERSION {
+    fn ensure_ipc_version(&self, actual: u32) -> Result<(), IpcError> {
+        if actual == IPC_VERSION {
             Ok(())
         } else {
             Err(IpcError::ProtocolMismatch {
-                expected: PROTOCOL_VERSION,
+                expected: IPC_VERSION,
                 actual,
             })
         }
+    }
+}
+
+fn decode_server_envelope(line: &str) -> Result<ServerEnvelope, IpcError> {
+    Ok(serde_json::from_str(line.trim())?)
+}
+
+enum DecodedStreamUpdate {
+    Hello,
+    Response(ResponseEnvelope),
+    Update(EventEnvelope),
+    IgnoredUnknownEvent(String),
+}
+
+fn decode_stream_update(line: &str) -> Result<DecodedStreamUpdate, IpcError> {
+    let raw: RawServerEnvelope = serde_json::from_str(line.trim())?;
+
+    match raw.message_kind.as_str() {
+        "hello" => {
+            let _: HelloEnvelope = serde_json::from_value(raw.data)?;
+            Ok(DecodedStreamUpdate::Hello)
+        }
+        "response" => Ok(DecodedStreamUpdate::Response(serde_json::from_value(
+            raw.data,
+        )?)),
+        "event" => {
+            let event: RawEventEnvelope = serde_json::from_value(raw.data)?;
+            let Some(event_type) = event
+                .event
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                return Err(IpcError::ProtocolError(
+                    "stream event is missing a type tag".to_string(),
+                ));
+            };
+
+            if !is_known_update_type(event_type.as_str()) {
+                return Ok(DecodedStreamUpdate::IgnoredUnknownEvent(event_type));
+            }
+
+            Ok(DecodedStreamUpdate::Update(EventEnvelope {
+                ipc_version: event.ipc_version,
+                event: serde_json::from_value(event.event)?,
+            }))
+        }
+        other => Err(IpcError::ProtocolError(format!(
+            "unknown server message kind: {other}"
+        ))),
+    }
+}
+
+fn is_known_update_type(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        UPDATE_STATUS | UPDATE_LIFECYCLE | UPDATE_STATS | UPDATE_LOG
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    fn test_socket_path(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!(
+                "playit-ipc-{name}-{}-{}.sock",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+            .display()
+            .to_string()
+    }
+
+    async fn spawn_server<F, Fut>(name: &str, handler: F) -> String
+    where
+        F: FnOnce(Stream) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = ()> + Send + 'static,
+    {
+        let path = test_socket_path(name);
+        let listener = ListenerOptions::new()
+            .name(path.clone().to_fs_name::<GenericFilePath>().unwrap())
+            .create_tokio()
+            .unwrap();
+
+        tokio::spawn(async move {
+            let stream = listener.accept().await.unwrap();
+            handler(stream).await;
+        });
+
+        path
+    }
+
+    fn hello_json(ipc_version: u32) -> String {
+        serde_json::to_string(&ServerEnvelope::Hello(HelloEnvelope {
+            protocol: ProtocolInfo {
+                ipc_version,
+                capabilities: vec!["stream_events".to_string()],
+            },
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn connect_succeeds_after_valid_hello() {
+        let socket_path = spawn_server("hello-ok", |mut stream| async move {
+            stream
+                .write_all(hello_json(IPC_VERSION).as_bytes())
+                .await
+                .unwrap();
+            stream.write_all(b"\n").await.unwrap();
+        })
+        .await;
+
+        let client = IpcClient::connect_with_path(&socket_path).await.unwrap();
+        assert_eq!(client.server_protocol().ipc_version, IPC_VERSION);
+        assert_eq!(client.server_protocol().capabilities, vec!["stream_events"]);
+    }
+
+    #[tokio::test]
+    async fn connect_fails_on_ipc_mismatch() {
+        let socket_path = spawn_server("hello-mismatch", |mut stream| async move {
+            stream
+                .write_all(hello_json(IPC_VERSION + 1).as_bytes())
+                .await
+                .unwrap();
+            stream.write_all(b"\n").await.unwrap();
+        })
+        .await;
+
+        let error = match IpcClient::connect_with_path(&socket_path).await {
+            Ok(_) => panic!("expected version mismatch"),
+            Err(error) => error,
+        };
+        assert!(matches!(
+            error,
+            IpcError::ProtocolMismatch {
+                expected: IPC_VERSION,
+                actual
+            } if actual == IPC_VERSION + 1
+        ));
+    }
+
+    #[tokio::test]
+    async fn connect_fails_when_first_frame_is_not_hello() {
+        let socket_path = spawn_server("hello-missing", |mut stream| async move {
+            let json = serde_json::to_string(&ServerEnvelope::Response(ResponseEnvelope {
+                ipc_version: IPC_VERSION,
+                request_id: 1,
+                response: ServiceResponse::State(AgentLifecycle::Starting),
+            }))
+            .unwrap();
+
+            stream.write_all(json.as_bytes()).await.unwrap();
+            stream.write_all(b"\n").await.unwrap();
+        })
+        .await;
+
+        let error = match IpcClient::connect_with_path(&socket_path).await {
+            Ok(_) => panic!("expected protocol error"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, IpcError::ProtocolError(_)));
+    }
+
+    #[tokio::test]
+    async fn recv_update_ignores_unknown_event_types() {
+        let socket_path = spawn_server("unknown-event", |stream| async move {
+            let (reader, mut writer) = stream.split();
+            let mut reader = BufReader::new(reader);
+
+            writer
+                .write_all(hello_json(IPC_VERSION).as_bytes())
+                .await
+                .unwrap();
+            writer.write_all(b"\n").await.unwrap();
+
+            let unknown_event = serde_json::json!({
+                "message_kind": "event",
+                "data": {
+                    "ipc_version": IPC_VERSION,
+                    "event": {
+                        "type": "future_event",
+                        "data": {"hello": "world"}
+                    }
+                }
+            });
+            writer
+                .write_all(serde_json::to_string(&unknown_event).unwrap().as_bytes())
+                .await
+                .unwrap();
+            writer.write_all(b"\n").await.unwrap();
+
+            let known_event = serde_json::to_string(&ServerEnvelope::Event(EventEnvelope {
+                ipc_version: IPC_VERSION,
+                event: ServiceUpdate::Stats(Default::default()),
+            }))
+            .unwrap();
+            writer.write_all(known_event.as_bytes()).await.unwrap();
+            writer.write_all(b"\n").await.unwrap();
+
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line).await;
+        })
+        .await;
+
+        let mut client = IpcClient::connect_with_path(&socket_path).await.unwrap();
+        let update = client.recv_update().await.unwrap();
+        assert!(matches!(update, ServiceUpdate::Stats(_)));
+    }
+
+    #[tokio::test]
+    async fn request_fails_on_unknown_response_variant() {
+        let socket_path = spawn_server("unknown-response", |stream| async move {
+            let (reader, mut writer) = stream.split();
+            let mut reader = BufReader::new(reader);
+
+            writer
+                .write_all(hello_json(IPC_VERSION).as_bytes())
+                .await
+                .unwrap();
+            writer.write_all(b"\n").await.unwrap();
+
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+
+            let raw_response = serde_json::json!({
+                "message_kind": "response",
+                "data": {
+                    "ipc_version": IPC_VERSION,
+                    "request_id": 1,
+                    "response": {
+                        "type": "future_response",
+                        "data": {"ok": true}
+                    }
+                }
+            });
+            writer
+                .write_all(serde_json::to_string(&raw_response).unwrap().as_bytes())
+                .await
+                .unwrap();
+            writer.write_all(b"\n").await.unwrap();
+        })
+        .await;
+
+        let mut client = IpcClient::connect_with_path(&socket_path).await.unwrap();
+        let error = client.status().await.unwrap_err();
+        assert!(matches!(error, IpcError::JsonError(_)));
     }
 }

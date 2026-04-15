@@ -13,7 +13,7 @@ use interprocess::os::windows::{
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
 use playit_ipc::ipc::{
-    EventEnvelope, IpcError, PROTOCOL_VERSION, RequestEnvelope, ResponseEnvelope, ServerEnvelope,
+    EventEnvelope, HelloEnvelope, IPC_VERSION, IpcError, ResponseEnvelope, ServerEnvelope,
     ServiceRequest, ServiceResponse, get_default_socket_path, protocol_info,
 };
 use playit_ipc::model::{
@@ -21,12 +21,32 @@ use playit_ipc::model::{
     ServiceError, ServiceErrorCode, ServiceStatus, ServiceUpdate, SubscribeResponse,
     SubscriptionSnapshot,
 };
+use serde::Deserialize;
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
 const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
+
+#[derive(Debug, Deserialize)]
+struct RawRequestEnvelope {
+    ipc_version: u32,
+    request_id: u64,
+    request: Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRequestType {
+    #[serde(rename = "type")]
+    request_type: String,
+}
+
+enum RequestDecodeError {
+    InvalidRequest(String),
+    InvalidRequestType(String),
+}
 
 #[derive(Default)]
 pub struct StateCache {
@@ -210,25 +230,28 @@ impl IpcServer {
         let mut event_rx = self.event_tx.subscribe();
         let mut subscribed = false;
 
+        self.send_hello(&mut writer).await?;
+
         loop {
             tokio::select! {
                 read_result = reader.read_line(&mut line) => {
                     match read_result {
                         Ok(0) => break,
                         Ok(_) => {
-                            let request = serde_json::from_str::<RequestEnvelope>(line.trim())?;
+                            let request = serde_json::from_str::<RawRequestEnvelope>(line.trim())?;
                             line.clear();
+                            let request_id = request.request_id;
 
-                            if request.protocol_version != PROTOCOL_VERSION {
+                            if request.ipc_version != IPC_VERSION {
                                 self.send_response(
                                     &mut writer,
-                                    request.request_id,
+                                    request_id,
                                     ServiceResponse::Error(protocol_error(
                                         ServiceErrorCode::UnsupportedProtocol,
                                         format!(
-                                            "unsupported protocol version {} (expected {})",
-                                            request.protocol_version,
-                                            PROTOCOL_VERSION
+                                            "unsupported IPC version {} (expected {})",
+                                            request.ipc_version,
+                                            IPC_VERSION
                                         ),
                                         false,
                                     )),
@@ -236,13 +259,39 @@ impl IpcServer {
                                 continue;
                             }
 
-                            match request.request {
+                            let request = match decode_service_request(request.request) {
+                                Ok(request) => request,
+                                Err(RequestDecodeError::InvalidRequest(message)) => {
+                                    self.send_response(
+                                        &mut writer,
+                                        request_id,
+                                        ServiceResponse::Error(protocol_error(
+                                            ServiceErrorCode::InvalidRequest,
+                                            message,
+                                            false,
+                                        )),
+                                    )
+                                    .await?;
+                                    continue;
+                                }
+                                Err(RequestDecodeError::InvalidRequestType(request_type)) => {
+                                    self.send_response(
+                                        &mut writer,
+                                        request_id,
+                                        ServiceResponse::Error(invalid_request_type_error(&request_type)),
+                                    )
+                                    .await?;
+                                    continue;
+                                }
+                            };
+
+                            match request {
                                 ServiceRequest::Subscribe => {
                                     subscribed = true;
                                     let snapshot = self.state_cache.subscription_snapshot().await;
                                     self.send_response(
                                         &mut writer,
-                                        request.request_id,
+                                        request_id,
                                         ServiceResponse::Subscribe(SubscribeResponse {
                                             protocol: protocol_info(),
                                             snapshot,
@@ -256,7 +305,7 @@ impl IpcServer {
                                     status.uptime_secs = uptime_ms / 1000;
                                     self.send_response(
                                         &mut writer,
-                                        request.request_id,
+                                        request_id,
                                         ServiceResponse::Status(status),
                                     )
                                     .await?;
@@ -264,7 +313,7 @@ impl IpcServer {
                                 ServiceRequest::GetState => {
                                     self.send_response(
                                         &mut writer,
-                                        request.request_id,
+                                        request_id,
                                         ServiceResponse::State(self.state_cache.lifecycle().await),
                                     )
                                     .await?;
@@ -274,7 +323,7 @@ impl IpcServer {
                                     self.cancel_token.cancel();
                                     self.send_response(
                                         &mut writer,
-                                        request.request_id,
+                                        request_id,
                                         ServiceResponse::Stop(CommandResponse {
                                             accepted: true,
                                             message: Some("shutdown requested".to_string()),
@@ -287,7 +336,7 @@ impl IpcServer {
                                     if !matches!(lifecycle, AgentLifecycle::WaitingForSecret) {
                                         self.send_response(
                                             &mut writer,
-                                            request.request_id,
+                                            request_id,
                                             ServiceResponse::Error(
                                                 secret_provisioning_state_error(&lifecycle),
                                             ),
@@ -299,7 +348,7 @@ impl IpcServer {
                                     let Some(secret_provision_tx) = &self.secret_provision_tx else {
                                         self.send_response(
                                             &mut writer,
-                                            request.request_id,
+                                            request_id,
                                             ServiceResponse::Error(self.secret_provision_error.clone()),
                                         )
                                         .await?;
@@ -314,7 +363,7 @@ impl IpcServer {
                                     {
                                         self.send_response(
                                             &mut writer,
-                                            request.request_id,
+                                            request_id,
                                             ServiceResponse::Error(protocol_error(
                                                 ServiceErrorCode::ProvisioningUnavailable,
                                                 "playitd is no longer waiting for secret provisioning"
@@ -330,7 +379,7 @@ impl IpcServer {
                                         Ok(Ok(())) => {
                                             self.send_response(
                                                 &mut writer,
-                                                request.request_id,
+                                                request_id,
                                                 ServiceResponse::SetSecret(CommandResponse {
                                                     accepted: true,
                                                     message: Some("secret provisioned".to_string()),
@@ -341,7 +390,7 @@ impl IpcServer {
                                         Ok(Err(message)) => {
                                             self.send_response(
                                                 &mut writer,
-                                                request.request_id,
+                                                request_id,
                                                 ServiceResponse::Error(protocol_error(
                                                     ServiceErrorCode::SecretWriteFailed,
                                                     message,
@@ -353,7 +402,7 @@ impl IpcServer {
                                         Err(_) => {
                                             self.send_response(
                                                 &mut writer,
-                                                request.request_id,
+                                                request_id,
                                                 ServiceResponse::Error(protocol_error(
                                                     ServiceErrorCode::ProvisioningUnavailable,
                                                     "playitd is no longer waiting for secret provisioning"
@@ -370,7 +419,7 @@ impl IpcServer {
                                         Ok(message) => {
                                             self.send_response(
                                                 &mut writer,
-                                                request.request_id,
+                                                request_id,
                                                 ServiceResponse::ResetSecret(CommandResponse {
                                                     accepted: true,
                                                     message: Some(message),
@@ -384,7 +433,7 @@ impl IpcServer {
                                         Err(error) => {
                                             self.send_response(
                                                 &mut writer,
-                                                request.request_id,
+                                                request_id,
                                                 ServiceResponse::Error(error),
                                             )
                                             .await?;
@@ -394,7 +443,7 @@ impl IpcServer {
                                 ServiceRequest::GetSecretPath => {
                                     self.send_response(
                                         &mut writer,
-                                        request.request_id,
+                                        request_id,
                                         ServiceResponse::SecretPath(SecretPathResponse {
                                             secret_path: self
                                                 .secret_path
@@ -409,7 +458,7 @@ impl IpcServer {
                                         Ok(login_url) => {
                                             self.send_response(
                                                 &mut writer,
-                                                request.request_id,
+                                                request_id,
                                                 ServiceResponse::AccountLoginUrl(
                                                     AccountLoginUrlResponse { login_url },
                                                 ),
@@ -419,7 +468,7 @@ impl IpcServer {
                                         Err(error) => {
                                             self.send_response(
                                                 &mut writer,
-                                                request.request_id,
+                                                request_id,
                                                 ServiceResponse::Error(error),
                                             )
                                             .await?;
@@ -453,9 +502,22 @@ impl IpcServer {
         response: ServiceResponse,
     ) -> Result<(), IpcError> {
         let json = serde_json::to_string(&ServerEnvelope::Response(ResponseEnvelope {
-            protocol_version: PROTOCOL_VERSION,
+            ipc_version: IPC_VERSION,
             request_id,
             response,
+        }))?;
+        writer.write_all(json.as_bytes()).await?;
+        writer.write_all(b"\n").await?;
+        writer.flush().await?;
+        Ok(())
+    }
+
+    async fn send_hello<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        writer: &mut BufWriter<W>,
+    ) -> Result<(), IpcError> {
+        let json = serde_json::to_string(&ServerEnvelope::Hello(HelloEnvelope {
+            protocol: protocol_info(),
         }))?;
         writer.write_all(json.as_bytes()).await?;
         writer.write_all(b"\n").await?;
@@ -469,7 +531,7 @@ impl IpcServer {
         event: ServiceUpdate,
     ) -> Result<(), IpcError> {
         let json = serde_json::to_string(&ServerEnvelope::Event(EventEnvelope {
-            protocol_version: PROTOCOL_VERSION,
+            ipc_version: IPC_VERSION,
             event,
         }))?;
         writer.write_all(json.as_bytes()).await?;
@@ -538,6 +600,32 @@ impl IpcServer {
     }
 }
 
+fn decode_service_request(value: Value) -> Result<ServiceRequest, RequestDecodeError> {
+    let request_type = serde_json::from_value::<RawRequestType>(value.clone())
+        .map_err(|error| {
+            RequestDecodeError::InvalidRequest(format!("invalid IPC request envelope: {error}"))
+        })?
+        .request_type;
+
+    match request_type.as_str() {
+        "subscribe"
+        | "get_status"
+        | "get_state"
+        | "stop"
+        | "set_secret"
+        | "reset_secret"
+        | "get_secret_path"
+        | "get_account_login_url" => {
+            serde_json::from_value::<ServiceRequest>(value).map_err(|error| {
+                RequestDecodeError::InvalidRequest(format!(
+                    "invalid IPC request payload for {request_type}: {error}"
+                ))
+            })
+        }
+        _ => Err(RequestDecodeError::InvalidRequestType(request_type)),
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn world_access_security_descriptor() -> Result<SecurityDescriptor, IpcError> {
     let mut descriptor = SecurityDescriptor::new().map_err(IpcError::BindFailed)?;
@@ -576,6 +664,15 @@ fn protocol_error(code: ServiceErrorCode, message: String, retryable: bool) -> S
         message,
         retryable,
         details: None,
+    }
+}
+
+fn invalid_request_type_error(request_type: &str) -> ServiceError {
+    ServiceError {
+        code: ServiceErrorCode::InvalidRequestType,
+        message: format!("unknown IPC request type: {request_type}"),
+        retryable: false,
+        details: Some(json!({ "request_type": request_type })),
     }
 }
 
@@ -638,8 +735,98 @@ fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
 
 #[cfg(test)]
 mod tests {
-    use super::secret_provisioning_state_error;
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::{IpcServer, protocol_error, secret_provisioning_state_error, try_connect};
+    use interprocess::local_socket::tokio::prelude::*;
+    use playit_ipc::ipc::{
+        IPC_VERSION, IpcClient, IpcError, RequestEnvelope, ServerEnvelope, ServiceRequest,
+        ServiceResponse,
+    };
     use playit_ipc::model::{AgentLifecycle, ServiceError, ServiceErrorCode};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+    use tokio::sync::broadcast;
+    use tokio_util::sync::CancellationToken;
+
+    fn test_socket_path(name: &str) -> String {
+        std::env::temp_dir()
+            .join(format!(
+                "playitd-ipc-{name}-{}-{}.sock",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ))
+            .display()
+            .to_string()
+    }
+
+    async fn spawn_test_server(
+        name: &str,
+    ) -> (
+        Arc<IpcServer>,
+        CancellationToken,
+        tokio::task::JoinHandle<Result<(), IpcError>>,
+        String,
+    ) {
+        let socket_path = test_socket_path(name);
+        let cancel_token = CancellationToken::new();
+        let (event_tx, _) = broadcast::channel(8);
+        let server = Arc::new(
+            IpcServer::new_with_sender(
+                Some(socket_path.clone()),
+                cancel_token.clone(),
+                event_tx,
+                None,
+                None,
+                protocol_error(
+                    ServiceErrorCode::ProvisioningUnavailable,
+                    "provisioning unavailable".to_string(),
+                    false,
+                ),
+                protocol_error(
+                    ServiceErrorCode::SecretWriteFailed,
+                    "secret reset unavailable".to_string(),
+                    false,
+                ),
+            )
+            .await
+            .unwrap(),
+        );
+        let listener = server.bind_listener().await.unwrap();
+        let handle = tokio::spawn(server.clone().run(listener));
+
+        (server, cancel_token, handle, socket_path)
+    }
+
+    async fn shutdown_server(
+        cancel_token: CancellationToken,
+        handle: tokio::task::JoinHandle<Result<(), IpcError>>,
+    ) {
+        cancel_token.cancel();
+        let _ = handle.await.unwrap();
+    }
+
+    async fn connect_raw(
+        socket_path: &str,
+    ) -> (
+        BufReader<interprocess::local_socket::tokio::RecvHalf>,
+        BufWriter<interprocess::local_socket::tokio::SendHalf>,
+    ) {
+        let stream = try_connect(socket_path).await.unwrap();
+        let (reader, writer) = stream.split();
+        (BufReader::new(reader), BufWriter::new(writer))
+    }
+
+    async fn read_server_envelope<R: tokio::io::AsyncBufRead + Unpin>(
+        reader: &mut R,
+    ) -> ServerEnvelope {
+        let mut line = String::new();
+        reader.read_line(&mut line).await.unwrap();
+        serde_json::from_str(line.trim()).unwrap()
+    }
 
     #[test]
     fn provisioning_rejects_running_daemon() {
@@ -667,5 +854,148 @@ mod tests {
         ));
         assert!(!error.retryable);
         assert!(error.message.contains("bad secret"));
+    }
+
+    #[tokio::test]
+    async fn server_writes_hello_immediately() {
+        let (_server, cancel_token, handle, socket_path) = spawn_test_server("hello").await;
+        let mut client = IpcClient::connect_with_path(&socket_path).await.unwrap();
+        assert_eq!(client.server_protocol().ipc_version, IPC_VERSION);
+        assert!(!client.server_protocol().capabilities.is_empty());
+        let lifecycle = client.lifecycle().await.unwrap();
+        assert!(matches!(lifecycle, AgentLifecycle::Starting));
+        shutdown_server(cancel_token, handle).await;
+    }
+
+    #[tokio::test]
+    async fn unknown_request_type_returns_error_and_connection_stays_open() {
+        let (_server, cancel_token, handle, socket_path) = spawn_test_server("unknown-type").await;
+        let (mut reader, mut writer) = connect_raw(&socket_path).await;
+
+        let hello = read_server_envelope(&mut reader).await;
+        assert!(matches!(hello, ServerEnvelope::Hello(_)));
+
+        let unknown_request = serde_json::json!({
+            "ipc_version": IPC_VERSION,
+            "request_id": 1,
+            "request": {
+                "type": "future_request",
+                "data": {"flag": true}
+            }
+        });
+        writer
+            .write_all(serde_json::to_string(&unknown_request).unwrap().as_bytes())
+            .await
+            .unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let response = read_server_envelope(&mut reader).await;
+        match response {
+            ServerEnvelope::Response(response) => match response.response {
+                ServiceResponse::Error(error) => {
+                    assert!(matches!(error.code, ServiceErrorCode::InvalidRequestType));
+                    assert_eq!(
+                        error.details.unwrap()["request_type"],
+                        serde_json::Value::String("future_request".to_string())
+                    );
+                }
+                other => panic!("expected error response, got {other:?}"),
+            },
+            other => panic!("expected response frame, got {other:?}"),
+        }
+
+        let valid_request = serde_json::to_string(&RequestEnvelope {
+            ipc_version: IPC_VERSION,
+            request_id: 2,
+            request: ServiceRequest::GetState,
+        })
+        .unwrap();
+        writer.write_all(valid_request.as_bytes()).await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let response = read_server_envelope(&mut reader).await;
+        match response {
+            ServerEnvelope::Response(response) => {
+                assert_eq!(response.request_id, 2);
+                assert!(matches!(
+                    response.response,
+                    ServiceResponse::State(AgentLifecycle::Starting)
+                ));
+            }
+            other => panic!("expected response frame, got {other:?}"),
+        }
+
+        shutdown_server(cancel_token, handle).await;
+    }
+
+    #[tokio::test]
+    async fn invalid_payload_for_known_request_returns_invalid_request() {
+        let (_server, cancel_token, handle, socket_path) =
+            spawn_test_server("invalid-payload").await;
+        let (mut reader, mut writer) = connect_raw(&socket_path).await;
+
+        let _ = read_server_envelope(&mut reader).await;
+
+        let invalid_request = serde_json::json!({
+            "ipc_version": IPC_VERSION,
+            "request_id": 1,
+            "request": {
+                "type": "set_secret"
+            }
+        });
+        writer
+            .write_all(serde_json::to_string(&invalid_request).unwrap().as_bytes())
+            .await
+            .unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let response = read_server_envelope(&mut reader).await;
+        match response {
+            ServerEnvelope::Response(response) => match response.response {
+                ServiceResponse::Error(error) => {
+                    assert!(matches!(error.code, ServiceErrorCode::InvalidRequest));
+                    assert!(error.message.contains("set_secret"));
+                }
+                other => panic!("expected error response, got {other:?}"),
+            },
+            other => panic!("expected response frame, got {other:?}"),
+        }
+
+        shutdown_server(cancel_token, handle).await;
+    }
+
+    #[tokio::test]
+    async fn mismatched_ipc_version_returns_unsupported_protocol() {
+        let (_server, cancel_token, handle, socket_path) =
+            spawn_test_server("version-mismatch").await;
+        let (mut reader, mut writer) = connect_raw(&socket_path).await;
+
+        let _ = read_server_envelope(&mut reader).await;
+
+        let request = serde_json::to_string(&RequestEnvelope {
+            ipc_version: IPC_VERSION + 1,
+            request_id: 1,
+            request: ServiceRequest::GetState,
+        })
+        .unwrap();
+        writer.write_all(request.as_bytes()).await.unwrap();
+        writer.write_all(b"\n").await.unwrap();
+        writer.flush().await.unwrap();
+
+        let response = read_server_envelope(&mut reader).await;
+        match response {
+            ServerEnvelope::Response(response) => match response.response {
+                ServiceResponse::Error(error) => {
+                    assert!(matches!(error.code, ServiceErrorCode::UnsupportedProtocol));
+                }
+                other => panic!("expected error response, got {other:?}"),
+            },
+            other => panic!("expected response frame, got {other:?}"),
+        }
+
+        shutdown_server(cancel_token, handle).await;
     }
 }

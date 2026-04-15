@@ -456,7 +456,7 @@ pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
                 None => println!("  Secret path: <inline secret>"),
             }
             println!("  Secret configured: {}", status.has_secret);
-            println!("  Protocol version: {}", status.protocol.version);
+            println!("  IPC version: {}", status.protocol.ipc_version);
             if !status.protocol.capabilities.is_empty() {
                 println!("  Capabilities: {:?}", status.protocol.capabilities);
             }

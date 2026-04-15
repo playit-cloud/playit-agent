@@ -22,20 +22,9 @@ pub enum LogLevel {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum ServiceCapability {
-    #[default]
-    StructuredResponses,
-    StreamEvents,
-    LifecycleState,
-    RichStatus,
-    SecretProvisioning,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ProtocolInfo {
-    pub version: u32,
-    pub capabilities: Vec<ServiceCapability>,
+    pub ipc_version: u32,
+    pub capabilities: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -58,6 +47,7 @@ pub enum ServiceErrorCode {
     Internal,
     UnsupportedProtocol,
     InvalidRequest,
+    InvalidRequestType,
     AgentDisabledOverLimit,
     InvalidSecret,
     SecretPinned,
