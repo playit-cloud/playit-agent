@@ -274,12 +274,52 @@
         </Feature>
 
         <SetProperty Id="ARPINSTALLLOCATION" Value="[APPLICATIONFOLDER]" After="CostFinalize"/>
-        <SetProperty
-            Id="PLAYITD_CLOSE_APPROVED"
-            Value="1"
-            Before="WixCloseApplications"
-            Sequence="execute">UILevel &lt; 5 AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</SetProperty>
         <Property Id="WixShellExecTarget" Value="[#exe2]" />
+        <CustomAction Id="DetectRunningPlayit" Script="vbscript" Execute="immediate"><![CDATA[
+Function IsServiceRunning(serviceName)
+    Dim service, services, wmi
+
+    IsServiceRunning = False
+    Set wmi = GetObject("winmgmts:\\.\root\cimv2")
+    Set services = wmi.ExecQuery("SELECT State FROM Win32_Service WHERE Name='" & serviceName & "'")
+
+    For Each service In services
+        If LCase(service.State) = "running" Then
+            IsServiceRunning = True
+        End If
+        Exit Function
+    Next
+End Function
+
+Function IsProcessRunning(processName)
+    Dim process, processes, wmi
+
+    IsProcessRunning = False
+    Set wmi = GetObject("winmgmts:\\.\root\cimv2")
+    Set processes = wmi.ExecQuery("SELECT Name FROM Win32_Process WHERE Name='" & processName & "'")
+
+    For Each process In processes
+        IsProcessRunning = True
+        Exit Function
+    Next
+End Function
+
+Session.Property("PLAYITD_SERVICE_RUNNING") = ""
+Session.Property("PLAYITD_TRAY_RUNNING") = ""
+
+If IsServiceRunning("playitd") Then
+    Session.Property("PLAYITD_SERVICE_RUNNING") = "1"
+End If
+
+If IsProcessRunning("playitd-tray.exe") Then
+    Session.Property("PLAYITD_TRAY_RUNNING") = "1"
+End If
+        ]]></CustomAction>
+        <CustomAction
+            Id="SetPlayitCloseApprovedSilently"
+            Property="PLAYITD_CLOSE_APPROVED"
+            Value="1"
+            Execute="immediate" />
         <CustomAction
             Id="LaunchTrayApplication"
             BinaryKey="WixCA"
@@ -344,6 +384,8 @@
             Return="ignore" />
 
         <InstallExecuteSequence>
+            <Custom Action="DetectRunningPlayit" Before="WixCloseApplications">UILevel &lt; 5</Custom>
+            <Custom Action="SetPlayitCloseApprovedSilently" After="DetectRunningPlayit">UILevel &lt; 5 AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Custom>
             <Custom Action="SetStopPlayitdServiceCommand" After="WixCloseApplications">PLAYITD_CLOSE_APPROVED AND PLAYITD_SERVICE_RUNNING</Custom>
             <Custom Action="StopPlayitdService" After="SetStopPlayitdServiceCommand">PLAYITD_CLOSE_APPROVED AND PLAYITD_SERVICE_RUNNING</Custom>
             <Custom Action="SetValidatePlayitdServiceStoppedCommand" After="StopPlayitdService">PLAYITD_CLOSE_APPROVED AND PLAYITD_SERVICE_RUNNING</Custom>
@@ -417,14 +459,18 @@
             -->
             <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="CustomizeDlg" Order="99">1</Publish>
             <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="99">1</Publish>
-            <Publish Dialog="WelcomeDlg" Control="Next" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="WelcomeDlg" Order="100">Installed AND PATCH AND NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="101">Installed AND PATCH AND NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="CustomizeDlg" Control="Next" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="CustomizeDlg" Order="100">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="CustomizeDlg" Control="Next" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="MaintenanceTypeDlg" Order="100">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="MaintenanceTypeDlg" Order="100">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
-            <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="WelcomeDlg" Control="Next" Event="DoAction" Value="DetectRunningPlayit" Order="100">Installed AND PATCH</Publish>
+            <Publish Dialog="WelcomeDlg" Control="Next" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="WelcomeDlg" Order="101">Installed AND PATCH AND NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="102">Installed AND PATCH AND NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="CustomizeDlg" Control="Next" Event="DoAction" Value="DetectRunningPlayit" Order="100">1</Publish>
+            <Publish Dialog="CustomizeDlg" Control="Next" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="CustomizeDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="CustomizeDlg" Control="Next" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="102">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="DoAction" Value="DetectRunningPlayit" Order="100">1</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="MaintenanceTypeDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="102">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="DoAction" Value="DetectRunningPlayit" Order="100">1</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Property="PLAYITD_CLOSE_RETURN_DIALOG" Value="MaintenanceTypeDlg" Order="101">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
+            <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="PlayitCloseRunningDlg" Order="102">NOT PLAYITD_CLOSE_APPROVED AND (PLAYITD_SERVICE_RUNNING OR PLAYITD_TRAY_RUNNING)</Publish>
         </UI>
 
 
