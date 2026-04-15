@@ -17,7 +17,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
 };
 
 use super::widgets::{render_header, render_help_bar, render_stats_bar};
@@ -81,13 +81,6 @@ pub struct ConnectionStats {
     pub active_udp: u32,
 }
 
-/// Which panel is currently focused
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum FocusedPanel {
-    Tunnels,
-    Logs,
-}
-
 /// UI mode for TuiApp
 #[derive(Clone, Debug, PartialEq)]
 pub enum TuiMode {
@@ -103,10 +96,6 @@ pub struct TuiApp {
 
     // UI state
     mode: TuiMode,
-    focused_panel: FocusedPanel,
-    tunnel_list_state: ListState,
-    log_scroll: usize,
-    log_follow: bool,
     should_quit: bool,
     quit_confirm: bool,
 
@@ -123,10 +112,6 @@ impl TuiApp {
             mode: TuiMode::Message {
                 message: "Initializing...".to_string(),
             },
-            focused_panel: FocusedPanel::Tunnels,
-            tunnel_list_state: ListState::default(),
-            log_scroll: 0,
-            log_follow: true,
             should_quit: false,
             quit_confirm: false,
             terminal: None,
@@ -264,92 +249,7 @@ impl TuiApp {
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.quit_confirm = true;
             }
-            KeyCode::Tab => {
-                self.focused_panel = match self.focused_panel {
-                    FocusedPanel::Tunnels => FocusedPanel::Logs,
-                    FocusedPanel::Logs => FocusedPanel::Tunnels,
-                };
-            }
-            KeyCode::Char('j') | KeyCode::Down => self.scroll_down(),
-            KeyCode::Char('k') | KeyCode::Up => self.scroll_up(),
-            KeyCode::Char('g') => self.scroll_to_top(),
-            KeyCode::Char('G') => self.scroll_to_bottom(),
-            KeyCode::PageDown => {
-                for _ in 0..10 {
-                    self.scroll_down();
-                }
-            }
-            KeyCode::PageUp => {
-                for _ in 0..10 {
-                    self.scroll_up();
-                }
-            }
             _ => {}
-        }
-    }
-
-    fn scroll_down(&mut self) {
-        match self.focused_panel {
-            FocusedPanel::Tunnels => {
-                let total = self.agent_data.tunnels.len();
-                if total > 0 {
-                    let next = match self.tunnel_list_state.selected() {
-                        Some(index) => (index + 1).min(total - 1),
-                        None => 0,
-                    };
-                    self.tunnel_list_state.select(Some(next));
-                }
-            }
-            FocusedPanel::Logs => {
-                let total = self.service_logs.len();
-                if self.log_scroll < total.saturating_sub(1) {
-                    self.log_scroll += 1;
-                    if self.log_scroll >= total.saturating_sub(1) {
-                        self.log_follow = true;
-                    }
-                }
-            }
-        }
-    }
-
-    fn scroll_up(&mut self) {
-        match self.focused_panel {
-            FocusedPanel::Tunnels => {
-                let previous = match self.tunnel_list_state.selected() {
-                    Some(index) => index.saturating_sub(1),
-                    None => 0,
-                };
-                self.tunnel_list_state.select(Some(previous));
-            }
-            FocusedPanel::Logs => {
-                self.log_scroll = self.log_scroll.saturating_sub(1);
-                self.log_follow = false;
-            }
-        }
-    }
-
-    fn scroll_to_top(&mut self) {
-        match self.focused_panel {
-            FocusedPanel::Tunnels => self.tunnel_list_state.select(Some(0)),
-            FocusedPanel::Logs => {
-                self.log_scroll = 0;
-                self.log_follow = false;
-            }
-        }
-    }
-
-    fn scroll_to_bottom(&mut self) {
-        match self.focused_panel {
-            FocusedPanel::Tunnels => {
-                let total = self.agent_data.tunnels.len();
-                if total > 0 {
-                    self.tunnel_list_state.select(Some(total - 1));
-                }
-            }
-            FocusedPanel::Logs => {
-                self.log_scroll = self.service_logs.len().saturating_sub(1);
-                self.log_follow = true;
-            }
         }
     }
 
@@ -360,20 +260,8 @@ impl TuiApp {
         let agent_data = self.agent_data.clone();
         let stats = self.stats.clone();
         let start_time = agent_data.start_time;
-        let focused_panel = self.focused_panel;
         let quit_confirm = self.quit_confirm;
         let log_entries: Vec<_> = self.service_logs.iter().cloned().collect();
-        let log_follow = self.log_follow;
-
-        let log_scroll = if log_follow {
-            let total = log_entries.len();
-            self.log_scroll = total.saturating_sub(1);
-            self.log_scroll
-        } else {
-            self.log_scroll
-        };
-
-        let mut tunnel_list_state = self.tunnel_list_state.clone();
 
         terminal.draw(|frame| {
             let area = frame.area();
@@ -399,49 +287,23 @@ impl TuiApp {
 
             render_header(frame, chunks[0], &agent_data, start_time);
 
-            Self::render_tunnels(
-                frame,
-                chunks[1],
-                &agent_data,
-                focused_panel == FocusedPanel::Tunnels,
-                &mut tunnel_list_state,
-            );
+            Self::render_tunnels(frame, chunks[1], &agent_data);
 
             render_stats_bar(frame, chunks[2], &stats);
 
-            Self::render_logs(
-                frame,
-                chunks[3],
-                &log_entries,
-                log_scroll,
-                focused_panel == FocusedPanel::Logs,
-                log_follow,
-            );
+            Self::render_logs(frame, chunks[3], &log_entries);
 
             render_help_bar(frame, chunks[4], quit_confirm);
         })?;
 
-        self.tunnel_list_state = tunnel_list_state;
         Ok(())
     }
 
-    fn render_tunnels(
-        frame: &mut Frame,
-        area: Rect,
-        agent_data: &AgentData,
-        focused: bool,
-        list_state: &mut ListState,
-    ) {
-        let border_style = if focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-
+    fn render_tunnels(frame: &mut Frame, area: Rect, agent_data: &AgentData) {
         let block = Block::default()
             .title(" Tunnels ")
             .borders(Borders::ALL)
-            .border_style(border_style);
+            .border_style(Style::default().fg(Color::Cyan));
 
         if agent_data.tunnels.is_empty() && agent_data.pending_tunnels.is_empty() {
             let msg = if agent_data.agent_id.is_empty() {
@@ -496,36 +358,19 @@ impl TuiApp {
             )
             .highlight_symbol("▶ ");
 
-        frame.render_stateful_widget(list, area, list_state);
+        frame.render_widget(list, area);
     }
 
-    fn render_logs(
-        frame: &mut Frame,
-        area: Rect,
-        log_entries: &[LogEntry],
-        scroll: usize,
-        focused: bool,
-        following: bool,
-    ) {
-        let border_style = if focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-
-        let title = if following {
-            format!(" Service Logs ({}) [following] ", log_entries.len())
-        } else {
-            format!(" Service Logs ({}) ", log_entries.len())
-        };
+    fn render_logs(frame: &mut Frame, area: Rect, log_entries: &[LogEntry]) {
+        let title = format!(" Service Logs ({}) [following] ", log_entries.len());
 
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(border_style);
+            .border_style(Style::default().fg(Color::DarkGray));
 
         let inner_height = area.height.saturating_sub(2) as usize;
-        let start = scroll.min(log_entries.len().saturating_sub(inner_height));
+        let start = log_entries.len().saturating_sub(inner_height);
         let visible_entries = log_entries.iter().skip(start).take(inner_height);
 
         let lines: Vec<Line> = visible_entries
@@ -751,6 +596,7 @@ impl Drop for TuiApp {
 
 #[cfg(test)]
 mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use playit_ipc::model::{LogEntry, LogLevel, ServiceError, ServicePhase, ServiceStatus};
 
     use super::*;
@@ -856,5 +702,38 @@ mod tests {
                 )
             }
         );
+    }
+
+    #[test]
+    fn navigation_keys_are_ignored() {
+        let mut app = TuiApp::new();
+
+        for key in [
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('G'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+        ] {
+            app.handle_key_event(key);
+            assert!(!app.quit_confirm);
+            assert!(!app.should_quit);
+        }
+    }
+
+    #[test]
+    fn quit_key_still_requires_confirmation() {
+        let mut app = TuiApp::new();
+
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert!(app.quit_confirm);
+        assert!(!app.should_quit);
+
+        app.handle_key_event(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(app.should_quit);
     }
 }

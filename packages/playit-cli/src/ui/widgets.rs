@@ -186,27 +186,6 @@ pub fn render_help_bar(frame: &mut Frame, area: Rect, quit_confirm: bool) {
     } else {
         Line::from(vec![
             Span::styled(
-                "j/k",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Scroll  "),
-            Span::styled(
-                "Tab",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Switch Panel  "),
-            Span::styled(
-                "g/G",
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(" Top/Bottom  "),
-            Span::styled(
                 "q",
                 Style::default()
                     .fg(Color::Cyan)
