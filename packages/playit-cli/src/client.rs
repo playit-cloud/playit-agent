@@ -1,4 +1,10 @@
 use std::time::Duration;
+#[cfg(target_os = "linux")]
+use std::{
+    fs,
+    os::unix::fs::{FileTypeExt, MetadataExt},
+    path::Path,
+};
 
 use chrono::{DateTime, Utc};
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
@@ -603,7 +609,17 @@ async fn ensure_installed_service_running_for_cli(
         if is_systemd_service_active().map_err(|error| {
             CliError::ServiceError(format!("Failed to check service status: {error}"))
         })? {
-            return Ok(InstalledServiceStartState::AlreadyRunning);
+            for _ in 0..20 {
+                if IpcClient::is_running(get_default_socket_path()).await {
+                    return Ok(InstalledServiceStartState::AlreadyRunning);
+                }
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+
+            return Err(CliError::ServiceError(
+                linux_installed_service_unreachable_message(),
+            ));
         }
 
         if let Some(console) = console {
@@ -648,6 +664,101 @@ fn current_user_is_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
+#[cfg(target_os = "linux")]
+fn linux_installed_service_unreachable_message() -> String {
+    let socket_path = get_default_socket_path();
+
+    match linux_socket_access_diagnostic(socket_path) {
+        Some(message) => message,
+        None => format!(
+            "The playit service is running, but its IPC socket at {socket_path} is still not reachable."
+        ),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_socket_access_diagnostic(socket_path: &str) -> Option<String> {
+    let path = Path::new(socket_path);
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Some(format!(
+                "The playit service is running, but its IPC socket at {socket_path} does not exist."
+            ));
+        }
+        Err(error) => {
+            return Some(format!(
+                "The playit service is running, but the IPC socket at {socket_path} could not be inspected: {error}"
+            ));
+        }
+    };
+
+    if !metadata.file_type().is_socket() {
+        return Some(format!(
+            "The playit service is running, but {socket_path} exists and is not a Unix socket."
+        ));
+    }
+
+    let current_uid = unsafe { libc::geteuid() };
+    let current_gid = unsafe { libc::getegid() };
+    let socket_uid = metadata.uid();
+    let socket_gid = metadata.gid();
+    let socket_mode = metadata.mode() & 0o777;
+
+    if current_user_can_write_socket(&metadata) {
+        return None;
+    }
+
+    Some(format!(
+        "The playit service is running, but the current user cannot access its IPC socket at {socket_path}. Current user uid={current_uid}, gid={current_gid}; socket owner uid={socket_uid}, gid={socket_gid}, mode={socket_mode:o}."
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn current_user_can_write_socket(metadata: &fs::Metadata) -> bool {
+    let mode = metadata.mode();
+    let uid = metadata.uid();
+    let gid = metadata.gid();
+    let current_uid = unsafe { libc::geteuid() };
+
+    if current_uid == 0 {
+        return true;
+    }
+
+    if current_uid == uid {
+        return mode & 0o200 != 0;
+    }
+
+    if current_user_in_group(gid) {
+        return mode & 0o020 != 0;
+    }
+
+    mode & 0o002 != 0
+}
+
+#[cfg(target_os = "linux")]
+fn current_user_in_group(target_gid: u32) -> bool {
+    if unsafe { libc::getegid() } == target_gid {
+        return true;
+    }
+
+    let group_count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
+    if group_count <= 0 {
+        return false;
+    }
+
+    let mut groups = vec![0 as libc::gid_t; group_count as usize];
+    let loaded = unsafe { libc::getgroups(group_count, groups.as_mut_ptr()) };
+    if loaded <= 0 {
+        return false;
+    }
+
+    groups
+        .into_iter()
+        .take(loaded as usize)
+        .any(|group| group == target_gid)
+}
+
 fn ipc_connection_error() -> CliError {
     CliError::IpcError(
         "Failed to connect to playitd over IPC. Start playitd and try again.".to_string(),
@@ -666,6 +777,9 @@ fn initial_attach_error(target: &CliTarget, error_context: &AttachErrorContext) 
 fn auto_attach_error(target: &CliTarget, start_attempt_failed: Option<&str>) -> CliError {
     match target {
         CliTarget::InstalledService => match start_attempt_failed {
+            Some(error) if error.starts_with("The playit service is running, but") => {
+                CliError::IpcError(error.to_string())
+            }
             Some(error) => CliError::IpcError(format!(
                 "Failed to connect to playitd over IPC. playit-cli auto mode also tried starting playitd first, but that start attempt failed: {error}"
             )),
@@ -719,7 +833,7 @@ fn format_log_level(level: &ServiceLogLevel) -> &'static str {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
-    use super::linux_service_start_prompt;
+    use super::{CliTarget, auto_attach_error, linux_service_start_prompt};
 
     #[test]
     fn linux_start_prompt_includes_command() {
@@ -733,5 +847,20 @@ mod tests {
     fn linux_start_prompt_warns_non_root_about_password() {
         let prompt = linux_service_start_prompt(false);
         assert!(prompt.contains("This will ask you for your password."));
+    }
+
+    #[test]
+    fn auto_attach_error_surfaces_precise_linux_socket_message() {
+        let error = auto_attach_error(
+            &CliTarget::InstalledService,
+            Some(
+                "The playit service is running, but the current user cannot access its IPC socket at /var/run/playitd.sock.",
+            ),
+        );
+
+        assert_eq!(
+            error.to_string(),
+            "The playit service is running, but the current user cannot access its IPC socket at /var/run/playitd.sock."
+        );
     }
 }
