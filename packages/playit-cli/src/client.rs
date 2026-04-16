@@ -357,9 +357,12 @@ pub async fn run_start_command(
 pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
     match target {
         CliTarget::InstalledService => {
+            let mut direct_stop_fallback = true;
+
             match connect_target(target).await {
                 Ok(mut client) => match client.stop().await {
                     Ok(response) if response.accepted => {
+                        direct_stop_fallback = false;
                         println!("playitd service stop requested");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
@@ -386,8 +389,16 @@ pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
                 }
             }
 
-            if let Err(error) = stop_installed_service() {
-                tracing::warn!("Failed to stop installed service: {error}");
+            if direct_stop_fallback {
+                #[cfg(target_os = "linux")]
+                if !linux::installed_service_is_active()? {
+                    println!("playitd service is already stopped");
+                    return Ok(());
+                }
+
+                if let Err(error) = stop_installed_service() {
+                    tracing::warn!("Failed to stop installed service: {error}");
+                }
             }
 
             tokio::time::sleep(Duration::from_millis(500)).await;

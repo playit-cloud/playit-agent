@@ -16,9 +16,7 @@ const PLAYIT_GROUP_NAME: &str = "playit";
 pub(crate) async fn prepare_installed_service_for_cli(
     console: Option<&mut ConsoleUi>,
 ) -> Result<bool, CliError> {
-    if is_systemd_service_active().map_err(|error| {
-        CliError::ServiceError(format!("Failed to check service status: {error}"))
-    })? {
+    if installed_service_is_active()? {
         for _ in 0..20 {
             if IpcClient::is_running(get_default_socket_path()).await {
                 return Ok(true);
@@ -46,6 +44,11 @@ pub(crate) async fn prepare_installed_service_for_cli(
     }
 
     Ok(false)
+}
+
+pub(crate) fn installed_service_is_active() -> Result<bool, CliError> {
+    is_systemd_service_active()
+        .map_err(|error| CliError::ServiceError(format!("Failed to check service status: {error}")))
 }
 
 pub(crate) fn is_linux_socket_access_message(message: &str) -> bool {
