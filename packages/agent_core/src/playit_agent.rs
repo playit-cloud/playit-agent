@@ -157,7 +157,7 @@ impl PlayitAgent {
                     }
                     _ = tokio::time::sleep_until(next_clear) => {
                         next_clear = Instant::now() + Duration::from_secs(16);
-                        udp_clients.clear_old(now_milli());
+                        udp_clients.clear_old(now_milli()).await;
                     }
                     _ = tokio::time::sleep(Duration::from_secs(3)) => {}
                 }

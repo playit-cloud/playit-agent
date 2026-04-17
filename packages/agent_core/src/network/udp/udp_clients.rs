@@ -114,8 +114,10 @@ impl UdpClients {
         }
     }
 
-    pub fn clear_old(&mut self, now_ms: u64) {
-        self.virtual_clients.retain(|slot, client| {
+    pub async fn clear_old(&mut self, now_ms: u64) {
+        let mut to_remove = Vec::new();
+
+        for (slot, client) in self.virtual_clients.iter_mut() {
             let receiver_closed = client.receiver.is_closed();
             let since_origin = now_ms.saturating_sub(client.from_origin_ts);
             let since_tunnel = now_ms.saturating_sub(client.from_tunnel_ts);
@@ -131,14 +133,19 @@ impl UdpClients {
             };
 
             if remove {
-                let removed = self.virtual_client_lookup.remove(&client.key).unwrap();
-                assert_eq!(removed, slot);
-
-                false
-            } else {
-                true
+                to_remove.push(slot);
             }
-        });
+        }
+
+        to_remove.sort_unstable();
+        to_remove.reverse();
+
+        for slot in to_remove {
+            let client = self.virtual_clients.remove(slot);
+            let removed = self.virtual_client_lookup.remove(&client.key).unwrap();
+            assert_eq!(removed, slot);
+            client.receiver.shutdown().await;
+        }
 
         // Update active UDP count
         self.stats.set_udp(self.virtual_clients.len() as u32);
