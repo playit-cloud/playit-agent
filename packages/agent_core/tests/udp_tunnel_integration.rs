@@ -26,7 +26,7 @@ use tokio::{net::UdpSocket, time::timeout};
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 const STRESS_TIMEOUT: Duration = Duration::from_secs(30);
-const UDP_STRESS_PACKET_COUNT: usize = 2_000;
+const UDP_STRESS_PACKET_COUNT: usize = 100_000;
 const UDP_STRESS_PACKET_SIZES: [usize; 4] = [32, 128, 512, 1300];
 const UDP_STRESS_BATCH_SIZE: usize = 32;
 
