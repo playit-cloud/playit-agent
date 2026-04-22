@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use byteorder::{BigEndian, ByteOrder};
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
@@ -58,6 +58,7 @@ impl LanAddress {
     pub async fn udp_socket(
         special_lan_ip: bool,
         peer: SocketAddr,
+        target: SocketAddr,
         tunnel_id: u64,
     ) -> std::io::Result<UdpSocket> {
         let ip_shuffle = shuffle_ip_to_u32(peer.ip());
@@ -97,10 +98,25 @@ impl LanAddress {
                 }
             }
         } else {
-            match UdpSocket::bind(SocketAddrV4::new(0.into(), local_port)).await {
+            let bind_addr = match target {
+                SocketAddr::V4(_) => {
+                    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, local_port))
+                }
+                SocketAddr::V6(_) => {
+                    SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, local_port, 0, 0))
+                }
+            };
+            let fallback_addr = match target {
+                SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
+                SocketAddr::V6(_) => {
+                    SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, 0, 0))
+                }
+            };
+
+            match UdpSocket::bind(bind_addr).await {
                 Ok(v) => Ok(v),
                 Err(bad_port_error) => {
-                    let v = UdpSocket::bind(SocketAddrV4::new(0.into(), 0)).await?;
+                    let v = UdpSocket::bind(fallback_addr).await?;
                     tracing::warn!("Failed to bind UDP to special port: {:?}", bad_port_error);
                     Ok(v)
                 }
