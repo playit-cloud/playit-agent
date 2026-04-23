@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    net::{IpAddr, Ipv4Addr, SocketAddrV4},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddrV4, SocketAddrV6},
     num::NonZeroU64,
     sync::Arc,
     time::{Duration, Instant},
@@ -159,6 +159,96 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
     assert_eq!(encap_source_2, channel_addr);
     assert_eq!(encap_flow_2, flow.flip());
     assert_eq!(encap_payload_2, tunnel_reply_2);
+}
+
+#[tokio::test]
+async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
+    let tunnel_server = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind tunnel server");
+    let origin_server = UdpSocket::bind(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 0))
+        .await
+        .expect("bind origin server");
+
+    let tunnel_addr = tunnel_server.local_addr().expect("tunnel addr");
+    let origin_addr = origin_server.local_addr().expect("origin addr");
+
+    let lookup = Arc::new(OriginLookup::default());
+    lookup
+        .update(std::iter::once(OriginResource {
+            tunnel_id: 42,
+            proto: PortProto::Udp,
+            target: OriginTarget::Port {
+                ip: OriginIp::IpAddress(IpAddr::V6(Ipv6Addr::LOCALHOST)),
+                port: origin_addr.port(),
+            },
+            port_count: 0,
+            proxy_protocol: None,
+        }))
+        .await;
+
+    let stats = AgentStats::new();
+    let mut udp_clients = UdpClients::new(
+        UdpSettings::default(),
+        lookup,
+        Packets::new(64),
+        stats.clone(),
+    );
+    let mut udp_channel = UdpChannel::new(Packets::new(64))
+        .await
+        .expect("create udp channel");
+
+    udp_channel
+        .update_session(UdpChannelDetails {
+            tunnel_addr,
+            token: Arc::new(b"test-session-token".to_vec()),
+        })
+        .await;
+
+    let (token_len, channel_addr, token_bytes) = recv_from_socket(&tunnel_server).await;
+    assert_eq!(&token_bytes[..token_len], b"test-session-token");
+
+    tunnel_server
+        .send_to(&UDP_CHANNEL_ESTABLISH_ID.to_be_bytes(), channel_addr)
+        .await
+        .expect("send establish ack");
+
+    let flow = test_flow();
+    let origin_payload = b"packet to ipv6 origin";
+    send_tunneled_packet(&tunnel_server, channel_addr, flow, origin_payload).await;
+
+    let (recv_flow, recv_packet) = timeout(TEST_TIMEOUT, udp_channel.recv())
+        .await
+        .expect("recv tunneled packet");
+    assert_eq!(recv_flow, flow);
+    udp_clients
+        .handle_tunneled_packet(1_000, recv_flow, recv_packet)
+        .await;
+
+    let (origin_len, virtual_addr, origin_bytes) = recv_from_socket(&origin_server).await;
+    assert_eq!(&origin_bytes[..origin_len], origin_payload);
+    assert!(virtual_addr.is_ipv6());
+    assert_eq!(stats.active_udp(), 1);
+
+    let tunnel_reply = b"reply from ipv6 origin";
+    origin_server
+        .send_to(tunnel_reply, virtual_addr)
+        .await
+        .expect("origin send reply");
+
+    let reply = timeout(TEST_TIMEOUT, udp_clients.recv_origin_packet())
+        .await
+        .expect("recv origin reply");
+    let (reply_flow, reply_packet) = udp_clients
+        .dispatch_origin_packet(2_000, reply)
+        .await
+        .expect("dispatch origin reply");
+    udp_channel.send(reply_flow, reply_packet).await;
+
+    let (encap_flow, encap_payload, encap_source) = recv_tunneled_packet(&tunnel_server).await;
+    assert_eq!(encap_source, channel_addr);
+    assert_eq!(encap_flow, flow.flip());
+    assert_eq!(encap_payload, tunnel_reply);
 }
 
 #[tokio::test]

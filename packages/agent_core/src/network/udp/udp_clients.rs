@@ -46,7 +46,7 @@ struct Client {
     id: u64,
     key: UdpClientKey,
     socket: Arc<UdpSocket>,
-    target_addr: SocketAddrV4,
+    target_addr: SocketAddr,
     port_offset: u16,
     flow: UdpFlow,
 
@@ -64,8 +64,12 @@ struct UdpClientKey {
 }
 
 impl UdpClientKey {
-    pub async fn create_socket(&self, special_lan: bool) -> std::io::Result<UdpSocket> {
-        LanAddress::udp_socket(special_lan, self.source_addr, self.tunnel_id).await
+    pub async fn create_socket(
+        &self,
+        special_lan: bool,
+        target_addr: SocketAddr,
+    ) -> std::io::Result<UdpSocket> {
+        LanAddress::udp_socket(special_lan, self.source_addr, target_addr, self.tunnel_id).await
     }
 }
 
@@ -173,12 +177,7 @@ impl UdpClients {
             return None;
         }
 
-        let SocketAddr::V4(source) = packet.from else {
-            udp_errors().origin_source_not_ip4.inc();
-            return None;
-        };
-
-        if source != client.target_addr {
+        if packet.from != client.target_addr {
             udp_errors().origin_reject_addr_differ.inc();
             return None;
         }
@@ -271,13 +270,10 @@ impl UdpClients {
             return;
         };
 
-        let SocketAddr::V4(target_addr) = target_addr else {
-            return;
-        };
+        let special_lan = matches!(target_addr, SocketAddr::V4(addr) if addr.ip().is_loopback())
+            && origin.proxy_protocol.is_none();
 
-        let special_lan = target_addr.ip().is_loopback() && origin.proxy_protocol.is_none();
-
-        let socket = match key.create_socket(special_lan).await {
+        let socket = match key.create_socket(special_lan, target_addr).await {
             Ok(socket) => Arc::new(socket),
             Err(error) => {
                 tracing::error!(?error, "failed to create socket");
