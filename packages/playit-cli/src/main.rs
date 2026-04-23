@@ -248,7 +248,10 @@ pub async fn run_setup_flow(console: &mut ConsoleUi, target: &CliTarget) -> Resu
 
     let claim_code = claim_generate();
     console
-        .write_screen(format!("Visit link to setup {}", claim_url(&claim_code)?))
+        .write_screen(format!(
+            "Open this link to finish setting up playit:\n{}",
+            claim_url(&claim_code)?
+        ))
         .await;
 
     let key = claim_exchange(console, &claim_code, ClaimAgentType::Assignable, 0).await?;
@@ -266,7 +269,7 @@ pub async fn run_setup_flow(console: &mut ConsoleUi, target: &CliTarget) -> Resu
     }
 
     console
-        .write_screen("Playit setup complete, secret provisioned to playitd")
+        .write_screen("playit setup is complete. The background service is ready.")
         .await;
     Ok(())
 }
@@ -301,7 +304,7 @@ pub async fn claim_exchange(
 
     {
         let _close_guard = get_signal_handle().close_guard();
-        let mut last_message = "Preparing Setup".to_string();
+        let mut last_message = "Preparing setup...".to_string();
 
         loop {
             let setup_res = api
@@ -326,19 +329,27 @@ pub async fn claim_exchange(
 
             last_message = match setup {
                 ClaimSetupResponse::WaitingForUserVisit => {
-                    format!("Visit link to setup {}", claim_url(claim_code)?)
+                    format!(
+                        "Open this link to finish setting up playit:\n{}",
+                        claim_url(claim_code)?
+                    )
                 }
                 ClaimSetupResponse::WaitingForUser => {
-                    format!("Approve program at {}", claim_url(claim_code)?)
+                    format!(
+                        "Approve this program in your browser:\n{}",
+                        claim_url(claim_code)?
+                    )
                 }
                 ClaimSetupResponse::UserAccepted => {
                     console
-                        .write_screen("Program approved :). Secret code being setup.")
+                        .write_screen("Program approved. Finishing setup...")
                         .await;
                     break;
                 }
                 ClaimSetupResponse::UserRejected => {
-                    console.write_screen("Program rejected :(").await;
+                    console
+                        .write_screen("Setup was not approved in the browser.")
+                        .await;
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     return Err(CliError::AgentClaimRejected);
                 }
@@ -358,7 +369,10 @@ pub async fn claim_exchange(
         {
             Ok(res) => break res.secret_key,
             Err(ApiError::Fail(status)) => {
-                let msg = format!("code \"{}\" not ready, {:?}", claim_code, status);
+                let msg = format!(
+                    "Waiting for claim code \"{}\" to be approved: {:?}",
+                    claim_code, status
+                );
                 console.write_screen(msg).await;
             }
             Err(error) => return Err(error.into()),
@@ -366,7 +380,7 @@ pub async fn claim_exchange(
 
         if now_milli() > end_at {
             console
-                .write_screen("you took too long to approve the program, closing")
+                .write_screen("Setup timed out before the program was approved.")
                 .await;
             tokio::time::sleep(Duration::from_secs(2)).await;
             return Err(CliError::TimedOut);

@@ -516,7 +516,7 @@ fn apply_startup_shortcut_state(state: &mut AppState, startup_shortcut_present: 
     state
         .tray_icon_action
         .set_text(if startup_shortcut_present {
-            "Remove Tray Icon"
+            "Remove Tray Icon from Startup"
         } else {
             "Close Tray Icon"
         });
@@ -527,15 +527,15 @@ fn apply_startup_shortcut_state(state: &mut AppState, startup_shortcut_present: 
 
 fn confirm_close_with_running_service(remove_from_startup: Option<bool>) -> bool {
     let action = if remove_from_startup.unwrap_or(false) {
-        "remove the tray icon"
+        "remove the tray icon from startup"
     } else {
         "close the tray icon"
     };
 
     confirm_warning(
-        "Playit Service Still Running",
+        "Playit Service Is Still Running",
         &format!(
-            "The playit service will keep running in the background if you {action} now.\n\nSelect Cancel to keep the tray icon open so you can stop the service first, or OK to continue."
+            "The background service will keep running if you {action} now.\n\nChoose Cancel to keep the tray icon open and stop the service first, or OK to continue."
         ),
     )
 }
@@ -594,9 +594,9 @@ fn load_tray_icon() -> Result<Icon, String> {
 
 fn tray_tooltip(service_running: bool) -> &'static str {
     if service_running {
-        "Playit service is running"
+        "Playit background service is running"
     } else {
-        "Playit service is stopped"
+        "Playit background service is stopped"
     }
 }
 

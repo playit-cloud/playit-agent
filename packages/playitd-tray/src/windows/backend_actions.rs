@@ -158,7 +158,7 @@ pub(super) fn launch_playit() -> Result<(), String> {
     Command::new(cli_path)
         .creation_flags(CREATE_NEW_CONSOLE)
         .spawn()
-        .map_err(|error| format!("Failed to launch playit.exe: {error}"))?;
+        .map_err(|error| format!("Could not open playit.exe: {error}"))?;
     Ok(())
 }
 
@@ -172,16 +172,16 @@ pub(super) fn launch_status_window() -> Result<(), String> {
         .creation_flags(CREATE_NEW_CONSOLE)
         .arg("attach")
         .spawn()
-        .map_err(|error| format!("Failed to launch playit.exe attach: {error}"))?;
+        .map_err(|error| format!("Could not open the playit status window: {error}"))?;
     Ok(())
 }
 
 pub(super) fn response_error_title(request: BackendRequestKind) -> &'static str {
     match request {
         BackendRequestKind::RefreshStatus => "Failed to refresh playit tray",
-        BackendRequestKind::StartService => "Failed to start playitd service",
-        BackendRequestKind::StopService => "Failed to stop playitd service",
-        BackendRequestKind::ResetAgent => "Failed to reset playit agent",
+        BackendRequestKind::StartService => "Failed to start playit service",
+        BackendRequestKind::StopService => "Failed to stop playit service",
+        BackendRequestKind::ResetAgent => "Failed to reset playit agent setup",
     }
 }
 
@@ -196,7 +196,7 @@ async fn start_service_async() -> Result<(), String> {
 
     let result = ensure_installed_service_running()
         .await
-        .map_err(|error| format!("Failed waiting for playitd service startup: {error}"));
+        .map_err(|error| format!("The background service did not start: {error}"));
 
     if result.is_ok() {
         debug_log("start_service: service started");
@@ -252,7 +252,7 @@ async fn stop_service_async() -> Result<(), String> {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     if IpcClient::is_running(get_default_socket_path()).await {
         debug_log("stop_service: final running check says playitd is still reachable");
-        Err("playitd service may still be running".to_string())
+        Err("The playit service may still be running. Try again in a few seconds or stop it from Windows Services.".to_string())
     } else {
         debug_log("stop_service: final running check says service stopped");
         Ok(())
@@ -263,7 +263,10 @@ async fn reset_agent_async() -> Result<(), String> {
     debug_log("reset_agent: begin");
     if !query_service_running_async().await {
         debug_log("reset_agent: service is not running");
-        return Err("playitd is not running, so Reset Agent is unavailable".to_string());
+        return Err(
+            "Reset Agent Setup is unavailable because the playit service is not running."
+                .to_string(),
+        );
     }
 
     let lifecycle = query_service_lifecycle_async().await;
@@ -273,14 +276,15 @@ async fn reset_agent_async() -> Result<(), String> {
     if matches!(lifecycle, Ok(AgentLifecycle::WaitingForSecret)) {
         debug_log("reset_agent: lifecycle already WaitingForSecret");
         return Err(
-            "playitd is already waiting for setup, so Reset Agent is unavailable".to_string(),
+            "The playit service is already waiting for setup. Open playit to finish setup."
+                .to_string(),
         );
     }
 
     debug_log("reset_agent: connecting to playitd over IPC");
     let mut client = IpcClient::connect().await.map_err(|error| {
         debug_log(&format!("reset_agent: failed to connect over IPC: {error}"));
-        format!("Failed to connect to playitd over IPC: {error}")
+        format!("Could not connect to the playit service: {error}")
     })?;
 
     debug_log("reset_agent: sending reset_secret request");
@@ -288,7 +292,7 @@ async fn reset_agent_async() -> Result<(), String> {
         debug_log(&format!(
             "reset_agent: reset_secret IPC call failed: {error}"
         ));
-        format!("Failed to reset agent over IPC: {error}")
+        format!("Could not reset the agent setup: {error}")
     })?;
 
     debug_log(&format!(
@@ -300,7 +304,7 @@ async fn reset_agent_async() -> Result<(), String> {
     if !reset_response.accepted {
         return Err(reset_response
             .message
-            .unwrap_or_else(|| "playitd rejected the reset request".to_string()));
+            .unwrap_or_else(|| "The playit service rejected the reset request.".to_string()));
     }
 
     debug_log("reset_agent: secret reset accepted, stopping service");
@@ -356,14 +360,14 @@ async fn query_service_lifecycle_async() -> Result<AgentLifecycle, String> {
     debug_log("lifecycle: connecting to playitd over IPC");
     let mut client = IpcClient::connect().await.map_err(|error| {
         debug_log(&format!("lifecycle: failed to connect over IPC: {error}"));
-        format!("Failed to connect to playitd over IPC: {error}")
+        format!("Could not connect to the playit service: {error}")
     })?;
 
     let lifecycle = client.lifecycle().await.map_err(|error| {
         debug_log(&format!(
             "lifecycle: failed to read lifecycle over IPC: {error}"
         ));
-        format!("Failed to read playitd lifecycle over IPC: {error}")
+        format!("Could not read the playit service status: {error}")
     })?;
 
     debug_log(&format!("lifecycle: received {lifecycle:?}"));

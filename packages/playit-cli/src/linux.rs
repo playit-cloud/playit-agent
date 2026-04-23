@@ -37,7 +37,7 @@ pub(crate) async fn prepare_installed_service_for_cli(
 
         if !should_start {
             return Err(CliError::ServiceError(
-                "The playit service is not running. Start it with `systemctl start playit` and try again."
+                "The playit service is not running. Start it with `sudo systemctl start playit`, then run `playit` again."
                     .to_string(),
             ));
         }
@@ -56,12 +56,17 @@ pub(crate) fn is_linux_socket_access_message(message: &str) -> bool {
 }
 
 fn service_start_prompt(is_root: bool) -> String {
-    let mut prompt = String::from(
-        "The playit service is not running.\nWould you like us to start it?\n\nCommand: systemctl start playit",
+    let command = if is_root {
+        "systemctl start playit"
+    } else {
+        "sudo systemctl start playit"
+    };
+    let mut prompt = format!(
+        "The playit service is not running.\nStart it now so playit can run in the background?\n\nCommand: {command}",
     );
 
     if !is_root {
-        prompt.push_str("\nThis will ask you for your password.");
+        prompt.push_str("\nYou may be asked for your password.");
     }
 
     prompt
@@ -77,7 +82,7 @@ fn installed_service_unreachable_message() -> String {
     match socket_access_issue(socket_path) {
         Some(issue) => format_socket_access_issue(socket_path, &issue),
         None => format!(
-            "The playit service is running, but its IPC socket at {socket_path} is still not reachable."
+            "The playit service is running, but this shell cannot reach its IPC socket:\n  {socket_path}\n\nTry running `playit status` again in a few seconds. If it still fails, restart the service with:\n  sudo systemctl restart playit"
         ),
     }
 }
@@ -157,17 +162,17 @@ fn format_socket_access_issue(socket_path: &str, issue: &LinuxSocketAccessIssue)
     match issue {
         LinuxSocketAccessIssue::MissingSocket => {
             format!(
-                "The playit service is running, but its IPC socket at {socket_path} does not exist."
+                "The playit service is running, but its IPC socket does not exist yet:\n  {socket_path}\n\nRestart the service, then try again:\n  sudo systemctl restart playit"
             )
         }
         LinuxSocketAccessIssue::InspectFailed(error) => {
             format!(
-                "The playit service is running, but the IPC socket at {socket_path} could not be inspected: {error}"
+                "The playit service is running, but playit could not inspect its IPC socket:\n  {socket_path}\n\nError: {error}"
             )
         }
         LinuxSocketAccessIssue::NotASocket => {
             format!(
-                "The playit service is running, but {socket_path} exists and is not a Unix socket."
+                "The playit service is running, but this path is not a Unix socket:\n  {socket_path}\n\nRemove or rename that file, then restart the service:\n  sudo systemctl restart playit"
             )
         }
         LinuxSocketAccessIssue::PlayitGroupJoinRequired => {
@@ -183,20 +188,20 @@ fn format_socket_access_issue(socket_path: &str, issue: &LinuxSocketAccessIssue)
             socket_gid,
             socket_mode,
         } => format!(
-            "The playit service is running, but the current user cannot access its IPC socket:\n  {socket_path}\n\nCurrent user uid={current_uid}, gid={current_gid}\nSocket owner uid={socket_uid}, gid={socket_gid}, mode={socket_mode:o}"
+            "The playit service is running, but this user cannot access its IPC socket:\n  {socket_path}\n\nCurrent user uid={current_uid}, gid={current_gid}\nSocket owner uid={socket_uid}, gid={socket_gid}, mode={socket_mode:o}\n\nCheck the socket permissions or run playit from a user that can access this socket."
         ),
     }
 }
 
 fn format_playit_group_join_message(socket_path: &str) -> String {
     format!(
-        "The playit service is running, but this shell cannot access its IPC socket:\n  {socket_path}\n\nThe socket is restricted to the `playit` group.\n\nAdd the current user to that group:\n  sudo usermod -aG playit $USER\n\nThen refresh group membership in this shell:\n  newgrp playit\n\nAfter that, run:\n  playit"
+        "The playit service is running, but this shell cannot access its IPC socket:\n  {socket_path}\n\nThe socket is restricted to the `playit` group. Add your user to that group:\n  sudo usermod -aG playit $USER\n\nThen refresh group membership for this shell:\n  newgrp playit\n\nAfter that, run:\n  playit"
     )
 }
 
 fn format_playit_group_refresh_message(socket_path: &str) -> String {
     format!(
-        "The playit service is running, but this shell cannot access its IPC socket:\n  {socket_path}\n\nThis user is already configured for the `playit` group, but the current shell has not picked up that group yet.\n\nRefresh group membership in this shell:\n  newgrp playit\n\nThen run:\n  playit"
+        "The playit service is running, but this shell cannot access its IPC socket:\n  {socket_path}\n\nYour user is already in the `playit` group, but this shell has not picked up that membership yet.\n\nRefresh group membership for this shell:\n  newgrp playit\n\nThen run:\n  playit"
     )
 }
 
@@ -380,13 +385,14 @@ mod tests {
     #[test]
     fn linux_start_prompt_warns_non_root_about_password() {
         let prompt = service_start_prompt(false);
-        assert!(prompt.contains("This will ask you for your password."));
+        assert!(prompt.contains("Command: sudo systemctl start playit"));
+        assert!(prompt.contains("You may be asked for your password."));
     }
 
     #[test]
     fn linux_socket_access_message_detector_matches_linux_message() {
         assert!(is_linux_socket_access_message(
-            "The playit service is running, but its IPC socket at /var/run/playitd.sock does not exist."
+            "The playit service is running, but its IPC socket does not exist yet:\n  /var/run/playitd.sock"
         ));
     }
 
@@ -413,7 +419,7 @@ mod tests {
     #[test]
     fn playit_group_refresh_message_only_includes_newgrp() {
         let message = format_playit_group_refresh_message("/var/run/playitd.sock");
-        assert!(message.contains("already configured for the `playit` group"));
+        assert!(message.contains("already in the `playit` group"));
         assert!(message.contains("newgrp playit"));
         assert!(!message.contains("sudo usermod -aG playit"));
     }
@@ -433,10 +439,11 @@ mod tests {
 
         assert!(
             message.contains(
-                "The playit service is running, but the current user cannot access its IPC socket:\n  /var/run/playitd.sock"
+                "The playit service is running, but this user cannot access its IPC socket:\n  /var/run/playitd.sock"
             )
         );
         assert!(message.contains("Current user uid=1000, gid=1000"));
         assert!(message.contains("Socket owner uid=0, gid=980, mode=660"));
+        assert!(message.contains("Check the socket permissions"));
     }
 }

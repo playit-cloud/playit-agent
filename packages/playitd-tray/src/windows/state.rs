@@ -47,11 +47,11 @@ impl AppState {
         service_running: bool,
         startup_shortcut_present: bool,
     ) -> Result<Self, String> {
-        let open_status = MenuItem::new("Open Status", true, None);
-        let start_service = MenuItem::new("Start Service", true, None);
-        let stop_service = MenuItem::new("Stop Service", true, None);
-        let reset_agent = MenuItem::new("Reset Agent", true, None);
-        let add_tray_icon_to_startup = MenuItem::new("Add Tray Icon To Startup", true, None);
+        let open_status = MenuItem::new("Open Status Window", true, None);
+        let start_service = MenuItem::new("Start Background Service", true, None);
+        let stop_service = MenuItem::new("Stop Background Service", true, None);
+        let reset_agent = MenuItem::new("Reset Agent Setup", true, None);
+        let add_tray_icon_to_startup = MenuItem::new("Show Tray Icon at Startup", true, None);
         let tray_icon_action = MenuItem::new("Close Tray Icon", true, None);
 
         let menu = Menu::new();
