@@ -628,7 +628,7 @@ fn invalid_request_type_error(request_type: &str) -> ServiceError {
 
 fn over_limit_guidance() -> String {
     format!(
-        "Visit {ACCOUNT_AGENTS_URL} to delete unused agents\nVisit {ACCOUNT_UPGRADE_URL} to increase your agent limit"
+        "Delete unused agents: {ACCOUNT_AGENTS_URL}\nIncrease your agent limit: {ACCOUNT_UPGRADE_URL}"
     )
 }
 
@@ -636,13 +636,14 @@ fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
     match lifecycle {
         AgentLifecycle::WaitingForSecret => protocol_error(
             ServiceErrorCode::ProvisioningUnavailable,
-            "playitd is not ready for secret provisioning".to_string(),
+            "The playit service is not ready to save a secret yet. Try setup again in a few seconds."
+                .to_string(),
             true,
         ),
         AgentLifecycle::HasInvalidSecret(error) => protocol_error(
             ServiceErrorCode::ProvisioningUnavailable,
             format!(
-                "playitd is not waiting for a new secret because its current secret is invalid: {}",
+                "The playit service is not waiting for a new secret because its current secret is invalid: {}",
                 error.message
             ),
             false,
@@ -658,24 +659,24 @@ fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
         ),
         AgentLifecycle::Starting => protocol_error(
             ServiceErrorCode::ProvisioningUnavailable,
-            "playitd is starting and not waiting for secret provisioning".to_string(),
+            "The playit service is still starting. Try setup again in a few seconds.".to_string(),
             true,
         ),
         AgentLifecycle::Running(_) => protocol_error(
             ServiceErrorCode::ProvisioningUnavailable,
-            "playitd already has a configured secret and is not waiting for provisioning"
+            "The playit service already has a configured secret. Run `playit reset` before provisioning a new one."
                 .to_string(),
             false,
         ),
         AgentLifecycle::Stopping => protocol_error(
             ServiceErrorCode::ProvisioningUnavailable,
-            "playitd is stopping and cannot accept secret provisioning".to_string(),
+            "The playit service is stopping and cannot accept setup right now.".to_string(),
             true,
         ),
         AgentLifecycle::Error(error) => protocol_error(
             ServiceErrorCode::ProvisioningUnavailable,
             format!(
-                "playitd reported an error and is not waiting for secret provisioning: {}",
+                "The playit service reported an error and cannot accept setup right now: {}",
                 error.message
             ),
             true,

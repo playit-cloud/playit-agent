@@ -91,7 +91,7 @@ pub async fn run_auto_command(
             let should_reset = console
                 .yn_question(
                     format!(
-                        "playitd has an invalid secret configuration: {}.\nReset the secret and run setup again?",
+                        "The playit service has an invalid secret: {}.\nReset it now and run setup again?",
                         error.message
                     ),
                     Some(false),
@@ -100,7 +100,7 @@ pub async fn run_auto_command(
 
             if !should_reset {
                 return Err(CliError::ServiceError(
-                    "playitd has an invalid secret configuration. Run `playit reset` or rerun `playit` and confirm the reset prompt to reclaim this agent."
+                    "The playit service has an invalid secret. Run `playit reset`, then run `playit` again to set up this agent."
                         .to_string(),
                 ));
             }
@@ -118,17 +118,18 @@ pub async fn run_auto_command(
         }
         AgentLifecycle::Starting => {
             return Err(CliError::ServiceError(
-                "Timed out waiting for playitd to finish starting".to_string(),
+                "Timed out while waiting for the playit service to finish starting. Try `playit status` to check its current state."
+                    .to_string(),
             ));
         }
         AgentLifecycle::Stopping => {
             return Err(CliError::ServiceError(
-                "playitd is stopping and cannot be auto-attached right now".to_string(),
+                "The playit service is stopping. Try again in a few seconds.".to_string(),
             ));
         }
         AgentLifecycle::Error(error) => {
             return Err(CliError::ServiceError(format!(
-                "playitd reported an error and cannot continue auto mode: {}",
+                "The playit service reported an error and cannot continue: {}",
                 error.message
             )));
         }
@@ -200,13 +201,13 @@ async fn wait_for_service_waiting_for_secret(target: &CliTarget) -> Result<(), C
             }
             AgentLifecycle::Stopping => {
                 return Err(CliError::ServiceError(
-                    "playitd is stopping and did not become ready for setup after reset"
+                    "The playit service is stopping and did not become ready for setup after the reset."
                         .to_string(),
                 ));
             }
             AgentLifecycle::Error(error) => {
                 return Err(CliError::ServiceError(format!(
-                    "playitd reported an error after reset: {}",
+                    "The playit service reported an error after the reset: {}",
                     error.message
                 )));
             }
@@ -214,7 +215,8 @@ async fn wait_for_service_waiting_for_secret(target: &CliTarget) -> Result<(), C
     }
 
     Err(CliError::ServiceError(
-        "Timed out waiting for playitd to become ready for setup after reset".to_string(),
+        "Timed out while waiting for the playit service to become ready for setup after the reset."
+            .to_string(),
     ))
 }
 
@@ -340,17 +342,17 @@ pub async fn run_start_command(
 ) -> Result<(), CliError> {
     if let CliTarget::ExplicitSocket(path) = target {
         return Err(CliError::ServiceError(format!(
-            "The start command only manages the installed playitd service and cannot be used with --socket-path ({path})."
+            "`playit start` only manages the installed background service. Remove `--socket-path {path}` or start that daemon manually."
         )));
     }
 
     match ensure_installed_service_running_for_cli(Some(console)).await? {
         InstalledServiceStartState::AlreadyRunning => {
-            println!("playitd service is already running")
+            println!("The playit service is already running.")
         }
-        InstalledServiceStartState::Started => println!("playitd service started"),
+        InstalledServiceStartState::Started => println!("The playit service started."),
     }
-    println!("Run \"playit attach\" to see the playit program.");
+    println!("Run \"playit attach\" to view logs and tunnel status.");
     Ok(())
 }
 
@@ -363,7 +365,7 @@ pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
                 Ok(mut client) => match client.stop().await {
                     Ok(response) if response.accepted => {
                         direct_stop_fallback = false;
-                        println!("playitd service stop requested");
+                        println!("Asked the playit service to stop.");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                     Ok(response) => {
@@ -377,14 +379,14 @@ pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
                     Err(error) => {
                         tracing::warn!("Failed to send stop via IPC: {error}");
                         eprintln!(
-                            "Could not reach playitd over IPC, attempting to stop the installed service directly."
+                            "Could not reach the playit service over IPC. Trying the system service manager instead."
                         );
                     }
                 },
                 Err(error) => {
                     tracing::warn!("Failed to connect to installed service over IPC: {error}");
                     eprintln!(
-                        "Could not reach playitd over IPC, attempting to stop the installed service directly."
+                        "Could not reach the playit service over IPC. Trying the system service manager instead."
                     );
                 }
             }
@@ -392,7 +394,7 @@ pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
             if direct_stop_fallback {
                 #[cfg(target_os = "linux")]
                 if !linux::installed_service_is_active()? {
-                    println!("playitd service is already stopped");
+                    println!("The playit service is already stopped.");
                     return Ok(());
                 }
 
@@ -403,9 +405,9 @@ pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
 
             tokio::time::sleep(Duration::from_millis(500)).await;
             if !IpcClient::is_running(get_default_socket_path()).await {
-                println!("playitd service stopped");
+                println!("The playit service stopped.");
             } else {
-                println!("playitd service may still be running");
+                println!("The playit service may still be running. Run `playit status` to check.");
             }
 
             Ok(())
@@ -428,7 +430,9 @@ pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
             if !IpcClient::is_running(path.as_str()).await {
                 println!("playitd daemon stopped");
             } else {
-                println!("playitd daemon may still be running");
+                println!(
+                    "The playit daemon may still be running. Check the daemon process for socket {path}."
+                );
             }
 
             Ok(())
@@ -439,9 +443,9 @@ pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
 pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
     if !IpcClient::is_running(target.socket_path()).await {
         match target {
-            CliTarget::InstalledService => println!("playitd service is not running"),
+            CliTarget::InstalledService => println!("The playit service is not running."),
             CliTarget::ExplicitSocket(path) => {
-                println!("playitd daemon is not reachable at socket {path}")
+                println!("The playit daemon is not reachable at socket {path}.")
             }
         }
         return Ok(());
@@ -452,7 +456,7 @@ pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
     match client.status().await {
         Ok(status) => {
             match target {
-                CliTarget::InstalledService => println!("playitd service status:"),
+                CliTarget::InstalledService => println!("playit service status:"),
                 CliTarget::ExplicitSocket(path) => {
                     println!("playitd daemon status for socket {path}:")
                 }
@@ -506,7 +510,7 @@ pub async fn ensure_service_waiting_for_secret(
     match lifecycle {
         AgentLifecycle::WaitingForSecret => Ok(()),
         AgentLifecycle::HasInvalidSecret(error) => Err(CliError::ServiceError(format!(
-            "playitd is not waiting for setup because it has an invalid secret configuration: {}. Reset the daemon secret first.",
+            "Setup cannot continue because the playit service has an invalid secret: {}. Run `playit reset`, then run `playit setup` again.",
             error.message
         ))),
         AgentLifecycle::DisabledOverLimit(_) => Err(CliError::ServiceError(format!(
@@ -515,17 +519,17 @@ pub async fn ensure_service_waiting_for_secret(
             agent_over_limit_guidance()
         ))),
         AgentLifecycle::Starting => Err(CliError::ServiceError(
-            "playitd is starting and is not waiting for setup".to_string(),
+            "The playit service is still starting. Try setup again in a few seconds.".to_string(),
         )),
         AgentLifecycle::Running(_) => Err(CliError::ServiceError(
-            "playitd already has a configured secret and is not waiting for setup. Run `playit reset` before claiming a new agent."
+            "The playit service already has a configured secret. Run `playit reset` before claiming a new agent."
                 .to_string(),
         )),
         AgentLifecycle::Stopping => Err(CliError::ServiceError(
-            "playitd is stopping and is not waiting for setup".to_string(),
+            "The playit service is stopping. Try setup again after it stops.".to_string(),
         )),
         AgentLifecycle::Error(error) => Err(CliError::ServiceError(format!(
-            "playitd reported an error and is not waiting for setup: {}",
+            "The playit service reported an error and is not ready for setup: {}",
             error.message
         ))),
     }
@@ -650,7 +654,8 @@ async fn ensure_installed_service_running_for_cli(
 
 fn ipc_connection_error() -> CliError {
     CliError::IpcError(
-        "Failed to connect to playitd over IPC. Start playitd and try again.".to_string(),
+        "Could not connect to the playit service. Start it with `playit start`, then try again."
+            .to_string(),
     )
 }
 
@@ -677,10 +682,10 @@ pub(crate) fn auto_attach_error(
                 CliError::IpcError(error.to_string())
             }
             Some(error) => CliError::IpcError(format!(
-                "Failed to connect to playitd over IPC. playit-cli auto mode also tried starting playitd first, but that start attempt failed: {error}"
+                "Could not connect to the playit service. playit also tried to start it first, but startup failed: {error}"
             )),
             None => CliError::IpcError(
-                "Failed to connect to playitd over IPC. playit-cli auto mode prepared the service first, but it is still not reachable."
+                "Could not connect to the playit service. playit tried to start it first, but it is still not reachable."
                     .to_string(),
             ),
         },
@@ -691,10 +696,12 @@ pub(crate) fn auto_attach_error(
 fn attach_lost_message(target: &CliTarget, error: &str) -> String {
     match target {
         CliTarget::InstalledService => {
-            format!("Connection to playitd lost: {error}. Run \"playit attach\" to reconnect.")
+            format!(
+                "Connection to the playit service was lost: {error}. Run \"playit attach\" to reconnect."
+            )
         }
         CliTarget::ExplicitSocket(path) => format!(
-            "Connection to playitd lost: {error}. Reattach with \"playit attach --socket-path {}\" once the daemon is reachable again.",
+            "Connection to the playit daemon was lost: {error}. Reattach with \"playit attach --socket-path {}\" once the daemon is reachable again.",
             path
         ),
     }
@@ -720,7 +727,7 @@ fn format_service_phase(phase: &ServicePhase) -> &'static str {
 
 fn agent_over_limit_guidance() -> String {
     format!(
-        "Visit {ACCOUNT_AGENTS_URL} to delete unused agents\nVisit {ACCOUNT_UPGRADE_URL} to increase your agent limit"
+        "Delete unused agents: {ACCOUNT_AGENTS_URL}\nIncrease your agent limit: {ACCOUNT_UPGRADE_URL}"
     )
 }
 
