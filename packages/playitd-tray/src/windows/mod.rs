@@ -11,10 +11,12 @@ pub(crate) fn init_debug_console_from_args() {
     util::init_debug_console_from_args();
 }
 
+#[derive(Debug)]
 enum StartupShortcutMode {
     RunTray,
     EnsureShortcut,
     RemoveShortcut,
+    WriteInstalledUserSid,
 }
 
 pub(crate) struct RunError {
@@ -55,6 +57,9 @@ pub(crate) fn run_from_args() -> Result<(), RunError> {
         StartupShortcutMode::RemoveShortcut => {
             backend_actions::remove_startup_shortcut().map_err(RunError::silent)
         }
+        StartupShortcutMode::WriteInstalledUserSid => {
+            backend_actions::write_installed_user_sid().map_err(RunError::silent)
+        }
     }
 }
 
@@ -72,22 +77,31 @@ fn startup_shortcut_mode() -> Result<StartupShortcutMode, String> {
 
         match arg.as_os_str() {
             value if value == OsStr::new("--ensure-startup-shortcut") => {
-                if matches!(mode, StartupShortcutMode::RemoveShortcut) {
+                if !matches!(mode, StartupShortcutMode::RunTray) {
                     return Err(
-                        "Cannot combine --ensure-startup-shortcut with --remove-startup-shortcut"
+                        "Cannot combine --ensure-startup-shortcut with another helper mode"
                             .to_string(),
                     );
                 }
                 mode = StartupShortcutMode::EnsureShortcut;
             }
             value if value == OsStr::new("--remove-startup-shortcut") => {
-                if matches!(mode, StartupShortcutMode::EnsureShortcut) {
+                if !matches!(mode, StartupShortcutMode::RunTray) {
                     return Err(
-                        "Cannot combine --remove-startup-shortcut with --ensure-startup-shortcut"
+                        "Cannot combine --remove-startup-shortcut with another helper mode"
                             .to_string(),
                     );
                 }
                 mode = StartupShortcutMode::RemoveShortcut;
+            }
+            value if value == OsStr::new("--write-installed-user-sid") => {
+                if !matches!(mode, StartupShortcutMode::RunTray) {
+                    return Err(
+                        "Cannot combine --write-installed-user-sid with another helper mode"
+                            .to_string(),
+                    );
+                }
+                mode = StartupShortcutMode::WriteInstalledUserSid;
             }
             _ => {
                 return Err(format!(
@@ -99,4 +113,53 @@ fn startup_shortcut_mode() -> Result<StartupShortcutMode, String> {
     }
 
     Ok(mode)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StartupShortcutMode;
+
+    fn parse_mode(args: &[&str]) -> Result<StartupShortcutMode, String> {
+        let mut mode = StartupShortcutMode::RunTray;
+
+        for arg in args {
+            match *arg {
+                "--debug-console" => {}
+                "--ensure-startup-shortcut" => {
+                    if !matches!(mode, StartupShortcutMode::RunTray) {
+                        return Err("duplicate helper mode".to_string());
+                    }
+                    mode = StartupShortcutMode::EnsureShortcut;
+                }
+                "--remove-startup-shortcut" => {
+                    if !matches!(mode, StartupShortcutMode::RunTray) {
+                        return Err("duplicate helper mode".to_string());
+                    }
+                    mode = StartupShortcutMode::RemoveShortcut;
+                }
+                "--write-installed-user-sid" => {
+                    if !matches!(mode, StartupShortcutMode::RunTray) {
+                        return Err("duplicate helper mode".to_string());
+                    }
+                    mode = StartupShortcutMode::WriteInstalledUserSid;
+                }
+                _ => return Err("unsupported argument".to_string()),
+            }
+        }
+
+        Ok(mode)
+    }
+
+    #[test]
+    fn parses_write_installed_user_sid_mode() {
+        let mode = parse_mode(&["--write-installed-user-sid"]).unwrap();
+        assert!(matches!(mode, StartupShortcutMode::WriteInstalledUserSid));
+    }
+
+    #[test]
+    fn write_installed_user_sid_cannot_be_combined_with_other_helper_modes() {
+        let error = parse_mode(&["--write-installed-user-sid", "--ensure-startup-shortcut"])
+            .expect_err("combined helper modes should fail");
+        assert_eq!(error, "duplicate helper mode");
+    }
 }

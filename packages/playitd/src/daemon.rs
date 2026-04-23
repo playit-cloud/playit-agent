@@ -949,6 +949,93 @@ async fn persist_secret_file(path: &Path, secret: &str) -> Result<(), String> {
         secret
     };
 
+    secure_write_secret_file(path, content.as_bytes()).await
+}
+
+#[cfg(unix)]
+async fn secure_write_secret_file(path: &Path, content: &[u8]) -> Result<(), String> {
+    let path = path.to_path_buf();
+    let content = content.to_vec();
+
+    tokio::task::spawn_blocking(move || secure_write_secret_file_blocking(&path, &content))
+        .await
+        .map_err(|error| format!("Failed to join secret file writer task: {error}"))?
+}
+
+#[cfg(unix)]
+fn secure_write_secret_file_blocking(path: &Path, content: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("playit.toml");
+    let tmp_path = parent.join(format!(
+        ".{file_name}.tmp-{}-{}",
+        std::process::id(),
+        now_milli()
+    ));
+
+    let result = (|| {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp_path)
+            .map_err(|error| {
+                format!(
+                    "Failed to create temporary secret file {}: {error}",
+                    tmp_path.display()
+                )
+            })?;
+
+        file.write_all(content).map_err(|error| {
+            format!(
+                "Failed to write temporary secret file {}: {error}",
+                tmp_path.display()
+            )
+        })?;
+        file.sync_all().map_err(|error| {
+            format!(
+                "Failed to sync temporary secret file {}: {error}",
+                tmp_path.display()
+            )
+        })?;
+        drop(file);
+
+        std::fs::rename(&tmp_path, path).map_err(|error| {
+            format!(
+                "Failed to replace secret file {} with {}: {error}",
+                path.display(),
+                tmp_path.display()
+            )
+        })?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
+            |error| {
+                format!(
+                    "Failed to set secret file permissions on {}: {error}",
+                    path.display()
+                )
+            },
+        )?;
+
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+
+    result
+}
+
+#[cfg(not(unix))]
+async fn secure_write_secret_file(path: &Path, content: &[u8]) -> Result<(), String> {
     tokio::fs::write(path, content)
         .await
         .map_err(|error| format!("Failed to write secret file {}: {error}", path.display()))

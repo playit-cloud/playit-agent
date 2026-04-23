@@ -2006,7 +2006,9 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "widestring",
  "windows-service",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

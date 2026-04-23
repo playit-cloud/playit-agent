@@ -104,11 +104,17 @@ set -e
 
 mkdir -p /usr/local/bin
 ln -sfn ${INSTALL_FOLDER}/playit /usr/local/bin/playit
-mkdir -p /var/log/playit # make logs folder
-chmod 0766 -R /var/log/playit
-mkdir -p /etc/playit
-chmod 0777 /etc/playit
 getent group playit >/dev/null || groupadd --system playit
+install -d -o root -g playit -m 0750 /etc/playit
+install -d -o root -g playit -m 0750 /var/log/playit
+chown root:playit /etc/playit
+chmod 0750 /etc/playit
+if [[ -f /etc/playit/playit.toml ]]; then
+  chown root:root /etc/playit/playit.toml
+  chmod 0600 /etc/playit/playit.toml
+fi
+chown root:playit /var/log/playit
+chmod 0750 /var/log/playit
 
 if ! command -v systemctl >/dev/null 2>&1; then
   echo "systemctl is required to install playit" >&2

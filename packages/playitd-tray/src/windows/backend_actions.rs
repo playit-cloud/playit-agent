@@ -442,6 +442,16 @@ pub(super) fn startup_shortcut_exists() -> Result<bool, String> {
     Ok(startup_shortcut_path()?.exists())
 }
 
+pub(super) fn write_installed_user_sid() -> Result<(), String> {
+    let path = playitd::windows::write_current_user_sid()
+        .map_err(|error| format!("Failed to write installed user SID: {error}"))?;
+    debug_log(&format!(
+        "write_installed_user_sid: wrote {}",
+        path.display()
+    ));
+    Ok(())
+}
+
 pub(super) fn query_service_running_sync() -> bool {
     unsafe {
         let manager = OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT);

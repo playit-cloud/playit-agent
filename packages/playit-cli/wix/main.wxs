@@ -275,6 +275,12 @@
             Impersonate="yes"
             Return="ignore" />
         <CustomAction
+            Id="WriteInstalledUserSid"
+            FileKey="exe2"
+            ExeCommand="--write-installed-user-sid"
+            Impersonate="yes"
+            Return="ignore" />
+        <CustomAction
             Id="RemoveTrayStartupShortcut"
             FileKey="exe2"
             ExeCommand="--remove-startup-shortcut"
@@ -283,8 +289,9 @@
 
         <InstallExecuteSequence>
             <Custom Action="RemoveTrayStartupShortcut" Before="RemoveFiles">REMOVE="ALL"</Custom>
-            <Custom Action="EnsureTrayStartupShortcut" After="InstallFinalize">NOT REMOVE="ALL"</Custom>
-            <Custom Action="LaunchTrayApplication" After="InstallFinalize">NOT Installed AND UILevel &gt;= 5</Custom>
+            <Custom Action="WriteInstalledUserSid" After="InstallFinalize">NOT REMOVE="ALL"</Custom>
+            <Custom Action="EnsureTrayStartupShortcut" After="WriteInstalledUserSid">NOT REMOVE="ALL"</Custom>
+            <Custom Action="LaunchTrayApplication" After="EnsureTrayStartupShortcut">NOT Installed AND UILevel &gt;= 5</Custom>
         </InstallExecuteSequence>
 
         <!--

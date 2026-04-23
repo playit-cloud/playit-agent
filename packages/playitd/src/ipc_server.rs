@@ -6,10 +6,7 @@ use interprocess::local_socket::{
     tokio::{Listener, Stream, prelude::*},
 };
 #[cfg(target_os = "windows")]
-use interprocess::os::windows::{
-    local_socket::ListenerOptionsExt,
-    security_descriptor::{AsSecurityDescriptorMutExt, SecurityDescriptor},
-};
+use interprocess::os::windows::local_socket::ListenerOptionsExt;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
 use playit_ipc::ipc::{
@@ -187,7 +184,8 @@ impl IpcServer {
                 })?;
             let listener = ListenerOptions::new().name(name);
             #[cfg(target_os = "windows")]
-            let listener = listener.security_descriptor(world_access_security_descriptor()?);
+            let listener = listener
+                .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
             listener.create_tokio().map_err(IpcError::BindFailed)
         } else {
             let name = self
@@ -199,7 +197,8 @@ impl IpcServer {
                 })?;
             let listener = ListenerOptions::new().name(name);
             #[cfg(target_os = "windows")]
-            let listener = listener.security_descriptor(world_access_security_descriptor()?);
+            let listener = listener
+                .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
             listener.create_tokio().map_err(IpcError::BindFailed)
         }
     }
@@ -587,18 +586,6 @@ impl IpcServer {
         *self.guest_login_cache.write().await = Some((link.clone(), now_milli()));
         Ok(link)
     }
-}
-
-#[cfg(target_os = "windows")]
-fn world_access_security_descriptor() -> Result<SecurityDescriptor, IpcError> {
-    let mut descriptor = SecurityDescriptor::new().map_err(IpcError::BindFailed)?;
-    unsafe {
-        // Allow non-elevated user sessions to connect to the service-owned named pipe.
-        descriptor
-            .set_dacl(std::ptr::null_mut(), false)
-            .map_err(IpcError::BindFailed)?;
-    }
-    Ok(descriptor)
 }
 
 async fn try_connect(socket_path: &str) -> Result<Stream, IpcError> {

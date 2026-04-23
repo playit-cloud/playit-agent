@@ -4,6 +4,8 @@ mod ipc_server;
 pub(crate) mod linux;
 pub mod logging;
 pub mod manager;
+#[cfg(target_os = "windows")]
+pub mod windows;
 
 pub use daemon::{
     DEFAULT_VARIANT_ID, DaemonOptions, VersionDetails, VersionOverrideFile, default_secret_path,
