@@ -144,10 +144,10 @@ impl TuiApp {
         match lifecycle {
             AgentLifecycle::Running(state) => self.set_agent_data(state.into()),
             AgentLifecycle::WaitingForSecret => {
-                self.set_message("playitd is waiting for a secret to be provisioned");
+                self.set_message("The playit service is waiting for setup to finish.");
             }
             AgentLifecycle::HasInvalidSecret(error) => self.set_message(format!(
-                "playitd has an invalid secret configuration: {}",
+                "The playit service has an invalid secret: {}",
                 error.message
             )),
             AgentLifecycle::DisabledOverLimit(_) => self.set_message(format!(
@@ -156,13 +156,16 @@ impl TuiApp {
                 agent_over_limit_guidance()
             )),
             AgentLifecycle::Starting => {
-                self.set_message("playitd is starting the agent");
+                self.set_message("The playit service is starting...");
             }
             AgentLifecycle::Stopping => {
-                self.set_message("playitd is stopping");
+                self.set_message("The playit service is stopping...");
             }
             AgentLifecycle::Error(error) => {
-                self.set_message(format!("playitd reported an error: {}", error.message));
+                self.set_message(format!(
+                    "The playit service reported an error: {}",
+                    error.message
+                ));
             }
         }
     }
@@ -307,9 +310,9 @@ impl TuiApp {
 
         if agent_data.tunnels.is_empty() && agent_data.pending_tunnels.is_empty() {
             let msg = if agent_data.agent_id.is_empty() {
-                "No tunnels configured. Setting up..."
+                "Loading tunnels..."
             } else {
-                "No tunnels configured. Add tunnels at playit.gg"
+                "No tunnels configured. Add one at playit.gg"
             };
             let paragraph = Paragraph::new(msg)
                 .style(Style::default().fg(Color::Yellow))
@@ -488,7 +491,7 @@ fn status_message(status: &ServiceStatus) -> Option<String> {
 
     if let Some(error) = &status.last_error {
         return Some(format!(
-            "playitd status: {} ({})",
+            "playit service status: {} ({})",
             service_phase_label(status),
             error.message
         ));
@@ -497,7 +500,10 @@ fn status_message(status: &ServiceStatus) -> Option<String> {
     if matches!(status.phase, playit_ipc::model::ServicePhase::Running) {
         None
     } else {
-        Some(format!("playitd status: {}", service_phase_label(status)))
+        Some(format!(
+            "playit service status: {}",
+            service_phase_label(status)
+        ))
     }
 }
 
@@ -515,7 +521,7 @@ fn service_phase_label(status: &ServiceStatus) -> &'static str {
 
 fn agent_over_limit_guidance() -> String {
     format!(
-        "Visit {ACCOUNT_AGENTS_URL} to delete unused agents\nVisit {ACCOUNT_UPGRADE_URL} to increase your agent limit"
+        "Delete unused agents: {ACCOUNT_AGENTS_URL}\nIncrease your agent limit: {ACCOUNT_UPGRADE_URL}"
     )
 }
 
@@ -629,7 +635,7 @@ mod tests {
         assert_eq!(
             app.mode,
             TuiMode::Message {
-                message: "playitd is starting the agent".to_string()
+                message: "The playit service is starting...".to_string()
             }
         );
 
@@ -664,7 +670,7 @@ mod tests {
         assert_eq!(
             app.mode,
             TuiMode::Message {
-                message: "playitd status: starting".to_string()
+                message: "playit service status: starting".to_string()
             }
         );
 
@@ -679,7 +685,7 @@ mod tests {
         assert_eq!(
             app.mode,
             TuiMode::Message {
-                message: "playitd status: error (boom)".to_string()
+                message: "playit service status: error (boom)".to_string()
             }
         );
     }
