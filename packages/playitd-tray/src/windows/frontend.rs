@@ -18,7 +18,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use super::backend::{PROCESS_BACKEND_RESPONSES_MESSAGE, TrayBackend};
 use super::backend_actions::{
-    ensure_startup_shortcut, launch_playit, launch_status_window, query_service_running_sync,
+    ensure_startup_shortcut, launch_status_window, query_service_running_sync,
     remove_startup_shortcut, response_error_title, startup_shortcut_exists,
 };
 use super::protocol::{BackendRequest, BackendResponse};
@@ -292,38 +292,14 @@ fn process_ui_events(hwnd: HWND) {
                 button_state: MouseButtonState::Up,
             } => {
                 debug_log("tray: left click");
-                if let Err(error) = launch_playit() {
-                    show_error("Failed to open playit", &error);
-                }
+                show_tray_menu(hwnd);
             }
             UiEvent::TrayClick {
                 button: MouseButton::Right,
                 button_state: MouseButtonState::Up,
             } => {
                 debug_log("tray: right click");
-
-                if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
-                    state.menu_visible = true;
-                }
-
-                if let Some(tray) =
-                    unsafe { get_state(hwnd).as_ref() }.and_then(|state| state.tray.as_ref())
-                {
-                    tray.show_menu();
-                }
-
-                if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
-                    state.menu_visible = false;
-                }
-
-                if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
-                    if let Ok(mut queue) = state.ui_event_queue.lock() {
-                        queue.push_back(UiEvent::RefreshAfterMenu);
-                    }
-                }
-                unsafe {
-                    let _ = PostMessageW(hwnd, PROCESS_UI_EVENTS_MESSAGE, 0, 0);
-                }
+                show_tray_menu(hwnd);
             }
             UiEvent::MenuActivated(menu_event) => {
                 if let Err(error) = handle_menu_event(hwnd, menu_event) {
@@ -590,6 +566,31 @@ fn load_tray_icon() -> Result<Icon, String> {
 
     Icon::from_rgba(image.into_raw(), width, height)
         .map_err(|error| format!("Failed to construct tray icon image: {error}"))
+}
+
+fn show_tray_menu(hwnd: HWND) {
+    if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
+        state.menu_visible = true;
+    }
+
+    if let Some(tray) = unsafe { get_state(hwnd).as_ref() }.and_then(|state| state.tray.as_ref())
+    {
+        tray.show_menu();
+    }
+
+    if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
+        state.menu_visible = false;
+    }
+
+    if let Some(state) = unsafe { get_state(hwnd).as_mut() }
+        && let Ok(mut queue) = state.ui_event_queue.lock()
+    {
+        queue.push_back(UiEvent::RefreshAfterMenu);
+    }
+
+    unsafe {
+        let _ = PostMessageW(hwnd, PROCESS_UI_EVENTS_MESSAGE, 0, 0);
+    }
 }
 
 fn tray_tooltip(service_running: bool) -> &'static str {
