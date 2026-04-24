@@ -9,6 +9,7 @@ use interprocess::local_socket::{
 use interprocess::os::windows::local_socket::ListenerOptionsExt;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
+use playit_ipc::endpoint::IpcEndpoint;
 use playit_ipc::ipc::{
     EventEnvelope, HelloEnvelope, IPC_VERSION, IncomingRequestEnvelope, IpcError, ResponseEnvelope,
     ServerEnvelope, ServiceRequest, ServiceRequestOrUnknown, ServiceResponse,
@@ -98,19 +99,23 @@ impl IpcServer {
         secret_reset_error: ServiceError,
     ) -> Result<Self, IpcError> {
         let socket_path = socket_path.unwrap_or_else(|| get_default_socket_path().to_string());
+        let endpoint = IpcEndpoint::parse(socket_path.clone());
 
-        if try_connect(&socket_path).await.is_ok() {
+        if try_connect(&endpoint).await.is_ok() {
             return Err(IpcError::AlreadyRunning);
         }
 
-        if !socket_path.starts_with('@') && !socket_path.starts_with(r"\\.\pipe\") {
-            if let Some(parent) = Path::new(&socket_path)
-                .parent()
+        if !endpoint.is_windows_named_pipe() {
+            if let Some(parent) = endpoint
+                .filesystem_path()
+                .and_then(Path::parent)
                 .filter(|parent| !parent.as_os_str().is_empty())
             {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let _ = std::fs::remove_file(&socket_path);
+            if let Some(path) = endpoint.filesystem_path() {
+                let _ = std::fs::remove_file(path);
+            }
         }
 
         Ok(Self {
@@ -176,30 +181,34 @@ impl IpcServer {
     }
 
     fn create_listener(&self) -> Result<Listener, IpcError> {
-        if self.socket_path.starts_with('@') {
-            let name = self.socket_path[1..]
-                .to_ns_name::<GenericNamespaced>()
-                .map_err(|e| {
+        let endpoint = IpcEndpoint::parse(self.socket_path.clone());
+        match endpoint {
+            IpcEndpoint::Namespaced(name) => {
+                let name = name
+                    .clone()
+                    .to_ns_name::<GenericNamespaced>()
+                    .map_err(|e| {
+                        IpcError::BindFailed(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            e,
+                        ))
+                    })?;
+                let listener = ListenerOptions::new().name(name);
+                #[cfg(target_os = "windows")]
+                let listener = listener
+                    .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
+                listener.create_tokio().map_err(IpcError::BindFailed)
+            }
+            IpcEndpoint::Filesystem(path) => {
+                let name = path.clone().to_fs_name::<GenericFilePath>().map_err(|e| {
                     IpcError::BindFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
                 })?;
-            let listener = ListenerOptions::new().name(name);
-            #[cfg(target_os = "windows")]
-            let listener = listener
-                .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
-            listener.create_tokio().map_err(IpcError::BindFailed)
-        } else {
-            let name = self
-                .socket_path
-                .clone()
-                .to_fs_name::<GenericFilePath>()
-                .map_err(|e| {
-                    IpcError::BindFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
-                })?;
-            let listener = ListenerOptions::new().name(name);
-            #[cfg(target_os = "windows")]
-            let listener = listener
-                .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
-            listener.create_tokio().map_err(IpcError::BindFailed)
+                let listener = ListenerOptions::new().name(name);
+                #[cfg(target_os = "windows")]
+                let listener = listener
+                    .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
+                listener.create_tokio().map_err(IpcError::BindFailed)
+            }
         }
     }
 
@@ -588,23 +597,30 @@ impl IpcServer {
     }
 }
 
-async fn try_connect(socket_path: &str) -> Result<Stream, IpcError> {
-    if socket_path.starts_with('@') {
-        let name = socket_path[1..]
-            .to_ns_name::<GenericNamespaced>()
-            .map_err(|e| {
+async fn try_connect(endpoint: &IpcEndpoint) -> Result<Stream, IpcError> {
+    match endpoint {
+        IpcEndpoint::Namespaced(name) => {
+            let name = name
+                .clone()
+                .to_ns_name::<GenericNamespaced>()
+                .map_err(|e| {
+                    IpcError::ConnectionFailed(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        e,
+                    ))
+                })?;
+            Stream::connect(name)
+                .await
+                .map_err(IpcError::ConnectionFailed)
+        }
+        IpcEndpoint::Filesystem(path) => {
+            let name = path.clone().to_fs_name::<GenericFilePath>().map_err(|e| {
                 IpcError::ConnectionFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
             })?;
-        Stream::connect(name)
-            .await
-            .map_err(IpcError::ConnectionFailed)
-    } else {
-        let name = socket_path.to_fs_name::<GenericFilePath>().map_err(|e| {
-            IpcError::ConnectionFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
-        })?;
-        Stream::connect(name)
-            .await
-            .map_err(IpcError::ConnectionFailed)
+            Stream::connect(name)
+                .await
+                .map_err(IpcError::ConnectionFailed)
+        }
     }
 }
 
@@ -691,6 +707,7 @@ mod tests {
 
     use super::{IpcServer, protocol_error, secret_provisioning_state_error, try_connect};
     use interprocess::local_socket::tokio::prelude::*;
+    use playit_ipc::endpoint::IpcEndpoint;
     use playit_ipc::ipc::{
         IPC_VERSION, IpcClient, IpcError, RequestEnvelope, ServerEnvelope, ServiceRequest,
         ServiceResponse,
@@ -766,7 +783,8 @@ mod tests {
         BufReader<interprocess::local_socket::tokio::RecvHalf>,
         BufWriter<interprocess::local_socket::tokio::SendHalf>,
     ) {
-        let stream = try_connect(socket_path).await.unwrap();
+        let endpoint = IpcEndpoint::parse(socket_path);
+        let stream = try_connect(&endpoint).await.unwrap();
         let (reader, writer) = stream.split();
         (BufReader::new(reader), BufWriter::new(writer))
     }

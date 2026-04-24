@@ -1,121 +1,18 @@
-use std::ffi::OsStr;
-use std::ffi::c_void;
-use std::fs;
-use std::iter::once;
-use std::mem::zeroed;
-use std::os::windows::ffi::OsStrExt;
-use std::os::windows::ffi::OsStringExt;
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
-use std::ptr::{null, null_mut};
 
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 use playit_ipc::model::AgentLifecycle;
 use playitd::manager::{
-    INSTALLED_SERVICE_LABEL, ensure_installed_service_running, stop_installed_service,
+    ensure_installed_service_running, installed_service_is_running, stop_installed_service,
 };
 use tokio::task;
-use windows_sys::Win32::Foundation::{RPC_E_CHANGED_MODE, S_FALSE, S_OK};
-use windows_sys::Win32::System::Com::{
-    CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
-    CoTaskMemFree, CoUninitialize,
-};
-use windows_sys::Win32::System::Services::{
-    CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_MANAGER_CONNECT,
-    SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_STATUS_PROCESS,
-};
 use windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE;
-use windows_sys::Win32::UI::Shell::{FOLDERID_Startup, KF_FLAG_DEFAULT, SHGetKnownFolderPath};
-use windows_sys::core::{GUID, HRESULT, PCWSTR};
 
 use super::protocol::{BackendRequest, BackendRequestKind, BackendResponse, ServiceStateSnapshot};
-use super::util::{debug_log, wide};
-
-const TRAY_SHORTCUT_NAME: &str = "Playit Tray.lnk";
-const TRAY_SHORTCUT_DESCRIPTION: &str =
-    "Shows the Playit tray icon when the background service is running.";
-const CLSID_SHELL_LINK: GUID = GUID::from_u128(0x00021401_0000_0000_c000_000000000046);
-const IID_ISHELL_LINK_W: GUID = GUID::from_u128(0x000214f9_0000_0000_c000_000000000046);
-const IID_IPERSIST_FILE: GUID = GUID::from_u128(0x0000010b_0000_0000_c000_000000000046);
-
-#[repr(C)]
-struct IUnknown {
-    vtable: *const IUnknownVTable,
-}
-
-#[repr(C)]
-struct IUnknownVTable {
-    query_interface:
-        unsafe extern "system" fn(*mut c_void, *const GUID, *mut *mut c_void) -> HRESULT,
-    add_ref: unsafe extern "system" fn(*mut c_void) -> u32,
-    release: unsafe extern "system" fn(*mut c_void) -> u32,
-}
-
-#[repr(C)]
-struct IPersistVTable {
-    parent: IUnknownVTable,
-    get_class_id: unsafe extern "system" fn(*mut c_void, *mut GUID) -> HRESULT,
-}
-
-#[repr(C)]
-struct IPersistFile {
-    vtable: *const IPersistFileVTable,
-}
-
-#[repr(C)]
-struct IPersistFileVTable {
-    parent: IPersistVTable,
-    is_dirty: unsafe extern "system" fn(*mut IPersistFile) -> HRESULT,
-    load: unsafe extern "system" fn(*mut IPersistFile, PCWSTR, u32) -> HRESULT,
-    save: unsafe extern "system" fn(*mut IPersistFile, PCWSTR, i32) -> HRESULT,
-    save_completed: unsafe extern "system" fn(*mut IPersistFile, PCWSTR) -> HRESULT,
-    get_cur_file: unsafe extern "system" fn(*mut IPersistFile, *mut *mut u16) -> HRESULT,
-}
-
-#[repr(C)]
-struct IShellLinkW {
-    vtable: *const IShellLinkWVTable,
-}
-
-#[repr(C)]
-struct IShellLinkWVTable {
-    parent: IUnknownVTable,
-    get_path:
-        unsafe extern "system" fn(*mut IShellLinkW, *mut u16, i32, *mut c_void, u32) -> HRESULT,
-    get_id_list: unsafe extern "system" fn(*mut IShellLinkW, *mut *mut c_void) -> HRESULT,
-    set_id_list: unsafe extern "system" fn(*mut IShellLinkW, *const c_void) -> HRESULT,
-    get_description: unsafe extern "system" fn(*mut IShellLinkW, *mut u16, i32) -> HRESULT,
-    set_description: unsafe extern "system" fn(*mut IShellLinkW, PCWSTR) -> HRESULT,
-    get_working_directory: unsafe extern "system" fn(*mut IShellLinkW, *mut u16, i32) -> HRESULT,
-    set_working_directory: unsafe extern "system" fn(*mut IShellLinkW, PCWSTR) -> HRESULT,
-    get_arguments: unsafe extern "system" fn(*mut IShellLinkW, *mut u16, i32) -> HRESULT,
-    set_arguments: unsafe extern "system" fn(*mut IShellLinkW, PCWSTR) -> HRESULT,
-    get_hotkey: unsafe extern "system" fn(*mut IShellLinkW, *mut u16) -> HRESULT,
-    set_hotkey: unsafe extern "system" fn(*mut IShellLinkW, u16) -> HRESULT,
-    get_show_cmd: unsafe extern "system" fn(*mut IShellLinkW, *mut i32) -> HRESULT,
-    set_show_cmd: unsafe extern "system" fn(*mut IShellLinkW, i32) -> HRESULT,
-    get_icon_location:
-        unsafe extern "system" fn(*mut IShellLinkW, *mut u16, i32, *mut i32) -> HRESULT,
-    set_icon_location: unsafe extern "system" fn(*mut IShellLinkW, PCWSTR, i32) -> HRESULT,
-    set_relative_path: unsafe extern "system" fn(*mut IShellLinkW, PCWSTR, u32) -> HRESULT,
-    resolve: unsafe extern "system" fn(*mut IShellLinkW, *mut c_void, u32) -> HRESULT,
-    set_path: unsafe extern "system" fn(*mut IShellLinkW, PCWSTR) -> HRESULT,
-}
-
-struct ComInitialization {
-    should_uninitialize: bool,
-}
-
-impl Drop for ComInitialization {
-    fn drop(&mut self) {
-        if self.should_uninitialize {
-            unsafe {
-                CoUninitialize();
-            }
-        }
-    }
-}
+use super::startup_shortcut;
+use super::util::debug_log;
 
 pub(super) async fn handle_request(request: BackendRequest) -> Option<BackendResponse> {
     debug_log(&format!("backend_actions: handling request {request:?}"));
@@ -375,75 +272,15 @@ async fn query_service_lifecycle_async() -> Result<AgentLifecycle, String> {
 }
 
 pub(super) fn remove_startup_shortcut() -> Result<(), String> {
-    let shortcut_path = startup_shortcut_path()?;
-
-    if !shortcut_path.exists() {
-        debug_log("remove_startup_shortcut: shortcut does not exist");
-        return Ok(());
-    }
-
-    debug_log(&format!(
-        "remove_startup_shortcut: deleting {}",
-        shortcut_path.display()
-    ));
-    fs::remove_file(&shortcut_path).map_err(|error| {
-        format!(
-            "Failed to delete startup shortcut at {}: {error}",
-            shortcut_path.display()
-        )
-    })
+    startup_shortcut::remove_startup_shortcut()
 }
 
 pub(super) fn ensure_startup_shortcut() -> Result<(), String> {
-    let shortcut_path = startup_shortcut_path()?;
-    let tray_path = std::env::current_exe()
-        .map_err(|error| format!("Failed to resolve playitd-tray.exe path: {error}"))?;
-    let working_directory = tray_path.parent().ok_or_else(|| {
-        format!(
-            "Failed to resolve the working directory for {}",
-            tray_path.display()
-        )
-    })?;
-
-    if let Some(parent) = shortcut_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "Failed to create the current user's Startup folder at {}: {error}",
-                parent.display()
-            )
-        })?;
-    }
-
-    debug_log(&format!(
-        "ensure_startup_shortcut: writing {} -> {}",
-        shortcut_path.display(),
-        tray_path.display()
-    ));
-
-    let _com = initialize_com()?;
-    unsafe {
-        let mut shell_link_ptr = null_mut::<c_void>();
-        check_hresult(
-            "Failed to create the ShellLink COM object",
-            CoCreateInstance(
-                &CLSID_SHELL_LINK,
-                null_mut(),
-                CLSCTX_INPROC_SERVER,
-                &IID_ISHELL_LINK_W,
-                &mut shell_link_ptr,
-            ),
-        )?;
-
-        let shell_link = shell_link_ptr.cast::<IShellLinkW>();
-        let result =
-            create_startup_shortcut(shell_link, &tray_path, working_directory, &shortcut_path);
-        release_com_ptr(shell_link_ptr);
-        result
-    }
+    startup_shortcut::ensure_startup_shortcut()
 }
 
 pub(super) fn startup_shortcut_exists() -> Result<bool, String> {
-    Ok(startup_shortcut_path()?.exists())
+    startup_shortcut::startup_shortcut_exists()
 }
 
 pub(super) fn write_installed_user_sid() -> Result<(), String> {
@@ -457,36 +294,15 @@ pub(super) fn write_installed_user_sid() -> Result<(), String> {
 }
 
 pub(super) fn query_service_running_sync() -> bool {
-    unsafe {
-        let manager = OpenSCManagerW(null(), null(), SC_MANAGER_CONNECT);
-        if manager.is_null() {
-            debug_log("service_query: failed to open SCM");
-            return false;
+    match installed_service_is_running() {
+        Ok(running) => {
+            debug_log(&format!("service_query: playitd running={running}"));
+            running
         }
-
-        let service_name = wide(INSTALLED_SERVICE_LABEL);
-        let service = OpenServiceW(manager, service_name.as_ptr(), SERVICE_QUERY_STATUS);
-        if service.is_null() {
-            debug_log("service_query: failed to open playitd service");
-            let _ = CloseServiceHandle(manager);
-            return false;
+        Err(error) => {
+            debug_log(&format!("service_query: failed to query playitd: {error}"));
+            false
         }
-
-        let mut status = zeroed::<SERVICE_STATUS_PROCESS>();
-        let mut bytes_needed = 0;
-        let running = QueryServiceStatusEx(
-            service,
-            SC_STATUS_PROCESS_INFO,
-            (&mut status as *mut SERVICE_STATUS_PROCESS).cast::<u8>(),
-            std::mem::size_of::<SERVICE_STATUS_PROCESS>() as u32,
-            &mut bytes_needed,
-        ) != 0
-            && status.dwCurrentState == SERVICE_RUNNING;
-
-        let _ = CloseServiceHandle(service);
-        let _ = CloseServiceHandle(manager);
-        debug_log(&format!("service_query: playitd running={running}"));
-        running
     }
 }
 
@@ -519,143 +335,4 @@ fn playit_cli_path() -> Result<PathBuf, String> {
     std::env::current_exe()
         .map(|path| path.with_file_name("playit.exe"))
         .map_err(|error| format!("Failed to resolve playit.exe path: {error}"))
-}
-
-fn startup_shortcut_path() -> Result<PathBuf, String> {
-    known_folder_shortcut_path(&FOLDERID_Startup, "the current user's Startup folder")
-}
-
-fn known_folder_shortcut_path(folder_id: &GUID, folder_name: &str) -> Result<PathBuf, String> {
-    unsafe {
-        let mut wide_path = null_mut();
-        let result = SHGetKnownFolderPath(
-            folder_id,
-            KF_FLAG_DEFAULT as u32,
-            null_mut(),
-            &mut wide_path,
-        );
-
-        if result < 0 {
-            return Err(format!(
-                "Failed to resolve {folder_name} (HRESULT {result:#x})"
-            ));
-        }
-
-        if wide_path.is_null() {
-            return Err(format!("{folder_name} path was empty"));
-        }
-
-        let mut len = 0usize;
-        while *wide_path.add(len) != 0 {
-            len += 1;
-        }
-
-        let path = std::ffi::OsString::from_wide(std::slice::from_raw_parts(wide_path, len));
-        CoTaskMemFree(wide_path.cast::<c_void>());
-
-        Ok(PathBuf::from(path).join(TRAY_SHORTCUT_NAME))
-    }
-}
-
-fn create_startup_shortcut(
-    shell_link: *mut IShellLinkW,
-    tray_path: &std::path::Path,
-    working_directory: &std::path::Path,
-    shortcut_path: &std::path::Path,
-) -> Result<(), String> {
-    let tray_path_wide = wide_os(tray_path.as_os_str());
-    let working_directory_wide = wide_os(working_directory.as_os_str());
-    let shortcut_path_wide = wide_os(shortcut_path.as_os_str());
-    let description_wide = wide(TRAY_SHORTCUT_DESCRIPTION);
-
-    unsafe {
-        check_hresult(
-            &format!(
-                "Failed to set the tray shortcut target to {}",
-                tray_path.display()
-            ),
-            ((*(*shell_link).vtable).set_path)(shell_link, tray_path_wide.as_ptr()),
-        )?;
-        check_hresult(
-            &format!(
-                "Failed to set the tray shortcut working directory to {}",
-                working_directory.display()
-            ),
-            ((*(*shell_link).vtable).set_working_directory)(
-                shell_link,
-                working_directory_wide.as_ptr(),
-            ),
-        )?;
-        check_hresult(
-            "Failed to set the tray shortcut description",
-            ((*(*shell_link).vtable).set_description)(shell_link, description_wide.as_ptr()),
-        )?;
-
-        let persist_file =
-            query_interface::<IPersistFile>(shell_link.cast::<c_void>(), &IID_IPERSIST_FILE)?;
-        let result = check_hresult(
-            &format!(
-                "Failed to save the startup shortcut at {}",
-                shortcut_path.display()
-            ),
-            ((*(*persist_file).vtable).save)(persist_file, shortcut_path_wide.as_ptr(), 1),
-        );
-        release_com_ptr(persist_file.cast::<c_void>());
-        result
-    }
-}
-
-fn initialize_com() -> Result<ComInitialization, String> {
-    unsafe {
-        let result = CoInitializeEx(null(), COINIT_APARTMENTTHREADED as u32);
-        if result == S_OK || result == S_FALSE {
-            return Ok(ComInitialization {
-                should_uninitialize: true,
-            });
-        }
-        if result == RPC_E_CHANGED_MODE {
-            return Ok(ComInitialization {
-                should_uninitialize: false,
-            });
-        }
-
-        Err(format!(
-            "Failed to initialize COM for the tray shortcut helper (HRESULT {result:#x})"
-        ))
-    }
-}
-
-fn check_hresult(context: &str, result: HRESULT) -> Result<(), String> {
-    if result < 0 {
-        Err(format!("{context} (HRESULT {result:#x})"))
-    } else {
-        Ok(())
-    }
-}
-
-fn query_interface<T>(interface: *mut c_void, iid: &GUID) -> Result<*mut T, String> {
-    unsafe {
-        let unknown = interface.cast::<IUnknown>();
-        let mut out = null_mut::<c_void>();
-        check_hresult(
-            "Failed to query the tray shortcut persistence interface",
-            ((*(*unknown).vtable).query_interface)(interface, iid, &mut out),
-        )?;
-        Ok(out.cast::<T>())
-    }
-}
-
-fn release_com_ptr(interface: *mut c_void) {
-    if interface.is_null() {
-        return;
-    }
-
-    unsafe {
-        let unknown = interface.cast::<IUnknown>();
-        let _ = ((*(*unknown).vtable).release)(interface);
-    }
-}
-
-fn wide_os(value: &OsStr) -> Vec<u16> {
-    value.encode_wide().chain(once(0)).collect()
 }

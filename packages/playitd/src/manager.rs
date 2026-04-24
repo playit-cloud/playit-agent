@@ -3,6 +3,12 @@ use service_manager::{ServiceLabel, ServiceManager, ServiceStartCtx, ServiceStop
 #[cfg(target_os = "linux")]
 use crate::linux;
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::System::Services::{
+    CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_HANDLE,
+    SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS, SERVICE_RUNNING,
+    SERVICE_STATUS_PROCESS,
+};
 
 #[cfg(target_os = "windows")]
 pub const INSTALLED_SERVICE_LABEL: &str = "playitd";
@@ -44,6 +50,13 @@ pub struct ServiceController {
     label: ServiceLabel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstalledServiceState {
+    Running,
+    Stopped,
+    Unknown,
+}
+
 impl ServiceController {
     const SERVICE_LABEL: &'static str = INSTALLED_SERVICE_LABEL;
 
@@ -74,6 +87,33 @@ impl ServiceController {
 #[cfg(target_os = "linux")]
 pub fn is_systemd_service_active() -> Result<bool, ServiceManagerError> {
     linux::is_systemd_service_active()
+}
+
+pub fn installed_service_state() -> Result<InstalledServiceState, ServiceManagerError> {
+    #[cfg(target_os = "linux")]
+    {
+        return Ok(if linux::is_systemd_service_active()? {
+            InstalledServiceState::Running
+        } else {
+            InstalledServiceState::Stopped
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        return windows_installed_service_state();
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        Err(ServiceManagerError::NotAvailable(
+            "service status queries are not supported on this platform".to_string(),
+        ))
+    }
+}
+
+pub fn installed_service_is_running() -> Result<bool, ServiceManagerError> {
+    Ok(installed_service_state()? == InstalledServiceState::Running)
 }
 
 pub async fn ensure_installed_service_running() -> Result<(), ServiceManagerError> {
@@ -123,4 +163,70 @@ async fn wait_for_installed_service() -> Result<(), ServiceManagerError> {
     Err(ServiceManagerError::StartFailed(
         "Service did not start within timeout".to_string(),
     ))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_installed_service_state() -> Result<InstalledServiceState, ServiceManagerError> {
+    unsafe {
+        let manager = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
+        if manager.is_null() {
+            return Err(ServiceManagerError::NotAvailable(format!(
+                "failed to open Windows service manager: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        let manager = ServiceHandle(manager);
+        let service_name = wide(INSTALLED_SERVICE_LABEL);
+        let service = OpenServiceW(manager.0, service_name.as_ptr(), SERVICE_QUERY_STATUS);
+        if service.is_null() {
+            return Ok(InstalledServiceState::Stopped);
+        }
+
+        let service = ServiceHandle(service);
+        let mut status = std::mem::zeroed::<SERVICE_STATUS_PROCESS>();
+        let mut bytes_needed = 0;
+        let queried = QueryServiceStatusEx(
+            service.0,
+            SC_STATUS_PROCESS_INFO,
+            (&mut status as *mut SERVICE_STATUS_PROCESS).cast::<u8>(),
+            std::mem::size_of::<SERVICE_STATUS_PROCESS>() as u32,
+            &mut bytes_needed,
+        );
+
+        if queried == 0 {
+            return Err(ServiceManagerError::NotAvailable(format!(
+                "failed to query Windows service status: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+
+        Ok(if status.dwCurrentState == SERVICE_RUNNING {
+            InstalledServiceState::Running
+        } else {
+            InstalledServiceState::Stopped
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+struct ServiceHandle(SC_HANDLE);
+
+#[cfg(target_os = "windows")]
+impl Drop for ServiceHandle {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseServiceHandle(self.0);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn wide(value: &str) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    std::ffi::OsStr::new(value)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }

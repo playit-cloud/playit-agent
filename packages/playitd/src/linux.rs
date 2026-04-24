@@ -2,7 +2,7 @@ use std::{
     ffi::CString,
     io,
     os::unix::{ffi::OsStrExt, fs::PermissionsExt},
-    path::{Path, PathBuf},
+    path::Path,
     process::Command,
 };
 
@@ -13,11 +13,6 @@ use crate::manager::ServiceManagerError;
 const SYSTEMD_SERVICE_NAME: &str = "playit";
 const PLAYIT_SOCKET_GROUP_NAME: &str = "playit";
 const PLAYIT_SOCKET_MODE: u32 = 0o660;
-
-pub(crate) fn default_secret_path() -> Option<PathBuf> {
-    let path = PathBuf::from("/etc/playit/playit.toml");
-    path.exists().then_some(path)
-}
 
 pub(crate) fn start_systemd_service() -> Result<(), ServiceManagerError> {
     run_systemctl(&systemd_start_args(), ServiceManagerError::StartFailed)
@@ -58,7 +53,7 @@ pub(crate) fn stop_systemd_service() -> Result<(), ServiceManagerError> {
 }
 
 pub(crate) fn configure_socket_permissions(socket_path: &str) -> Result<(), IpcError> {
-    let Some(target) = socket_permission_target(socket_path, unsafe { libc::geteuid() as u32 })
+    let Some(target) = socket_permission_target(socket_path, crate::unix_account::effective_uid())
     else {
         return Ok(());
     };
@@ -70,7 +65,7 @@ pub(crate) fn configure_socket_permissions(socket_path: &str) -> Result<(), IpcE
         )));
     }
 
-    let Some(group_gid) = lookup_group_gid(target.group_name)? else {
+    let Some(group_gid) = crate::unix_account::group_gid_by_name(target.group_name) else {
         tracing::warn!(
             group = target.group_name,
             socket_path = %target.path,
@@ -135,48 +130,6 @@ fn socket_permission_target(
         group_name: PLAYIT_SOCKET_GROUP_NAME,
         mode: PLAYIT_SOCKET_MODE,
     })
-}
-
-fn lookup_group_gid(group_name: &str) -> Result<Option<u32>, IpcError> {
-    let group_name = CString::new(group_name).map_err(|e| {
-        IpcError::BindFailed(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("invalid group name {group_name:?}: {e}"),
-        ))
-    })?;
-
-    let mut group = std::mem::MaybeUninit::<libc::group>::uninit();
-    let mut result = std::ptr::null_mut();
-    let mut buf_len = 1024usize;
-
-    loop {
-        let mut buf = vec![0u8; buf_len];
-        let status = unsafe {
-            libc::getgrnam_r(
-                group_name.as_ptr(),
-                group.as_mut_ptr(),
-                buf.as_mut_ptr().cast(),
-                buf.len(),
-                &mut result,
-            )
-        };
-
-        if status == 0 {
-            if result.is_null() {
-                return Ok(None);
-            }
-
-            let group = unsafe { group.assume_init() };
-            return Ok(Some(group.gr_gid));
-        }
-
-        if status == libc::ERANGE {
-            buf_len *= 2;
-            continue;
-        }
-
-        return Err(IpcError::BindFailed(io::Error::from_raw_os_error(status)));
-    }
 }
 
 fn apply_socket_permissions(socket_path: &str, group_gid: u32, mode: u32) -> Result<(), IpcError> {

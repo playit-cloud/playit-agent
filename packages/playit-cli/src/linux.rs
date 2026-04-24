@@ -1,5 +1,4 @@
 use std::{
-    ffi::CStr,
     fs,
     os::unix::fs::{FileTypeExt, MetadataExt},
     path::Path,
@@ -8,6 +7,10 @@ use std::{
 
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 use playitd::manager::is_systemd_service_active;
+use playitd::unix_account::{
+    current_process_has_group, current_user_account, current_user_is_root, effective_gid,
+    effective_uid, group_info_by_gid,
+};
 
 use crate::{CliError, ui::ConsoleUi};
 
@@ -72,10 +75,6 @@ fn service_start_prompt(is_root: bool) -> String {
     prompt
 }
 
-fn current_user_is_root() -> bool {
-    unsafe { libc::geteuid() == 0 }
-}
-
 fn installed_service_unreachable_message() -> String {
     let socket_path = get_default_socket_path();
 
@@ -104,12 +103,6 @@ enum LinuxSocketAccessIssue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct LinuxUserAccount {
-    username: String,
-    primary_gid: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct LinuxGroupInfo {
     name: String,
     members: Vec<String>,
@@ -129,8 +122,8 @@ fn socket_access_issue(socket_path: &str) -> Option<LinuxSocketAccessIssue> {
         return Some(LinuxSocketAccessIssue::NotASocket);
     }
 
-    let current_uid = unsafe { libc::geteuid() as u32 };
-    let current_gid = unsafe { libc::getegid() as u32 };
+    let current_uid = effective_uid();
+    let current_gid = effective_gid();
     let socket_uid = metadata.uid();
     let socket_gid = metadata.gid();
     let socket_mode = metadata.mode() & 0o777;
@@ -209,7 +202,7 @@ fn current_user_account_is_configured_for_group(
     target_gid: u32,
     group: Option<&LinuxGroupInfo>,
 ) -> Option<bool> {
-    let account = lookup_current_user_account()?;
+    let account = current_user_account()?;
 
     if account.primary_gid == target_gid {
         return Some(true);
@@ -224,54 +217,11 @@ fn current_user_account_is_configured_for_group(
     )
 }
 
-fn lookup_current_user_account() -> Option<LinuxUserAccount> {
-    let mut passwd = std::mem::MaybeUninit::<libc::passwd>::uninit();
-    let mut result = std::ptr::null_mut();
-    let mut buf_len = 1024usize;
-    let current_uid = unsafe { libc::geteuid() };
-
-    loop {
-        let mut buf = vec![0u8; buf_len];
-        let status = unsafe {
-            libc::getpwuid_r(
-                current_uid,
-                passwd.as_mut_ptr(),
-                buf.as_mut_ptr().cast(),
-                buf.len(),
-                &mut result,
-            )
-        };
-
-        if status == 0 {
-            if result.is_null() {
-                return None;
-            }
-
-            let passwd = unsafe { passwd.assume_init() };
-            let username = unsafe { CStr::from_ptr(passwd.pw_name) }
-                .to_string_lossy()
-                .into_owned();
-
-            return Some(LinuxUserAccount {
-                username,
-                primary_gid: passwd.pw_gid,
-            });
-        }
-
-        if status == libc::ERANGE {
-            buf_len *= 2;
-            continue;
-        }
-
-        return None;
-    }
-}
-
 fn current_user_can_write_socket(metadata: &fs::Metadata) -> bool {
     let mode = metadata.mode();
     let uid = metadata.uid();
     let gid = metadata.gid();
-    let current_uid = unsafe { libc::geteuid() };
+    let current_uid = effective_uid();
 
     if current_uid == 0 {
         return true;
@@ -289,80 +239,14 @@ fn current_user_can_write_socket(metadata: &fs::Metadata) -> bool {
 }
 
 fn current_user_in_group(target_gid: u32) -> bool {
-    if unsafe { libc::getegid() } == target_gid {
-        return true;
-    }
-
-    let group_count = unsafe { libc::getgroups(0, std::ptr::null_mut()) };
-    if group_count <= 0 {
-        return false;
-    }
-
-    let mut groups = vec![0 as libc::gid_t; group_count as usize];
-    let loaded = unsafe { libc::getgroups(group_count, groups.as_mut_ptr()) };
-    if loaded <= 0 {
-        return false;
-    }
-
-    groups
-        .into_iter()
-        .take(loaded as usize)
-        .any(|group| group == target_gid)
+    current_process_has_group(target_gid)
 }
 
 fn lookup_group_info(group_gid: u32) -> Option<LinuxGroupInfo> {
-    let mut group = std::mem::MaybeUninit::<libc::group>::uninit();
-    let mut result = std::ptr::null_mut();
-    let mut buf_len = 1024usize;
-
-    loop {
-        let mut buf = vec![0u8; buf_len];
-        let status = unsafe {
-            libc::getgrgid_r(
-                group_gid,
-                group.as_mut_ptr(),
-                buf.as_mut_ptr().cast(),
-                buf.len(),
-                &mut result,
-            )
-        };
-
-        if status == 0 {
-            if result.is_null() {
-                return None;
-            }
-
-            let group = unsafe { group.assume_init() };
-            let name = unsafe { CStr::from_ptr(group.gr_name) }
-                .to_string_lossy()
-                .into_owned();
-            let mut members = Vec::new();
-            let mut member_ptr = group.gr_mem;
-
-            while !member_ptr.is_null() {
-                let member = unsafe { *member_ptr };
-                if member.is_null() {
-                    break;
-                }
-
-                members.push(
-                    unsafe { CStr::from_ptr(member) }
-                        .to_string_lossy()
-                        .into_owned(),
-                );
-                member_ptr = unsafe { member_ptr.add(1) };
-            }
-
-            return Some(LinuxGroupInfo { name, members });
-        }
-
-        if status == libc::ERANGE {
-            buf_len *= 2;
-            continue;
-        }
-
-        return None;
-    }
+    group_info_by_gid(group_gid).map(|group| LinuxGroupInfo {
+        name: group.name,
+        members: group.members,
+    })
 }
 
 #[cfg(test)]

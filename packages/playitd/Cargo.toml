@@ -26,7 +26,7 @@ playit-agent-core = { path = "../agent_core", version = "1.0.0" }
 playit-ipc = { path = "../playit-ipc", version = "1.0.0" }
 playit-api-client = { path = "../api_client", version = "0.2.0" }
 clap = { version = "4.6.0", features = ["derive"] }
-serde_yaml = "0.9.34"
+serde_yml = "0.0.12"
 
 [[bin]]
 name = "playitd"
@@ -38,12 +38,14 @@ path = "src/bin/playitd-service.rs"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+uzers = { version = "0.12.2", default-features = false }
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.59.0", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_System_Services",
     "Win32_System_Threading",
 ] }
 windows-service = "0.8.0"

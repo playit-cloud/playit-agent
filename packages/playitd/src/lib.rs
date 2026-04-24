@@ -4,19 +4,23 @@ mod ipc_server;
 pub(crate) mod linux;
 pub mod logging;
 pub mod manager;
+pub mod paths;
+#[cfg(unix)]
+pub mod unix_account;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
 pub use daemon::{
-    DEFAULT_VARIANT_ID, DaemonOptions, VersionDetails, VersionOverrideFile, default_secret_path,
-    load_version_overrides, run_daemon,
+    DEFAULT_VARIANT_ID, DaemonOptions, VersionDetails, VersionOverrideFile, load_version_overrides,
+    run_daemon,
 };
+pub use paths::default_secret_path;
 
 #[cfg(target_os = "macos")]
-pub use daemon::{
+pub use paths::{
     macos_launch_agent_data_dir, macos_launch_agent_log_dir, macos_launch_agent_log_path,
     macos_launch_agent_secret_path, macos_launch_agent_socket_path,
 };
 
 #[cfg(target_os = "windows")]
-pub use daemon::{windows_service_data_dir, windows_service_log_path, windows_service_secret_path};
+pub use paths::{windows_service_data_dir, windows_service_log_path, windows_service_secret_path};

@@ -12,7 +12,7 @@ pub async fn load_config<T: DeserializeOwned>(path: &str) -> Option<T> {
     }
 
     if path.ends_with(".yaml") || path.ends_with(".yml") {
-        return serde_yaml::from_str(&data).ok();
+        return serde_yml::from_str(&data).ok();
     }
 
     None

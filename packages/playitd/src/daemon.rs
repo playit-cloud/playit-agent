@@ -50,7 +50,7 @@ impl Default for DaemonOptions {
     fn default() -> Self {
         Self {
             secret: None,
-            secret_path: Some(default_secret_path()),
+            secret_path: Some(crate::paths::default_secret_path()),
             socket_path: None,
             log_path: None,
             platform_docker: false,
@@ -178,78 +178,13 @@ pub async fn load_version_overrides(path: &Path) -> Result<VersionOverrideFile, 
     {
         Some("json") => serde_json::from_str(&content)
             .map_err(|error| format!("Invalid JSON in {}: {error}", path.display())),
-        Some("yaml") | Some("yml") => serde_yaml::from_str(&content)
+        Some("yaml") | Some("yml") => serde_yml::from_str(&content)
             .map_err(|error| format!("Invalid YAML in {}: {error}", path.display())),
         _ => Err(format!(
             "Unsupported version override file format for {}. Use .json, .yaml, or .yml",
             path.display()
         )),
     }
-}
-
-pub fn default_secret_path() -> PathBuf {
-    if Path::new("playit.toml").exists() {
-        return PathBuf::from("playit.toml");
-    }
-
-    #[cfg(target_os = "linux")]
-    if let Some(path) = crate::linux::default_secret_path() {
-        return path;
-    }
-
-    dirs::config_local_dir()
-        .unwrap_or_else(|| ".".into())
-        .join("playit_gg")
-        .join("playit.toml")
-}
-
-#[cfg(target_os = "macos")]
-pub fn macos_launch_agent_data_dir() -> PathBuf {
-    dirs::config_local_dir()
-        .unwrap_or_else(|| ".".into())
-        .join("playit_gg")
-}
-
-#[cfg(target_os = "macos")]
-pub fn macos_launch_agent_secret_path() -> PathBuf {
-    macos_launch_agent_data_dir().join("playit.toml")
-}
-
-#[cfg(target_os = "macos")]
-pub fn macos_launch_agent_socket_path() -> PathBuf {
-    macos_launch_agent_data_dir().join("playitd.sock")
-}
-
-#[cfg(target_os = "macos")]
-pub fn macos_launch_agent_log_dir() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| ".".into())
-        .join("Library")
-        .join("Logs")
-        .join("playit")
-}
-
-#[cfg(target_os = "macos")]
-pub fn macos_launch_agent_log_path() -> PathBuf {
-    macos_launch_agent_log_dir().join("playitd.log")
-}
-
-#[cfg(target_os = "windows")]
-pub fn windows_service_data_dir() -> PathBuf {
-    std::env::var_os("PROGRAMDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\ProgramData"))
-        .join("playit_gg")
-}
-
-#[cfg(target_os = "windows")]
-pub fn windows_service_secret_path() -> PathBuf {
-    windows_service_data_dir().join("playit.toml")
-}
-
-#[cfg(target_os = "windows")]
-pub fn windows_service_log_path() -> PathBuf {
-    windows_service_data_dir().join("logs").join("playitd.log")
 }
 
 impl SecretSource {
@@ -260,7 +195,7 @@ impl SecretSource {
                 path: options
                     .secret_path
                     .clone()
-                    .unwrap_or_else(default_secret_path),
+                    .unwrap_or_else(crate::paths::default_secret_path),
             },
         }
     }

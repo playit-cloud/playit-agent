@@ -1,10 +1,6 @@
 //! IPC protocol for communication between CLI and background service.
 
 use std::io;
-#[cfg(target_os = "macos")]
-use std::path::PathBuf;
-#[cfg(target_os = "macos")]
-use std::sync::LazyLock;
 
 use interprocess::local_socket::{
     GenericFilePath, GenericNamespaced, ToFsName, ToNsName,
@@ -14,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 
+use crate::endpoint::IpcEndpoint;
 use crate::model::{
     AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ProtocolInfo, SecretPathResponse,
     ServiceError, ServiceStatus, ServiceUpdate, SubscribeResponse,
@@ -197,56 +194,34 @@ pub fn protocol_info() -> ProtocolInfo {
 }
 
 pub fn get_default_socket_path() -> &'static str {
-    #[cfg(target_os = "linux")]
-    {
-        "/var/run/playitd.sock"
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        MACOS_DEFAULT_SOCKET_PATH.as_str()
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        r"\\.\pipe\playitd-system"
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    {
-        "./playitd.sock"
-    }
+    crate::paths::default_socket_path_static()
 }
 
-#[cfg(target_os = "macos")]
-static MACOS_DEFAULT_SOCKET_PATH: LazyLock<String> =
-    LazyLock::new(|| macos_launch_agent_socket_path().display().to_string());
-
-#[cfg(target_os = "macos")]
-pub fn macos_launch_agent_socket_path() -> PathBuf {
-    dirs::config_local_dir()
-        .unwrap_or_else(|| ".".into())
-        .join("playit_gg")
-        .join("playitd.sock")
+pub fn get_default_endpoint() -> IpcEndpoint {
+    IpcEndpoint::default()
 }
 
-async fn try_connect(socket_path: &str) -> Result<Stream, IpcError> {
-    if socket_path.starts_with('@') {
-        let name = socket_path[1..]
-            .to_ns_name::<GenericNamespaced>()
-            .map_err(|e| {
+async fn try_connect(endpoint: &IpcEndpoint) -> Result<Stream, IpcError> {
+    match endpoint {
+        IpcEndpoint::Namespaced(name) => {
+            let name = name
+                .clone()
+                .to_ns_name::<GenericNamespaced>()
+                .map_err(|e| {
+                    IpcError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidInput, e))
+                })?;
+            Stream::connect(name)
+                .await
+                .map_err(IpcError::ConnectionFailed)
+        }
+        IpcEndpoint::Filesystem(path) => {
+            let name = path.clone().to_fs_name::<GenericFilePath>().map_err(|e| {
                 IpcError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidInput, e))
             })?;
-        Stream::connect(name)
-            .await
-            .map_err(IpcError::ConnectionFailed)
-    } else {
-        let name = socket_path.to_fs_name::<GenericFilePath>().map_err(|e| {
-            IpcError::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidInput, e))
-        })?;
-        Stream::connect(name)
-            .await
-            .map_err(IpcError::ConnectionFailed)
+            Stream::connect(name)
+                .await
+                .map_err(IpcError::ConnectionFailed)
+        }
     }
 }
 
@@ -263,7 +238,8 @@ impl IpcClient {
     }
 
     pub async fn connect_with_path(socket_path: &str) -> Result<Self, IpcError> {
-        let stream = try_connect(socket_path).await?;
+        let endpoint = IpcEndpoint::parse(socket_path);
+        let stream = try_connect(&endpoint).await?;
         let (reader, writer) = stream.split();
         let mut client = Self {
             reader: BufReader::new(reader),
@@ -280,7 +256,8 @@ impl IpcClient {
     }
 
     pub async fn is_running(socket_path: &str) -> bool {
-        try_connect(socket_path).await.is_ok()
+        let endpoint = IpcEndpoint::parse(socket_path);
+        try_connect(&endpoint).await.is_ok()
     }
 
     pub fn server_protocol(&self) -> &ProtocolInfo {
