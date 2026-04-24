@@ -60,6 +60,15 @@ impl std::fmt::Display for IpcError {
 
 impl std::error::Error for IpcError {}
 
+impl IpcError {
+    pub fn is_connection_closed(&self) -> bool {
+        match self {
+            Self::IoError(error) => is_connection_closed_error(error),
+            _ => false,
+        }
+    }
+}
+
 impl From<io::Error> for IpcError {
     fn from(e: io::Error) -> Self {
         Self::IoError(e)
@@ -335,6 +344,17 @@ fn line_codec_error(error: LinesCodecError) -> IpcError {
             IpcError::ProtocolError("IPC frame exceeded maximum line length".to_string())
         }
     }
+}
+
+fn is_connection_closed_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::NotConnected
+    )
 }
 
 pub struct IpcClient {
@@ -874,6 +894,23 @@ mod tests {
             parsed,
             ServiceUpdateOrUnknown::Known(ServiceUpdate::Stats(_))
         ));
+    }
+
+    #[test]
+    fn ipc_error_classifies_peer_disconnects() {
+        for kind in [
+            io::ErrorKind::UnexpectedEof,
+            io::ErrorKind::BrokenPipe,
+            io::ErrorKind::ConnectionAborted,
+            io::ErrorKind::ConnectionReset,
+            io::ErrorKind::NotConnected,
+        ] {
+            let error = IpcError::IoError(io::Error::new(kind, "closed"));
+            assert!(error.is_connection_closed());
+        }
+
+        let error = IpcError::IoError(io::Error::new(io::ErrorKind::PermissionDenied, "denied"));
+        assert!(!error.is_connection_closed());
     }
 
     #[test]

@@ -162,7 +162,11 @@ impl IpcServer {
                             let server = self.clone();
                             tokio::spawn(async move {
                                 if let Err(e) = server.handle_client(stream).await {
-                                    tracing::warn!("Client connection error: {e}");
+                                    if e.is_connection_closed() {
+                                        tracing::debug!("Client disconnected: {e}");
+                                    } else {
+                                        tracing::warn!("Client connection error: {e}");
+                                    }
                                 }
                             });
                         }
