@@ -4,10 +4,15 @@ use service_manager::{ServiceLabel, ServiceManager, ServiceStartCtx, ServiceStop
 use crate::linux;
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 #[cfg(target_os = "windows")]
+use windows_sys::Win32::Foundation::{
+    ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_NOT_ACTIVE,
+};
+#[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Services::{
-    CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx, SC_HANDLE,
-    SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_QUERY_STATUS, SERVICE_RUNNING,
-    SERVICE_STATUS_PROCESS,
+    CloseServiceHandle, ControlService, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx,
+    SC_HANDLE, SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_CONTROL_STOP,
+    SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START, SERVICE_STATUS, SERVICE_STATUS_PROCESS,
+    SERVICE_STOP, StartServiceW,
 };
 
 #[cfg(target_os = "windows")]
@@ -132,9 +137,16 @@ pub async fn ensure_installed_service_running() -> Result<(), ServiceManagerErro
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[cfg(not(target_os = "windows"))]
     {
         let controller = ServiceController::new()?;
         controller.start()?;
+        wait_for_installed_service().await
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        windows_start_installed_service()?;
         wait_for_installed_service().await
     }
 }
@@ -146,9 +158,15 @@ pub fn stop_installed_service() -> Result<(), ServiceManagerError> {
     }
 
     #[cfg(not(target_os = "linux"))]
+    #[cfg(not(target_os = "windows"))]
     {
         let controller = ServiceController::new()?;
         controller.stop()
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        windows_stop_installed_service()
     }
 }
 
@@ -166,17 +184,68 @@ async fn wait_for_installed_service() -> Result<(), ServiceManagerError> {
 }
 
 #[cfg(target_os = "windows")]
-fn windows_installed_service_state() -> Result<InstalledServiceState, ServiceManagerError> {
+fn windows_start_installed_service() -> Result<(), ServiceManagerError> {
     unsafe {
-        let manager = OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT);
-        if manager.is_null() {
-            return Err(ServiceManagerError::NotAvailable(format!(
-                "failed to open Windows service manager: {}",
-                std::io::Error::last_os_error()
-            )));
+        let manager = open_windows_service_manager()?;
+        let service_name = wide(INSTALLED_SERVICE_LABEL);
+        let service = OpenServiceW(
+            manager.0,
+            service_name.as_ptr(),
+            SERVICE_START | SERVICE_QUERY_STATUS,
+        );
+        if service.is_null() {
+            return Err(open_service_error(ServiceAction::Start));
         }
 
-        let manager = ServiceHandle(manager);
+        let service = ServiceHandle(service);
+        let started = StartServiceW(service.0, 0, std::ptr::null());
+        if started != 0 {
+            return Ok(());
+        }
+
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_SERVICE_ALREADY_RUNNING as i32) {
+            Ok(())
+        } else {
+            Err(ServiceManagerError::StartFailed(error.to_string()))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_stop_installed_service() -> Result<(), ServiceManagerError> {
+    unsafe {
+        let manager = open_windows_service_manager()?;
+        let service_name = wide(INSTALLED_SERVICE_LABEL);
+        let service = OpenServiceW(
+            manager.0,
+            service_name.as_ptr(),
+            SERVICE_STOP | SERVICE_QUERY_STATUS,
+        );
+        if service.is_null() {
+            return Err(open_service_error(ServiceAction::Stop));
+        }
+
+        let service = ServiceHandle(service);
+        let mut status = std::mem::zeroed::<SERVICE_STATUS>();
+        let stopped = ControlService(service.0, SERVICE_CONTROL_STOP, &mut status);
+        if stopped != 0 {
+            return Ok(());
+        }
+
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(ERROR_SERVICE_NOT_ACTIVE as i32) {
+            Ok(())
+        } else {
+            Err(ServiceManagerError::StopFailed(error.to_string()))
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_installed_service_state() -> Result<InstalledServiceState, ServiceManagerError> {
+    unsafe {
+        let manager = open_windows_service_manager()?;
         let service_name = wide(INSTALLED_SERVICE_LABEL);
         let service = OpenServiceW(manager.0, service_name.as_ptr(), SERVICE_QUERY_STATUS);
         if service.is_null() {
@@ -206,6 +275,39 @@ fn windows_installed_service_state() -> Result<InstalledServiceState, ServiceMan
         } else {
             InstalledServiceState::Stopped
         })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn open_windows_service_manager() -> Result<ServiceHandle, ServiceManagerError> {
+    let manager = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT) };
+    if manager.is_null() {
+        return Err(ServiceManagerError::NotAvailable(format!(
+            "failed to open Windows service manager: {}",
+            std::io::Error::last_os_error()
+        )));
+    }
+
+    Ok(ServiceHandle(manager))
+}
+
+#[cfg(target_os = "windows")]
+enum ServiceAction {
+    Start,
+    Stop,
+}
+
+#[cfg(target_os = "windows")]
+fn open_service_error(action: ServiceAction) -> ServiceManagerError {
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) {
+        return ServiceManagerError::NotFound;
+    }
+
+    let message = format!("failed to open Windows service: {error}");
+    match action {
+        ServiceAction::Start => ServiceManagerError::StartFailed(message),
+        ServiceAction::Stop => ServiceManagerError::StopFailed(message),
     }
 }
 
