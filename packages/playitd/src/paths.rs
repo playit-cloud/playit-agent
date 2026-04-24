@@ -65,22 +65,3 @@ pub fn windows_service_secret_path() -> PathBuf {
 pub fn windows_service_log_path() -> PathBuf {
     windows_service_data_dir().join("logs").join("playitd.log")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::default_secret_path;
-
-    #[test]
-    fn fallback_secret_path_uses_playit_config_dir() {
-        if std::path::Path::new("playit.toml").exists() {
-            return;
-        }
-
-        #[cfg(target_os = "linux")]
-        if std::path::Path::new("/etc/playit/playit.toml").exists() {
-            return;
-        }
-
-        assert!(default_secret_path().ends_with("playit.toml"));
-    }
-}

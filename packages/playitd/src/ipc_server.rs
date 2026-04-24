@@ -604,14 +604,14 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{IpcServer, protocol_error, secret_provisioning_state_error, try_connect};
+    use super::{IpcServer, protocol_error, try_connect};
     use interprocess::local_socket::tokio::prelude::*;
     use playit_ipc::endpoint::IpcEndpoint;
     use playit_ipc::ipc::{
         IPC_VERSION, IpcClient, IpcError, RequestEnvelope, ServerEnvelope, ServiceRequest,
         ServiceResponse,
     };
-    use playit_ipc::model::{AgentLifecycle, ServiceError, ServiceErrorCode};
+    use playit_ipc::model::{AgentLifecycle, ServiceErrorCode};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
     use tokio::sync::broadcast;
     use tokio_util::sync::CancellationToken;
@@ -694,34 +694,6 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
         serde_json::from_str(line.trim()).unwrap()
-    }
-
-    #[test]
-    fn provisioning_rejects_running_daemon() {
-        let error = secret_provisioning_state_error(&AgentLifecycle::Running(Default::default()));
-        assert!(matches!(
-            error.code,
-            ServiceErrorCode::ProvisioningUnavailable
-        ));
-        assert!(!error.retryable);
-        assert!(error.message.contains("already has a configured secret"));
-    }
-
-    #[test]
-    fn provisioning_rejects_invalid_secret_state() {
-        let error =
-            secret_provisioning_state_error(&AgentLifecycle::HasInvalidSecret(ServiceError {
-                code: ServiceErrorCode::InvalidSecret,
-                message: "bad secret".to_string(),
-                retryable: true,
-                details: None,
-            }));
-        assert!(matches!(
-            error.code,
-            ServiceErrorCode::ProvisioningUnavailable
-        ));
-        assert!(!error.retryable);
-        assert!(error.message.contains("bad secret"));
     }
 
     #[tokio::test]

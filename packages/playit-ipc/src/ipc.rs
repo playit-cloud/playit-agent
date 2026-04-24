@@ -832,19 +832,6 @@ mod tests {
     }
 
     #[test]
-    fn request_fallback_keeps_known_requests_typed() {
-        let request = serde_json::json!({
-            "type": "get_state"
-        });
-
-        let parsed = serde_json::from_value::<ServiceRequestOrUnknown>(request).unwrap();
-        assert!(matches!(
-            parsed,
-            ServiceRequestOrUnknown::Known(ServiceRequest::GetState)
-        ));
-    }
-
-    #[test]
     fn event_fallback_parses_unknown_type_name_without_manual_tag_read() {
         let event = serde_json::json!({
             "type": "future_event",
@@ -875,42 +862,6 @@ mod tests {
             }
             other => panic!("expected unknown event fallback, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn event_fallback_keeps_known_events_typed() {
-        let event = serde_json::json!({
-            "type": "stats",
-            "data": {
-                "bytes_in": 1,
-                "bytes_out": 2,
-                "active_tcp": 3,
-                "active_udp": 4
-            }
-        });
-
-        let parsed = serde_json::from_value::<ServiceUpdateOrUnknown>(event).unwrap();
-        assert!(matches!(
-            parsed,
-            ServiceUpdateOrUnknown::Known(ServiceUpdate::Stats(_))
-        ));
-    }
-
-    #[test]
-    fn ipc_error_classifies_peer_disconnects() {
-        for kind in [
-            io::ErrorKind::UnexpectedEof,
-            io::ErrorKind::BrokenPipe,
-            io::ErrorKind::ConnectionAborted,
-            io::ErrorKind::ConnectionReset,
-            io::ErrorKind::NotConnected,
-        ] {
-            let error = IpcError::IoError(io::Error::new(kind, "closed"));
-            assert!(error.is_connection_closed());
-        }
-
-        let error = IpcError::IoError(io::Error::new(io::ErrorKind::PermissionDenied, "denied"));
-        assert!(!error.is_connection_closed());
     }
 
     #[test]

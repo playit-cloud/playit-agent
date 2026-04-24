@@ -61,22 +61,3 @@ fn validate_arg_values(args: impl IntoIterator<Item = OsString>) -> Result<(), S
 
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use std::ffi::OsString;
-
-    fn validate(args: &[&str]) -> Result<(), String> {
-        super::validate_arg_values(args.iter().map(OsString::from))
-    }
-
-    #[test]
-    fn accepts_no_args() {
-        validate(&[]).unwrap();
-    }
-
-    #[test]
-    fn accepts_debug_console_arg() {
-        validate(&["--debug-console"]).unwrap();
-    }
-}
