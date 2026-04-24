@@ -27,6 +27,7 @@ use playit_ipc::model::{
 };
 use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
@@ -257,6 +258,65 @@ impl SecretSource {
 }
 
 pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
+    let secret_source = SecretSource::from_options(&options);
+    let (secret_provision_tx, mut secret_rx) = if secret_source.allows_ipc_provisioning() {
+        let (secret_tx, secret_rx) = mpsc::channel::<SecretProvisionRequest>(8);
+        (Some(secret_tx), Some(secret_rx))
+    } else {
+        (None, None)
+    };
+    let mut runtime = initialize_runtime(&options, &secret_source, secret_provision_tx).await?;
+
+    let Some(secret_code) =
+        resolve_startup_secret(&mut runtime, &secret_source, &mut secret_rx).await?
+    else {
+        return Ok(());
+    };
+
+    let Some(agent) =
+        build_agent_with_reprovisioning(&mut runtime, &secret_source, &mut secret_rx, secret_code)
+            .await?
+    else {
+        return Ok(());
+    };
+
+    publish_runtime_state(
+        &runtime.state_cache,
+        &runtime.event_tx,
+        runtime
+            .status_context
+            .status(ServicePhase::Running, true, None),
+        AgentLifecycle::Starting,
+    )
+    .await;
+
+    run_until_shutdown(runtime, agent).await
+}
+
+struct DaemonRuntime {
+    start_time: u64,
+    version_string: String,
+    status_context: StatusContext,
+    cancel_token: CancellationToken,
+    ipc_server: Arc<IpcServer>,
+    ipc_handle: Option<JoinHandle<()>>,
+    state_cache: Arc<StateCache>,
+    event_tx: broadcast::Sender<ServiceUpdate>,
+    _log_guard: Option<WorkerGuard>,
+}
+
+struct AgentRuntime {
+    api: PlayitApi,
+    runner: PlayitAgent,
+    stats: AgentStats,
+    lookup: Arc<OriginLookup>,
+}
+
+async fn initialize_runtime(
+    options: &DaemonOptions,
+    secret_source: &SecretSource,
+    secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
+) -> Result<DaemonRuntime, DaemonError> {
     let start_time = now_milli();
     let (event_tx, _) = broadcast::channel::<ServiceUpdate>(256);
     let version_string = options.version.version_string();
@@ -265,7 +325,6 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     } else {
         current_platform()
     };
-    let secret_source = SecretSource::from_options(&options);
     let status_context = StatusContext {
         secret_path: secret_source
             .secret_path()
@@ -281,7 +340,7 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     let log_filter =
         EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     let use_ansi = matches!(platform, Platform::Linux | Platform::Docker);
-    let _log_guard = init_tracing(
+    let log_guard = init_tracing(
         log_filter,
         use_ansi,
         event_tx.clone(),
@@ -301,17 +360,11 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     );
 
     let cancel_token = CancellationToken::new();
-    let (secret_provision_tx, mut secret_rx) = if secret_source.allows_ipc_provisioning() {
-        let (secret_tx, secret_rx) = mpsc::channel::<SecretProvisionRequest>(8);
-        (Some(secret_tx), Some(secret_rx))
-    } else {
-        (None, None)
-    };
     let ipc_server = Arc::new(
         IpcServer::new_with_sender(
             options.socket_path.clone(),
             cancel_token.clone(),
-            event_tx.clone(),
+            event_tx,
             secret_source.secret_path().map(PathBuf::from),
             secret_provision_tx,
             secret_source.secret_provision_error(),
@@ -320,6 +373,7 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
         .await
         .map_err(DaemonError::Ipc)?,
     );
+
     let listener = ipc_server.bind_listener().await.map_err(DaemonError::Ipc)?;
     let state_cache = ipc_server.state_cache();
     let event_tx = ipc_server.event_sender();
@@ -332,64 +386,38 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
         })
     };
 
-    let secret_code = match secret_source.load().await {
+    Ok(DaemonRuntime {
+        start_time,
+        version_string,
+        status_context,
+        cancel_token,
+        ipc_server,
+        ipc_handle: Some(ipc_handle),
+        state_cache,
+        event_tx,
+        _log_guard: log_guard,
+    })
+}
+
+async fn resolve_startup_secret(
+    runtime: &mut DaemonRuntime,
+    secret_source: &SecretSource,
+    secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
+) -> Result<Option<String>, DaemonError> {
+    match secret_source.load().await {
         LoadedSecret::Ready(secret) => {
-            publish_runtime_state(
-                &state_cache,
-                &event_tx,
-                status_context.status(ServicePhase::Starting, true, None),
-                AgentLifecycle::Starting,
-            )
-            .await;
-            secret
+            publish_starting(runtime).await;
+            Ok(Some(secret))
         }
         LoadedSecret::Missing => {
-            let Some(secret_path) = secret_source.secret_path() else {
-                return Err(DaemonError::SecretError(
-                    "No secret source available for startup".to_string(),
-                ));
-            };
-            publish_runtime_state(
-                &state_cache,
-                &event_tx,
-                status_context.status(ServicePhase::WaitingForSecret, false, None),
-                AgentLifecycle::WaitingForSecret,
-            )
-            .await;
-
-            match wait_for_secret_provisioning(
-                secret_path,
-                secret_rx
-                    .as_mut()
-                    .expect("file-backed secret mode must enable provisioning"),
-                &cancel_token,
-            )
-            .await
-            .map_err(DaemonError::SecretError)?
-            {
-                Some(secret) => {
-                    publish_runtime_state(
-                        &state_cache,
-                        &event_tx,
-                        status_context.status(ServicePhase::Starting, true, None),
-                        AgentLifecycle::Starting,
-                    )
-                    .await;
-                    secret
-                }
-                None => {
-                    publish_runtime_state(
-                        &state_cache,
-                        &event_tx,
-                        status_context.status(ServicePhase::Stopping, false, None),
-                        AgentLifecycle::Stopping,
-                    )
-                    .await;
-                    let _ = ipc_handle.await;
-                    tracing::info!("playitd shutdown before provisioning completed");
-                    return Ok(());
-                }
+            let secret_path = secret_source
+                .secret_path()
+                .expect("file-backed secret mode must provide a secret path");
+            let secret = wait_for_provisioned_secret(runtime, secret_path, secret_rx).await?;
+            if secret.is_none() {
+                tracing::info!("playitd shutdown before provisioning completed");
             }
+            Ok(secret)
         }
         LoadedSecret::Invalid(error) => {
             let service_error = daemon_error(
@@ -398,14 +426,14 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
                 secret_source.allows_ipc_provisioning(),
             );
             publish_runtime_state(
-                &state_cache,
-                &event_tx,
-                status_context.status(
+                &runtime.state_cache,
+                &runtime.event_tx,
+                runtime.status_context.status(
                     ServicePhase::HasInvalidSecret,
                     false,
                     Some(service_error.clone()),
                 ),
-                AgentLifecycle::HasInvalidSecret(service_error.clone()),
+                AgentLifecycle::HasInvalidSecret(service_error),
             )
             .await;
 
@@ -413,239 +441,225 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
                 return Err(DaemonError::SecretError(error));
             }
 
-            let secret_path = secret_source
-                .secret_path()
-                .expect("file-backed secret mode must provide a secret path");
-            match wait_for_secret_provisioning(
-                secret_path,
-                secret_rx
-                    .as_mut()
-                    .expect("file-backed secret mode must enable provisioning"),
-                &cancel_token,
-            )
-            .await
-            .map_err(DaemonError::SecretError)?
-            {
-                Some(secret) => {
-                    publish_runtime_state(
-                        &state_cache,
-                        &event_tx,
-                        status_context.status(ServicePhase::Starting, true, None),
-                        AgentLifecycle::Starting,
-                    )
-                    .await;
-                    secret
-                }
-                None => {
-                    publish_runtime_state(
-                        &state_cache,
-                        &event_tx,
-                        status_context.status(ServicePhase::Stopping, false, None),
-                        AgentLifecycle::Stopping,
-                    )
-                    .await;
-                    let _ = ipc_handle.await;
-                    tracing::info!("playitd shutdown before invalid secret was corrected");
-                    return Ok(());
-                }
+            let secret = wait_for_startup_secret(runtime, secret_source, secret_rx).await?;
+            if secret.is_none() {
+                tracing::info!("playitd shutdown before invalid secret was corrected");
             }
+            Ok(secret)
         }
-    };
+    }
+}
 
-    let lookup = Arc::new(OriginLookup::default());
-    let (api, runner, stats) = {
-        let mut secret_code = secret_code;
-
-        loop {
-            let api = PlayitApi::create(api_base(), Some(secret_code.clone()));
-            ipc_server.set_api(api.clone()).await;
-
-            if let Ok(data) = api.v1_agents_rundata().await {
-                lookup.update_from_run_data(&data).await;
-            }
-
-            let settings = PlayitAgentSettings {
-                udp_settings: UdpSettings::default(),
-                tcp_settings: TcpSettings::default(),
-                api_url: api_base(),
-                secret_key: secret_code.clone(),
-            };
-
-            match PlayitAgent::new(settings, lookup.clone()).await {
-                Ok(runner) => {
-                    let stats = runner.stats();
-                    break (api, runner, stats);
-                }
-                Err(error)
-                    if secret_source.allows_ipc_provisioning()
-                        && is_invalid_agent_secret_error(&error) =>
-                {
-                    tracing::warn!(?error, "configured agent secret is no longer valid");
-
-                    let service_error = daemon_error(
-                        ServiceErrorCode::InvalidSecret,
-                        "The configured playit secret is no longer valid. Run `playit setup` to provision a new secret.".to_string(),
-                        true,
-                    );
-                    publish_runtime_state(
-                        &state_cache,
-                        &event_tx,
-                        status_context.status(
-                            ServicePhase::WaitingForSecret,
-                            false,
-                            Some(service_error),
-                        ),
-                        AgentLifecycle::WaitingForSecret,
-                    )
-                    .await;
-
-                    let secret_path = secret_source
-                        .secret_path()
-                        .expect("file-backed secret mode must provide a secret path");
-                    match wait_for_secret_provisioning(
-                        secret_path,
-                        secret_rx
-                            .as_mut()
-                            .expect("file-backed secret mode must enable provisioning"),
-                        &cancel_token,
-                    )
-                    .await
-                    .map_err(DaemonError::SecretError)?
-                    {
-                        Some(secret) => {
-                            publish_runtime_state(
-                                &state_cache,
-                                &event_tx,
-                                status_context.status(ServicePhase::Starting, true, None),
-                                AgentLifecycle::Starting,
-                            )
-                            .await;
-                            secret_code = secret;
-                        }
-                        None => {
-                            publish_runtime_state(
-                                &state_cache,
-                                &event_tx,
-                                status_context.status(ServicePhase::Stopping, false, None),
-                                AgentLifecycle::Stopping,
-                            )
-                            .await;
-                            let _ = ipc_handle.await;
-                            tracing::info!("playitd shutdown before reprovisioning completed");
-                            return Ok(());
-                        }
-                    }
-                }
-                Err(error) if is_agent_disabled_over_limit_error(&error) => {
-                    tracing::warn!(
-                        ?error,
-                        "agent disabled because the account is over the agent limit"
-                    );
-
-                    let service_error = daemon_error(
-                        ServiceErrorCode::AgentDisabledOverLimit,
-                        agent_disabled_over_limit_message(),
-                        true,
-                    );
-                    publish_runtime_state(
-                        &state_cache,
-                        &event_tx,
-                        status_context.status(
-                            ServicePhase::DisabledOverLimit,
-                            true,
-                            Some(service_error.clone()),
-                        ),
-                        AgentLifecycle::DisabledOverLimit(service_error),
-                    )
-                    .await;
-
-                    tokio::select! {
-                        _ = cancel_token.cancelled() => {
-                            publish_runtime_state(
-                                &state_cache,
-                                &event_tx,
-                                status_context.status(ServicePhase::Stopping, true, None),
-                                AgentLifecycle::Stopping,
-                            )
-                            .await;
-                            let _ = ipc_handle.await;
-                            tracing::info!("playitd shutdown while waiting for the account agent limit to be resolved");
-                            return Ok(());
-                        }
-                        _ = tokio::time::sleep(AGENT_LIMIT_RETRY_INTERVAL) => {}
-                    }
-                }
-                Err(error) => {
-                    let message = format!("Failed to create agent: {error:?}");
-                    let service_error =
-                        daemon_error(ServiceErrorCode::Internal, message.clone(), true);
-                    publish_runtime_state(
-                        &state_cache,
-                        &event_tx,
-                        status_context.status(
-                            ServicePhase::Error,
-                            true,
-                            Some(service_error.clone()),
-                        ),
-                        AgentLifecycle::Error(service_error),
-                    )
-                    .await;
-                    return Err(DaemonError::SetupError(message));
-                }
-            }
-        }
+async fn wait_for_startup_secret(
+    runtime: &mut DaemonRuntime,
+    secret_source: &SecretSource,
+    secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
+) -> Result<Option<String>, DaemonError> {
+    let Some(secret_path) = secret_source.secret_path() else {
+        return Err(DaemonError::SecretError(
+            "No secret source available for startup".to_string(),
+        ));
     };
 
     publish_runtime_state(
-        &state_cache,
-        &event_tx,
-        status_context.status(ServicePhase::Running, true, None),
-        AgentLifecycle::Starting,
+        &runtime.state_cache,
+        &runtime.event_tx,
+        runtime
+            .status_context
+            .status(ServicePhase::WaitingForSecret, false, None),
+        AgentLifecycle::WaitingForSecret,
     )
     .await;
 
-    let agent_keep_running = runner.keep_running();
-    let mut agent_handle = tokio::spawn(runner.run());
+    wait_for_provisioned_secret(runtime, secret_path, secret_rx).await
+}
+
+async fn wait_for_provisioned_secret(
+    runtime: &mut DaemonRuntime,
+    secret_path: &Path,
+    secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
+) -> Result<Option<String>, DaemonError> {
+    let secret_rx = secret_rx
+        .as_mut()
+        .expect("file-backed secret mode must enable provisioning");
+
+    match wait_for_secret_provisioning(secret_path, secret_rx, &runtime.cancel_token)
+        .await
+        .map_err(DaemonError::SecretError)?
+    {
+        Some(secret) => {
+            publish_starting(runtime).await;
+            Ok(Some(secret))
+        }
+        None => {
+            publish_stopping(runtime, false).await;
+            await_ipc_shutdown(runtime).await;
+            Ok(None)
+        }
+    }
+}
+
+async fn build_agent_with_reprovisioning(
+    runtime: &mut DaemonRuntime,
+    secret_source: &SecretSource,
+    secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
+    secret_code: String,
+) -> Result<Option<AgentRuntime>, DaemonError> {
+    let lookup = Arc::new(OriginLookup::default());
+    let mut secret_code = secret_code;
+
+    loop {
+        let api = PlayitApi::create(api_base(), Some(secret_code.clone()));
+        runtime.ipc_server.set_api(api.clone()).await;
+
+        if let Ok(data) = api.v1_agents_rundata().await {
+            lookup.update_from_run_data(&data).await;
+        }
+
+        let settings = PlayitAgentSettings {
+            udp_settings: UdpSettings::default(),
+            tcp_settings: TcpSettings::default(),
+            api_url: api_base(),
+            secret_key: secret_code.clone(),
+        };
+
+        match PlayitAgent::new(settings, lookup.clone()).await {
+            Ok(runner) => {
+                let stats = runner.stats();
+                return Ok(Some(AgentRuntime {
+                    api,
+                    runner,
+                    stats,
+                    lookup,
+                }));
+            }
+            Err(error)
+                if secret_source.allows_ipc_provisioning()
+                    && is_invalid_agent_secret_error(&error) =>
+            {
+                tracing::warn!(?error, "configured agent secret is no longer valid");
+
+                let service_error = daemon_error(
+                    ServiceErrorCode::InvalidSecret,
+                    "The configured playit secret is no longer valid. Run `playit setup` to provision a new secret.".to_string(),
+                    true,
+                );
+                publish_runtime_state(
+                    &runtime.state_cache,
+                    &runtime.event_tx,
+                    runtime.status_context.status(
+                        ServicePhase::WaitingForSecret,
+                        false,
+                        Some(service_error),
+                    ),
+                    AgentLifecycle::WaitingForSecret,
+                )
+                .await;
+
+                let secret_path = secret_source
+                    .secret_path()
+                    .expect("file-backed secret mode must provide a secret path");
+                let Some(secret) =
+                    wait_for_provisioned_secret(runtime, secret_path, secret_rx).await?
+                else {
+                    tracing::info!("playitd shutdown before reprovisioning completed");
+                    return Ok(None);
+                };
+                secret_code = secret;
+            }
+            Err(error) if is_agent_disabled_over_limit_error(&error) => {
+                tracing::warn!(
+                    ?error,
+                    "agent disabled because the account is over the agent limit"
+                );
+
+                let service_error = daemon_error(
+                    ServiceErrorCode::AgentDisabledOverLimit,
+                    agent_disabled_over_limit_message(),
+                    true,
+                );
+                publish_runtime_state(
+                    &runtime.state_cache,
+                    &runtime.event_tx,
+                    runtime.status_context.status(
+                        ServicePhase::DisabledOverLimit,
+                        true,
+                        Some(service_error.clone()),
+                    ),
+                    AgentLifecycle::DisabledOverLimit(service_error),
+                )
+                .await;
+
+                tokio::select! {
+                    _ = runtime.cancel_token.cancelled() => {
+                        publish_stopping(runtime, true).await;
+                        await_ipc_shutdown(runtime).await;
+                        tracing::info!("playitd shutdown while waiting for the account agent limit to be resolved");
+                        return Ok(None);
+                    }
+                    _ = tokio::time::sleep(AGENT_LIMIT_RETRY_INTERVAL) => {}
+                }
+            }
+            Err(error) => {
+                let message = format!("Failed to create agent: {error:?}");
+                let service_error = daemon_error(ServiceErrorCode::Internal, message.clone(), true);
+                publish_runtime_state(
+                    &runtime.state_cache,
+                    &runtime.event_tx,
+                    runtime.status_context.status(
+                        ServicePhase::Error,
+                        true,
+                        Some(service_error.clone()),
+                    ),
+                    AgentLifecycle::Error(service_error),
+                )
+                .await;
+                return Err(DaemonError::SetupError(message));
+            }
+        }
+    }
+}
+
+async fn run_until_shutdown(
+    mut runtime: DaemonRuntime,
+    agent: AgentRuntime,
+) -> Result<(), DaemonError> {
+    let agent_keep_running = agent.runner.keep_running();
+    let mut agent_handle = tokio::spawn(agent.runner.run());
     let stats_handle = {
-        let event_tx = event_tx.clone();
-        let token = cancel_token.clone();
-        let cache = state_cache.clone();
-        tokio::spawn(broadcast_stats(stats, event_tx, cache, token))
+        let event_tx = runtime.event_tx.clone();
+        let token = runtime.cancel_token.clone();
+        let cache = runtime.state_cache.clone();
+        tokio::spawn(broadcast_stats(agent.stats, event_tx, cache, token))
     };
     let state_handle = {
-        let event_tx = event_tx.clone();
-        let token = cancel_token.clone();
-        let cache = state_cache.clone();
+        let event_tx = runtime.event_tx.clone();
+        let token = runtime.cancel_token.clone();
+        let cache = runtime.state_cache.clone();
         tokio::spawn(broadcast_agent_state(
-            api,
-            lookup,
+            agent.api,
+            agent.lookup,
             event_tx,
             cache,
             token,
-            start_time,
-            version_string,
+            runtime.start_time,
+            runtime.version_string.clone(),
         ))
     };
 
     tokio::select! {
         _ = tokio::signal::ctrl_c() => tracing::info!("Received Ctrl+C, shutting down"),
-        _ = cancel_token.cancelled() => tracing::info!("Shutdown requested via IPC"),
+        _ = runtime.cancel_token.cancelled() => tracing::info!("Shutdown requested via IPC"),
         _ = &mut agent_handle => tracing::info!("Agent task completed"),
     }
 
-    cancel_token.cancel();
+    runtime.cancel_token.cancel();
     agent_keep_running.store(false, Ordering::SeqCst);
-    publish_runtime_state(
-        &state_cache,
-        &event_tx,
-        status_context.status(ServicePhase::Stopping, true, None),
-        AgentLifecycle::Stopping,
-    )
-    .await;
+    publish_stopping(&runtime, true).await;
 
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
         let _ = (&mut agent_handle).await;
-        let _ = ipc_handle.await;
+        await_ipc_shutdown(&mut runtime).await;
         let _ = stats_handle.await;
         let _ = state_handle.await;
     })
@@ -653,6 +667,36 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
 
     tracing::info!("playitd shutdown complete");
     Ok(())
+}
+
+async fn publish_starting(runtime: &DaemonRuntime) {
+    publish_runtime_state(
+        &runtime.state_cache,
+        &runtime.event_tx,
+        runtime
+            .status_context
+            .status(ServicePhase::Starting, true, None),
+        AgentLifecycle::Starting,
+    )
+    .await;
+}
+
+async fn publish_stopping(runtime: &DaemonRuntime, has_secret: bool) {
+    publish_runtime_state(
+        &runtime.state_cache,
+        &runtime.event_tx,
+        runtime
+            .status_context
+            .status(ServicePhase::Stopping, has_secret, None),
+        AgentLifecycle::Stopping,
+    )
+    .await;
+}
+
+async fn await_ipc_shutdown(runtime: &mut DaemonRuntime) {
+    if let Some(handle) = runtime.ipc_handle.take() {
+        let _ = handle.await;
+    }
 }
 
 async fn broadcast_stats(

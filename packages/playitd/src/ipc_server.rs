@@ -222,253 +222,15 @@ impl IpcServer {
         loop {
             tokio::select! {
                 read_result = reader.read_json::<IncomingRequestEnvelope>() => {
-                    match read_result {
-                        Ok(request) => {
-                            let request_id = request.request_id;
+                    let envelope = read_result?;
+                    let request_id = envelope.request_id;
+                    let outcome = self.handle_request_envelope(envelope).await;
 
-                            if request.ipc_version != IPC_VERSION {
-                                self.send_response(
-                                    &mut writer,
-                                    request_id,
-                                    ServiceResponse::Error(protocol_error(
-                                        ServiceErrorCode::UnsupportedProtocol,
-                                        format!(
-                                            "unsupported IPC version {} (expected {})",
-                                            request.ipc_version,
-                                            IPC_VERSION
-                                        ),
-                                        false,
-                                    )),
-                                ).await?;
-                                continue;
-                            }
-
-                            let request = match request.request {
-                                ServiceRequestOrUnknown::Known(request) => request,
-                                ServiceRequestOrUnknown::Unknown(unknown) => {
-                                    if is_known_request_type(&unknown.type_name) {
-                                        let message = format!(
-                                            "invalid IPC request payload for {}",
-                                            unknown.type_name
-                                        );
-                                        self.send_response(
-                                            &mut writer,
-                                            request_id,
-                                            ServiceResponse::Error(protocol_error(
-                                                ServiceErrorCode::InvalidRequest,
-                                                message,
-                                                false,
-                                            )),
-                                        )
-                                        .await?;
-                                        continue;
-                                    }
-                                    self.send_response(
-                                        &mut writer,
-                                        request_id,
-                                        ServiceResponse::Error(invalid_request_type_error(
-                                            &unknown.type_name,
-                                        )),
-                                    )
-                                    .await?;
-                                    continue;
-                                }
-                            };
-
-                            match request {
-                                ServiceRequest::Subscribe => {
-                                    subscribed = true;
-                                    let snapshot = self.state_cache.subscription_snapshot().await;
-                                    self.send_response(
-                                        &mut writer,
-                                        request_id,
-                                        ServiceResponse::Subscribe(SubscribeResponse {
-                                            protocol: protocol_info(),
-                                            snapshot,
-                                        }),
-                                    )
-                                    .await?;
-                                }
-                                ServiceRequest::GetStatus => {
-                                    let mut status = self.state_cache.status().await;
-                                    let uptime_ms = now_milli().saturating_sub(self.start_time);
-                                    status.uptime_secs = uptime_ms / 1000;
-                                    self.send_response(
-                                        &mut writer,
-                                        request_id,
-                                        ServiceResponse::Status(status),
-                                    )
-                                    .await?;
-                                }
-                                ServiceRequest::GetState => {
-                                    self.send_response(
-                                        &mut writer,
-                                        request_id,
-                                        ServiceResponse::State(self.state_cache.lifecycle().await),
-                                    )
-                                    .await?;
-                                }
-                                ServiceRequest::Stop => {
-                                    tracing::info!("Stop request received, initiating shutdown");
-                                    self.cancel_token.cancel();
-                                    self.send_response(
-                                        &mut writer,
-                                        request_id,
-                                        ServiceResponse::Stop(CommandResponse {
-                                            accepted: true,
-                                            message: Some("shutdown requested".to_string()),
-                                        }),
-                                    )
-                                    .await?;
-                                }
-                                ServiceRequest::SetSecret { secret } => {
-                                    let lifecycle = self.state_cache.lifecycle().await;
-                                    if !matches!(lifecycle, AgentLifecycle::WaitingForSecret) {
-                                        self.send_response(
-                                            &mut writer,
-                                            request_id,
-                                            ServiceResponse::Error(
-                                                secret_provisioning_state_error(&lifecycle),
-                                            ),
-                                        )
-                                        .await?;
-                                        continue;
-                                    }
-
-                                    let Some(secret_provision_tx) = &self.secret_provision_tx else {
-                                        self.send_response(
-                                            &mut writer,
-                                            request_id,
-                                            ServiceResponse::Error(self.secret_provision_error.clone()),
-                                        )
-                                        .await?;
-                                        continue;
-                                    };
-
-                                    let (response_tx, response_rx) = oneshot::channel();
-                                    if secret_provision_tx
-                                        .send(SecretProvisionRequest { secret, response_tx })
-                                        .await
-                                        .is_err()
-                                    {
-                                        self.send_response(
-                                            &mut writer,
-                                            request_id,
-                                            ServiceResponse::Error(protocol_error(
-                                                ServiceErrorCode::ProvisioningUnavailable,
-                                                "playitd is no longer waiting for secret provisioning"
-                                                    .to_string(),
-                                                true,
-                                            )),
-                                        )
-                                        .await?;
-                                        continue;
-                                    }
-
-                                    match response_rx.await {
-                                        Ok(Ok(())) => {
-                                            self.send_response(
-                                                &mut writer,
-                                                request_id,
-                                                ServiceResponse::SetSecret(CommandResponse {
-                                                    accepted: true,
-                                                    message: Some("secret provisioned".to_string()),
-                                                }),
-                                            )
-                                            .await?;
-                                        }
-                                        Ok(Err(message)) => {
-                                            self.send_response(
-                                                &mut writer,
-                                                request_id,
-                                                ServiceResponse::Error(protocol_error(
-                                                    ServiceErrorCode::SecretWriteFailed,
-                                                    message,
-                                                    true,
-                                                )),
-                                            )
-                                            .await?;
-                                        }
-                                        Err(_) => {
-                                            self.send_response(
-                                                &mut writer,
-                                                request_id,
-                                                ServiceResponse::Error(protocol_error(
-                                                    ServiceErrorCode::ProvisioningUnavailable,
-                                                    "playitd is no longer waiting for secret provisioning"
-                                                        .to_string(),
-                                                    true,
-                                                )),
-                                            )
-                                            .await?;
-                                        }
-                                    }
-                                }
-                                ServiceRequest::ResetSecret => {
-                                    match self.reset_secret().await {
-                                        Ok(message) => {
-                                            self.send_response(
-                                                &mut writer,
-                                                request_id,
-                                                ServiceResponse::ResetSecret(CommandResponse {
-                                                    accepted: true,
-                                                    message: Some(message),
-                                                }),
-                                            )
-                                            .await?;
-
-                                            tracing::info!("Secret reset, initiating shutdown");
-                                            self.cancel_token.cancel();
-                                        }
-                                        Err(error) => {
-                                            self.send_response(
-                                                &mut writer,
-                                                request_id,
-                                                ServiceResponse::Error(error),
-                                            )
-                                            .await?;
-                                        }
-                                    }
-                                }
-                                ServiceRequest::GetSecretPath => {
-                                    self.send_response(
-                                        &mut writer,
-                                        request_id,
-                                        ServiceResponse::SecretPath(SecretPathResponse {
-                                            secret_path: self
-                                                .secret_path
-                                                .as_ref()
-                                                .map(|path| path.display().to_string()),
-                                        }),
-                                    )
-                                    .await?;
-                                }
-                                ServiceRequest::GetAccountLoginUrl => {
-                                    match self.get_account_login_url().await {
-                                        Ok(login_url) => {
-                                            self.send_response(
-                                                &mut writer,
-                                                request_id,
-                                                ServiceResponse::AccountLoginUrl(
-                                                    AccountLoginUrlResponse { login_url },
-                                                ),
-                                            )
-                                            .await?;
-                                        }
-                                        Err(error) => {
-                                            self.send_response(
-                                                &mut writer,
-                                                request_id,
-                                                ServiceResponse::Error(error),
-                                            )
-                                            .await?;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => return Err(e),
+                    if outcome.subscribed {
+                        subscribed = true;
                     }
+
+                    self.send_response(&mut writer, request_id, outcome.response).await?;
                 }
                 event_result = event_rx.recv(), if subscribed => {
                     match event_result {
@@ -483,6 +245,157 @@ impl IpcServer {
         }
 
         Ok(())
+    }
+
+    async fn handle_request_envelope(&self, envelope: IncomingRequestEnvelope) -> RequestOutcome {
+        match self.validate_request_envelope(envelope) {
+            Ok(request) => self.handle_service_request(request).await,
+            Err(response) => RequestOutcome::respond(response),
+        }
+    }
+
+    fn validate_request_envelope(
+        &self,
+        envelope: IncomingRequestEnvelope,
+    ) -> Result<ServiceRequest, ServiceResponse> {
+        if envelope.ipc_version != IPC_VERSION {
+            return Err(ServiceResponse::Error(protocol_error(
+                ServiceErrorCode::UnsupportedProtocol,
+                format!(
+                    "unsupported IPC version {} (expected {})",
+                    envelope.ipc_version, IPC_VERSION
+                ),
+                false,
+            )));
+        }
+
+        match envelope.request {
+            ServiceRequestOrUnknown::Known(request) => Ok(request),
+            ServiceRequestOrUnknown::Unknown(unknown)
+                if is_known_request_type(&unknown.type_name) =>
+            {
+                Err(ServiceResponse::Error(protocol_error(
+                    ServiceErrorCode::InvalidRequest,
+                    format!("invalid IPC request payload for {}", unknown.type_name),
+                    false,
+                )))
+            }
+            ServiceRequestOrUnknown::Unknown(unknown) => Err(ServiceResponse::Error(
+                invalid_request_type_error(&unknown.type_name),
+            )),
+        }
+    }
+
+    async fn handle_service_request(&self, request: ServiceRequest) -> RequestOutcome {
+        match request {
+            ServiceRequest::Subscribe => RequestOutcome {
+                response: self.subscribe_response().await,
+                subscribed: true,
+            },
+            ServiceRequest::GetStatus => RequestOutcome::respond(self.status_response().await),
+            ServiceRequest::GetState => {
+                RequestOutcome::respond(ServiceResponse::State(self.state_cache.lifecycle().await))
+            }
+            ServiceRequest::Stop => {
+                tracing::info!("Stop request received, initiating shutdown");
+                self.cancel_token.cancel();
+                RequestOutcome::respond(ServiceResponse::Stop(CommandResponse {
+                    accepted: true,
+                    message: Some("shutdown requested".to_string()),
+                }))
+            }
+            ServiceRequest::SetSecret { secret } => {
+                RequestOutcome::respond(self.set_secret_response(secret).await)
+            }
+            ServiceRequest::ResetSecret => {
+                RequestOutcome::respond(self.reset_secret_response().await)
+            }
+            ServiceRequest::GetSecretPath => {
+                RequestOutcome::respond(ServiceResponse::SecretPath(SecretPathResponse {
+                    secret_path: self
+                        .secret_path
+                        .as_ref()
+                        .map(|path| path.display().to_string()),
+                }))
+            }
+            ServiceRequest::GetAccountLoginUrl => {
+                RequestOutcome::respond(self.account_login_url_response().await)
+            }
+        }
+    }
+
+    async fn subscribe_response(&self) -> ServiceResponse {
+        let snapshot = self.state_cache.subscription_snapshot().await;
+        ServiceResponse::Subscribe(SubscribeResponse {
+            protocol: protocol_info(),
+            snapshot,
+        })
+    }
+
+    async fn status_response(&self) -> ServiceResponse {
+        let mut status = self.state_cache.status().await;
+        let uptime_ms = now_milli().saturating_sub(self.start_time);
+        status.uptime_secs = uptime_ms / 1000;
+        ServiceResponse::Status(status)
+    }
+
+    async fn set_secret_response(&self, secret: String) -> ServiceResponse {
+        let lifecycle = self.state_cache.lifecycle().await;
+        if !matches!(lifecycle, AgentLifecycle::WaitingForSecret) {
+            return ServiceResponse::Error(secret_provisioning_state_error(&lifecycle));
+        }
+
+        let Some(secret_provision_tx) = &self.secret_provision_tx else {
+            return ServiceResponse::Error(self.secret_provision_error.clone());
+        };
+
+        let (response_tx, response_rx) = oneshot::channel();
+        if secret_provision_tx
+            .send(SecretProvisionRequest {
+                secret,
+                response_tx,
+            })
+            .await
+            .is_err()
+        {
+            return ServiceResponse::Error(provisioning_unavailable_error());
+        }
+
+        match response_rx.await {
+            Ok(Ok(())) => ServiceResponse::SetSecret(CommandResponse {
+                accepted: true,
+                message: Some("secret provisioned".to_string()),
+            }),
+            Ok(Err(message)) => ServiceResponse::Error(protocol_error(
+                ServiceErrorCode::SecretWriteFailed,
+                message,
+                true,
+            )),
+            Err(_) => ServiceResponse::Error(provisioning_unavailable_error()),
+        }
+    }
+
+    async fn reset_secret_response(&self) -> ServiceResponse {
+        match self.reset_secret().await {
+            Ok(message) => {
+                tracing::info!("Secret reset, initiating shutdown");
+                self.cancel_token.cancel();
+                ServiceResponse::ResetSecret(CommandResponse {
+                    accepted: true,
+                    message: Some(message),
+                })
+            }
+            Err(error) => ServiceResponse::Error(error),
+        }
+    }
+
+    async fn account_login_url_response(&self) -> ServiceResponse {
+        match self.get_account_login_url().await {
+            Ok(login_url) => {
+                ServiceResponse::AccountLoginUrl(AccountLoginUrlResponse { login_url })
+            }
+            Err(error) => ServiceResponse::Error(error),
+        }
     }
 
     async fn send_response<W: tokio::io::AsyncWrite + Unpin>(
@@ -584,6 +497,20 @@ impl IpcServer {
     }
 }
 
+struct RequestOutcome {
+    response: ServiceResponse,
+    subscribed: bool,
+}
+
+impl RequestOutcome {
+    fn respond(response: ServiceResponse) -> Self {
+        Self {
+            response,
+            subscribed: false,
+        }
+    }
+}
+
 fn protocol_error(code: ServiceErrorCode, message: String, retryable: bool) -> ServiceError {
     ServiceError {
         code,
@@ -591,6 +518,14 @@ fn protocol_error(code: ServiceErrorCode, message: String, retryable: bool) -> S
         retryable,
         details: None,
     }
+}
+
+fn provisioning_unavailable_error() -> ServiceError {
+    protocol_error(
+        ServiceErrorCode::ProvisioningUnavailable,
+        "playitd is no longer waiting for secret provisioning".to_string(),
+        true,
+    )
 }
 
 fn invalid_request_type_error(request_type: &str) -> ServiceError {

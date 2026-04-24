@@ -378,13 +378,14 @@ impl IpcClient {
     }
 
     pub async fn subscribe(&mut self) -> Result<SubscribeResponse, IpcError> {
-        match self.request(ServiceRequest::Subscribe).await? {
-            ServiceResponse::Subscribe(response) => Ok(response),
-            ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
-            other => Err(IpcError::ProtocolError(format!(
-                "expected subscribe response, got {other:?}"
-            ))),
-        }
+        expect_response(
+            self.request(ServiceRequest::Subscribe).await?,
+            "subscribe response",
+            |response| match response {
+                ServiceResponse::Subscribe(response) => Some(response),
+                _ => None,
+            },
+        )
     }
 
     pub async fn recv_update(&mut self) -> Result<ServiceUpdate, IpcError> {
@@ -418,78 +419,83 @@ impl IpcClient {
     }
 
     pub async fn status(&mut self) -> Result<ServiceStatus, IpcError> {
-        match self.request(ServiceRequest::GetStatus).await? {
-            ServiceResponse::Status(status) => Ok(status),
-            ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
-            other => Err(IpcError::ProtocolError(format!(
-                "expected status response, got {other:?}"
-            ))),
-        }
+        expect_response(
+            self.request(ServiceRequest::GetStatus).await?,
+            "status response",
+            |response| match response {
+                ServiceResponse::Status(status) => Some(status),
+                _ => None,
+            },
+        )
     }
 
     pub async fn lifecycle(&mut self) -> Result<AgentLifecycle, IpcError> {
-        match self.request(ServiceRequest::GetState).await? {
-            ServiceResponse::State(state) => Ok(state),
-            ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
-            other => Err(IpcError::ProtocolError(format!(
-                "expected lifecycle response, got {other:?}"
-            ))),
-        }
+        expect_response(
+            self.request(ServiceRequest::GetState).await?,
+            "lifecycle response",
+            |response| match response {
+                ServiceResponse::State(state) => Some(state),
+                _ => None,
+            },
+        )
     }
 
     pub async fn stop(&mut self) -> Result<CommandResponse, IpcError> {
-        match self.request(ServiceRequest::Stop).await? {
-            ServiceResponse::Stop(response) => Ok(response),
-            ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
-            other => Err(IpcError::ProtocolError(format!(
-                "expected stop response, got {other:?}"
-            ))),
-        }
+        expect_response(
+            self.request(ServiceRequest::Stop).await?,
+            "stop response",
+            |response| match response {
+                ServiceResponse::Stop(response) => Some(response),
+                _ => None,
+            },
+        )
     }
 
     pub async fn set_secret(&mut self, secret: &str) -> Result<CommandResponse, IpcError> {
-        match self
-            .request(ServiceRequest::SetSecret {
+        expect_response(
+            self.request(ServiceRequest::SetSecret {
                 secret: secret.to_string(),
             })
-            .await?
-        {
-            ServiceResponse::SetSecret(response) => Ok(response),
-            ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
-            other => Err(IpcError::ProtocolError(format!(
-                "expected secret provisioning response, got {other:?}"
-            ))),
-        }
+            .await?,
+            "secret provisioning response",
+            |response| match response {
+                ServiceResponse::SetSecret(response) => Some(response),
+                _ => None,
+            },
+        )
     }
 
     pub async fn reset_secret(&mut self) -> Result<CommandResponse, IpcError> {
-        match self.request(ServiceRequest::ResetSecret).await? {
-            ServiceResponse::ResetSecret(response) => Ok(response),
-            ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
-            other => Err(IpcError::ProtocolError(format!(
-                "expected reset secret response, got {other:?}"
-            ))),
-        }
+        expect_response(
+            self.request(ServiceRequest::ResetSecret).await?,
+            "reset secret response",
+            |response| match response {
+                ServiceResponse::ResetSecret(response) => Some(response),
+                _ => None,
+            },
+        )
     }
 
     pub async fn get_secret_path(&mut self) -> Result<SecretPathResponse, IpcError> {
-        match self.request(ServiceRequest::GetSecretPath).await? {
-            ServiceResponse::SecretPath(response) => Ok(response),
-            ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
-            other => Err(IpcError::ProtocolError(format!(
-                "expected secret path response, got {other:?}"
-            ))),
-        }
+        expect_response(
+            self.request(ServiceRequest::GetSecretPath).await?,
+            "secret path response",
+            |response| match response {
+                ServiceResponse::SecretPath(response) => Some(response),
+                _ => None,
+            },
+        )
     }
 
     pub async fn get_account_login_url(&mut self) -> Result<AccountLoginUrlResponse, IpcError> {
-        match self.request(ServiceRequest::GetAccountLoginUrl).await? {
-            ServiceResponse::AccountLoginUrl(response) => Ok(response),
-            ServiceResponse::Error(error) => Err(IpcError::ProtocolError(error.to_string())),
-            other => Err(IpcError::ProtocolError(format!(
-                "expected account login URL response, got {other:?}"
-            ))),
-        }
+        expect_response(
+            self.request(ServiceRequest::GetAccountLoginUrl).await?,
+            "account login URL response",
+            |response| match response {
+                ServiceResponse::AccountLoginUrl(response) => Some(response),
+                _ => None,
+            },
+        )
     }
 
     pub async fn request(&mut self, request: ServiceRequest) -> Result<ServiceResponse, IpcError> {
@@ -567,6 +573,20 @@ impl IpcClient {
             })
         }
     }
+}
+
+fn expect_response<T>(
+    response: ServiceResponse,
+    expected: &str,
+    extract: impl FnOnce(ServiceResponse) -> Option<T>,
+) -> Result<T, IpcError> {
+    if let ServiceResponse::Error(error) = &response {
+        return Err(IpcError::ProtocolError(error.to_string()));
+    }
+
+    let debug = format!("{response:?}");
+    extract(response)
+        .ok_or_else(|| IpcError::ProtocolError(format!("expected {expected}, got {debug}")))
 }
 
 #[cfg(test)]
