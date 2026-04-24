@@ -29,6 +29,7 @@ playit-api-client = { path = "../api_client", version = "0.2.0" }
 governor = "0.10.0"
 crossbeam = "0.8.4"
 slab = "0.4.9"
+slotmap = "1.1.1"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

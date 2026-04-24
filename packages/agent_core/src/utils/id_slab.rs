@@ -1,229 +1,130 @@
-use std::{
-    mem::{ManuallyDrop, MaybeUninit},
-    u32,
-};
+use slotmap::{DefaultKey, Key, KeyData, SlotMap};
 
 pub struct IdSlab<T> {
-    entries: Vec<Entry<T>>,
-    free_slots: Vec<usize>,
+    entries: SlotMap<DefaultKey, Entry<T>>,
+    capacity: usize,
 }
 
-struct Entry<T> {
-    id: u64,
-    value: MaybeUninit<T>,
+enum Entry<T> {
+    Reserved,
+    Occupied(T),
 }
 
 pub struct IdSlabVacantEntry<'a, T> {
-    slab: &'a mut IdSlab<T>,
-    id: u64,
-    slot: usize,
+    slab: Option<&'a mut IdSlab<T>>,
+    key: DefaultKey,
 }
-
-const EMPTY_BIT: u64 = 1u64 << 63;
-const EMPTY_BIT_NEG: u64 = !EMPTY_BIT;
-const USE_NUM: u64 = (u32::MAX as u64) + 1;
-const SLOT_MASK: u64 = 0x00000000FFFFFFFF;
 
 impl<T> IdSlab<T> {
     pub fn with_capacity(capacity: usize) -> Self {
-        let mut slab = IdSlab {
-            entries: Vec::with_capacity(capacity),
-            free_slots: Vec::with_capacity(capacity),
-        };
-
-        for pos in 0..capacity {
-            slab.entries.push(Entry {
-                id: EMPTY_BIT | (pos as u64),
-                value: MaybeUninit::uninit(),
-            });
-
-            slab.free_slots.push(capacity - (pos + 1));
+        Self {
+            entries: SlotMap::with_capacity(capacity),
+            capacity,
         }
-
-        slab
     }
 
     pub fn capacity(&self) -> usize {
-        self.entries.len()
+        self.capacity
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len() - self.free_slots.len()
+        self.entries.len()
     }
 
     pub fn available(&self) -> usize {
-        self.free_slots.len()
+        self.capacity.saturating_sub(self.entries.len())
     }
 
     pub fn get(&self, id: u64) -> Option<&T> {
-        let slot = self.slot(id)?;
-
-        let entry = &self.entries[slot];
-        if (entry.id & EMPTY_BIT) == EMPTY_BIT {
-            return None;
+        match self.entries.get(key_from_id(id))? {
+            Entry::Reserved => None,
+            Entry::Occupied(value) => Some(value),
         }
-
-        unsafe { Some(entry.value.assume_init_ref()) }
     }
 
     pub fn get_mut(&mut self, id: u64) -> Option<&mut T> {
-        let slot = self.slot(id)?;
-
-        let entry = &mut self.entries[slot];
-        if (entry.id & EMPTY_BIT) == EMPTY_BIT {
-            return None;
+        match self.entries.get_mut(key_from_id(id))? {
+            Entry::Reserved => None,
+            Entry::Occupied(value) => Some(value),
         }
-
-        unsafe { Some(entry.value.assume_init_mut()) }
     }
 
     pub fn remove(&mut self, id: u64) -> Option<T> {
-        let slot = self.slot(id)?;
-
-        let entry = &mut self.entries[slot];
-        if (entry.id & EMPTY_BIT) == EMPTY_BIT {
-            return None;
+        match self.entries.remove(key_from_id(id))? {
+            Entry::Reserved => None,
+            Entry::Occupied(value) => Some(value),
         }
-
-        entry.id = EMPTY_BIT | (entry.id + USE_NUM);
-        assert_eq!(entry.id & EMPTY_BIT, EMPTY_BIT);
-
-        self.free_slots.push(slot);
-
-        Some(unsafe { std::mem::replace(&mut entry.value, MaybeUninit::uninit()).assume_init() })
-    }
-
-    fn slot(&self, id: u64) -> Option<usize> {
-        let slot = (id & SLOT_MASK) as usize;
-        if self.entries.len() <= slot {
-            return None;
-        }
-        Some(slot)
     }
 
     pub fn insert(&mut self, value: T) -> Result<u64, T> {
-        let slot = match self.free_slots.pop() {
-            Some(v) => v,
-            None => return Err(value),
-        };
+        if self.entries.len() >= self.capacity {
+            return Err(value);
+        }
 
-        let entry = &mut self.entries[slot];
-        assert!((entry.id & EMPTY_BIT) == EMPTY_BIT);
-
-        entry.id = EMPTY_BIT_NEG & entry.id;
-        assert!((entry.id & EMPTY_BIT) == 0);
-
-        entry.value.write(value);
-        Ok(entry.id)
+        let key = self.entries.insert(Entry::Occupied(value));
+        Ok(id_from_key(key))
     }
 
     pub fn vacant_entry(&mut self) -> Option<IdSlabVacantEntry<'_, T>> {
-        let slot = self.free_slots.pop()?;
-        let id = self.entries[slot].id & EMPTY_BIT_NEG;
+        if self.entries.len() >= self.capacity {
+            return None;
+        }
 
+        let key = self.entries.insert(Entry::Reserved);
         Some(IdSlabVacantEntry {
-            slab: self,
-            id,
-            slot,
+            slab: Some(self),
+            key,
         })
     }
 
-    pub fn iter(&self) -> IdSlabIter<'_, T> {
-        IdSlabIter {
-            slab: self,
-            slot: 0,
-            remaining: self.len(),
-        }
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.entries.values().filter_map(|entry| match entry {
+            Entry::Reserved => None,
+            Entry::Occupied(value) => Some(value),
+        })
     }
 
-    pub fn iter_mut(&mut self) -> IdSlabIterMut<'_, T> {
-        let remaining = self.len();
-        IdSlabIterMut {
-            slab: self,
-            slot: 0,
-            remaining,
-        }
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.entries.values_mut().filter_map(|entry| match entry {
+            Entry::Reserved => None,
+            Entry::Occupied(value) => Some(value),
+        })
     }
 }
 
 impl<'a, T> IdSlabVacantEntry<'a, T> {
     pub fn id(&self) -> u64 {
-        self.id
+        id_from_key(self.key)
     }
 
-    pub fn insert(self, value: T) -> u64 {
-        let entry = &mut self.slab.entries[self.slot];
-        assert!(entry.id & EMPTY_BIT == EMPTY_BIT);
-
-        let id = EMPTY_BIT_NEG & entry.id;
-        assert!((id & EMPTY_BIT) == 0);
-
-        entry.id = id;
-        entry.value.write(value);
-
-        let _ = ManuallyDrop::new(self);
-        id
+    pub fn insert(mut self, value: T) -> u64 {
+        let slab = self
+            .slab
+            .take()
+            .expect("vacant entry must always own its slab reference");
+        let entry = slab
+            .entries
+            .get_mut(self.key)
+            .expect("reserved slot must exist");
+        *entry = Entry::Occupied(value);
+        id_from_key(self.key)
     }
 }
 
 impl<'a, T> Drop for IdSlabVacantEntry<'a, T> {
     fn drop(&mut self) {
-        self.slab.free_slots.push(self.slot);
-    }
-}
-
-pub struct IdSlabIter<'a, T> {
-    slab: &'a IdSlab<T>,
-    slot: usize,
-    remaining: usize,
-}
-
-impl<'a, T> Iterator for IdSlabIter<'a, T> {
-    type Item = &'a T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        while self.slot < self.slab.entries.len() && self.remaining > 0 {
-            let entry = &self.slab.entries[self.slot];
-            self.slot += 1;
-
-            if (entry.id & EMPTY_BIT) == EMPTY_BIT {
-                continue;
-            }
-
-            self.remaining -= 1;
-            return Some(unsafe { entry.value.assume_init_ref() });
+        if let Some(slab) = self.slab.take() {
+            let _ = slab.entries.remove(self.key);
         }
-
-        None
     }
 }
 
-pub struct IdSlabIterMut<'a, T> {
-    slab: &'a mut IdSlab<T>,
-    slot: usize,
-    remaining: usize,
+fn id_from_key(key: DefaultKey) -> u64 {
+    key.data().as_ffi()
 }
 
-impl<'a, T> Iterator for IdSlabIterMut<'a, T> {
-    type Item = &'a mut T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let len = self.slab.entries.len();
-
-        while self.slot < len && self.remaining > 0 {
-            let entry = &mut self.slab.entries[self.slot];
-            self.slot += 1;
-
-            if (entry.id & EMPTY_BIT) == EMPTY_BIT {
-                continue;
-            }
-
-            self.remaining -= 1;
-            return Some(unsafe { std::mem::transmute(entry.value.assume_init_mut()) });
-        }
-
-        None
-    }
+fn key_from_id(id: u64) -> DefaultKey {
+    KeyData::from_ffi(id).into()
 }
 
 #[cfg(test)]
@@ -264,5 +165,17 @@ mod test {
         for id in ids {
             slab.remove(id).unwrap();
         }
+    }
+
+    #[test]
+    fn dropped_vacant_entry_releases_capacity() {
+        let mut slab = IdSlab::<String>::with_capacity(1);
+
+        {
+            let _entry = slab.vacant_entry().unwrap();
+        }
+
+        assert_eq!(slab.available(), 1);
+        assert!(slab.insert("value".to_string()).is_ok());
     }
 }
