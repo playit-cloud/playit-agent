@@ -18,8 +18,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use super::backend::{PROCESS_BACKEND_RESPONSES_MESSAGE, TrayBackend};
 use super::backend_actions::{
-    ensure_startup_shortcut, launch_status_window, query_service_running_sync,
-    remove_startup_shortcut, response_error_title, startup_shortcut_exists,
+    cleanup_legacy_console_startup_shortcuts, ensure_startup_shortcut, launch_status_window,
+    query_service_running_sync, remove_startup_shortcut, response_error_title,
+    startup_shortcut_exists,
 };
 use super::protocol::{BackendRequest, BackendResponse};
 use super::state::{AppState, UiEvent};
@@ -45,6 +46,11 @@ pub(super) fn run() -> Result<(), String> {
     let ui_event_queue = Arc::new(Mutex::new(VecDeque::new()));
     let backend = TrayBackend::new()?;
     let response_rx = backend.response_rx();
+    if let Err(error) = cleanup_legacy_console_startup_shortcuts() {
+        debug_log(&format!(
+            "failed to clean up legacy console startup shortcuts: {error}"
+        ));
+    }
     let startup_shortcut_present = match startup_shortcut_exists() {
         Ok(value) => value,
         Err(error) => {
@@ -573,8 +579,7 @@ fn show_tray_menu(hwnd: HWND) {
         state.menu_visible = true;
     }
 
-    if let Some(tray) = unsafe { get_state(hwnd).as_ref() }.and_then(|state| state.tray.as_ref())
-    {
+    if let Some(tray) = unsafe { get_state(hwnd).as_ref() }.and_then(|state| state.tray.as_ref()) {
         tray.show_menu();
     }
 

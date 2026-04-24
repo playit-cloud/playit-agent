@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 #[cfg(target_os = "windows")]
 mod windows_service_host {
     use std::ffi::OsString;
@@ -9,6 +11,7 @@ mod windows_service_host {
     use playit_ipc::ipc::{IpcClient, get_default_socket_path};
     use playitd::manager::INSTALLED_SERVICE_LABEL;
     use playitd::{windows_service_log_path, windows_service_secret_path};
+    use std::os::windows::process::CommandExt;
     use windows_service::define_windows_service;
     use windows_service::service::{
         ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus,
@@ -16,6 +19,7 @@ mod windows_service_host {
     };
     use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
     use windows_service::{Result, service_dispatcher};
+    use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
 
     const START_TIMEOUT: Duration = Duration::from_secs(15);
     const STOP_TIMEOUT: Duration = Duration::from_secs(15);
@@ -161,6 +165,7 @@ mod windows_service_host {
             .arg(secret_path)
             .arg("--log-path")
             .arg(log_path)
+            .creation_flags(CREATE_NO_WINDOW)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

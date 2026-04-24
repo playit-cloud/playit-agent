@@ -283,6 +283,10 @@ pub(super) fn startup_shortcut_exists() -> Result<bool, String> {
     startup_shortcut::startup_shortcut_exists()
 }
 
+pub(super) fn cleanup_legacy_console_startup_shortcuts() -> Result<(), String> {
+    startup_shortcut::cleanup_legacy_console_startup_shortcuts()
+}
+
 pub(super) fn write_installed_user_sid() -> Result<(), String> {
     let path = playitd::windows::write_current_user_sid()
         .map_err(|error| format!("Failed to write installed user SID: {error}"))?;
