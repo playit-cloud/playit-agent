@@ -283,10 +283,6 @@ pub(super) fn startup_shortcut_exists() -> Result<bool, String> {
     startup_shortcut::startup_shortcut_exists()
 }
 
-pub(super) fn cleanup_legacy_console_startup_shortcuts() -> Result<(), String> {
-    startup_shortcut::cleanup_legacy_console_startup_shortcuts()
-}
-
 pub(super) fn query_service_running_sync() -> bool {
     match installed_service_is_running() {
         Ok(running) => {

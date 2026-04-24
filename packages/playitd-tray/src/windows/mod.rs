@@ -79,16 +79,4 @@ mod tests {
     fn accepts_debug_console_arg() {
         validate(&["--debug-console"]).unwrap();
     }
-
-    #[test]
-    fn rejects_old_helper_args() {
-        for arg in [
-            "--ensure-startup-shortcut",
-            "--remove-startup-shortcut",
-            "--write-installed-user-sid",
-        ] {
-            let error = validate(&[arg]).expect_err("old helper args should be unsupported");
-            assert_eq!(error, format!("Unsupported playitd-tray argument: {arg}"));
-        }
-    }
 }

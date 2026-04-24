@@ -15,12 +15,6 @@ use windows::core::{GUID, Interface, PCWSTR};
 const TRAY_SHORTCUT_NAME: &str = "Playit Tray.lnk";
 const TRAY_SHORTCUT_DESCRIPTION: &str =
     "Shows the Playit tray icon when the background service is running.";
-const LEGACY_CONSOLE_STARTUP_SHORTCUT_NAMES: &[&str] = &[
-    "Playit.gg.lnk",
-    "Playit.lnk",
-    "playit.lnk",
-    "playit.exe.lnk",
-];
 
 struct ComInitialization {
     should_uninitialize: bool,
@@ -38,10 +32,6 @@ impl Drop for ComInitialization {
 
 pub(crate) fn remove_startup_shortcut() -> Result<(), String> {
     let shortcut_path = startup_shortcut_path()?;
-
-    if let Some(parent) = shortcut_path.parent() {
-        cleanup_legacy_console_startup_shortcuts(parent);
-    }
 
     if !shortcut_path.exists() {
         return Ok(());
@@ -74,7 +64,6 @@ pub(crate) fn ensure_startup_shortcut() -> Result<(), String> {
                 parent.display()
             )
         })?;
-        cleanup_legacy_console_startup_shortcuts(parent);
     }
 
     let _com = initialize_com()?;
@@ -143,15 +132,6 @@ fn create_startup_shortcut(
                     shortcut_path.display()
                 )
             })
-    }
-}
-
-fn cleanup_legacy_console_startup_shortcuts(startup_dir: &Path) {
-    for shortcut_name in LEGACY_CONSOLE_STARTUP_SHORTCUT_NAMES {
-        let shortcut_path = startup_dir.join(shortcut_name);
-        if shortcut_path.exists() {
-            let _ = fs::remove_file(shortcut_path);
-        }
     }
 }
 

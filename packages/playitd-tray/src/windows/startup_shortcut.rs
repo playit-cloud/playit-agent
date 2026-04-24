@@ -17,12 +17,6 @@ use super::util::debug_log;
 const TRAY_SHORTCUT_NAME: &str = "Playit Tray.lnk";
 const TRAY_SHORTCUT_DESCRIPTION: &str =
     "Shows the Playit tray icon when the background service is running.";
-const LEGACY_CONSOLE_STARTUP_SHORTCUT_NAMES: &[&str] = &[
-    "Playit.gg.lnk",
-    "Playit.lnk",
-    "playit.lnk",
-    "playit.exe.lnk",
-];
 
 struct ComInitialization {
     should_uninitialize: bool,
@@ -76,7 +70,6 @@ pub(super) fn ensure_startup_shortcut() -> Result<(), String> {
                 parent.display()
             )
         })?;
-        cleanup_legacy_console_startup_shortcuts_in(parent);
     }
 
     debug_log(&format!(
@@ -91,14 +84,6 @@ pub(super) fn ensure_startup_shortcut() -> Result<(), String> {
 
 pub(super) fn startup_shortcut_exists() -> Result<bool, String> {
     Ok(startup_shortcut_path()?.exists())
-}
-
-pub(super) fn cleanup_legacy_console_startup_shortcuts() -> Result<(), String> {
-    let shortcut_path = startup_shortcut_path()?;
-    if let Some(parent) = shortcut_path.parent() {
-        cleanup_legacy_console_startup_shortcuts_in(parent);
-    }
-    Ok(())
 }
 
 fn startup_shortcut_path() -> Result<PathBuf, String> {
@@ -163,27 +148,6 @@ fn create_startup_shortcut(
                     shortcut_path.display()
                 )
             })
-    }
-}
-
-fn cleanup_legacy_console_startup_shortcuts_in(startup_dir: &Path) {
-    for shortcut_name in LEGACY_CONSOLE_STARTUP_SHORTCUT_NAMES {
-        let shortcut_path = startup_dir.join(shortcut_name);
-        if !shortcut_path.exists() {
-            continue;
-        }
-
-        debug_log(&format!(
-            "cleanup_legacy_console_startup_shortcuts_in: deleting {}",
-            shortcut_path.display()
-        ));
-
-        if let Err(error) = fs::remove_file(&shortcut_path) {
-            debug_log(&format!(
-                "cleanup_legacy_console_startup_shortcuts_in: failed to delete {}: {error}",
-                shortcut_path.display()
-            ));
-        }
     }
 }
 

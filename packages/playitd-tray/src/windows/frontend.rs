@@ -18,9 +18,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use super::backend::{PROCESS_BACKEND_RESPONSES_MESSAGE, TrayBackend};
 use super::backend_actions::{
-    cleanup_legacy_console_startup_shortcuts, ensure_startup_shortcut, launch_playit,
-    launch_status_window, query_service_running_sync, remove_startup_shortcut,
-    response_error_title, startup_shortcut_exists,
+    ensure_startup_shortcut, launch_playit, launch_status_window, query_service_running_sync,
+    remove_startup_shortcut, response_error_title, startup_shortcut_exists,
 };
 use super::protocol::{BackendRequest, BackendRequestKind, BackendResponse};
 use super::state::{AppState, UiEvent};
@@ -46,11 +45,6 @@ pub(super) fn run() -> Result<(), String> {
     let ui_event_queue = Arc::new(Mutex::new(VecDeque::new()));
     let backend = TrayBackend::new()?;
     let response_rx = backend.response_rx();
-    if let Err(error) = cleanup_legacy_console_startup_shortcuts() {
-        debug_log(&format!(
-            "failed to clean up legacy console startup shortcuts: {error}"
-        ));
-    }
     let startup_shortcut_present = match startup_shortcut_exists() {
         Ok(value) => value,
         Err(error) => {
