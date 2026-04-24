@@ -6,18 +6,10 @@ mod startup_shortcut;
 mod state;
 mod util;
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 
 pub(crate) fn init_debug_console_from_args() {
     util::init_debug_console_from_args();
-}
-
-#[derive(Debug)]
-enum StartupShortcutMode {
-    RunTray,
-    EnsureShortcut,
-    RemoveShortcut,
-    WriteInstalledUserSid,
 }
 
 pub(crate) struct RunError {
@@ -33,13 +25,6 @@ impl RunError {
         }
     }
 
-    fn silent(message: String) -> Self {
-        Self {
-            message,
-            show_dialog: false,
-        }
-    }
-
     pub(crate) fn message(&self) -> &str {
         &self.message
     }
@@ -50,117 +35,60 @@ impl RunError {
 }
 
 pub(crate) fn run_from_args() -> Result<(), RunError> {
-    match startup_shortcut_mode().map_err(RunError::interactive)? {
-        StartupShortcutMode::RunTray => frontend::run().map_err(RunError::interactive),
-        StartupShortcutMode::EnsureShortcut => {
-            backend_actions::ensure_startup_shortcut().map_err(RunError::silent)
-        }
-        StartupShortcutMode::RemoveShortcut => {
-            backend_actions::remove_startup_shortcut().map_err(RunError::silent)
-        }
-        StartupShortcutMode::WriteInstalledUserSid => {
-            backend_actions::write_installed_user_sid().map_err(RunError::silent)
-        }
-    }
+    validate_args().map_err(RunError::interactive)?;
+    frontend::run().map_err(RunError::interactive)
 }
 
 pub(crate) fn show_error(title: &str, message: &str) {
     util::show_error(title, message);
 }
 
-fn startup_shortcut_mode() -> Result<StartupShortcutMode, String> {
-    let mut mode = StartupShortcutMode::RunTray;
+fn validate_args() -> Result<(), String> {
+    validate_arg_values(std::env::args_os().skip(1))
+}
 
-    for arg in std::env::args_os().skip(1) {
+fn validate_arg_values(args: impl IntoIterator<Item = OsString>) -> Result<(), String> {
+    for arg in args {
         if arg == OsStr::new("--debug-console") {
             continue;
         }
 
-        match arg.as_os_str() {
-            value if value == OsStr::new("--ensure-startup-shortcut") => {
-                if !matches!(mode, StartupShortcutMode::RunTray) {
-                    return Err(
-                        "Cannot combine --ensure-startup-shortcut with another helper mode"
-                            .to_string(),
-                    );
-                }
-                mode = StartupShortcutMode::EnsureShortcut;
-            }
-            value if value == OsStr::new("--remove-startup-shortcut") => {
-                if !matches!(mode, StartupShortcutMode::RunTray) {
-                    return Err(
-                        "Cannot combine --remove-startup-shortcut with another helper mode"
-                            .to_string(),
-                    );
-                }
-                mode = StartupShortcutMode::RemoveShortcut;
-            }
-            value if value == OsStr::new("--write-installed-user-sid") => {
-                if !matches!(mode, StartupShortcutMode::RunTray) {
-                    return Err(
-                        "Cannot combine --write-installed-user-sid with another helper mode"
-                            .to_string(),
-                    );
-                }
-                mode = StartupShortcutMode::WriteInstalledUserSid;
-            }
-            _ => {
-                return Err(format!(
-                    "Unsupported playitd-tray argument: {}",
-                    arg.to_string_lossy()
-                ));
-            }
-        }
+        return Err(format!(
+            "Unsupported playitd-tray argument: {}",
+            arg.to_string_lossy()
+        ));
     }
 
-    Ok(mode)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::StartupShortcutMode;
+    use std::ffi::OsString;
 
-    fn parse_mode(args: &[&str]) -> Result<StartupShortcutMode, String> {
-        let mut mode = StartupShortcutMode::RunTray;
+    fn validate(args: &[&str]) -> Result<(), String> {
+        super::validate_arg_values(args.iter().map(OsString::from))
+    }
 
-        for arg in args {
-            match *arg {
-                "--debug-console" => {}
-                "--ensure-startup-shortcut" => {
-                    if !matches!(mode, StartupShortcutMode::RunTray) {
-                        return Err("duplicate helper mode".to_string());
-                    }
-                    mode = StartupShortcutMode::EnsureShortcut;
-                }
-                "--remove-startup-shortcut" => {
-                    if !matches!(mode, StartupShortcutMode::RunTray) {
-                        return Err("duplicate helper mode".to_string());
-                    }
-                    mode = StartupShortcutMode::RemoveShortcut;
-                }
-                "--write-installed-user-sid" => {
-                    if !matches!(mode, StartupShortcutMode::RunTray) {
-                        return Err("duplicate helper mode".to_string());
-                    }
-                    mode = StartupShortcutMode::WriteInstalledUserSid;
-                }
-                _ => return Err("unsupported argument".to_string()),
-            }
+    #[test]
+    fn accepts_no_args() {
+        validate(&[]).unwrap();
+    }
+
+    #[test]
+    fn accepts_debug_console_arg() {
+        validate(&["--debug-console"]).unwrap();
+    }
+
+    #[test]
+    fn rejects_old_helper_args() {
+        for arg in [
+            "--ensure-startup-shortcut",
+            "--remove-startup-shortcut",
+            "--write-installed-user-sid",
+        ] {
+            let error = validate(&[arg]).expect_err("old helper args should be unsupported");
+            assert_eq!(error, format!("Unsupported playitd-tray argument: {arg}"));
         }
-
-        Ok(mode)
-    }
-
-    #[test]
-    fn parses_write_installed_user_sid_mode() {
-        let mode = parse_mode(&["--write-installed-user-sid"]).unwrap();
-        assert!(matches!(mode, StartupShortcutMode::WriteInstalledUserSid));
-    }
-
-    #[test]
-    fn write_installed_user_sid_cannot_be_combined_with_other_helper_modes() {
-        let error = parse_mode(&["--write-installed-user-sid", "--ensure-startup-shortcut"])
-            .expect_err("combined helper modes should fail");
-        assert_eq!(error, "duplicate helper mode");
     }
 }

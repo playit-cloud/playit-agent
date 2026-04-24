@@ -182,6 +182,14 @@
                                 Source="$(var.CargoTargetDir)\$(var.TargetTriple)\$(var.CargoProfile)\playitd-tray.exe"
                                 KeyPath="yes"/>
                         </Component>
+                        <Component Id="binaryWindowsSetup" Guid="*">
+                            <File
+                                Id="playitWindowsSetupExe"
+                                Name="playitd-windows-setup.exe"
+                                DiskId="1"
+                                Source="$(var.CargoTargetDir)\$(var.TargetTriple)\$(var.CargoProfile)\playitd-windows-setup.exe"
+                                KeyPath="yes"/>
+                        </Component>
                         <Component Id="playitdServiceComponent" Guid="*">
                             <File
                                 Id="playitdServiceExe"
@@ -244,6 +252,7 @@
             <ComponentRef Id="binary0"/>
             <ComponentRef Id="binary1"/>
             <ComponentRef Id="binary2"/>
+            <ComponentRef Id="binaryWindowsSetup"/>
             <ComponentRef Id="playitdServiceComponent"/>
             <ComponentRef Id="PlayitLocalAppDataFolder"/>
             <ComponentRef Id="PlayitCommonDataFolder"/>
@@ -270,20 +279,20 @@
             Return="check" />
         <CustomAction
             Id="EnsureTrayStartupShortcut"
-            FileKey="exe2"
-            ExeCommand="--ensure-startup-shortcut"
+            FileKey="playitWindowsSetupExe"
+            ExeCommand="ensure-startup-shortcut"
             Impersonate="yes"
             Return="ignore" />
         <CustomAction
             Id="WriteInstalledUserSid"
-            FileKey="exe2"
-            ExeCommand="--write-installed-user-sid"
+            FileKey="playitWindowsSetupExe"
+            ExeCommand="write-installed-user-sid"
             Impersonate="yes"
             Return="ignore" />
         <CustomAction
             Id="RemoveTrayStartupShortcut"
-            FileKey="exe2"
-            ExeCommand="--remove-startup-shortcut"
+            FileKey="playitWindowsSetupExe"
+            ExeCommand="remove-startup-shortcut"
             Impersonate="yes"
             Return="ignore" />
 

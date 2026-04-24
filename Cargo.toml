@@ -4,6 +4,7 @@ members = [
     "packages/playit-ipc",
     "packages/playitd",
     "packages/playitd-tray",
+    "packages/playitd-windows-setup",
     "packages/agent_core",
     "packages/agent_proto",
     "packages/api_client",

@@ -287,16 +287,6 @@ pub(super) fn cleanup_legacy_console_startup_shortcuts() -> Result<(), String> {
     startup_shortcut::cleanup_legacy_console_startup_shortcuts()
 }
 
-pub(super) fn write_installed_user_sid() -> Result<(), String> {
-    let path = playitd::windows::write_current_user_sid()
-        .map_err(|error| format!("Failed to write installed user SID: {error}"))?;
-    debug_log(&format!(
-        "write_installed_user_sid: wrote {}",
-        path.display()
-    ));
-    Ok(())
-}
-
 pub(super) fn query_service_running_sync() -> bool {
     match installed_service_is_running() {
         Ok(running) => {
