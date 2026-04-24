@@ -24,14 +24,38 @@ curl -L -o "${SIGN_DIR}/playit-windows-x86_64.msi" https://github.com/playit-clo
 curl -L -o "${SIGN_DIR}/playit-windows-x86.exe" https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}/playit-windows-x86.exe
 curl -L -o "${SIGN_DIR}/playit-windows-x86_64.exe" https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}/playit-windows-x86_64.exe
 
-java -jar "${SCRIPT_DIR}/jsign-5.0.jar" --keystore /usr/local/lib/libykcs11.so --storetype YUBIKEY --tsaurl http://ts.ssl.com --storepass "${PIN}" --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86.msi" \
+java -jar "${SCRIPT_DIR}/jsign-5.0.jar" \
+  --keystore PIV \
+  --storetype YUBIKEY \
+  --tsaurl http://timestamp.digicert.com \
+  --storepass "${PIN}" \
+  --certfile "${SCRIPT_DIR}/digicert.pem" \
+  --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86.msi" \
  && mv "${SIGN_DIR}/playit-windows-x86.msi" "${SIGN_DIR}/playit-windows-x86-signed.msi"
 
-java -jar "${SCRIPT_DIR}/jsign-5.0.jar" --keystore /usr/local/lib/libykcs11.so --storetype YUBIKEY --tsaurl http://ts.ssl.com --storepass "${PIN}" --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86_64.msi" \
+java -jar "${SCRIPT_DIR}/jsign-5.0.jar" \
+  --keystore PIV \
+  --storetype YUBIKEY \
+  --tsaurl http://timestamp.digicert.com \
+  --storepass "${PIN}" \
+  --certfile "${SCRIPT_DIR}/digicert.pem" \
+  --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86_64.msi" \
  && mv "${SIGN_DIR}/playit-windows-x86_64.msi" "${SIGN_DIR}/playit-windows-x86_64-signed.msi"
 
-java -jar "${SCRIPT_DIR}/jsign-5.0.jar" --keystore /usr/local/lib/libykcs11.so --storetype YUBIKEY --tsaurl http://ts.ssl.com --storepass "${PIN}" --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86.exe" \
+java -jar "${SCRIPT_DIR}/jsign-5.0.jar" \
+  --keystore PIV \
+  --storetype YUBIKEY \
+  --tsaurl http://timestamp.digicert.com \
+  --storepass "${PIN}" \
+  --certfile "${SCRIPT_DIR}/digicert.pem" \
+  --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86.exe" \
  && mv "${SIGN_DIR}/playit-windows-x86.exe" "${SIGN_DIR}/playit-windows-x86-signed.exe"
 
-java -jar "${SCRIPT_DIR}/jsign-5.0.jar" --keystore /usr/local/lib/libykcs11.so --storetype YUBIKEY --tsaurl http://ts.ssl.com --storepass "${PIN}" --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86_64.exe" \
+java -jar "${SCRIPT_DIR}/jsign-5.0.jar" \
+  --keystore PIV \
+  --storetype YUBIKEY \
+  --tsaurl http://timestamp.digicert.com \
+  --storepass "${PIN}" \
+  --certfile "${SCRIPT_DIR}/digicert.pem" \
+  --tsmode RFC3161 "${SIGN_DIR}/playit-windows-x86_64.exe" \
  && mv "${SIGN_DIR}/playit-windows-x86_64.exe" "${SIGN_DIR}/playit-windows-x86_64-signed.exe"
