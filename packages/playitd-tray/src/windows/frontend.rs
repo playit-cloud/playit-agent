@@ -18,11 +18,11 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use super::backend::{PROCESS_BACKEND_RESPONSES_MESSAGE, TrayBackend};
 use super::backend_actions::{
-    cleanup_legacy_console_startup_shortcuts, ensure_startup_shortcut, launch_status_window,
-    query_service_running_sync, remove_startup_shortcut, response_error_title,
-    startup_shortcut_exists,
+    cleanup_legacy_console_startup_shortcuts, ensure_startup_shortcut, launch_playit,
+    launch_status_window, query_service_running_sync, remove_startup_shortcut,
+    response_error_title, startup_shortcut_exists,
 };
-use super::protocol::{BackendRequest, BackendResponse};
+use super::protocol::{BackendRequest, BackendRequestKind, BackendResponse};
 use super::state::{AppState, UiEvent};
 use super::util::{SingleInstanceGuard, confirm_warning, debug_log, last_error, show_error, wide};
 
@@ -298,7 +298,9 @@ fn process_ui_events(hwnd: HWND) {
                 button_state: MouseButtonState::Up,
             } => {
                 debug_log("tray: left click");
-                show_tray_menu(hwnd);
+                if let Err(error) = launch_playit() {
+                    show_error("Failed to open playit", &error);
+                }
             }
             UiEvent::TrayClick {
                 button: MouseButton::Right,
@@ -347,8 +349,14 @@ fn process_backend_responses(hwnd: HWND) {
                 error,
             }) => {
                 if let Some(state) = unsafe { get_state(hwnd).as_mut() } {
-                    if matches!(request, super::protocol::BackendRequestKind::RefreshStatus) {
+                    if matches!(request, BackendRequestKind::RefreshStatus) {
                         state.refresh_inflight = false;
+                    }
+                    if matches!(
+                        request,
+                        BackendRequestKind::StartService | BackendRequestKind::StopService
+                    ) {
+                        state.service_action_pending = false;
                     }
                     if let Err(apply_error) = apply_service_state(
                         state,
@@ -358,7 +366,7 @@ fn process_backend_responses(hwnd: HWND) {
                         show_error("Failed to refresh playit tray", &apply_error);
                     }
 
-                    if matches!(request, super::protocol::BackendRequestKind::RefreshStatus)
+                    if matches!(request, BackendRequestKind::RefreshStatus)
                         && state.refresh_after_current
                     {
                         state.refresh_after_current = false;
@@ -472,8 +480,12 @@ fn apply_service_state(
     state.reset_agent_enabled = reset_agent_enabled;
 
     state.open_status.set_enabled(service_running);
-    state.start_service.set_enabled(!service_running);
-    state.stop_service.set_enabled(service_running);
+    state
+        .start_service
+        .set_enabled(!service_running && !state.service_action_pending);
+    state
+        .stop_service
+        .set_enabled(service_running && !state.service_action_pending);
     state.reset_agent.set_enabled(reset_agent_enabled);
     apply_startup_shortcut_state(state, state.startup_shortcut_present);
 
@@ -528,6 +540,10 @@ fn dispatch_request(hwnd: HWND, request: BackendRequest) -> Result<(), String> {
     };
 
     let is_refresh = matches!(request, BackendRequest::RefreshStatus);
+    let is_service_action = matches!(
+        request,
+        BackendRequest::StartService | BackendRequest::StopService
+    );
     debug_log(&format!(
         "frontend: dispatch_request {request:?} refresh_inflight={} refresh_after_current={}",
         state.refresh_inflight, state.refresh_after_current
@@ -537,6 +553,11 @@ fn dispatch_request(hwnd: HWND, request: BackendRequest) -> Result<(), String> {
         debug_log("frontend: coalescing refresh request because another refresh is in flight");
         state.refresh_after_current = true;
         return Ok(());
+    }
+
+    if is_service_action {
+        state.service_action_pending = true;
+        apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
     }
 
     match state.backend.try_send_request(request) {
@@ -552,12 +573,20 @@ fn dispatch_request(hwnd: HWND, request: BackendRequest) -> Result<(), String> {
                 state.refresh_after_current = true;
                 return Ok(());
             }
+            if is_service_action {
+                state.service_action_pending = false;
+                apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
+            }
 
             Err("playit tray backend queue is full".to_string())
         }
         Err(error) => {
             if is_refresh {
                 state.refresh_inflight = false;
+            }
+            if is_service_action {
+                state.service_action_pending = false;
+                apply_service_state(state, state.service_running, state.reset_agent_enabled)?;
             }
             Err(error)
         }
