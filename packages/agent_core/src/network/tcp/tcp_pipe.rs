@@ -9,6 +9,8 @@ use tokio_util::sync::CancellationToken;
 use crate::stats::AgentStats;
 use crate::utils::now_milli;
 
+const TCP_PIPE_BUFFER_SIZE: usize = 16 * 1024;
+
 /// Direction of data flow for stats tracking
 #[derive(Clone, Copy)]
 pub enum PipeDirection {
@@ -115,10 +117,17 @@ struct Worker<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> {
 
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
     pub async fn start(mut self) {
-        let mut buffer = vec![0u8; 2048];
+        let mut buffer = vec![0u8; TCP_PIPE_BUFFER_SIZE];
 
         loop {
-            tokio::task::yield_now().await;
+            // Keep the pipe cooperative when both sockets stay continuously ready.
+            tokio::select! {
+                _ = self.cancel.cancelled() => {
+                    tracing::info!("TcpPipe cancelled");
+                    break;
+                }
+                _ = tokio::task::yield_now() => {}
+            }
 
             let Some(read_res) = self
                 .cancel

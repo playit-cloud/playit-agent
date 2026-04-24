@@ -105,10 +105,14 @@ enum Event {
 }
 
 impl TcpClients {
-    pub fn new(settings: TcpSettings, lookup: Arc<OriginLookup>, stats: AgentStats) -> Self {
+    pub fn new(
+        settings: TcpSettings,
+        lookup: Arc<OriginLookup>,
+        stats: AgentStats,
+        cancel: CancellationToken,
+    ) -> Self {
         let quota = build_quota(&settings);
         let (events_tx, events_rx) = channel(1024);
-        let cancel = CancellationToken::new();
 
         tokio::spawn(
             Worker {
@@ -116,7 +120,7 @@ impl TcpClients {
                 lookup,
                 events: events_rx,
                 events_tx: events_tx.clone(),
-                cancel: cancel.clone(),
+                cancel: cancel.child_token(),
                 settings,
                 stats,
                 clients: Vec::with_capacity(32),
@@ -165,7 +169,13 @@ impl Worker {
 
         loop {
             let event = tokio::select! {
-                recv_opt = self.events.recv() => recv_opt.unwrap(),
+                recv_opt = self.events.recv() => {
+                    let Some(event) = recv_opt else {
+                        tracing::info!("TcpClients worker closed because event channel closed");
+                        break;
+                    };
+                    event
+                },
                 _ = tokio::time::sleep_until(next_clear) => {
                     next_clear = Instant::now() + Duration::from_secs(15);
                     Event::ClearOld
@@ -222,6 +232,7 @@ impl Worker {
 
                     let event_tx = self.events_tx.clone();
                     let stats = self.stats.clone();
+                    let cancel = self.cancel.child_token();
                     tokio::spawn(async move {
                         let Some(origin_addr) = found.resolve_local(details.port_offset).await
                         else {
@@ -236,11 +247,13 @@ impl Worker {
 
                         /* connect to tunnel server */
 
-                        let conn_res = tokio::time::timeout(
-                            Duration::from_secs(8),
-                            TcpStream::connect(details.claim_instructions.address),
-                        )
-                        .await;
+                        let conn_res = tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            res = tokio::time::timeout(
+                                Duration::from_secs(8),
+                                TcpStream::connect(details.claim_instructions.address),
+                            ) => res,
+                        };
 
                         let mut tunn_stream = match conn_res {
                             Ok(Ok(stream)) => stream,
@@ -267,11 +280,13 @@ impl Worker {
 
                         /* send token to tunnel server to claim client */
 
-                        let send_res = tokio::time::timeout(
-                            Duration::from_secs(8),
-                            tunn_stream.write_all(&details.claim_instructions.token),
-                        )
-                        .await;
+                        let send_res = tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            res = tokio::time::timeout(
+                                Duration::from_secs(8),
+                                tunn_stream.write_all(&details.claim_instructions.token),
+                            ) => res,
+                        };
                         match send_res {
                             Ok(Ok(_)) => {}
                             Err(_) => {
@@ -290,11 +305,13 @@ impl Worker {
                         }
 
                         let mut expect_buffer = [0u8; 8];
-                        let confirm_res = tokio::time::timeout(
-                            Duration::from_secs(4),
-                            tunn_stream.read_exact(&mut expect_buffer[..]),
-                        )
-                        .await;
+                        let confirm_res = tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            res = tokio::time::timeout(
+                                Duration::from_secs(4),
+                                tunn_stream.read_exact(&mut expect_buffer[..]),
+                            ) => res,
+                        };
                         match confirm_res {
                             Ok(Ok(_)) => {}
                             Err(_) => {
@@ -311,11 +328,13 @@ impl Worker {
 
                         /* connect to origin */
 
-                        let connect_res = tokio::time::timeout(
-                            Duration::from_secs(2),
-                            LanAddress::tcp_socket(true, details.peer_addr, origin_addr),
-                        )
-                        .await;
+                        let connect_res = tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            res = tokio::time::timeout(
+                                Duration::from_secs(2),
+                                LanAddress::tcp_socket(true, details.peer_addr, origin_addr),
+                            ) => res,
+                        };
 
                         let mut origin_stream = match connect_res {
                             Ok(Ok(stream)) => stream,
@@ -342,18 +361,22 @@ impl Worker {
 
                         let proxy_write_res = match found.proxy_protocol {
                             Some(ProxyProtocol::ProxyProtocolV1) => {
-                                tokio::time::timeout(
-                                    Duration::from_secs(2),
-                                    proxy_header.write_v1_tcp(&mut origin_stream),
-                                )
-                                .await
+                                tokio::select! {
+                                    _ = cancel.cancelled() => return,
+                                    res = tokio::time::timeout(
+                                        Duration::from_secs(2),
+                                        proxy_header.write_v1_tcp(&mut origin_stream),
+                                    ) => res,
+                                }
                             }
                             Some(ProxyProtocol::ProxyProtocolV2) => {
-                                tokio::time::timeout(
-                                    Duration::from_secs(2),
-                                    proxy_header.write_v2_tcp(&mut origin_stream),
-                                )
-                                .await
+                                tokio::select! {
+                                    _ = cancel.cancelled() => return,
+                                    res = tokio::time::timeout(
+                                        Duration::from_secs(2),
+                                        proxy_header.write_v2_tcp(&mut origin_stream),
+                                    ) => res,
+                                }
                             }
                             None => Ok(Ok(())),
                         };
@@ -375,18 +398,20 @@ impl Worker {
                         let tcp_client =
                             TcpClient::create_with_stats(tunn_stream, origin_stream, Some(stats))
                                 .await;
-                        let _ = event_tx
-                            .send(Event::ConnectedClient(Client {
-                                id: client_id,
-                                added_at: now_milli(),
-                                tunnel_id: details.tunnel_id,
-                                port_offset: details.port_offset,
-                                source_addr: details.peer_addr,
-                                tunnel_addr: details.connect_addr,
-                                origin_addr,
-                                tcp: tcp_client,
-                            }))
-                            .await;
+                        let event = Event::ConnectedClient(Client {
+                            id: client_id,
+                            added_at: now_milli(),
+                            tunnel_id: details.tunnel_id,
+                            port_offset: details.port_offset,
+                            source_addr: details.peer_addr,
+                            tunnel_addr: details.connect_addr,
+                            origin_addr,
+                            tcp: tcp_client,
+                        });
+                        let _ = tokio::select! {
+                            _ = cancel.cancelled() => return,
+                            res = event_tx.send(event) => res,
+                        };
                     });
                 }
                 Event::GetDetails(resp) => {

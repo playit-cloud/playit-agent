@@ -1,7 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
@@ -624,7 +623,7 @@ async fn run_until_shutdown(
     mut runtime: DaemonRuntime,
     agent: AgentRuntime,
 ) -> Result<(), DaemonError> {
-    let agent_keep_running = agent.runner.keep_running();
+    let agent_cancel = agent.runner.cancellation_token();
     let mut agent_handle = tokio::spawn(agent.runner.run());
     let stats_handle = {
         let event_tx = runtime.event_tx.clone();
@@ -654,7 +653,7 @@ async fn run_until_shutdown(
     }
 
     runtime.cancel_token.cancel();
-    agent_keep_running.store(false, Ordering::SeqCst);
+    agent_cancel.cancel();
     publish_stopping(&runtime, true).await;
 
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
