@@ -8,6 +8,8 @@ repository = "https://github.com/playit-cloud/playit-agent"
 
 [dependencies]
 tokio = { workspace = true }
+tokio-util = { workspace = true }
+futures-util = { workspace = true, features = ["sink"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 dirs = { workspace = true }

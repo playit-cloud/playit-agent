@@ -11,9 +11,9 @@ use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
 use playit_ipc::endpoint::IpcEndpoint;
 use playit_ipc::ipc::{
-    EventEnvelope, HelloEnvelope, IPC_VERSION, IncomingRequestEnvelope, IpcError, ResponseEnvelope,
-    ServerEnvelope, ServiceRequest, ServiceRequestOrUnknown, ServiceResponse,
-    get_default_socket_path, is_known_request_type, protocol_info,
+    EventEnvelope, HelloEnvelope, IPC_VERSION, IncomingRequestEnvelope, IpcError, IpcFrameWriter,
+    ResponseEnvelope, ServerEnvelope, ServiceRequest, ServiceRequestOrUnknown, ServiceResponse,
+    framed_parts, get_default_socket_path, is_known_request_type, protocol_info, try_connect,
 };
 use playit_ipc::model::{
     AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ConnectionStats, SecretPathResponse,
@@ -21,7 +21,6 @@ use playit_ipc::model::{
     SubscriptionSnapshot,
 };
 use serde_json::json;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -214,9 +213,7 @@ impl IpcServer {
 
     async fn handle_client(&self, stream: Stream) -> Result<(), IpcError> {
         let (reader, writer) = stream.split();
-        let mut reader = BufReader::new(reader);
-        let mut writer = BufWriter::new(writer);
-        let mut line = String::new();
+        let (mut reader, mut writer) = framed_parts(reader, writer);
         let mut event_rx = self.event_tx.subscribe();
         let mut subscribed = false;
 
@@ -224,13 +221,9 @@ impl IpcServer {
 
         loop {
             tokio::select! {
-                read_result = reader.read_line(&mut line) => {
+                read_result = reader.read_json::<IncomingRequestEnvelope>() => {
                     match read_result {
-                        Ok(0) => break,
-                        Ok(_) => {
-                            let request =
-                                serde_json::from_str::<IncomingRequestEnvelope>(line.trim())?;
-                            line.clear();
+                        Ok(request) => {
                             let request_id = request.request_id;
 
                             if request.ipc_version != IPC_VERSION {
@@ -474,7 +467,7 @@ impl IpcServer {
                                 }
                             }
                         }
-                        Err(e) => return Err(e.into()),
+                        Err(e) => return Err(e),
                     }
                 }
                 event_result = event_rx.recv(), if subscribed => {
@@ -494,47 +487,41 @@ impl IpcServer {
 
     async fn send_response<W: tokio::io::AsyncWrite + Unpin>(
         &self,
-        writer: &mut BufWriter<W>,
+        writer: &mut IpcFrameWriter<W>,
         request_id: u64,
         response: ServiceResponse,
     ) -> Result<(), IpcError> {
-        let json = serde_json::to_string(&ServerEnvelope::Response(ResponseEnvelope {
-            ipc_version: IPC_VERSION,
-            request_id,
-            response,
-        }))?;
-        writer.write_all(json.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await?;
-        Ok(())
+        writer
+            .write_json(&ServerEnvelope::Response(ResponseEnvelope {
+                ipc_version: IPC_VERSION,
+                request_id,
+                response,
+            }))
+            .await
     }
 
     async fn send_hello<W: tokio::io::AsyncWrite + Unpin>(
         &self,
-        writer: &mut BufWriter<W>,
+        writer: &mut IpcFrameWriter<W>,
     ) -> Result<(), IpcError> {
-        let json = serde_json::to_string(&ServerEnvelope::Hello(HelloEnvelope {
-            protocol: protocol_info(),
-        }))?;
-        writer.write_all(json.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await?;
-        Ok(())
+        writer
+            .write_json(&ServerEnvelope::Hello(HelloEnvelope {
+                protocol: protocol_info(),
+            }))
+            .await
     }
 
     async fn send_event<W: tokio::io::AsyncWrite + Unpin>(
         &self,
-        writer: &mut BufWriter<W>,
+        writer: &mut IpcFrameWriter<W>,
         event: ServiceUpdate,
     ) -> Result<(), IpcError> {
-        let json = serde_json::to_string(&ServerEnvelope::Event(EventEnvelope {
-            ipc_version: IPC_VERSION,
-            event,
-        }))?;
-        writer.write_all(json.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-        writer.flush().await?;
-        Ok(())
+        writer
+            .write_json(&ServerEnvelope::Event(EventEnvelope {
+                ipc_version: IPC_VERSION,
+                event,
+            }))
+            .await
     }
 
     async fn reset_secret(&self) -> Result<String, ServiceError> {
@@ -594,33 +581,6 @@ impl IpcServer {
         );
         *self.guest_login_cache.write().await = Some((link.clone(), now_milli()));
         Ok(link)
-    }
-}
-
-async fn try_connect(endpoint: &IpcEndpoint) -> Result<Stream, IpcError> {
-    match endpoint {
-        IpcEndpoint::Namespaced(name) => {
-            let name = name
-                .clone()
-                .to_ns_name::<GenericNamespaced>()
-                .map_err(|e| {
-                    IpcError::ConnectionFailed(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        e,
-                    ))
-                })?;
-            Stream::connect(name)
-                .await
-                .map_err(IpcError::ConnectionFailed)
-        }
-        IpcEndpoint::Filesystem(path) => {
-            let name = path.clone().to_fs_name::<GenericFilePath>().map_err(|e| {
-                IpcError::ConnectionFailed(std::io::Error::new(std::io::ErrorKind::InvalidInput, e))
-            })?;
-            Stream::connect(name)
-                .await
-                .map_err(IpcError::ConnectionFailed)
-        }
     }
 }
 

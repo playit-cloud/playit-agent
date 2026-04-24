@@ -1991,10 +1991,12 @@ name = "playit-ipc"
 version = "1.0.0"
 dependencies = [
  "dirs 6.0.0",
+ "futures-util",
  "interprocess",
  "serde",
  "serde_json",
  "tokio",
+ "tokio-util",
  "tracing",
  "whoami",
 ]

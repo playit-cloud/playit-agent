@@ -2,13 +2,16 @@
 
 use std::io;
 
+use futures_util::{SinkExt, StreamExt};
 use interprocess::local_socket::{
     GenericFilePath, GenericNamespaced, ToFsName, ToNsName,
     tokio::{Stream, prelude::*},
 };
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec, LinesCodecError};
 
 use crate::endpoint::IpcEndpoint;
 use crate::model::{
@@ -201,7 +204,7 @@ pub fn get_default_endpoint() -> IpcEndpoint {
     IpcEndpoint::default()
 }
 
-async fn try_connect(endpoint: &IpcEndpoint) -> Result<Stream, IpcError> {
+pub async fn try_connect(endpoint: &IpcEndpoint) -> Result<Stream, IpcError> {
     match endpoint {
         IpcEndpoint::Namespaced(name) => {
             let name = name
@@ -225,9 +228,120 @@ async fn try_connect(endpoint: &IpcEndpoint) -> Result<Stream, IpcError> {
     }
 }
 
+pub struct IpcFrameReader<R> {
+    reader: FramedRead<R, LinesCodec>,
+}
+
+pub struct IpcFrameWriter<W> {
+    writer: FramedWrite<W, LinesCodec>,
+}
+
+pub struct IpcTransport<R, W> {
+    reader: IpcFrameReader<R>,
+    writer: IpcFrameWriter<W>,
+}
+
+impl<R> IpcFrameReader<R>
+where
+    R: AsyncRead + Unpin,
+{
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader: FramedRead::new(reader, LinesCodec::new()),
+        }
+    }
+
+    pub async fn read_json<T>(&mut self) -> Result<T, IpcError>
+    where
+        T: DeserializeOwned,
+    {
+        let line = self.read_line().await?;
+        Ok(serde_json::from_str(&line)?)
+    }
+
+    async fn read_line(&mut self) -> Result<String, IpcError> {
+        self.reader
+            .next()
+            .await
+            .transpose()
+            .map_err(line_codec_error)?
+            .ok_or_else(|| {
+                IpcError::IoError(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Connection closed",
+                ))
+            })
+    }
+}
+
+impl<W> IpcFrameWriter<W>
+where
+    W: AsyncWrite + Unpin,
+{
+    pub fn new(writer: W) -> Self {
+        Self {
+            writer: FramedWrite::new(writer, LinesCodec::new()),
+        }
+    }
+
+    pub async fn write_json<T>(&mut self, value: &T) -> Result<(), IpcError>
+    where
+        T: Serialize,
+    {
+        let json = serde_json::to_string(value)?;
+        self.writer.send(json).await.map_err(line_codec_error)
+    }
+}
+
+impl<R, W> IpcTransport<R, W>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    pub fn new(reader: R, writer: W) -> Self {
+        Self {
+            reader: IpcFrameReader::new(reader),
+            writer: IpcFrameWriter::new(writer),
+        }
+    }
+
+    pub async fn read_json<T>(&mut self) -> Result<T, IpcError>
+    where
+        T: DeserializeOwned,
+    {
+        self.reader.read_json().await
+    }
+
+    pub async fn write_json<T>(&mut self, value: &T) -> Result<(), IpcError>
+    where
+        T: Serialize,
+    {
+        self.writer.write_json(value).await
+    }
+}
+
+pub fn framed_parts<R, W>(reader: R, writer: W) -> (IpcFrameReader<R>, IpcFrameWriter<W>)
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    (IpcFrameReader::new(reader), IpcFrameWriter::new(writer))
+}
+
+fn line_codec_error(error: LinesCodecError) -> IpcError {
+    match error {
+        LinesCodecError::Io(error) => IpcError::IoError(error),
+        LinesCodecError::MaxLineLengthExceeded => {
+            IpcError::ProtocolError("IPC frame exceeded maximum line length".to_string())
+        }
+    }
+}
+
 pub struct IpcClient {
-    reader: BufReader<interprocess::local_socket::tokio::RecvHalf>,
-    writer: BufWriter<interprocess::local_socket::tokio::SendHalf>,
+    transport: IpcTransport<
+        interprocess::local_socket::tokio::RecvHalf,
+        interprocess::local_socket::tokio::SendHalf,
+    >,
     next_request_id: u64,
     server_protocol: ProtocolInfo,
 }
@@ -242,8 +356,7 @@ impl IpcClient {
         let stream = try_connect(&endpoint).await?;
         let (reader, writer) = stream.split();
         let mut client = Self {
-            reader: BufReader::new(reader),
-            writer: BufWriter::new(writer),
+            transport: IpcTransport::new(reader, writer),
             next_request_id: 1,
             server_protocol: ProtocolInfo::default(),
         };
@@ -276,8 +389,7 @@ impl IpcClient {
 
     pub async fn recv_update(&mut self) -> Result<ServiceUpdate, IpcError> {
         loop {
-            let line = self.read_line().await?;
-            match decode_incoming_server_envelope(&line)? {
+            match self.recv_incoming_server_envelope().await? {
                 IncomingServerEnvelope::Event(event) => {
                     self.ensure_ipc_version(event.ipc_version)?;
                     match event.event {
@@ -398,14 +510,13 @@ impl IpcClient {
         let request_id = self.next_request_id;
         self.next_request_id += 1;
 
-        let json = serde_json::to_string(&RequestEnvelope {
-            ipc_version: IPC_VERSION,
-            request_id,
-            request,
-        })?;
-        self.writer.write_all(json.as_bytes()).await?;
-        self.writer.write_all(b"\n").await?;
-        self.writer.flush().await?;
+        self.transport
+            .write_json(&RequestEnvelope {
+                ipc_version: IPC_VERSION,
+                request_id,
+                request,
+            })
+            .await?;
         Ok(request_id)
     }
 
@@ -437,20 +548,13 @@ impl IpcClient {
     }
 
     async fn recv_server_envelope(&mut self) -> Result<ServerEnvelope, IpcError> {
-        let line = self.read_line().await?;
-        decode_server_envelope(&line)
+        self.transport.read_json().await
     }
 
-    async fn read_line(&mut self) -> Result<String, IpcError> {
-        let mut line = String::new();
-        let bytes_read = self.reader.read_line(&mut line).await?;
-        if bytes_read == 0 {
-            return Err(IpcError::IoError(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "Connection closed",
-            )));
-        }
-        Ok(line)
+    async fn recv_incoming_server_envelope(&mut self) -> Result<IncomingServerEnvelope, IpcError> {
+        let envelope = self.transport.read_json::<IncomingServerEnvelope>().await?;
+        validate_incoming_server_envelope(&envelope)?;
+        Ok(envelope)
     }
 
     fn ensure_ipc_version(&self, actual: u32) -> Result<(), IpcError> {
@@ -465,12 +569,14 @@ impl IpcClient {
     }
 }
 
-fn decode_server_envelope(line: &str) -> Result<ServerEnvelope, IpcError> {
-    Ok(serde_json::from_str(line.trim())?)
-}
-
+#[cfg(test)]
 fn decode_incoming_server_envelope(line: &str) -> Result<IncomingServerEnvelope, IpcError> {
     let envelope = serde_json::from_str::<IncomingServerEnvelope>(line.trim())?;
+    validate_incoming_server_envelope(&envelope)?;
+    Ok(envelope)
+}
+
+fn validate_incoming_server_envelope(envelope: &IncomingServerEnvelope) -> Result<(), IpcError> {
     match &envelope {
         IncomingServerEnvelope::Hello(hello) => {
             let _ = hello;
@@ -487,7 +593,7 @@ fn decode_incoming_server_envelope(line: &str) -> Result<IncomingServerEnvelope,
             }
         }
     }
-    Ok(envelope)
+    Ok(())
 }
 
 pub fn is_known_request_type(type_name: &str) -> bool {
