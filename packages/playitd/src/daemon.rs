@@ -646,18 +646,37 @@ async fn run_until_shutdown(
         ))
     };
 
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => tracing::info!("Received Ctrl+C, shutting down"),
-        _ = runtime.cancel_token.cancelled() => tracing::info!("Shutdown requested via IPC"),
-        _ = &mut agent_handle => tracing::info!("Agent task completed"),
-    }
+    let shutdown_reason = tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Received Ctrl+C, shutting down");
+            ShutdownReason::Requested
+        }
+        _ = runtime.cancel_token.cancelled() => {
+            tracing::info!("Shutdown requested via IPC");
+            ShutdownReason::Requested
+        }
+        result = &mut agent_handle => {
+            if runtime.cancel_token.is_cancelled() || agent_cancel.is_cancelled() {
+                tracing::info!("Agent task completed during shutdown");
+                ShutdownReason::Requested
+            } else {
+                match &result {
+                    Ok(()) => tracing::error!("Agent task stopped unexpectedly"),
+                    Err(error) => tracing::error!(?error, "Agent task failed"),
+                }
+                ShutdownReason::AgentStopped(result)
+            }
+        }
+    };
 
     runtime.cancel_token.cancel();
     agent_cancel.cancel();
     publish_stopping(&runtime, true).await;
 
     let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        let _ = (&mut agent_handle).await;
+        if !matches!(shutdown_reason, ShutdownReason::AgentStopped(_)) {
+            let _ = (&mut agent_handle).await;
+        }
         await_ipc_shutdown(&mut runtime).await;
         let _ = stats_handle.await;
         let _ = state_handle.await;
@@ -665,7 +684,21 @@ async fn run_until_shutdown(
     .await;
 
     tracing::info!("playitd shutdown complete");
-    Ok(())
+
+    match shutdown_reason {
+        ShutdownReason::Requested => Ok(()),
+        ShutdownReason::AgentStopped(Ok(())) => Err(DaemonError::SetupError(
+            "playit agent task stopped unexpectedly".to_string(),
+        )),
+        ShutdownReason::AgentStopped(Err(error)) => Err(DaemonError::SetupError(format!(
+            "playit agent task failed: {error}"
+        ))),
+    }
+}
+
+enum ShutdownReason {
+    Requested,
+    AgentStopped(Result<(), tokio::task::JoinError>),
 }
 
 async fn publish_starting(runtime: &DaemonRuntime) {
