@@ -32,9 +32,6 @@ RUN cargo build --release --package=playit-agent-core
 # Build daemon
 COPY packages/playit-ipc packages/playit-ipc
 COPY packages/playitd packages/playitd
-COPY packages/playitd-tray packages/playitd-tray
-COPY packages/playitd-windows-setup packages/playitd-windows-setup
-COPY packages/playit-cli packages/playit-cli
 RUN cargo build --release --package playitd --bin playitd
 
 ########## RUNTIME CONTAINER ##########
