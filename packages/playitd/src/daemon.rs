@@ -409,10 +409,7 @@ async fn resolve_startup_secret(
             Ok(Some(secret))
         }
         LoadedSecret::Missing => {
-            let secret_path = secret_source
-                .secret_path()
-                .expect("file-backed secret mode must provide a secret path");
-            let secret = wait_for_provisioned_secret(runtime, secret_path, secret_rx).await?;
+            let secret = wait_for_startup_secret(runtime, secret_source, secret_rx).await?;
             if secret.is_none() {
                 tracing::info!("playitd shutdown before provisioning completed");
             }
@@ -1204,5 +1201,96 @@ fn init_tracing(
 
             Ok(None)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use super::{DaemonOptions, run_daemon};
+    use playit_ipc::ipc::IpcClient;
+    use playit_ipc::model::{AgentLifecycle, ServicePhase};
+
+    fn unique_test_path(name: &str, extension: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "playitd-{name}-{}-{}.{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            extension,
+        ))
+    }
+
+    async fn wait_for_waiting_for_secret(socket_path: &str) -> IpcClient {
+        let mut last_lifecycle = None;
+
+        for _ in 0..50 {
+            match IpcClient::connect_with_path(socket_path).await {
+                Ok(mut client) => match client.lifecycle().await {
+                    Ok(AgentLifecycle::WaitingForSecret) => return client,
+                    Ok(lifecycle) => {
+                        last_lifecycle = Some(format!("{lifecycle:?}"));
+                    }
+                    Err(error) => {
+                        last_lifecycle = Some(format!("lifecycle error: {error}"));
+                    }
+                },
+                Err(error) => {
+                    last_lifecycle = Some(format!("connect error: {error}"));
+                }
+            }
+
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        panic!(
+            "daemon did not report WaitingForSecret over IPC; last observed state: {}",
+            last_lifecycle.unwrap_or_else(|| "none".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_file_secret_reports_waiting_for_secret() {
+        let secret_path = unique_test_path("missing-secret", "toml");
+        let socket_path = unique_test_path("missing-secret", "sock")
+            .display()
+            .to_string();
+        let _ = std::fs::remove_file(&secret_path);
+        let _ = std::fs::remove_file(&socket_path);
+
+        let daemon_handle = tokio::spawn(run_daemon(DaemonOptions {
+            secret: None,
+            secret_path: Some(secret_path.clone()),
+            socket_path: Some(socket_path.clone()),
+            log_path: None,
+            platform_docker: false,
+            ..DaemonOptions::default()
+        }));
+
+        let mut client = wait_for_waiting_for_secret(&socket_path).await;
+        let status = client.status().await.unwrap();
+        let expected_secret_path = secret_path.display().to_string();
+
+        assert!(matches!(status.phase, ServicePhase::WaitingForSecret));
+        assert!(!status.has_secret);
+        assert_eq!(
+            status.secret_path.as_deref(),
+            Some(expected_secret_path.as_str())
+        );
+
+        let stop_response = client.stop().await.unwrap();
+        assert!(stop_response.accepted);
+
+        let daemon_result = tokio::time::timeout(Duration::from_secs(5), daemon_handle)
+            .await
+            .expect("daemon did not stop after IPC stop request")
+            .expect("daemon task panicked");
+        assert!(daemon_result.is_ok());
+
+        let _ = std::fs::remove_file(&secret_path);
+        let _ = std::fs::remove_file(&socket_path);
     }
 }
