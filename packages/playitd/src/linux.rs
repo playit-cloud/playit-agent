@@ -1,0 +1,164 @@
+use std::{
+    ffi::CString,
+    io,
+    os::unix::{ffi::OsStrExt, fs::PermissionsExt},
+    path::Path,
+    process::Command,
+};
+
+use playit_ipc::ipc::IpcError;
+
+use crate::manager::ServiceManagerError;
+
+const SYSTEMD_SERVICE_NAME: &str = "playit";
+const PLAYIT_SOCKET_GROUP_NAME: &str = "playit";
+const PLAYIT_SOCKET_MODE: u32 = 0o660;
+
+pub(crate) fn start_systemd_service() -> Result<(), ServiceManagerError> {
+    run_systemctl(&systemd_start_args(), ServiceManagerError::StartFailed)
+}
+
+pub(crate) fn is_systemd_service_active() -> Result<bool, ServiceManagerError> {
+    let args = systemd_is_active_args();
+    let output = Command::new("systemctl")
+        .args(args)
+        .output()
+        .map_err(|e| ServiceManagerError::NotAvailable(format!("Failed to run systemctl: {e}")))?;
+
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(3) | Some(4) => Ok(false),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let detail = if !stderr.is_empty() {
+                stderr
+            } else if !stdout.is_empty() {
+                stdout
+            } else {
+                format!("exit status {}", output.status)
+            };
+
+            Err(ServiceManagerError::NotAvailable(format!(
+                "systemctl {} failed: {}",
+                args.join(" "),
+                detail
+            )))
+        }
+    }
+}
+
+pub(crate) fn stop_systemd_service() -> Result<(), ServiceManagerError> {
+    run_systemctl(&systemd_stop_args(), ServiceManagerError::StopFailed)
+}
+
+pub(crate) fn configure_socket_permissions(socket_path: &str) -> Result<(), IpcError> {
+    let Some(target) = socket_permission_target(socket_path, crate::unix_account::effective_uid())
+    else {
+        return Ok(());
+    };
+
+    if !Path::new(target.path).exists() {
+        return Err(IpcError::BindFailed(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("IPC socket {} was not created", target.path),
+        )));
+    }
+
+    let Some(group_gid) = crate::unix_account::group_gid_by_name(target.group_name) else {
+        tracing::warn!(
+            group = target.group_name,
+            socket_path = %target.path,
+            "IPC socket group is missing, leaving default socket permissions in place"
+        );
+        return Ok(());
+    };
+
+    apply_socket_permissions(target.path, group_gid, target.mode)
+}
+
+fn systemd_start_args() -> [&'static str; 2] {
+    ["start", SYSTEMD_SERVICE_NAME]
+}
+
+fn systemd_is_active_args() -> [&'static str; 3] {
+    ["is-active", "--quiet", SYSTEMD_SERVICE_NAME]
+}
+
+fn systemd_stop_args() -> [&'static str; 2] {
+    ["stop", SYSTEMD_SERVICE_NAME]
+}
+
+fn run_systemctl(
+    args: &[&str],
+    err_builder: fn(String) -> ServiceManagerError,
+) -> Result<(), ServiceManagerError> {
+    let output = Command::new("systemctl")
+        .args(args)
+        .output()
+        .map_err(|e| err_builder(format!("Failed to run systemctl: {e}")))?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    Err(err_builder(format!(
+        "systemctl {} failed: {}",
+        args.join(" "),
+        stderr
+    )))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LinuxSocketPermissionTarget<'a> {
+    path: &'a str,
+    group_name: &'static str,
+    mode: u32,
+}
+
+fn socket_permission_target(
+    socket_path: &str,
+    effective_uid: u32,
+) -> Option<LinuxSocketPermissionTarget<'_>> {
+    if effective_uid != 0 || socket_path.starts_with('@') || socket_path.starts_with(r"\\.\pipe\") {
+        return None;
+    }
+
+    Some(LinuxSocketPermissionTarget {
+        path: socket_path,
+        group_name: PLAYIT_SOCKET_GROUP_NAME,
+        mode: PLAYIT_SOCKET_MODE,
+    })
+}
+
+fn apply_socket_permissions(socket_path: &str, group_gid: u32, mode: u32) -> Result<(), IpcError> {
+    let path = Path::new(socket_path);
+    let permissions = std::fs::Permissions::from_mode(mode);
+    std::fs::set_permissions(path, permissions).map_err(|e| {
+        IpcError::BindFailed(io::Error::new(
+            e.kind(),
+            format!("failed to chmod IPC socket {socket_path} to {mode:o}: {e}"),
+        ))
+    })?;
+
+    let path_cstr = CString::new(path.as_os_str().as_bytes()).map_err(|e| {
+        IpcError::BindFailed(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("invalid IPC socket path {socket_path:?}: {e}"),
+        ))
+    })?;
+
+    let chown_status = unsafe { libc::chown(path_cstr.as_ptr(), u32::MAX, group_gid) };
+    if chown_status != 0 {
+        return Err(IpcError::BindFailed(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "failed to chown IPC socket {socket_path} to group gid {group_gid}: {}",
+                io::Error::last_os_error()
+            ),
+        )));
+    }
+
+    Ok(())
+}

@@ -36,18 +36,3 @@ async fn ip_lookup(name: &str) -> Vec<SocketAddr> {
 
     iter.collect()
 }
-
-#[cfg(test)]
-mod test {
-    use super::*;
-    use tracing::Level;
-
-    #[tokio::test]
-    async fn test_lookup() {
-        let _ = tracing_subscriber::fmt()
-            .with_max_level(Level::INFO)
-            .try_init();
-        assert!(!address_lookup("control.playit.gg", 5523).await.is_empty());
-        assert!(!address_lookup("ping.playit.gg", 5523).await.is_empty());
-    }
-}

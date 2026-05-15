@@ -29,15 +29,7 @@ playit-api-client = { path = "../api_client", version = "0.2.0" }
 governor = "0.10.0"
 crossbeam = "0.8.4"
 slab = "0.4.9"
+slotmap = "1.1.1"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
-
-# hyper = { version = "1.4", features = ["client", "http2", "http1"] }
-# bytes = "1.7"
-# time = "0.3.36"
-# hyper-util = { version = "0.1.7", features = ["client", "client-legacy", "http1", "http2"] }
-# http-body-util = "0.1.2"
-# hyper-rustls = { version = "0.27", features = ["http2", "webpki-roots"] }
-
-# rustls = { version = "0.23", default-features = false, features = ["ring"] }

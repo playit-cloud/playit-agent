@@ -7,9 +7,3 @@ pub mod stats;
 pub mod utils;
 
 pub const PROTOCOL_VERSION: u64 = 2;
-
-#[cfg(test)]
-mod test {
-    #[test]
-    fn test() {}
-}

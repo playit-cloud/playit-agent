@@ -182,14 +182,14 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                 .await
             {
                 Ok(Ok(ControlFeed::NewClient(new_client))) => {
-                    return Some(TunnelControlEvent::NewClient(new_client))
+                    return Some(TunnelControlEvent::NewClient(new_client));
                 }
                 Ok(Ok(ControlFeed::NewClientOld(new_client))) => {
-                    return Some(TunnelControlEvent::NewClient(new_client.into()))
+                    return Some(TunnelControlEvent::NewClient(new_client.into()));
                 }
                 Ok(Ok(ControlFeed::Response(msg))) => match msg.content {
                     ControlResponse::UdpChannelDetails(details) => {
-                        return Some(TunnelControlEvent::UdpChannelDetails(details))
+                        return Some(TunnelControlEvent::UdpChannelDetails(details));
                     }
                     ControlResponse::Unauthorized => {
                         tracing::info!("session no longer authorized");

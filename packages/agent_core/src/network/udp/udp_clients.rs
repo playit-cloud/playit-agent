@@ -1,8 +1,11 @@
 use std::{
-    collections::{HashMap, hash_map},
-    net::{IpAddr, SocketAddr, SocketAddrV4},
+    collections::HashMap,
+    net::{SocketAddr, SocketAddrV4},
     num::NonZeroU32,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
 };
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
@@ -14,9 +17,7 @@ use tokio::{
 };
 
 use crate::network::{
-    lan_address::LanAddress,
-    origin_lookup::{OriginLookup, OriginTarget},
-    proxy_protocol::ProxyProtocolHeader,
+    lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
 };
 use crate::stats::AgentStats;
 use playit_agent_proto::udp_proto::UdpFlow;
@@ -33,6 +34,7 @@ pub struct UdpClients {
 
     virtual_client_lookup: HashMap<UdpClientKey, usize>,
     virtual_clients: Slab<Client>,
+    next_client_generation: AtomicU32,
     setup: UdpReceiverSetup,
     rx: Receiver<UdpReceivedPacket>,
 
@@ -44,10 +46,12 @@ struct Client {
     id: u64,
     key: UdpClientKey,
     socket: Arc<UdpSocket>,
+    target_addr: SocketAddr,
+    port_offset: u16,
     flow: UdpFlow,
 
     /* when dropped, rx task get killed */
-    _receiver: UdpReceiver,
+    receiver: UdpReceiver,
 
     from_tunnel_ts: u64,
     from_origin_ts: u64,
@@ -60,41 +64,71 @@ struct UdpClientKey {
 }
 
 impl UdpClientKey {
-    pub async fn create_socket(&self, special_lan: bool) -> std::io::Result<UdpSocket> {
-        LanAddress::udp_socket(special_lan, self.source_addr, self.tunnel_id).await
+    pub async fn create_socket(
+        &self,
+        special_lan: bool,
+        target_addr: SocketAddr,
+    ) -> std::io::Result<UdpSocket> {
+        LanAddress::udp_socket(special_lan, self.source_addr, target_addr, self.tunnel_id).await
     }
 }
 
-impl UdpClients {
-    pub fn new(settings: UdpSettings, lookup: Arc<OriginLookup>, packets: Packets, stats: AgentStats) -> Self {
-        let (origin_tx, origin_rx) = channel(2048);
+fn build_quota(settings: &UdpSettings) -> Quota {
+    let rate = NonZeroU32::new(settings.new_client_ratelimit).unwrap_or_else(|| {
+        tracing::warn!("invalid udp new client rate limit of 0, clamping to 1");
+        NonZeroU32::MIN
+    });
+    let burst = NonZeroU32::new(settings.new_client_ratelimit_burst).unwrap_or_else(|| {
+        tracing::warn!("invalid udp new client burst of 0, clamping to 1");
+        NonZeroU32::MIN
+    });
 
-        let quota = unsafe {
-            Quota::per_second(NonZeroU32::new_unchecked(settings.new_client_ratelimit)).allow_burst(
-                NonZeroU32::new_unchecked(settings.new_client_ratelimit_burst),
-            )
-        };
+    Quota::per_second(rate).allow_burst(burst)
+}
+
+fn pack_client_id(slot: u32, generation: u32) -> u64 {
+    ((generation as u64) << 32) | (slot as u64)
+}
+
+fn unpack_slot(id: u64) -> usize {
+    (id as u32) as usize
+}
+
+impl UdpClients {
+    pub fn new(
+        settings: UdpSettings,
+        lookup: Arc<OriginLookup>,
+        packets: Packets,
+        stats: AgentStats,
+    ) -> Self {
+        let (origin_tx, origin_rx) = channel(2048);
 
         UdpClients {
             lookup,
             virtual_client_lookup: HashMap::new(),
             virtual_clients: Slab::with_capacity(2048),
+            next_client_generation: AtomicU32::new(1),
             setup: UdpReceiverSetup {
                 output: origin_tx,
                 packets,
             },
             rx: origin_rx,
-            new_client_limiter: RateLimiter::direct(quota),
+            new_client_limiter: RateLimiter::direct(build_quota(&settings)),
             stats,
         }
     }
 
-    pub fn clear_old(&mut self, now_ms: u64) {
-        self.virtual_clients.retain(|slot, client| {
+    pub async fn clear_old(&mut self, now_ms: u64) {
+        let mut to_remove = Vec::new();
+
+        for (slot, client) in self.virtual_clients.iter_mut() {
+            let receiver_closed = client.receiver.is_closed();
             let since_origin = now_ms.saturating_sub(client.from_origin_ts);
             let since_tunnel = now_ms.saturating_sub(client.from_tunnel_ts);
 
             let remove = {
+                receiver_closed
+                ||
                 /* both haven't seen action in over 1m */
                 60_000 < since_tunnel && 60_000 < since_origin
                 /* either side has no traffic in 1.5m */
@@ -103,14 +137,19 @@ impl UdpClients {
             };
 
             if remove {
-                let removed = self.virtual_client_lookup.remove(&client.key).unwrap();
-                assert_eq!(removed, slot);
-
-                false
-            } else {
-                true
+                to_remove.push(slot);
             }
-        });
+        }
+
+        to_remove.sort_unstable();
+        to_remove.reverse();
+
+        for slot in to_remove {
+            let client = self.virtual_clients.remove(slot);
+            let removed = self.virtual_client_lookup.remove(&client.key).unwrap();
+            assert_eq!(removed, slot);
+            client.receiver.shutdown().await;
+        }
 
         // Update active UDP count
         self.stats.set_udp(self.virtual_clients.len() as u32);
@@ -128,7 +167,7 @@ impl UdpClients {
         now_ms: u64,
         packet: UdpReceivedPacket,
     ) -> Option<(UdpFlow, Packet)> {
-        let Some(client) = self.virtual_clients.get_mut((packet.rx_id as u32) as usize) else {
+        let Some(client) = self.virtual_clients.get_mut(unpack_slot(packet.rx_id)) else {
             udp_errors().origin_client_missing.inc();
             return None;
         };
@@ -138,39 +177,12 @@ impl UdpClients {
             return None;
         }
 
-        let Some(tunnel) = self.lookup.lookup(client.key.tunnel_id, false).await else {
-            udp_errors().origin_tunnel_not_found.inc();
-            return None;
-        };
-
-        let SocketAddr::V4(source) = packet.from else {
-            udp_errors().origin_source_not_ip4.inc();
-            return None;
-        };
-
-        let OriginTarget::Port {
-            ip: local_ip,
-            port: port_start,
-        } = tunnel.target
-        else {
-            return None;
-        };
-
-        if local_ip != IpAddr::V4(*source.ip()) {
+        if packet.from != client.target_addr {
             udp_errors().origin_reject_addr_differ.inc();
             return None;
         }
 
-        if source.port() < port_start {
-            udp_errors().origin_reject_port_too_low.inc();
-            return None;
-        }
-
-        let port_offset = source.port() - port_start;
-        if tunnel.port_count <= port_offset {
-            udp_errors().origin_reject_port_too_high.inc();
-            return None;
-        }
+        let port_offset = client.port_offset;
 
         client.from_origin_ts = now_ms;
 
@@ -215,134 +227,140 @@ impl UdpClients {
             tunnel_id: extension.tunnel_id.get(),
         };
 
-        let OriginTarget::Port {
-            ip: local_ip,
-            port: port_start,
-        } = origin.target
-        else {
-            return;
-        };
-
-        let target_addr = {
-            let IpAddr::V4(ip) = local_ip else {
-                return;
-            };
-            SocketAddrV4::new(ip, port_start + extension.port_offset)
-        };
-
         // Track bytes coming in (from tunnel to origin)
         let packet_len = packet.len() as u64;
-        self.stats.add_bytes_in(packet_len);
 
-        match self.virtual_client_lookup.entry(key) {
-            hash_map::Entry::Occupied(o) => {
-                let slot = *o.get();
+        if let Some(&slot) = self.virtual_client_lookup.get(&key) {
+            let receiver_closed = self
+                .virtual_clients
+                .get_mut(slot)
+                .map(|client| client.receiver.is_closed())
+                .unwrap_or(true);
 
+            if !receiver_closed {
                 let client = self.virtual_clients.get_mut(slot).unwrap();
 
                 client.from_tunnel_ts = now_ms;
                 if client
                     .socket
-                    .send_to(packet.as_ref(), target_addr)
+                    .send_to(packet.as_ref(), client.target_addr)
                     .await
                     .is_err()
                 {
                     udp_errors().origin_send_io_error.inc();
                 }
+
+                self.stats.add_bytes_in(packet_len);
+                return;
             }
-            hash_map::Entry::Vacant(v) => {
-                if self.new_client_limiter.check().is_err() {
-                    udp_errors().new_client_ratelimit.inc();
-                    return;
+
+            self.virtual_client_lookup.remove(&key);
+            if self.virtual_clients.get(slot).is_some() {
+                self.virtual_clients.remove(slot);
+            }
+            self.stats.set_udp(self.virtual_clients.len() as u32);
+        }
+
+        if self.new_client_limiter.check().is_err() {
+            udp_errors().new_client_ratelimit.inc();
+            return;
+        }
+
+        let Some(target_addr) = origin.resolve_local(extension.port_offset).await else {
+            return;
+        };
+
+        let special_lan = matches!(target_addr, SocketAddr::V4(addr) if addr.ip().is_loopback())
+            && origin.proxy_protocol.is_none();
+
+        let socket = match key.create_socket(special_lan, target_addr).await {
+            Ok(socket) => Arc::new(socket),
+            Err(error) => {
+                tracing::error!(?error, "failed to create socket");
+                return;
+            }
+        };
+
+        let entry = self.virtual_clients.vacant_entry();
+        let slot = entry.key();
+        let slot = u32::try_from(slot).expect("udp client slot overflow");
+        let generation = self.next_client_generation.fetch_add(1, Ordering::Relaxed);
+        let id = pack_client_id(slot, generation);
+
+        let receiver = self.setup.create(id, socket.clone());
+
+        let mut client_flow = flow.flip();
+        match &mut client_flow {
+            UdpFlow::V4 {
+                src,
+                extension: Some(ext),
+                ..
+            } => {
+                if extension.port_offset != 0 {
+                    assert!(extension.port_offset <= src.port());
+                    *src = SocketAddrV4::new(*src.ip(), src.port() - extension.port_offset);
                 }
-
-                let special_lan = local_ip.is_loopback() && origin.proxy_protocol.is_none();
-
-                let socket = match v.key().create_socket(special_lan).await {
-                    Ok(socket) => Arc::new(socket),
-                    Err(error) => {
-                        tracing::error!(?error, "failed to create socket");
-                        return;
-                    }
-                };
-
-                let entry = self.virtual_clients.vacant_entry();
-                let slot = entry.key();
-                let id = slot as u64;
-
-                let receiver = self.setup.create(id, socket.clone());
-
-                let mut client_flow = flow.flip();
-                match &mut client_flow {
-                    UdpFlow::V4 {
-                        src,
-                        extension: Some(ext),
-                        ..
-                    } => {
-                        if extension.port_offset != 0 {
-                            assert!(extension.port_offset <= src.port());
-                            *src = SocketAddrV4::new(*src.ip(), src.port() - extension.port_offset);
-                        }
-                        ext.port_offset = 0;
-                    }
-                    UdpFlow::V6 {
-                        src,
-                        extension: Some(ext),
-                        ..
-                    } => {
-                        if extension.port_offset != 0 {
-                            assert!(extension.port_offset <= src.1);
-                            src.1 -= extension.port_offset;
-                        }
-                        ext.port_offset = 0;
-                    }
-                    _ => unreachable!(),
+                ext.port_offset = 0;
+            }
+            UdpFlow::V6 {
+                src,
+                extension: Some(ext),
+                ..
+            } => {
+                if extension.port_offset != 0 {
+                    assert!(extension.port_offset <= src.1);
+                    src.1 -= extension.port_offset;
                 }
+                ext.port_offset = 0;
+            }
+            _ => unreachable!(),
+        }
 
-                let key = v.key().clone();
+        let client = Client {
+            id,
+            key: key.clone(),
+            socket,
+            target_addr,
+            port_offset: extension.port_offset,
+            receiver,
+            flow: client_flow,
+            from_tunnel_ts: now_ms,
+            from_origin_ts: now_ms,
+        };
 
-                let client = Client {
-                    id,
-                    key,
-                    socket,
-                    _receiver: receiver,
-                    flow: client_flow,
-                    from_tunnel_ts: now_ms,
-                    from_origin_ts: now_ms,
-                };
+        if let Some(proto) = origin.proxy_protocol {
+            if proto != ProxyProtocol::ProxyProtocolV2 {
+                udp_errors().origin_v1_proxy_protocol.inc();
+            } else {
+                let header = ProxyProtocolHeader::from_udp_flow(&flow);
 
-                if let Some(proto) = origin.proxy_protocol {
-                    if proto != ProxyProtocol::ProxyProtocolV2 {
-                        udp_errors().origin_v1_proxy_protocol.inc();
-                    } else {
-                        let header = ProxyProtocolHeader::from_udp_flow(&flow);
+                let mut buffer = Vec::new();
+                header
+                    .write_v2_udp(&mut buffer)
+                    .expect("Failed to write proxy proto header to Vec");
 
-                        let mut buffer = Vec::new();
-                        header
-                            .write_v2_udp(&mut buffer)
-                            .expect("Failed to write proxy proto header to Vec");
-
-                        if client.socket.send_to(&buffer, target_addr).await.is_err() {
-                            udp_errors().origin_send_io_error.inc();
-                        }
-                    }
-                }
-
-                if client
-                    .socket
-                    .send_to(packet.as_ref(), target_addr)
-                    .await
-                    .is_err()
-                {
+                if client.socket.send_to(&buffer, target_addr).await.is_err() {
                     udp_errors().origin_send_io_error.inc();
                 }
-
-                v.insert(slot);
-                entry.insert(client);
-
-                // Update active UDP count for new client
-                self.stats.set_udp(self.virtual_clients.len() as u32);
             }
         }
+
+        if client
+            .socket
+            .send_to(packet.as_ref(), target_addr)
+            .await
+            .is_err()
+        {
+            udp_errors().origin_send_io_error.inc();
+        }
+
+        self.virtual_client_lookup.insert(
+            key,
+            usize::try_from(slot).expect("udp client slot overflow"),
+        );
+        entry.insert(client);
+
+        // Update active UDP count for new client
+        self.stats.set_udp(self.virtual_clients.len() as u32);
     }
 }

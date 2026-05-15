@@ -1,8 +1,8 @@
 use std::panic::Location;
 
 use reqwest::StatusCode;
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use tokio::sync::RwLock;
 
 use crate::api::{ApiResult, PlayitHttpClient};

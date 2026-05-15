@@ -40,17 +40,17 @@ jobs:
             artifact: playit-linux-i686
             dpkg_arch: i386
 
- #          - name: linux mipsel
- #            os: ubuntu-latest
- #            arch: mipsel-unknown-linux-musl
- #            artifact: playit-linux-mipsel
- #            dpkg_arch: mipsel
- #
- #          - name: linux mips
- #            os: ubuntu-latest
- #            arch: mips-unknown-linux-musl
- #            artifact: playit-linux-mips
- #            dpkg_arch: mips
+    #          - name: linux mipsel
+    #            os: ubuntu-latest
+    #            arch: mipsel-unknown-linux-musl
+    #            artifact: playit-linux-mipsel
+    #            dpkg_arch: mipsel
+    #
+    #          - name: linux mips
+    #            os: ubuntu-latest
+    #            arch: mips-unknown-linux-musl
+    #            artifact: playit-linux-mips
+    #            dpkg_arch: mips
 
     runs-on: ${{ matrix.platform.os }}
     steps:
@@ -81,7 +81,7 @@ jobs:
 
       - name: Package .deb
         shell: bash
-        run: 'bash ./build-scripts/package-linux-deb.sh "./target/${{ matrix.platform.arch }}/release/playit-cli" ${{ matrix.platform.dpkg_arch }}'
+        run: 'bash ./build-scripts/package-linux-deb.sh "./target/${{ matrix.platform.arch }}/release/playit-cli" "./target/${{ matrix.platform.arch }}/release/playitd" ${{ matrix.platform.dpkg_arch }}'
 
       - name: Upload .deb
         uses: actions/upload-release-asset@v1
@@ -92,111 +92,6 @@ jobs:
           asset_path: ./target/deb/playit_${{ matrix.platform.dpkg_arch }}.deb
           asset_name: playit_${{ matrix.platform.dpkg_arch }}.deb
           asset_content_type: application/octet-stream
-
-
-  # build_macos:
-  #   environment: production
-
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       platform:
-  #         - name: macos intel
-  #           os: macos-latest
-  #           arch: x86_64-apple-darwin
-  #           artifact: playit-darwin-intel
-
-  #         - name: macos arm
-  #           os: macos-latest
-  #           arch: aarch64-apple-darwin
-  #           artifact: playit-darwin-arm
-
-  #   runs-on: ${{ matrix.platform.os }}
-  #   steps:
-  #     - uses: actions/checkout@v3
-
-  #     - name: Get release
-  #       id: get_release
-  #       uses: bruceadams/get-release@v1.2.3
-  #       env:
-  #         GITHUB_TOKEN: ${{ github.token }}
-
-  #     - uses: dtolnay/rust-toolchain@stable
-  #       with:
-  #         targets: ${{ matrix.platform.arch }}
-
-  #     - name: build release
-  #       uses: actions-rs/cargo@v1
-  #       with:
-  #         command: build
-  #         args: --target ${{ matrix.platform.arch }} --release --all
-
-  #     # reference: https://federicoterzi.com/blog/automatic-code-signing-and-notarization-for-macos-apps-using-github-actions/
-  #     - name: Codesign binary
-  #       # Extract the secrets we defined earlier as environment variables
-  #       env:
-  #         MACOS_CERTIFICATE: ${{ secrets.PROD_MACOS_CERTIFICATE }}
-  #         MACOS_CERTIFICATE_PWD: ${{ secrets.PROD_MACOS_CERTIFICATE_PWD }}
-  #         MACOS_CERTIFICATE_NAME: ${{ secrets.PROD_MACOS_CERTIFICATE_NAME }}
-  #         MACOS_CI_KEYCHAIN_PWD: ${{ secrets.PROD_MACOS_CI_KEYCHAIN_PWD }}
-  #       run: |
-  #         # Turn our base64-encoded certificate back to a regular .p12 file
-
-  #         echo $MACOS_CERTIFICATE | base64 --decode > certificate.p12
-
-  #         # We need to create a new keychain, otherwise using the certificate will prompt
-  #         # with a UI dialog asking for the certificate password, which we can't
-  #         # use in a headless CI environment
-
-  #         security create-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
-  #         security default-keychain -s build.keychain
-  #         security unlock-keychain -p "$MACOS_CI_KEYCHAIN_PWD" build.keychain
-  #         security import certificate.p12 -k build.keychain -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
-  #         security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$MACOS_CI_KEYCHAIN_PWD" build.keychain
-
-  #         /usr/bin/codesign --force -s "$MACOS_CERTIFICATE_NAME" --options runtime target/${{ matrix.platform.arch }}/release/playit-cli
-
-  #     - name: Notorize binary
-  #       env:
-  #         PROD_MACOS_NOTARIZATION_APPLE_ID: ${{ secrets.PROD_MACOS_NOTARIZATION_APPLE_ID }}
-  #         PROD_MACOS_NOTARIZATION_TEAM_ID: ${{ secrets.PROD_MACOS_NOTARIZATION_TEAM_ID }}
-  #         PROD_MACOS_NOTARIZATION_PWD: ${{ secrets.PROD_MACOS_NOTARIZATION_PWD }}
-  #       run: |
-  #         echo "Create keychain profile"
-  #         xcrun notarytool store-credentials "notarytool-profile" --apple-id "$PROD_MACOS_NOTARIZATION_APPLE_ID" --team-id "$PROD_MACOS_NOTARIZATION_TEAM_ID" --password "$PROD_MACOS_NOTARIZATION_PWD"
-
-  #         # We can't notarize an app bundle directly, but we need to compress it as an archive.
-  #         # Therefore, we create a zip file containing our app bundle, so that we can send it to the
-  #         # notarization service
-
-  #         echo "Creating temp notarization archive"
-  #         ditto -c -k --keepParent "target/${{ matrix.platform.arch }}/release/playit-cli" "notarization.zip"
-
-  #         # Here we send the notarization request to the Apple's Notarization service, waiting for the result.
-  #         # This typically takes a few seconds inside a CI environment, but it might take more depending on the App
-  #         # characteristics. Visit the Notarization docs for more information and strategies on how to optimize it if
-  #         # you're curious
-
-  #         echo "Notarize app"
-  #         xcrun notarytool submit "notarization.zip" --keychain-profile "notarytool-profile"
-
-  #         # Finally, we need to "attach the staple" to our executable, which will allow our app to be
-  #         # validated by macOS even when an internet connection is not available.
-  #         # REMOVED: don't wait for notarization, takes too long
-  #         # echo "Attach staple"
-  #         # xcrun stapler staple "target/${{ matrix.platform.arch }}/release/playit-cli"
-
-  #     - name: Upload Binary
-  #       if: matrix.platform.os != 'windows-latest'
-  #       uses: actions/upload-release-asset@v1
-  #       env:
-  #         GITHUB_TOKEN: ${{ github.token }}
-  #       with:
-  #         upload_url: ${{ steps.get_release.outputs.upload_url }}
-  #         asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
-  #         asset_name: ${{ matrix.platform.artifact }}
-  #         asset_content_type: application/octet-stream
-
   build_windows:
     strategy:
       fail-fast: false
@@ -232,6 +127,7 @@ jobs:
           targets: ${{ matrix.platform.arch }}
 
       - run: cargo install cargo-wix
+      - run: cargo build --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd --package playitd-tray --package playitd-windows-setup
       - run: cargo wix --target ${{ matrix.platform.arch }} --package playit-cli --nocapture --output=target/wix/${{ matrix.platform.artifact }}.msi
 
       - name: Upload .exe
@@ -240,7 +136,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli.exe
+          asset_path: ./target/${{ matrix.platform.arch }}/release/playitd.exe
           asset_name: ${{ matrix.platform.artifact }}.exe
           asset_content_type: application/octet-stream
 
@@ -256,7 +152,7 @@ jobs:
 
   build_docker:
     runs-on: ubuntu-latest
-    needs: [ build_linux ]
+    needs: [build_linux]
     permissions:
       contents: read
       packages: write
@@ -274,7 +170,7 @@ jobs:
         if: github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 #v3.5.0
         with:
-          cosign-release: 'v2.2.4'
+          cosign-release: "v2.2.4"
 
       # Set up BuildKit Docker container builder to be able to build
       # multi-platform images and export cache

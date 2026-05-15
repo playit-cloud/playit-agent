@@ -1,0 +1,52 @@
+[package]
+name = "playitd"
+version.workspace = true
+edition = "2024"
+authors = ["Patrick Lorio <patrick@playit.gg>"]
+description = "Shared daemon, IPC, and service management for playit"
+repository = "https://github.com/playit-cloud/playit-agent"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+dirs = { workspace = true }
+hex = { workspace = true }
+toml = { workspace = true }
+
+dotenv = "0.15.0"
+interprocess = { version = "2.2", features = ["tokio"] }
+service-manager = "0.10"
+
+playit-agent-core = { path = "../agent_core", version = "1.0.0" }
+playit-ipc = { path = "../playit-ipc", version = "1.0.0" }
+playit-api-client = { path = "../api_client", version = "0.2.0" }
+clap = { version = "4.6.0", features = ["derive"] }
+serde_yml = "0.0.12"
+
+[[bin]]
+name = "playitd"
+path = "src/bin/playitd.rs"
+
+[[bin]]
+name = "playitd-service"
+path = "src/bin/playitd-service.rs"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+uzers = { version = "0.12.2", default-features = false }
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+] }
+windows-service = "0.8.0"
+widestring = "1.2"
