@@ -147,7 +147,7 @@ fn normalize_sid(sid: &str) -> Option<&str> {
 }
 
 fn pipe_security_sddl(user_sid: Option<&str>) -> String {
-    let mut sddl = String::from("D:P(A;;GA;;;SY)(A;;GA;;;BA)");
+    let mut sddl = String::from("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;AU)");
     if let Some(user_sid) = user_sid.and_then(normalize_sid) {
         sddl.push_str("(A;;GA;;;");
         sddl.push_str(user_sid);
@@ -209,14 +209,14 @@ mod tests {
     use super::{normalize_sid, pipe_security_sddl};
 
     #[test]
-    fn pipe_sddl_allows_only_service_admins_and_installed_user() {
+    fn pipe_sddl_allows_service_admins_authenticated_users_and_installed_user() {
         let sddl = pipe_security_sddl(Some("S-1-5-21-1-2-3-1001"));
 
         assert!(sddl.contains("(A;;GA;;;SY)"));
         assert!(sddl.contains("(A;;GA;;;BA)"));
+        assert!(sddl.contains("(A;;GA;;;AU)"));
         assert!(sddl.contains("(A;;GA;;;S-1-5-21-1-2-3-1001)"));
         assert!(!sddl.contains("WD"));
-        assert!(!sddl.contains("AU"));
         assert!(!sddl.contains("BU"));
     }
 
