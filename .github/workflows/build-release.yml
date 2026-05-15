@@ -20,37 +20,29 @@ jobs:
             os: ubuntu-latest
             arch: x86_64-unknown-linux-musl
             artifact: playit-linux-amd64
+            artifact_cli: playit-cli-linux-amd64
             dpkg_arch: amd64
 
           - name: linux arm64
             os: ubuntu-latest
             arch: aarch64-unknown-linux-musl
             artifact: playit-linux-aarch64
+            artifact_cli: playit-cli-linux-aarch64
             dpkg_arch: arm64
 
           - name: linux arm7
             os: ubuntu-latest
             arch: armv7-unknown-linux-gnueabihf
             artifact: playit-linux-armv7
+            artifact_cli: playit-cli-linux-armv7
             dpkg_arch: armhf
 
           - name: linux 32bit
             os: ubuntu-latest
             arch: i686-unknown-linux-gnu
             artifact: playit-linux-i686
+            artifact_cli: playit-cli-linux-i686
             dpkg_arch: i386
-
-    #          - name: linux mipsel
-    #            os: ubuntu-latest
-    #            arch: mipsel-unknown-linux-musl
-    #            artifact: playit-linux-mipsel
-    #            dpkg_arch: mipsel
-    #
-    #          - name: linux mips
-    #            os: ubuntu-latest
-    #            arch: mips-unknown-linux-musl
-    #            artifact: playit-linux-mips
-    #            dpkg_arch: mips
 
     runs-on: ${{ matrix.platform.os }}
     steps:
@@ -75,8 +67,18 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
+          asset_path: ./target/${{ matrix.platform.arch }}/release/playitd
           asset_name: ${{ matrix.platform.artifact }}
+          asset_content_type: application/octet-stream
+
+      - name: Upload Binary (cli)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
+          asset_name: ${{ matrix.platform.artifact_cli }}
           asset_content_type: application/octet-stream
 
       - name: Package .deb
