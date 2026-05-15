@@ -24,6 +24,7 @@ use super::{
     tcp_client::{TcpClient, TcpClientStat},
     tcp_errors::tcp_errors,
     tcp_settings::TcpSettings,
+    tcp_upload_qos::TcpUploadFairness,
 };
 
 fn build_quota(settings: &TcpSettings) -> Quota {
@@ -52,6 +53,7 @@ struct Worker {
     cancel: CancellationToken,
     settings: TcpSettings,
     stats: AgentStats,
+    upload_fairness: TcpUploadFairness,
 
     clients: Vec<Client>,
     next_client_id: u64,
@@ -113,6 +115,8 @@ impl TcpClients {
     ) -> Self {
         let quota = build_quota(&settings);
         let (events_tx, events_rx) = channel(1024);
+        let worker_cancel = cancel.child_token();
+        let upload_fairness = TcpUploadFairness::new(worker_cancel.child_token());
 
         tokio::spawn(
             Worker {
@@ -120,9 +124,10 @@ impl TcpClients {
                 lookup,
                 events: events_rx,
                 events_tx: events_tx.clone(),
-                cancel: cancel.child_token(),
+                cancel: worker_cancel,
                 settings,
                 stats,
+                upload_fairness,
                 clients: Vec::with_capacity(32),
             }
             .start(),
@@ -232,6 +237,7 @@ impl Worker {
 
                     let event_tx = self.events_tx.clone();
                     let stats = self.stats.clone();
+                    let upload_fairness = self.upload_fairness.clone();
                     let cancel = self.cancel.child_token();
                     tokio::spawn(async move {
                         let Some(origin_addr) = found.resolve_local(details.port_offset).await
@@ -395,9 +401,13 @@ impl Worker {
                             }
                         }
 
-                        let tcp_client =
-                            TcpClient::create_with_stats(tunn_stream, origin_stream, Some(stats))
-                                .await;
+                        let tcp_client = TcpClient::create_with_stats_and_upload_qos(
+                            tunn_stream,
+                            origin_stream,
+                            Some(stats),
+                            upload_fairness,
+                        )
+                        .await;
                         let event = Event::ConnectedClient(Client {
                             id: client_id,
                             added_at: now_milli(),
