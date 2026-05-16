@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     network::{
         lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
+        upload_qos::UploadFairness,
     },
     stats::AgentStats,
     utils::now_milli,
@@ -24,7 +25,6 @@ use super::{
     tcp_client::{TcpClient, TcpClientStat},
     tcp_errors::tcp_errors,
     tcp_settings::TcpSettings,
-    tcp_upload_qos::TcpUploadFairness,
 };
 
 fn build_quota(settings: &TcpSettings) -> Quota {
@@ -53,7 +53,7 @@ struct Worker {
     cancel: CancellationToken,
     settings: TcpSettings,
     stats: AgentStats,
-    upload_fairness: TcpUploadFairness,
+    upload_fairness: UploadFairness,
 
     clients: Vec<Client>,
     next_client_id: u64,
@@ -112,11 +112,11 @@ impl TcpClients {
         lookup: Arc<OriginLookup>,
         stats: AgentStats,
         cancel: CancellationToken,
+        upload_fairness: UploadFairness,
     ) -> Self {
         let quota = build_quota(&settings);
         let (events_tx, events_rx) = channel(1024);
         let worker_cancel = cancel.child_token();
-        let upload_fairness = TcpUploadFairness::new(worker_cancel.child_token());
 
         tokio::spawn(
             Worker {

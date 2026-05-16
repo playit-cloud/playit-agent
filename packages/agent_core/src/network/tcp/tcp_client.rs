@@ -4,10 +4,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::stats::AgentStats;
 
-use super::{
-    tcp_pipe::{PipeDirection, TcpPipe},
-    tcp_upload_qos::TcpUploadFairness,
-};
+use super::tcp_pipe::{PipeDirection, TcpPipe};
+use crate::network::upload_qos::UploadFairness;
 
 pub struct TcpClient {
     tunn_to_origin: TcpPipe,
@@ -31,7 +29,7 @@ impl TcpClient {
         tunn: TcpStream,
         origin: TcpStream,
         stats: Option<AgentStats>,
-        upload_fairness: TcpUploadFairness,
+        upload_fairness: UploadFairness,
     ) -> Self {
         Self::create_with_stats_and_upload_flow(tunn, origin, stats, Some(upload_fairness)).await
     }
@@ -40,7 +38,7 @@ impl TcpClient {
         tunn: TcpStream,
         origin: TcpStream,
         stats: Option<AgentStats>,
-        upload_fairness: Option<TcpUploadFairness>,
+        upload_fairness: Option<UploadFairness>,
     ) -> Self {
         let (tunn_read, tunn_write) = tunn.into_split();
         let (origin_read, origin_write) = origin.into_split();

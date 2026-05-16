@@ -9,16 +9,16 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-pub(super) const TCP_UPLOAD_QOS_SLICE_SIZE: usize = 2048;
-const TCP_UPLOAD_QOS_CHANNEL_SIZE: usize = 1024;
+pub(crate) const UPLOAD_QOS_SLICE_SIZE: usize = 2048;
+const UPLOAD_QOS_CHANNEL_SIZE: usize = 1024;
 
 #[derive(Clone)]
-pub(super) struct TcpUploadFairness {
+pub struct UploadFairness {
     events_tx: mpsc::Sender<Event>,
     next_flow_id: Arc<AtomicU64>,
 }
 
-pub(super) struct TcpUploadFlow {
+pub(crate) struct UploadFlow {
     id: u64,
     events_tx: mpsc::Sender<Event>,
 }
@@ -50,9 +50,9 @@ struct Worker {
     ready: VecDeque<u64>,
 }
 
-impl TcpUploadFairness {
-    pub(super) fn new(cancel: CancellationToken) -> Self {
-        let (events_tx, events_rx) = mpsc::channel(TCP_UPLOAD_QOS_CHANNEL_SIZE);
+impl UploadFairness {
+    pub fn new(cancel: CancellationToken) -> Self {
+        let (events_tx, events_rx) = mpsc::channel(UPLOAD_QOS_CHANNEL_SIZE);
 
         tokio::spawn(
             Worker {
@@ -70,16 +70,16 @@ impl TcpUploadFairness {
         }
     }
 
-    pub(super) fn register(&self) -> TcpUploadFlow {
-        TcpUploadFlow {
+    pub(crate) fn register(&self) -> UploadFlow {
+        UploadFlow {
             id: self.next_flow_id.fetch_add(1, Ordering::Relaxed),
             events_tx: self.events_tx.clone(),
         }
     }
 }
 
-impl TcpUploadFlow {
-    pub(super) async fn acquire(&self, bytes: usize, cancel: &CancellationToken) -> bool {
+impl UploadFlow {
+    pub(crate) async fn acquire(&self, bytes: usize, cancel: &CancellationToken) -> bool {
         if bytes == 0 {
             return true;
         }
@@ -107,7 +107,7 @@ impl TcpUploadFlow {
     }
 }
 
-impl Drop for TcpUploadFlow {
+impl Drop for UploadFlow {
     fn drop(&mut self) {
         let _ = self
             .events_tx
@@ -208,7 +208,7 @@ mod tests {
     #[tokio::test]
     async fn grants_are_round_robin_when_two_flows_are_pending() {
         let cancel = CancellationToken::new();
-        let fairness = TcpUploadFairness::new(cancel.clone());
+        let fairness = UploadFairness::new(cancel.clone());
         let first = fairness.register();
         let second = fairness.register();
 
@@ -227,7 +227,7 @@ mod tests {
     #[tokio::test]
     async fn single_active_flow_receives_all_grants() {
         let cancel = CancellationToken::new();
-        let fairness = TcpUploadFairness::new(cancel.clone());
+        let fairness = UploadFairness::new(cancel.clone());
         let flow = fairness.register();
 
         for _ in 0..8 {
@@ -238,7 +238,7 @@ mod tests {
     #[tokio::test]
     async fn dropped_flow_removes_pending_request() {
         let cancel = CancellationToken::new();
-        let fairness = TcpUploadFairness::new(cancel.clone());
+        let fairness = UploadFairness::new(cancel.clone());
         let dropped = fairness.register();
         let active = fairness.register();
 
@@ -266,7 +266,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_stops_pending_acquires() {
         let cancel = CancellationToken::new();
-        let fairness = TcpUploadFairness::new(cancel.clone());
+        let fairness = UploadFairness::new(cancel.clone());
         let flow = fairness.register();
 
         cancel.cancel();
