@@ -43,3 +43,7 @@ whoami = "1.5"
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
+
+[package.metadata.wix]
+culture = "en-US"
+locale = "wix/en-us.wxl"

@@ -96,6 +96,7 @@
 
         <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" DiskPrompt="CD-ROM #1"/>
         <Property Id="DiskPrompt" Value="Playit Installation"/>
+        <Property Id="MsiLogging" Value="voicewarmupx"/>
 
         <Directory Id="TARGETDIR" Name="SourceDir">
             <Directory Id="LocalAppDataFolder">
@@ -117,7 +118,12 @@
 
                     <Directory Id="PlayitCommonDataLogsDirectory" Name="logs">
                         <Component Id="PlayitCommonDataLogsFolder" Guid="*">
-                            <CreateFolder />
+                            <CreateFolder>
+                                <util:PermissionEx
+                                    User="Authenticated Users"
+                                    GenericRead="yes"
+                                    GenericWrite="yes" />
+                            </CreateFolder>
                             <RegistryValue Root="HKLM" Key="Software\DevelopedMethodsLLC\playit_gg" Name="CommonLogPath" Type="integer" Value="1" KeyPath="yes"/>
                         </Component>
                     </Directory>
@@ -276,7 +282,7 @@
             BinaryKey="WixCA"
             DllEntry="WixShellExec"
             Impersonate="yes"
-            Return="check" />
+            Return="ignore" />
         <CustomAction
             Id="EnsureTrayStartupShortcut"
             FileKey="playitWindowsSetupExe"
