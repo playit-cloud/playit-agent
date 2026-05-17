@@ -46,4 +46,4 @@ winres = "0.1"
 
 [package.metadata.wix]
 culture = "en-US"
-locale = "wix/en-us.wxl"
+locale = "packages/playit-cli/wix/en-us.wxl"
