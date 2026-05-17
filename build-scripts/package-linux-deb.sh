@@ -121,6 +121,17 @@ if ! command -v systemctl >/dev/null 2>&1; then
   exit 1
 fi
 
+LEGACY_UNIT="/etc/systemd/system/playit.service"
+if [[ -f "\${LEGACY_UNIT}" || -L "\${LEGACY_UNIT}" ]]; then
+  BACKUP_UNIT="\${LEGACY_UNIT}.dpkg-bak.\$(date -u +%Y%m%d%H%M%S)"
+  echo "Moving legacy systemd unit \${LEGACY_UNIT} to \${BACKUP_UNIT} because it shadows the packaged unit"
+  mv "\${LEGACY_UNIT}" "\${BACKUP_UNIT}"
+elif [[ -e "\${LEGACY_UNIT}" ]]; then
+  echo "Cannot install playit: \${LEGACY_UNIT} exists but is not a file or symlink" >&2
+  echo "Remove or rename it manually, then reinstall playit." >&2
+  exit 1
+fi
+
 systemctl daemon-reload
 systemctl enable playit
 systemctl restart playit || systemctl start playit
