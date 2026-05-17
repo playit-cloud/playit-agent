@@ -34,22 +34,23 @@ fn run_and_log() -> Result<(), String> {
         );
     };
     let command_text = command.to_string_lossy().into_owned();
-
-    if let Some(extra) = args.next() {
-        return setup_log::log_command_result(
-            &command_text,
-            Err(format!(
-                "Unexpected extra argument for playitd-windows-setup: {}",
-                extra.to_string_lossy()
-            )),
-        );
-    }
+    let extra_args = args.collect::<Vec<_>>();
 
     let result = match command_text.as_str() {
-        "apply-installer-permissions" => permissions::apply_installer_permissions(),
-        "ensure-startup-shortcut" => startup_shortcut::ensure_startup_shortcut(),
-        "remove-startup-shortcut" => startup_shortcut::remove_startup_shortcut(),
+        "apply-installer-permissions" => {
+            if extra_args.len() > 1 {
+                Err(unexpected_extra_arguments(&extra_args))
+            } else {
+                let installed_user_sid = extra_args.first().map(|arg| arg.to_string_lossy());
+                permissions::apply_installer_permissions(installed_user_sid.as_deref())
+            }
+        }
+        "ensure-startup-shortcut" => require_no_extra_arguments(&extra_args)
+            .and_then(|()| startup_shortcut::ensure_startup_shortcut()),
+        "remove-startup-shortcut" => require_no_extra_arguments(&extra_args)
+            .and_then(|()| startup_shortcut::remove_startup_shortcut()),
         "write-installed-user-sid" => {
+            require_no_extra_arguments(&extra_args)?;
             playitd::windows::write_current_user_sid()
                 .map_err(|error| format!("Failed to write installed user SID: {error}"))?;
             Ok(())
@@ -60,6 +61,26 @@ fn run_and_log() -> Result<(), String> {
     };
 
     setup_log::log_command_result(&command_text, result)
+}
+
+#[cfg(target_os = "windows")]
+fn require_no_extra_arguments(args: &[std::ffi::OsString]) -> Result<(), String> {
+    if args.is_empty() {
+        Ok(())
+    } else {
+        Err(unexpected_extra_arguments(args))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn unexpected_extra_arguments(args: &[std::ffi::OsString]) -> String {
+    format!(
+        "Unexpected extra argument(s) for playitd-windows-setup: {}",
+        args.iter()
+            .map(|arg| arg.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(" ")
+    )
 }
 
 #[cfg(not(target_os = "windows"))]

@@ -11,7 +11,7 @@ const AUTHENTICATED_USERS_SDDL_ALIAS: &str = "AU";
 const AUTHENTICATED_USERS_ICACLS_SID: &str = "*S-1-5-11";
 const SERVICE_ACCESS_ACE: &str = "(A;;LCRPWPLO;;;AU)";
 
-pub(crate) fn apply_installer_permissions() -> Result<(), String> {
+pub(crate) fn apply_installer_permissions(installed_user_sid: Option<&str>) -> Result<(), String> {
     let mut errors = Vec::new();
 
     if let Err(error) = grant_log_folder_permissions() {
@@ -22,11 +22,42 @@ pub(crate) fn apply_installer_permissions() -> Result<(), String> {
         errors.push(error);
     }
 
+    if let Err(error) = write_installed_user_sid(installed_user_sid) {
+        errors.push(error);
+    }
+
     if errors.is_empty() {
         Ok(())
     } else {
         Err(errors.join("; "))
     }
+}
+
+fn write_installed_user_sid(installed_user_sid: Option<&str>) -> Result<(), String> {
+    let installed_user_sid = installed_user_sid
+        .map(str::trim)
+        .filter(|sid| !sid.is_empty())
+        .ok_or_else(|| "MSI did not provide the installing user's SID".to_string())?;
+    let installed_user_sid = normalize_sid(installed_user_sid).ok_or_else(|| {
+        format!("MSI provided an invalid installing user SID: {installed_user_sid}")
+    })?;
+
+    let path = playitd::windows::installed_user_sid_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create installed user SID directory at {}: {error}",
+                parent.display()
+            )
+        })?;
+    }
+
+    fs::write(&path, format!("{installed_user_sid}\n")).map_err(|error| {
+        format!(
+            "Failed to write installed user SID to {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn grant_log_folder_permissions() -> Result<(), String> {
@@ -123,6 +154,36 @@ fn add_service_access_ace(sddl: &str) -> Result<String, String> {
     Ok(updated)
 }
 
+fn normalize_sid(sid: &str) -> Option<&str> {
+    if !sid.starts_with("S-1-") {
+        return None;
+    }
+
+    if sid
+        .chars()
+        .any(|c| c.is_whitespace() || matches!(c, '(' | ')' | ';'))
+    {
+        return None;
+    }
+
+    if !sid
+        .chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, 'S' | '-'))
+    {
+        return None;
+    }
+
+    let mut parts = sid.split('-');
+    if parts.next() != Some("S") || parts.next() != Some("1") {
+        return None;
+    }
+    if !parts.all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())) {
+        return None;
+    }
+
+    Some(sid)
+}
+
 fn run_command(program: &str, args: Vec<OsString>) -> Result<(), String> {
     let output = run_command_with_output(program, args)?;
     if output.status.success() {
@@ -153,7 +214,9 @@ fn command_output_text(output: &Output) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_service_access_ace, AUTHENTICATED_USERS_SDDL_ALIAS, SERVICE_ACCESS_ACE};
+    use super::{
+        add_service_access_ace, normalize_sid, AUTHENTICATED_USERS_SDDL_ALIAS, SERVICE_ACCESS_ACE,
+    };
 
     #[test]
     fn service_ace_uses_authenticated_users_sddl_alias() {
@@ -182,5 +245,17 @@ mod tests {
     #[test]
     fn add_service_access_ace_rejects_missing_dacl() {
         assert!(add_service_access_ace("S:(AU;FA;LCRP;;;WD)").is_err());
+    }
+
+    #[test]
+    fn sid_validation_rejects_sddl_breakout_characters() {
+        assert_eq!(
+            normalize_sid("S-1-5-21-1-2-3-1001"),
+            Some("S-1-5-21-1-2-3-1001")
+        );
+        assert_eq!(normalize_sid("S-1-5-21-1-2-3-1001)"), None);
+        assert_eq!(normalize_sid("S-1-5-21-1-2-3-1001;"), None);
+        assert_eq!(normalize_sid("S-1-5-21-1-2-3-1001("), None);
+        assert_eq!(normalize_sid("S-1-5-21-1-2-3-1001 "), None);
     }
 }

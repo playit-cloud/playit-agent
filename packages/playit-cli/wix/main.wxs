@@ -280,7 +280,7 @@
         <CustomAction
             Id="ApplyInstallerPermissions"
             FileKey="playitWindowsSetupExe"
-            ExeCommand="apply-installer-permissions"
+            ExeCommand="apply-installer-permissions [UserSID]"
             Execute="deferred"
             Impersonate="no"
             Return="ignore" />
