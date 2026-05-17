@@ -28,7 +28,9 @@ pub(crate) fn log_command_result(command: &str, result: Result<(), String>) -> R
         status,
         &detail,
     );
-    let _ = append_log_line(&default_log_path(), &line);
+    if append_log_line(&default_log_path(), &line).is_err() {
+        let _ = append_log_line(&temp_log_path(), &line);
+    }
 
     result
 }
@@ -39,6 +41,11 @@ fn default_log_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(PROGRAMDATA_FALLBACK));
     log_path_from_base(base)
+}
+
+#[cfg(target_os = "windows")]
+fn temp_log_path() -> PathBuf {
+    std::env::temp_dir().join("playit-installer.log")
 }
 
 fn log_path_from_base(base: impl Into<PathBuf>) -> PathBuf {

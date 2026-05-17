@@ -1,6 +1,8 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 #[cfg(target_os = "windows")]
+mod permissions;
+#[cfg(target_os = "windows")]
 mod startup_shortcut;
 
 #[cfg(any(target_os = "windows", test))]
@@ -8,6 +10,7 @@ mod setup_log;
 
 #[cfg(target_os = "windows")]
 const COMMANDS: &[&str] = &[
+    "apply-installer-permissions",
     "ensure-startup-shortcut",
     "remove-startup-shortcut",
     "write-installed-user-sid",
@@ -43,6 +46,7 @@ fn run_and_log() -> Result<(), String> {
     }
 
     let result = match command_text.as_str() {
+        "apply-installer-permissions" => permissions::apply_installer_permissions(),
         "ensure-startup-shortcut" => startup_shortcut::ensure_startup_shortcut(),
         "remove-startup-shortcut" => startup_shortcut::remove_startup_shortcut(),
         "write-installed-user-sid" => {

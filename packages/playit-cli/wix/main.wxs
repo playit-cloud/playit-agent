@@ -118,12 +118,7 @@
 
                     <Directory Id="PlayitCommonDataLogsDirectory" Name="logs">
                         <Component Id="PlayitCommonDataLogsFolder" Guid="*">
-                            <CreateFolder>
-                                <util:PermissionEx
-                                    User="Users"
-                                    GenericRead="yes"
-                                    GenericWrite="yes" />
-                            </CreateFolder>
+                            <CreateFolder />
                             <RegistryValue Root="HKLM" Key="Software\DevelopedMethodsLLC\playit_gg" Name="CommonLogPath" Type="integer" Value="1" KeyPath="yes"/>
                         </Component>
                     </Directory>
@@ -212,14 +207,7 @@
                                 Start="demand"
                                 ErrorControl="normal"
                                 Vital="yes"
-                                Account="LocalSystem">
-                                <util:PermissionEx
-                                    User="Users"
-                                    ServiceStart="yes"
-                                    ServiceStop="yes"
-                                    ServiceQueryStatus="yes"
-                                    ServiceInterrogate="yes" />
-                            </ServiceInstall>
+                                Account="LocalSystem" />
                             <ServiceControl
                                 Id="playitdServiceControl"
                                 Name="playitd"
@@ -290,6 +278,13 @@
             Impersonate="yes"
             Return="ignore" />
         <CustomAction
+            Id="ApplyInstallerPermissions"
+            FileKey="playitWindowsSetupExe"
+            ExeCommand="apply-installer-permissions"
+            Execute="deferred"
+            Impersonate="no"
+            Return="ignore" />
+        <CustomAction
             Id="WriteInstalledUserSid"
             FileKey="playitWindowsSetupExe"
             ExeCommand="write-installed-user-sid"
@@ -304,6 +299,7 @@
 
         <InstallExecuteSequence>
             <Custom Action="RemoveTrayStartupShortcut" Before="RemoveFiles">REMOVE="ALL"</Custom>
+            <Custom Action="ApplyInstallerPermissions" After="InstallServices">NOT REMOVE="ALL"</Custom>
             <Custom Action="WriteInstalledUserSid" After="InstallFinalize">NOT REMOVE="ALL"</Custom>
             <Custom Action="EnsureTrayStartupShortcut" After="WriteInstalledUserSid">NOT REMOVE="ALL"</Custom>
             <Custom Action="LaunchTrayApplication" After="EnsureTrayStartupShortcut">NOT Installed AND UILevel &gt;= 5</Custom>
