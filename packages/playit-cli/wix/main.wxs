@@ -96,6 +96,7 @@
 
         <Media Id="1" Cabinet="media1.cab" EmbedCab="yes" DiskPrompt="CD-ROM #1"/>
         <Property Id="DiskPrompt" Value="Playit Installation"/>
+        <Property Id="MsiLogging" Value="voicewarmupx"/>
 
         <Directory Id="TARGETDIR" Name="SourceDir">
             <Directory Id="LocalAppDataFolder">
@@ -206,14 +207,7 @@
                                 Start="demand"
                                 ErrorControl="normal"
                                 Vital="yes"
-                                Account="LocalSystem">
-                                <util:PermissionEx
-                                    User="Authenticated Users"
-                                    ServiceStart="yes"
-                                    ServiceStop="yes"
-                                    ServiceQueryStatus="yes"
-                                    ServiceInterrogate="yes" />
-                            </ServiceInstall>
+                                Account="LocalSystem" />
                             <ServiceControl
                                 Id="playitdServiceControl"
                                 Name="playitd"
@@ -276,12 +270,19 @@
             BinaryKey="WixCA"
             DllEntry="WixShellExec"
             Impersonate="yes"
-            Return="check" />
+            Return="ignore" />
         <CustomAction
             Id="EnsureTrayStartupShortcut"
             FileKey="playitWindowsSetupExe"
             ExeCommand="ensure-startup-shortcut"
             Impersonate="yes"
+            Return="ignore" />
+        <CustomAction
+            Id="ApplyInstallerPermissions"
+            FileKey="playitWindowsSetupExe"
+            ExeCommand="apply-installer-permissions [UserSID]"
+            Execute="deferred"
+            Impersonate="no"
             Return="ignore" />
         <CustomAction
             Id="WriteInstalledUserSid"
@@ -298,6 +299,7 @@
 
         <InstallExecuteSequence>
             <Custom Action="RemoveTrayStartupShortcut" Before="RemoveFiles">REMOVE="ALL"</Custom>
+            <Custom Action="ApplyInstallerPermissions" After="InstallServices">NOT REMOVE="ALL"</Custom>
             <Custom Action="WriteInstalledUserSid" After="InstallFinalize">NOT REMOVE="ALL"</Custom>
             <Custom Action="EnsureTrayStartupShortcut" After="WriteInstalledUserSid">NOT REMOVE="ALL"</Custom>
             <Custom Action="LaunchTrayApplication" After="EnsureTrayStartupShortcut">NOT Installed AND UILevel &gt;= 5</Custom>

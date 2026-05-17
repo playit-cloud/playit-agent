@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<WixLocalization Culture="en-US" Codepage="1252" xmlns="http://schemas.microsoft.com/wix/2006/localization">
+    <String Id="FatalErrorDescription1" Overridable="yes">[ProductName] Setup Wizard ended prematurely because of an error. Details may be available in the Windows Installer log: [MsiLogFileLocation]. Playit setup helper details are written to %ProgramData%\playit_gg\logs\playit-installer.log.</String>
+    <String Id="FatalErrorDescription2" Overridable="yes">Click the Finish button to exit the Setup Wizard.</String>
+</WixLocalization>
