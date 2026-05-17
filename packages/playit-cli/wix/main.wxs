@@ -120,7 +120,7 @@
                         <Component Id="PlayitCommonDataLogsFolder" Guid="*">
                             <CreateFolder>
                                 <util:PermissionEx
-                                    User="Authenticated Users"
+                                    User="S-1-5-11"
                                     GenericRead="yes"
                                     GenericWrite="yes" />
                             </CreateFolder>
@@ -214,7 +214,7 @@
                                 Vital="yes"
                                 Account="LocalSystem">
                                 <util:PermissionEx
-                                    User="Authenticated Users"
+                                    User="S-1-5-11"
                                     ServiceStart="yes"
                                     ServiceStop="yes"
                                     ServiceQueryStatus="yes"
