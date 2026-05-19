@@ -1,3 +1,5 @@
+#![cfg_attr(target_os = "windows", windows_subsystem = "console")]
+
 use std::path::PathBuf;
 
 use clap::Parser;
