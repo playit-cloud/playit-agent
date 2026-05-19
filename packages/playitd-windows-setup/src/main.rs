@@ -2,6 +2,10 @@
 
 #[cfg(target_os = "windows")]
 mod permissions;
+#[cfg(any(target_os = "windows", test))]
+mod secret_migration;
+#[cfg(any(target_os = "windows", test))]
+mod sid;
 #[cfg(target_os = "windows")]
 mod startup_shortcut;
 
@@ -12,6 +16,7 @@ mod setup_log;
 const COMMANDS: &[&str] = &[
     "apply-installer-permissions",
     "ensure-startup-shortcut",
+    "migrate-v17-secret",
     "remove-startup-shortcut",
     "write-installed-user-sid",
 ];
@@ -47,6 +52,14 @@ fn run_and_log() -> Result<(), String> {
         }
         "ensure-startup-shortcut" => require_no_extra_arguments(&extra_args)
             .and_then(|()| startup_shortcut::ensure_startup_shortcut()),
+        "migrate-v17-secret" => {
+            if extra_args.len() > 1 {
+                Err(unexpected_extra_arguments(&extra_args))
+            } else {
+                let installed_user_sid = extra_args.first().map(|arg| arg.to_string_lossy());
+                secret_migration::migrate_v17_secret(installed_user_sid.as_deref())
+            }
+        }
         "remove-startup-shortcut" => require_no_extra_arguments(&extra_args)
             .and_then(|()| startup_shortcut::remove_startup_shortcut()),
         "write-installed-user-sid" => {

@@ -285,6 +285,13 @@
             Impersonate="no"
             Return="ignore" />
         <CustomAction
+            Id="MigrateV17Secret"
+            FileKey="playitWindowsSetupExe"
+            ExeCommand="migrate-v17-secret [UserSID]"
+            Execute="deferred"
+            Impersonate="no"
+            Return="ignore" />
+        <CustomAction
             Id="WriteInstalledUserSid"
             FileKey="playitWindowsSetupExe"
             ExeCommand="write-installed-user-sid"
@@ -300,6 +307,7 @@
         <InstallExecuteSequence>
             <Custom Action="RemoveTrayStartupShortcut" Before="RemoveFiles">REMOVE="ALL"</Custom>
             <Custom Action="ApplyInstallerPermissions" After="InstallServices">NOT REMOVE="ALL"</Custom>
+            <Custom Action="MigrateV17Secret" After="ApplyInstallerPermissions">NOT REMOVE="ALL"</Custom>
             <Custom Action="WriteInstalledUserSid" After="InstallFinalize">NOT REMOVE="ALL"</Custom>
             <Custom Action="EnsureTrayStartupShortcut" After="WriteInstalledUserSid">NOT REMOVE="ALL"</Custom>
             <Custom Action="LaunchTrayApplication" After="EnsureTrayStartupShortcut">NOT Installed AND UILevel &gt;= 5</Custom>
