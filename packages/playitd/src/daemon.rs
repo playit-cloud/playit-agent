@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
-use crate::logging::IpcBroadcastLayer;
+use crate::logging::{IpcBroadcastLayer, log_rate_limit_filter};
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
@@ -30,11 +30,17 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::layer::{Layer, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub const DEFAULT_VARIANT_ID: &str = "308943e8-faef-4835-a2ba-270351f72aa3";
 const AGENT_LIMIT_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+#[cfg(target_os = "windows")]
+const WINDOWS_LOG_MAX_FILE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+#[cfg(target_os = "windows")]
+const WINDOWS_LOG_MAX_TOTAL_FILES: usize = 3;
+#[cfg(target_os = "windows")]
+const WINDOWS_LOG_MAX_ROTATED_FILES: usize = WINDOWS_LOG_MAX_TOTAL_FILES - 1;
 
 #[derive(Debug, Clone)]
 pub struct DaemonOptions {
@@ -1162,27 +1168,19 @@ fn init_tracing(
 ) -> Result<Option<WorkerGuard>, String> {
     match log_path {
         Some(path) => {
-            let parent = path.parent().unwrap_or_else(|| Path::new("."));
-            std::fs::create_dir_all(parent).map_err(|error| {
-                format!(
-                    "Failed to create log directory {}: {error}",
-                    parent.display()
-                )
-            })?;
-            let file_name = path
-                .file_name()
-                .and_then(|file| file.to_str())
-                .ok_or_else(|| format!("Invalid --log-path {}", path.display()))?;
-            let writer = tracing_appender::rolling::never(parent, file_name);
+            let writer = log_file_writer(path)?;
             let (non_blocking, guard) = tracing_appender::non_blocking(writer);
 
             tracing_subscriber::registry()
                 .with(log_filter)
-                .with(IpcBroadcastLayer::new(event_tx))
                 .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_ansi(use_ansi)
-                        .with_writer(non_blocking),
+                    IpcBroadcastLayer::new(event_tx)
+                        .and_then(
+                            tracing_subscriber::fmt::layer()
+                                .with_ansi(use_ansi)
+                                .with_writer(non_blocking),
+                        )
+                        .with_filter(log_rate_limit_filter()),
                 )
                 .init();
 
@@ -1191,17 +1189,73 @@ fn init_tracing(
         None => {
             tracing_subscriber::registry()
                 .with(log_filter)
-                .with(IpcBroadcastLayer::new(event_tx))
                 .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_ansi(use_ansi)
-                        .with_writer(std::io::stderr),
+                    IpcBroadcastLayer::new(event_tx)
+                        .and_then(
+                            tracing_subscriber::fmt::layer()
+                                .with_ansi(use_ansi)
+                                .with_writer(std::io::stderr),
+                        )
+                        .with_filter(log_rate_limit_filter()),
                 )
                 .init();
 
             Ok(None)
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn log_file_writer(path: &Path) -> Result<tracing_rolling_file::RollingFileAppenderBase, String> {
+    windows_log_file_writer_with_limits(
+        path,
+        WINDOWS_LOG_MAX_FILE_SIZE_BYTES,
+        WINDOWS_LOG_MAX_ROTATED_FILES,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn windows_log_file_writer_with_limits(
+    path: &Path,
+    max_file_size_bytes: u64,
+    max_rotated_files: usize,
+) -> Result<tracing_rolling_file::RollingFileAppenderBase, String> {
+    create_log_parent_dir(path)?;
+
+    Ok(tracing_rolling_file::RollingFileAppenderBase::builder()
+        .filename(path.display().to_string())
+        .max_filecount(max_rotated_files)
+        .condition_max_file_size(max_file_size_bytes)
+        .build()
+        .map_err(|error| {
+            format!(
+                "Failed to create log file writer {}: {error}",
+                path.display()
+            )
+        })?)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn log_file_writer(path: &Path) -> Result<tracing_appender::rolling::RollingFileAppender, String> {
+    create_log_parent_dir(path)?;
+
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|file| file.to_str())
+        .ok_or_else(|| format!("Invalid --log-path {}", path.display()))?;
+
+    Ok(tracing_appender::rolling::never(parent, file_name))
+}
+
+fn create_log_parent_dir(path: &Path) -> Result<(), String> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "Failed to create log directory {}: {error}",
+            parent.display()
+        )
+    })
 }
 
 #[cfg(test)]
@@ -1222,6 +1276,43 @@ mod tests {
                 .as_nanos(),
             extension,
         ))
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_log_file_writer_rotates_by_size_and_file_count() {
+        use std::io::Write;
+
+        let log_path = unique_test_path("rotating-log", "log");
+        for suffix in ["", ".1", ".2", ".3"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", log_path.display()));
+        }
+
+        {
+            let mut writer = super::windows_log_file_writer_with_limits(&log_path, 64, 2).unwrap();
+            for _ in 0..8 {
+                writer
+                    .write_all(b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\n")
+                    .unwrap();
+            }
+            writer.flush().unwrap();
+        }
+
+        let existing_log_files = ["", ".1", ".2", ".3"]
+            .iter()
+            .filter(|suffix| {
+                std::path::PathBuf::from(format!("{}{suffix}", log_path.display())).exists()
+            })
+            .count();
+
+        assert!(log_path.exists());
+        assert!(std::path::PathBuf::from(format!("{}.1", log_path.display())).exists());
+        assert!(existing_log_files <= 3);
+        assert!(!std::path::PathBuf::from(format!("{}.3", log_path.display())).exists());
+
+        for suffix in ["", ".1", ".2", ".3"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", log_path.display()));
+        }
     }
 
     async fn wait_for_waiting_for_secret(socket_path: &str) -> IpcClient {

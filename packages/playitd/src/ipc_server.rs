@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use interprocess::local_socket::{
     GenericFilePath, GenericNamespaced, ListenerOptions, ToFsName, ToNsName,
@@ -170,7 +171,11 @@ impl IpcServer {
                                 }
                             });
                         }
-                        Err(e) => tracing::error!("Accept error: {e}"),
+                        Err(e) => {
+                            tracing::error!("Accept error: {e}");
+                            // Avoid tight-loop logging if the listener enters a persistent failure state.
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
                     }
                 }
                 _ = self.cancel_token.cancelled() => {

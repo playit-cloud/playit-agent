@@ -2008,6 +2008,7 @@ dependencies = [
  "clap",
  "dirs 6.0.0",
  "dotenv",
+ "governor",
  "hex",
  "interprocess",
  "libc",
@@ -2023,6 +2024,7 @@ dependencies = [
  "toml 0.9.8",
  "tracing",
  "tracing-appender",
+ "tracing-rolling-file",
  "tracing-subscriber",
  "uzers",
  "widestring",
@@ -3188,6 +3190,15 @@ dependencies = [
  "log",
  "once_cell",
  "tracing-core",
+]
+
+[[package]]
+name = "tracing-rolling-file"
+version = "0.1.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fd38b6b03a92e4e311682054368ef79e7cb208c2125dd96647ef6bd7833de6db"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]
