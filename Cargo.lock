@@ -2008,6 +2008,7 @@ dependencies = [
  "clap",
  "dirs 6.0.0",
  "dotenv",
+ "governor",
  "hex",
  "interprocess",
  "libc",

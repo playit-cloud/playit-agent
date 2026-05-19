@@ -1,8 +1,17 @@
+use std::num::NonZeroU32;
+use std::sync::Arc;
+
+use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use playit_ipc::model::{LogEntry, LogLevel, ServiceUpdate};
 use tokio::sync::broadcast;
-use tracing::{Event, Subscriber};
+use tracing::{Event, Metadata, Subscriber};
 use tracing_subscriber::Layer;
+use tracing_subscriber::filter::dynamic_filter_fn;
 use tracing_subscriber::layer::Context;
+use tracing_subscriber::layer::Filter;
+
+pub const LOG_RATE_LIMIT_PER_SECOND: u32 = 2;
+pub const LOG_RATE_LIMIT_BURST: u32 = 32;
 
 #[derive(Default)]
 struct MessageVisitor {
@@ -46,6 +55,42 @@ fn level_to_wire(level: &tracing::Level) -> LogLevel {
     }
 }
 
+#[derive(Clone)]
+struct LogRateLimiter {
+    limiter: Arc<DefaultDirectRateLimiter>,
+}
+
+impl LogRateLimiter {
+    fn new() -> Self {
+        let rate = NonZeroU32::new(LOG_RATE_LIMIT_PER_SECOND)
+            .expect("log rate limit per second must be non-zero");
+        let burst =
+            NonZeroU32::new(LOG_RATE_LIMIT_BURST).expect("log rate limit burst must be non-zero");
+
+        Self {
+            limiter: Arc::new(RateLimiter::direct(
+                Quota::per_second(rate).allow_burst(burst),
+            )),
+        }
+    }
+
+    fn allow(&self, metadata: &Metadata<'_>) -> bool {
+        !metadata.is_event() || self.allow_event()
+    }
+
+    fn allow_event(&self) -> bool {
+        self.limiter.check().is_ok()
+    }
+}
+
+pub fn log_rate_limit_filter<S>() -> impl Filter<S>
+where
+    S: Subscriber,
+{
+    let limiter = LogRateLimiter::new();
+    dynamic_filter_fn(move |metadata, _ctx| limiter.allow(metadata))
+}
+
 /// Tracing layer that broadcasts log events via IPC.
 pub struct IpcBroadcastLayer {
     event_tx: broadcast::Sender<ServiceUpdate>,
@@ -71,5 +116,47 @@ impl<S: Subscriber> Layer<S> for IpcBroadcastLayer {
             message: visitor.message,
             timestamp: now_milli(),
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{LOG_RATE_LIMIT_BURST, LogRateLimiter};
+
+    #[test]
+    fn log_rate_limiter_allows_initial_burst() {
+        let limiter = LogRateLimiter::new();
+
+        for _ in 0..LOG_RATE_LIMIT_BURST {
+            assert!(limiter.allow_event());
+        }
+    }
+
+    #[test]
+    fn log_rate_limiter_rejects_after_burst() {
+        let limiter = LogRateLimiter::new();
+
+        for _ in 0..LOG_RATE_LIMIT_BURST {
+            assert!(limiter.allow_event());
+        }
+
+        assert!(!limiter.allow_event());
+    }
+
+    #[test]
+    fn log_rate_limiter_refills_at_sustained_rate() {
+        let limiter = LogRateLimiter::new();
+
+        for _ in 0..LOG_RATE_LIMIT_BURST {
+            assert!(limiter.allow_event());
+        }
+        assert!(!limiter.allow_event());
+
+        std::thread::sleep(Duration::from_millis(1_100));
+
+        let accepted = (0..4).filter(|_| limiter.allow_event()).count();
+        assert!((2..=3).contains(&accepted));
     }
 }

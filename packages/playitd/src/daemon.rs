@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
-use crate::logging::IpcBroadcastLayer;
+use crate::logging::{IpcBroadcastLayer, log_rate_limit_filter};
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
@@ -30,7 +30,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::layer::{Layer, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
 
 pub const DEFAULT_VARIANT_ID: &str = "308943e8-faef-4835-a2ba-270351f72aa3";
@@ -1178,11 +1178,14 @@ fn init_tracing(
 
             tracing_subscriber::registry()
                 .with(log_filter)
-                .with(IpcBroadcastLayer::new(event_tx))
                 .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_ansi(use_ansi)
-                        .with_writer(non_blocking),
+                    IpcBroadcastLayer::new(event_tx)
+                        .and_then(
+                            tracing_subscriber::fmt::layer()
+                                .with_ansi(use_ansi)
+                                .with_writer(non_blocking),
+                        )
+                        .with_filter(log_rate_limit_filter()),
                 )
                 .init();
 
@@ -1191,11 +1194,14 @@ fn init_tracing(
         None => {
             tracing_subscriber::registry()
                 .with(log_filter)
-                .with(IpcBroadcastLayer::new(event_tx))
                 .with(
-                    tracing_subscriber::fmt::layer()
-                        .with_ansi(use_ansi)
-                        .with_writer(std::io::stderr),
+                    IpcBroadcastLayer::new(event_tx)
+                        .and_then(
+                            tracing_subscriber::fmt::layer()
+                                .with_ansi(use_ansi)
+                                .with_writer(std::io::stderr),
+                        )
+                        .with_filter(log_rate_limit_filter()),
                 )
                 .init();
 

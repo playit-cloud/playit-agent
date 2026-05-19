@@ -17,6 +17,7 @@ tracing-appender = { workspace = true }
 dirs = { workspace = true }
 hex = { workspace = true }
 toml = { workspace = true }
+governor = "0.10.0"
 
 dotenv = "0.15.0"
 interprocess = { version = "2.2", features = ["tokio"] }
