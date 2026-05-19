@@ -40,6 +40,13 @@ FILES=(
   playit_arm64.deb
   playit_armhf.deb
   playit_i386.deb
+
+  playit_x86_64.rpm
+  playit_aarch64.rpm
+  playit_armv7hl.rpm
+  playit_i686.rpm
+
+  playit-bin-PKGBUILD.tar.gz
 )
 
 BASE_URL="https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}"
