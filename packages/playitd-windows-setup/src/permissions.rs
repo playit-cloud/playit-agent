@@ -3,6 +3,7 @@ use std::fs;
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Output};
 
+use crate::sid::normalize_sid;
 use playitd::manager::INSTALLED_SERVICE_LABEL;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -154,36 +155,6 @@ fn add_service_access_ace(sddl: &str) -> Result<String, String> {
     Ok(updated)
 }
 
-fn normalize_sid(sid: &str) -> Option<&str> {
-    if !sid.starts_with("S-1-") {
-        return None;
-    }
-
-    if sid
-        .chars()
-        .any(|c| c.is_whitespace() || matches!(c, '(' | ')' | ';'))
-    {
-        return None;
-    }
-
-    if !sid
-        .chars()
-        .all(|c| c.is_ascii_digit() || matches!(c, 'S' | '-'))
-    {
-        return None;
-    }
-
-    let mut parts = sid.split('-');
-    if parts.next() != Some("S") || parts.next() != Some("1") {
-        return None;
-    }
-    if !parts.all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_digit())) {
-        return None;
-    }
-
-    Some(sid)
-}
-
 fn run_command(program: &str, args: Vec<OsString>) -> Result<(), String> {
     let output = run_command_with_output(program, args)?;
     if output.status.success() {
@@ -214,9 +185,7 @@ fn command_output_text(output: &Output) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        add_service_access_ace, normalize_sid, AUTHENTICATED_USERS_SDDL_ALIAS, SERVICE_ACCESS_ACE,
-    };
+    use super::{AUTHENTICATED_USERS_SDDL_ALIAS, SERVICE_ACCESS_ACE, add_service_access_ace};
 
     #[test]
     fn service_ace_uses_authenticated_users_sddl_alias() {
@@ -245,17 +214,5 @@ mod tests {
     #[test]
     fn add_service_access_ace_rejects_missing_dacl() {
         assert!(add_service_access_ace("S:(AU;FA;LCRP;;;WD)").is_err());
-    }
-
-    #[test]
-    fn sid_validation_rejects_sddl_breakout_characters() {
-        assert_eq!(
-            normalize_sid("S-1-5-21-1-2-3-1001"),
-            Some("S-1-5-21-1-2-3-1001")
-        );
-        assert_eq!(normalize_sid("S-1-5-21-1-2-3-1001)"), None);
-        assert_eq!(normalize_sid("S-1-5-21-1-2-3-1001;"), None);
-        assert_eq!(normalize_sid("S-1-5-21-1-2-3-1001("), None);
-        assert_eq!(normalize_sid("S-1-5-21-1-2-3-1001 "), None);
     }
 }
