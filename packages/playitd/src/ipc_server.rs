@@ -240,7 +240,7 @@ impl IpcServer {
                     match event_result {
                         Ok(event) => self.send_event(&mut writer, event).await?,
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            tracing::warn!("Client lagged behind, some events dropped");
+                            tracing::debug!("Client lagged behind, some events dropped");
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
