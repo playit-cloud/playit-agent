@@ -63,7 +63,15 @@ impl UdpReceiver {
 
     pub async fn shutdown(mut self) {
         self.cancel.cancel();
-        self.end.take().unwrap().await.unwrap();
+
+        let timedout = tokio::time::timeout(Duration::from_secs(15), self.end.take().unwrap())
+            .await
+            .is_err();
+
+        if timedout {
+            panic!("Timeout waiting for UdpReceiver to shutdown 15s+");
+        }
+
         self.closed = true;
     }
 }
