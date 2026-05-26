@@ -2,10 +2,10 @@
   "agent_variant_id": "308943e8-faef-4835-a2ba-270351f72aa3",
   "version_major": 1,
   "version_minor": 0,
-  "version_patch": 4,
+  "version_patch": 5,
   "proto_version": 2,
   "allow_self_managed": true,
-  "release_url": "https://github.com/playit-cloud/playit-agent/releases/tag/v1.0.4",
+  "release_url": "https://github.com/playit-cloud/playit-agent/releases/tag/v1.0.5",
   "schema": {
     "default_schema": {
       "fields": {
