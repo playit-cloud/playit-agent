@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 use crate::stats::AgentStats;
 use crate::utils::now_milli;
 
-const TCP_PIPE_BUFFER_SIZE: usize = 16 * 1024;
+const TCP_PIPE_BUFFER_SIZE: usize = 256 * 1024;
 
 /// Direction of data flow for stats tracking
 #[derive(Clone, Copy)]
