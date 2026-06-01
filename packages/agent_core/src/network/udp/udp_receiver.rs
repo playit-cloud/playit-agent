@@ -9,7 +9,7 @@ use super::packets::{Packet, Packets};
 
 pub struct UdpReceiverSetup {
     pub packets: Packets,
-    pub output: Sender<UdpReceivedPacket>,
+    pub output: Sender<UdpReceiverEvent>,
 }
 
 pub struct UdpReceiver {
@@ -88,7 +88,12 @@ struct Task<I: PacketRx> {
     packets: Packets,
     cancel: CancellationToken,
     end: tokio::sync::oneshot::Sender<()>,
-    output: Sender<UdpReceivedPacket>,
+    output: Sender<UdpReceiverEvent>,
+}
+
+pub enum UdpReceiverEvent {
+    Packet(UdpReceivedPacket),
+    Closed { rx_id: u64 },
 }
 
 pub struct UdpReceivedPacket {
@@ -121,10 +126,7 @@ impl<I: PacketRx> Task<I> {
                     }
                 }
                 Err(error) => match error.kind() {
-                    ErrorKind::Interrupted
-                    | ErrorKind::WouldBlock
-                    | ErrorKind::TimedOut
-                    | ErrorKind::ConnectionReset => {
+                    ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut => {
                         tracing::warn!(?error, id = self.id, "transient UDP receive error");
                         tokio::time::sleep(Duration::from_millis(20)).await;
                         continue;
@@ -138,7 +140,7 @@ impl<I: PacketRx> Task<I> {
 
             let result = self
                 .cancel
-                .run_until_cancelled(self.output.send(packet))
+                .run_until_cancelled(self.output.send(UdpReceiverEvent::Packet(packet)))
                 .await;
             match result {
                 Some(Ok(_)) => {}
@@ -146,18 +148,20 @@ impl<I: PacketRx> Task<I> {
             }
         }
 
+        let _ = self
+            .cancel
+            .run_until_cancelled(
+                self.output
+                    .send(UdpReceiverEvent::Closed { rx_id: self.id }),
+            )
+            .await;
         let _ = self.end.send(());
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::VecDeque,
-        future, io,
-        net::{Ipv4Addr, SocketAddr, SocketAddrV4},
-        sync::Mutex,
-    };
+    use std::{collections::VecDeque, future, io, net::SocketAddr, sync::Mutex};
 
     use tokio::{sync::mpsc, time::Duration};
 
@@ -194,27 +198,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn receiver_continues_after_connection_reset() {
-        let source = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1234));
+    async fn receiver_reports_closed_after_connection_reset() {
         let rx = MockPacketRx {
-            responses: Mutex::new(VecDeque::from([
-                Err(io::Error::from(io::ErrorKind::ConnectionReset)),
-                Ok((b"still alive".to_vec(), source)),
-            ])),
+            responses: Mutex::new(VecDeque::from([Err(io::Error::from(
+                io::ErrorKind::ConnectionReset,
+            ))])),
         };
         let packets = Packets::new(2);
         let (output, mut received) = mpsc::channel(1);
         let setup = UdpReceiverSetup { packets, output };
 
         let receiver = setup.create(7, rx);
-        let packet = tokio::time::timeout(Duration::from_secs(1), received.recv())
+        let event = tokio::time::timeout(Duration::from_secs(1), received.recv())
             .await
-            .expect("timed out waiting for packet")
+            .expect("timed out waiting for close event")
             .expect("receiver output closed");
 
-        assert_eq!(packet.rx_id, 7);
-        assert_eq!(packet.from, source);
-        assert_eq!(packet.packet.as_ref(), b"still alive");
+        assert!(matches!(event, UdpReceiverEvent::Closed { rx_id: 7 }));
 
         receiver.shutdown().await;
     }

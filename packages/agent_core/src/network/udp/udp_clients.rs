@@ -25,7 +25,7 @@ use playit_agent_proto::udp_proto::UdpFlow;
 use super::{
     packets::{Packet, Packets},
     udp_errors::udp_errors,
-    udp_receiver::{UdpReceivedPacket, UdpReceiver, UdpReceiverSetup},
+    udp_receiver::{UdpReceivedPacket, UdpReceiver, UdpReceiverEvent, UdpReceiverSetup},
     udp_settings::UdpSettings,
 };
 
@@ -36,7 +36,7 @@ pub struct UdpClients {
     virtual_clients: Slab<Client>,
     next_client_generation: AtomicU32,
     setup: UdpReceiverSetup,
-    rx: Receiver<UdpReceivedPacket>,
+    rx: Receiver<UdpReceiverEvent>,
 
     new_client_limiter: DefaultDirectRateLimiter,
     stats: AgentStats,
@@ -145,24 +145,55 @@ impl UdpClients {
         to_remove.reverse();
 
         for slot in to_remove {
-            let client = self.virtual_clients.remove(slot);
-            let removed = self.virtual_client_lookup.remove(&client.key).unwrap();
-            assert_eq!(removed, slot);
-            client.receiver.shutdown().await;
+            self.remove_client(slot).await;
         }
+    }
 
-        // Update active UDP count
+    async fn remove_client(&mut self, slot: usize) {
+        let client = self.virtual_clients.remove(slot);
+        let removed = self.virtual_client_lookup.remove(&client.key).unwrap();
+        assert_eq!(removed, slot);
+        client.receiver.shutdown().await;
         self.stats.set_udp(self.virtual_clients.len() as u32);
     }
 
-    pub async fn recv_origin_packet(&mut self) -> UdpReceivedPacket {
+    async fn remove_closed_client(&mut self, rx_id: u64) {
+        let slot = unpack_slot(rx_id);
+        let Some(client) = self.virtual_clients.get(slot) else {
+            udp_errors().origin_client_missing.inc();
+            return;
+        };
+
+        if client.id != rx_id {
+            udp_errors().origin_reject_bad_id.inc();
+            return;
+        }
+
+        self.remove_client(slot).await;
+    }
+
+    pub async fn recv_origin_event(&mut self) -> UdpReceiverEvent {
         self.rx
             .recv()
             .await
             .expect("should never close with local reference")
     }
 
-    pub async fn dispatch_origin_packet(
+    pub async fn dispatch_origin_event(
+        &mut self,
+        now_ms: u64,
+        event: UdpReceiverEvent,
+    ) -> Option<(UdpFlow, Packet)> {
+        match event {
+            UdpReceiverEvent::Packet(packet) => self.dispatch_origin_packet(now_ms, packet).await,
+            UdpReceiverEvent::Closed { rx_id } => {
+                self.remove_closed_client(rx_id).await;
+                None
+            }
+        }
+    }
+
+    async fn dispatch_origin_packet(
         &mut self,
         now_ms: u64,
         packet: UdpReceivedPacket,
@@ -254,11 +285,9 @@ impl UdpClients {
                 return;
             }
 
-            self.virtual_client_lookup.remove(&key);
             if self.virtual_clients.get(slot).is_some() {
-                self.virtual_clients.remove(slot);
+                self.remove_client(slot).await;
             }
-            self.stats.set_udp(self.virtual_clients.len() as u32);
         }
 
         if self.new_client_limiter.check().is_err() {

@@ -105,11 +105,11 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
         .await
         .expect("origin send reply");
 
-    let reply_1 = timeout(TEST_TIMEOUT, udp_clients.recv_origin_packet())
+    let reply_1 = timeout(TEST_TIMEOUT, udp_clients.recv_origin_event())
         .await
         .expect("recv origin reply");
     let (reply_flow_1, reply_packet_1) = udp_clients
-        .dispatch_origin_packet(2_000, reply_1)
+        .dispatch_origin_event(2_000, reply_1)
         .await
         .expect("dispatch origin reply");
     udp_channel.send(reply_flow_1, reply_packet_1).await;
@@ -145,11 +145,11 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
         .await
         .expect("origin send second reply");
 
-    let reply_2 = timeout(TEST_TIMEOUT, udp_clients.recv_origin_packet())
+    let reply_2 = timeout(TEST_TIMEOUT, udp_clients.recv_origin_event())
         .await
         .expect("recv origin reply after clear");
     let (reply_flow_2, reply_packet_2) = udp_clients
-        .dispatch_origin_packet(102_000, reply_2)
+        .dispatch_origin_event(102_000, reply_2)
         .await
         .expect("dispatch origin reply after clear");
     udp_channel.send(reply_flow_2, reply_packet_2).await;
@@ -236,11 +236,11 @@ async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
         .await
         .expect("origin send reply");
 
-    let reply = timeout(TEST_TIMEOUT, udp_clients.recv_origin_packet())
+    let reply = timeout(TEST_TIMEOUT, udp_clients.recv_origin_event())
         .await
         .expect("recv origin reply");
     let (reply_flow, reply_packet) = udp_clients
-        .dispatch_origin_packet(2_000, reply)
+        .dispatch_origin_event(2_000, reply)
         .await
         .expect("dispatch origin reply");
     udp_channel.send(reply_flow, reply_packet).await;
@@ -564,11 +564,11 @@ async fn drive_parallel_flows(
     .await;
 
     for _ in 0..cases.len() {
-        let reply = timeout(TEST_TIMEOUT, udp_clients.recv_origin_packet())
+        let reply = timeout(TEST_TIMEOUT, udp_clients.recv_origin_event())
             .await
             .expect("recv origin reply");
         let (reply_flow, reply_packet) = udp_clients
-            .dispatch_origin_packet(origin_ts, reply)
+            .dispatch_origin_event(origin_ts, reply)
             .await
             .expect("dispatch origin reply");
         udp_channel.send(reply_flow, reply_packet).await;
@@ -716,9 +716,9 @@ async fn measure_origin_to_tunnel_bitrate(
             }
 
             for i in 0..batch {
-                let recv = udp_clients.recv_origin_packet().await;
+                let recv = udp_clients.recv_origin_event().await;
                 let (reply_flow, reply_packet) = udp_clients
-                    .dispatch_origin_packet(20_000 + (processed + i) as u64, recv)
+                    .dispatch_origin_event(20_000 + (processed + i) as u64, recv)
                     .await
                     .expect("dispatch origin stress packet");
                 assert_eq!(reply_flow, flow.flip());
