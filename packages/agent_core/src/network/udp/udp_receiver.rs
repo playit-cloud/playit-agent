@@ -121,7 +121,10 @@ impl<I: PacketRx> Task<I> {
                     }
                 }
                 Err(error) => match error.kind() {
-                    ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut => {
+                    ErrorKind::Interrupted
+                    | ErrorKind::WouldBlock
+                    | ErrorKind::TimedOut
+                    | ErrorKind::ConnectionReset => {
                         tracing::warn!(?error, id = self.id, "transient UDP receive error");
                         tokio::time::sleep(Duration::from_millis(20)).await;
                         continue;
@@ -144,5 +147,75 @@ impl<I: PacketRx> Task<I> {
         }
 
         let _ = self.end.send(());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        future, io,
+        net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+        sync::Mutex,
+    };
+
+    use tokio::{sync::mpsc, time::Duration};
+
+    use crate::network::udp::packets::Packets;
+
+    use super::*;
+
+    struct MockPacketRx {
+        responses: Mutex<VecDeque<io::Result<(Vec<u8>, SocketAddr)>>>,
+    }
+
+    impl PacketRx for MockPacketRx {
+        fn recv_from(
+            &self,
+            buf: &mut [u8],
+        ) -> impl Future<Output = io::Result<(usize, SocketAddr)>> + Sync + Send {
+            let response = self
+                .responses
+                .lock()
+                .expect("responses lock poisoned")
+                .pop_front()
+                .expect("missing mock response");
+
+            let result = match response {
+                Ok((bytes, source)) => {
+                    buf[..bytes.len()].copy_from_slice(&bytes);
+                    Ok((bytes.len(), source))
+                }
+                Err(error) => Err(error),
+            };
+
+            future::ready(result)
+        }
+    }
+
+    #[tokio::test]
+    async fn receiver_continues_after_connection_reset() {
+        let source = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1234));
+        let rx = MockPacketRx {
+            responses: Mutex::new(VecDeque::from([
+                Err(io::Error::from(io::ErrorKind::ConnectionReset)),
+                Ok((b"still alive".to_vec(), source)),
+            ])),
+        };
+        let packets = Packets::new(2);
+        let (output, mut received) = mpsc::channel(1);
+        let setup = UdpReceiverSetup { packets, output };
+
+        let receiver = setup.create(7, rx);
+        let packet = tokio::time::timeout(Duration::from_secs(1), received.recv())
+            .await
+            .expect("timed out waiting for packet")
+            .expect("receiver output closed");
+
+        assert_eq!(packet.rx_id, 7);
+        assert_eq!(packet.from, source);
+        assert_eq!(packet.packet.as_ref(), b"still alive");
+
+        receiver.shutdown().await;
     }
 }
