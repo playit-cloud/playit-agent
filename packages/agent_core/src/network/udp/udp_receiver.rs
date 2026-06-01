@@ -1,4 +1,4 @@
-use std::{io::ErrorKind, net::SocketAddr, time::Duration};
+use std::{net::SocketAddr, time::Duration};
 
 use tokio::sync::mpsc::Sender;
 use tokio_util::sync::CancellationToken;
@@ -99,6 +99,8 @@ pub struct UdpReceivedPacket {
 
 impl<I: PacketRx> Task<I> {
     async fn start(self) {
+        let mut next_error_log_allowed = tokio::time::Instant::now();
+
         'rx_loop: loop {
             let mut packet = tokio::select! {
                 _ = self.cancel.cancelled() => break 'rx_loop,
@@ -120,17 +122,15 @@ impl<I: PacketRx> Task<I> {
                         from: source,
                     }
                 }
-                Err(error) => match error.kind() {
-                    ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut => {
-                        tracing::warn!(?error, id = self.id, "transient UDP receive error");
-                        tokio::time::sleep(Duration::from_millis(20)).await;
-                        continue;
+                Err(error) => {
+                    let now = tokio::time::Instant::now();
+                    if next_error_log_allowed <= now {
+                        tracing::warn!(?error, id = self.id, "failed to receive UDP packet");
+                        next_error_log_allowed = now + Duration::from_secs(1);
                     }
-                    _ => {
-                        tracing::error!(?error, id = self.id, "failed to receive UDP packet");
-                        break;
-                    }
-                },
+
+                    continue;
+                }
             };
 
             let result = self
