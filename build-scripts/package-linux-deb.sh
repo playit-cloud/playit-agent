@@ -1,8 +1,8 @@
-cargo install toml-cli
+#!/usr/bin/env bash
+set -euo pipefail
 
 START_DIR="$(pwd)"
-
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 if [[ $# -ne 2 && $# -ne 3 ]]; then
   echo "usage: $0 <playit-cli-binary> [playitd-binary] <deb-arch>" >&2
@@ -29,77 +29,42 @@ fi
 
 CLI_BIN="$(resolve_input_path "${CLI_SRC_PATH}")"
 DAEMON_BIN="$(resolve_input_path "${DAEMON_SRC_PATH}")"
-
-if [[ ! -f "${CLI_BIN}" ]]; then
-  echo "playit CLI binary not found: ${CLI_BIN}" >&2
-  exit 1
-fi
-
-if [[ ! -f "${DAEMON_BIN}" ]]; then
-  echo "playit daemon binary not found: ${DAEMON_BIN}" >&2
-  exit 1
-fi
-
 TEMP_DIR_NAME="temp-build-${DEB_ARCH}"
-
-# prepare temp build folder
-echo "PREPARE TEMP BUILD FOLDER"
-# shellcheck disable=SC2164
-cd "${SCRIPT_DIR}"
-rm -fr "${TEMP_DIR_NAME}"
-mkdir "${TEMP_DIR_NAME}"
-# shellcheck disable=SC2164
-cd "${TEMP_DIR_NAME}"
-
+DEB_PACKAGE="playit_${DEB_ARCH}"
+ROOT_CARGO_FILE="${SCRIPT_DIR}/../Cargo.toml"
+CLI_CARGO_FILE="${SCRIPT_DIR}/../packages/playit-cli/Cargo.toml"
 INSTALL_FOLDER="/opt/playit"
 
-ROOT_CARGO_FILE="${SCRIPT_DIR}/../Cargo.toml"
-CARGO_FILE="${SCRIPT_DIR}/../packages/playit-cli/Cargo.toml"
-VERSION=$(toml get "${ROOT_CARGO_FILE}" workspace.package.version | sed "s/\"//g")
+# shellcheck source=build-scripts/package-metadata.sh
+source "${SCRIPT_DIR}/package-metadata.sh"
 
-DEB_PACKAGE="playit_${DEB_ARCH}"
-# shellcheck disable=SC2164
-mkdir "${DEB_PACKAGE}" && cd "${DEB_PACKAGE}"
-WK_DIR=$(pwd)
+VERSION="$(package_metadata_workspace_version "${ROOT_CARGO_FILE}")"
+MAINTAINER="$(package_metadata_cli_author "${CLI_CARGO_FILE}")"
+DESCRIPTION="$(package_metadata_cli_description "${CLI_CARGO_FILE}")"
 
-# Copy over playit binary
-echo "PREPARE BINARY AND RUN SCRIPT"
-mkdir -p "${WK_DIR}${INSTALL_FOLDER}"
+echo "PREPARE TEMP BUILD FOLDER"
+cd "${SCRIPT_DIR}"
+rm -rf "${TEMP_DIR_NAME}"
+mkdir -p "${TEMP_DIR_NAME}"
 
-cp "${CLI_BIN}" "${WK_DIR}${INSTALL_FOLDER}/agent"
-cp "${DAEMON_BIN}" "${WK_DIR}${INSTALL_FOLDER}/playitd"
-chmod 0755 "${WK_DIR}${INSTALL_FOLDER}/agent" "${WK_DIR}${INSTALL_FOLDER}/playitd"
+WK_DIR="${SCRIPT_DIR}/${TEMP_DIR_NAME}/${DEB_PACKAGE}"
 
-# Create run script
-echo "#!/bin/bash
-/opt/playit/agent \$@
-" > "${WK_DIR}${INSTALL_FOLDER}/playit"
-chmod 0755 "${WK_DIR}${INSTALL_FOLDER}/playit"
+echo "PREPARE PACKAGE FILES"
+"${SCRIPT_DIR}/package-linux-stage.sh" "${CLI_BIN}" "${DAEMON_BIN}" "${WK_DIR}" "/lib/systemd/system"
 
-# Add systemd unit
-mkdir -p "${WK_DIR}/lib/systemd/system"
-cp "${SCRIPT_DIR}/../linux/playit.service" "${WK_DIR}/lib/systemd/system/playit.service"
-
-# Add logrotate config
-mkdir -p "${WK_DIR}/etc/logrotate.d"
-cp "${SCRIPT_DIR}/../linux/logrotate.conf" "${WK_DIR}/etc/logrotate.d/playit"
-
-# build control file
 echo "BUILD DEB CONFIG FILES"
-
-mkdir -p DEBIAN
-echo "
+mkdir -p "${WK_DIR}/DEBIAN"
+cat > "${WK_DIR}/DEBIAN/control" <<EOF
 Package: playit
 Version: ${VERSION}
 Architecture: ${DEB_ARCH}
-Maintainer: $(toml get "${CARGO_FILE}" 'package.authors[0]' | sed "s/\"//g")
-Description: $(toml get "${CARGO_FILE}" package.description | sed "s/\"//g")
+Maintainer: ${MAINTAINER}
+Description: ${DESCRIPTION}
 Depends: logrotate
-" > "${WK_DIR}/DEBIAN/control"
+EOF
 
-# setup script
-cat <<EOF > "${WK_DIR}/DEBIAN/postinst"
-#!/bin/bash
+cat > "${WK_DIR}/DEBIAN/postinst" <<EOF
+#!/usr/bin/env bash
 set -e
 
 mkdir -p /usr/local/bin
@@ -138,17 +103,14 @@ systemctl restart playit || systemctl start playit
 EOF
 chmod 0555 "${WK_DIR}/DEBIAN/postinst"
 
-# teardown script
-cat <<EOF > "${WK_DIR}/DEBIAN/prerm"
-#!/bin/bash
+cat > "${WK_DIR}/DEBIAN/prerm" <<'EOF'
+#!/usr/bin/env bash
 if [[ -L "/usr/local/bin/playit" ]]; then
-  rm "/usr/local/bin/playit";
+  rm "/usr/local/bin/playit"
 fi
 EOF
 chmod 0555 "${WK_DIR}/DEBIAN/prerm"
 
-# build package
-# shellcheck disable=SC2164
 cd "${SCRIPT_DIR}/${TEMP_DIR_NAME}"
 dpkg-deb --build -Zgzip --root-owner-group "${DEB_PACKAGE}"
 

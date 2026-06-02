@@ -45,6 +45,26 @@ echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.git
 sudo apt update
 ```
 
+### Installing on Fedora
+
+Download the RPM for your architecture from the latest GitHub release, then install it with `dnf`:
+
+```sh
+sudo dnf install ./playit_x86_64.rpm
+```
+
+Available RPM architectures are `x86_64`, `aarch64`, `armv7hl`, and `i686`.
+
+### Installing on Arch Linux
+
+Install the binary AUR package:
+
+```sh
+yay -S playit-bin
+```
+
+The generated `playit-bin` AUR package files are also attached to GitHub releases as `playit-bin-PKGBUILD.tar.gz` for maintainers and manual publishing.
+
 **Note**
 Please only use the playit program if you downloaded it from an offical source or are compiling and running from source.
 

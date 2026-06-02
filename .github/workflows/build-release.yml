@@ -22,6 +22,8 @@ jobs:
             artifact: playit-linux-amd64
             artifact_cli: playit-cli-linux-amd64
             dpkg_arch: amd64
+            rpm_arch: x86_64
+            aur_arch: x86_64
 
           - name: linux arm64
             os: ubuntu-latest
@@ -29,6 +31,8 @@ jobs:
             artifact: playit-linux-aarch64
             artifact_cli: playit-cli-linux-aarch64
             dpkg_arch: arm64
+            rpm_arch: aarch64
+            aur_arch: aarch64
 
           - name: linux arm7
             os: ubuntu-latest
@@ -36,6 +40,8 @@ jobs:
             artifact: playit-linux-armv7
             artifact_cli: playit-cli-linux-armv7
             dpkg_arch: armhf
+            rpm_arch: armv7hl
+            aur_arch: armv7h
 
           - name: linux 32bit
             os: ubuntu-latest
@@ -43,6 +49,8 @@ jobs:
             artifact: playit-linux-i686
             artifact_cli: playit-cli-linux-i686
             dpkg_arch: i386
+            rpm_arch: i686
+            aur_arch: i686
 
     runs-on: ${{ matrix.platform.os }}
     steps:
@@ -53,6 +61,13 @@ jobs:
         uses: bruceadams/get-release@v1.2.3
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Install RPM packaging tools
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          sudo gem install --no-document fpm
 
       - name: build release
         uses: actions-rs/cargo@v1
@@ -81,6 +96,19 @@ jobs:
           asset_name: ${{ matrix.platform.artifact_cli }}
           asset_content_type: application/octet-stream
 
+      - name: Collect AUR inputs
+        shell: bash
+        run: |
+          mkdir -p ./target/aur-inputs
+          cp "./target/${{ matrix.platform.arch }}/release/playitd" "./target/aur-inputs/${{ matrix.platform.artifact }}"
+          cp "./target/${{ matrix.platform.arch }}/release/playit-cli" "./target/aur-inputs/${{ matrix.platform.artifact_cli }}"
+
+      - name: Upload AUR inputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-aur-inputs-${{ matrix.platform.aur_arch }}
+          path: ./target/aur-inputs/*
+
       - name: Package .deb
         shell: bash
         run: 'bash ./build-scripts/package-linux-deb.sh "./target/${{ matrix.platform.arch }}/release/playit-cli" "./target/${{ matrix.platform.arch }}/release/playitd" ${{ matrix.platform.dpkg_arch }}'
@@ -94,6 +122,57 @@ jobs:
           asset_path: ./target/deb/playit_${{ matrix.platform.dpkg_arch }}.deb
           asset_name: playit_${{ matrix.platform.dpkg_arch }}.deb
           asset_content_type: application/octet-stream
+
+      - name: Package .rpm
+        shell: bash
+        run: 'bash ./build-scripts/package-linux-rpm.sh "./target/${{ matrix.platform.arch }}/release/playit-cli" "./target/${{ matrix.platform.arch }}/release/playitd" ${{ matrix.platform.rpm_arch }}'
+
+      - name: Upload .rpm
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/rpm/playit_${{ matrix.platform.rpm_arch }}.rpm
+          asset_name: playit_${{ matrix.platform.rpm_arch }}.rpm
+          asset_content_type: application/x-rpm
+
+  build_arch_aur:
+    runs-on: ubuntu-latest
+    needs: [build_linux]
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Get release
+        id: get_release
+        uses: bruceadams/get-release@v1.2.3
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Download Linux release binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: linux-aur-inputs-*
+          merge-multiple: true
+          path: ./target/aur-inputs
+
+      - name: Generate AUR package files
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          bash ./build-scripts/package-arch-aur.sh "${VERSION}" ./target/aur-inputs
+          tar -C ./target/aur -czf ./target/playit-bin-PKGBUILD.tar.gz playit-bin
+
+      - name: Upload AUR package files
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/playit-bin-PKGBUILD.tar.gz
+          asset_name: playit-bin-PKGBUILD.tar.gz
+          asset_content_type: application/gzip
+
   build_windows:
     strategy:
       fail-fast: false
