@@ -1,0 +1,79 @@
+# yaml-language-server: $schema=https://nfpm.goreleaser.com/schema.json
+name: playit
+arch: ${PLAYIT_NFPM_ARCH}
+platform: linux
+version: ${PLAYIT_VERSION}
+version_schema: semver
+release: ${PLAYIT_PACKAGE_RELEASE}
+section: net
+priority: optional
+maintainer: Patrick Lorio <patrick@playit.gg>
+description: Making it easy to play games with friends. Makes your server public
+homepage: https://playit.gg
+license: BSD-2-Clause
+depends:
+  - logrotate
+contents:
+  - src: ${PLAYIT_CLI_BIN}
+    dst: /opt/playit/agent
+    expand: true
+    file_info:
+      mode: 0755
+  - src: ${PLAYITD_BIN}
+    dst: /opt/playit/playitd
+    expand: true
+    file_info:
+      mode: 0755
+  - src: ./linux/playit
+    dst: /opt/playit/playit
+    file_info:
+      mode: 0755
+  - src: /opt/playit/playit
+    dst: /usr/local/bin/playit
+    type: symlink
+  - src: ./linux/logrotate.conf
+    dst: /etc/logrotate.d/playit
+    file_info:
+      mode: 0644
+  - src: ./linux/playit.service
+    dst: /lib/systemd/system/playit.service
+    packager: deb
+    file_info:
+      mode: 0644
+  - src: ./linux/playit.service
+    dst: /lib/systemd/system/playit.service
+    packager: apk
+    file_info:
+      mode: 0644
+  - src: ./linux/playit.service
+    dst: /lib/systemd/system/playit.service
+    packager: archlinux
+    file_info:
+      mode: 0644
+  - src: ./linux/playit.service
+    dst: /lib/systemd/system/playit.service
+    packager: ipk
+    file_info:
+      mode: 0644
+  - src: ./linux/playit.service
+    dst: /usr/lib/systemd/system/playit.service
+    packager: rpm
+    file_info:
+      mode: 0644
+  - dst: /etc/playit
+    type: dir
+    file_info:
+      mode: 0750
+      owner: playit
+      group: playit
+  - dst: /var/log/playit
+    type: dir
+    file_info:
+      mode: 0750
+      owner: playit
+      group: playit
+scripts:
+  preinstall: ./build-scripts/nfpm/preinstall.sh
+  postinstall: ./build-scripts/nfpm/postinstall.sh
+  preremove: ./build-scripts/nfpm/preremove.sh
+  postremove: ./build-scripts/nfpm/postremove.sh
