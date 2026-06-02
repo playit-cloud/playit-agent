@@ -15,10 +15,24 @@ if [[ $# -lt 2 ]]; then
 fi
 
 resolve_input_path() {
+  local input_path="$1"
+  local full_path
+
   if [[ "$1" = /* ]]; then
-    printf '%s\n' "$1"
+    full_path="${input_path}"
   else
-    printf '%s/%s\n' "${START_DIR}" "$1"
+    full_path="${START_DIR}/${input_path}"
+  fi
+
+  local dir
+  local base
+  dir="$(dirname "${full_path}")"
+  base="$(basename "${full_path}")"
+
+  if [[ -d "${dir}" ]]; then
+    printf '%s/%s\n' "$(cd "${dir}" && pwd -P)" "${base}"
+  else
+    printf '%s\n' "${full_path}"
   fi
 }
 
