@@ -55,11 +55,6 @@ FILES=(
   playit_aarch64.pkg.tar.zst
   playit_armv7h.pkg.tar.zst
   playit_i686.pkg.tar.zst
-
-  playit_x86_64.ipk
-  playit_arm64.ipk
-  playit_armhf.ipk
-  playit_i386.ipk
 )
 
 BASE_URL="https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}"

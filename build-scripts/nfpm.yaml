@@ -44,18 +44,8 @@ contents:
     file_info:
       mode: 0644
   - src: ./linux/playit.service
-    dst: /lib/systemd/system/playit.service
-    packager: apk
-    file_info:
-      mode: 0644
-  - src: ./linux/playit.service
     dst: /usr/lib/systemd/system/playit.service
     packager: archlinux
-    file_info:
-      mode: 0644
-  - src: ./linux/playit.service
-    dst: /lib/systemd/system/playit.service
-    packager: ipk
     file_info:
       mode: 0644
   - src: ./linux/playit.service

@@ -55,7 +55,7 @@ fi
 
 FORMATS=("$@")
 if [[ ${#FORMATS[@]} -eq 0 ]]; then
-  FORMATS=(deb rpm apk archlinux ipk)
+  FORMATS=(deb rpm apk archlinux)
 fi
 
 case "${NFPM_ARCH}" in
@@ -64,28 +64,24 @@ case "${NFPM_ARCH}" in
     RPM_ARCH=x86_64
     APK_ARCH=x86_64
     ARCHLINUX_ARCH=x86_64
-    IPK_ARCH=x86_64
     ;;
   arm64)
     DEB_ARCH=arm64
     RPM_ARCH=aarch64
     APK_ARCH=aarch64
     ARCHLINUX_ARCH=aarch64
-    IPK_ARCH=arm64
     ;;
   arm7)
     DEB_ARCH=armhf
     RPM_ARCH=armv7hl
     APK_ARCH=armv7
     ARCHLINUX_ARCH=armv7h
-    IPK_ARCH=armhf
     ;;
   386)
     DEB_ARCH=i386
     RPM_ARCH=i386
     APK_ARCH=x86
     ARCHLINUX_ARCH=i686
-    IPK_ARCH=i386
     ;;
   *)
     echo "unsupported nFPM architecture: ${NFPM_ARCH}" >&2
@@ -132,27 +128,29 @@ export PLAYITD_BIN="${DAEMON_BIN}"
 
 OUT_DIR="${REPO_DIR}/target/pkg"
 mkdir -p "${OUT_DIR}"
+rm -f "${OUT_DIR}"/playit_*.ipk
 
 for format in "${FORMATS[@]}"; do
   case "${format}" in
     deb)
       output="${OUT_DIR}/playit_${DEB_ARCH}.deb"
+      config="${REPO_DIR}/build-scripts/nfpm.yaml"
       ;;
     rpm)
       output="${OUT_DIR}/playit_${RPM_ARCH}.rpm"
+      config="${REPO_DIR}/build-scripts/nfpm.yaml"
       ;;
     apk)
       output="${OUT_DIR}/playit_${APK_ARCH}.apk"
+      config="${REPO_DIR}/build-scripts/nfpm-apk.yaml"
       ;;
     archlinux)
       output="${OUT_DIR}/playit_${ARCHLINUX_ARCH}.pkg.tar.zst"
-      ;;
-    ipk)
-      output="${OUT_DIR}/playit_${IPK_ARCH}.ipk"
+      config="${REPO_DIR}/build-scripts/nfpm.yaml"
       ;;
     *)
       echo "unsupported nFPM package format: ${format}" >&2
-      echo "supported formats: deb rpm apk archlinux ipk" >&2
+      echo "supported formats: deb rpm apk archlinux" >&2
       exit 1
       ;;
   esac
@@ -160,6 +158,6 @@ for format in "${FORMATS[@]}"; do
   echo "Building ${format} package: ${output}"
   (
     cd "${REPO_DIR}"
-    nfpm package --config ./build-scripts/nfpm.yaml --packager "${format}" --target "${output}"
+    nfpm package --config "${config}" --packager "${format}" --target "${output}"
   )
 done
