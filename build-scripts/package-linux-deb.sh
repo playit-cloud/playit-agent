@@ -1,156 +1,45 @@
-cargo install toml-cli
+#!/usr/bin/env bash
+set -euo pipefail
 
-START_DIR="$(pwd)"
-
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 
 if [[ $# -ne 2 && $# -ne 3 ]]; then
   echo "usage: $0 <playit-cli-binary> [playitd-binary] <deb-arch>" >&2
   exit 1
 fi
 
-resolve_input_path() {
-  if [[ "$1" = /* ]]; then
-    printf '%s\n' "$1"
-  else
-    printf '%s/%s\n' "${START_DIR}" "$1"
-  fi
-}
-
-CLI_SRC_PATH="$1"
-
 if [[ $# -eq 3 ]]; then
-  DAEMON_SRC_PATH="$2"
+  CLI_BIN="$1"
+  DAEMON_BIN="$2"
   DEB_ARCH="$3"
 else
-  DAEMON_SRC_PATH="$(dirname "${CLI_SRC_PATH}")/playitd"
+  CLI_BIN="$1"
+  DAEMON_BIN=""
   DEB_ARCH="$2"
 fi
 
-CLI_BIN="$(resolve_input_path "${CLI_SRC_PATH}")"
-DAEMON_BIN="$(resolve_input_path "${DAEMON_SRC_PATH}")"
+case "${DEB_ARCH}" in
+  amd64)
+    NFPM_ARCH=amd64
+    ;;
+  arm64)
+    NFPM_ARCH=arm64
+    ;;
+  armhf)
+    NFPM_ARCH=arm7
+    ;;
+  i386)
+    NFPM_ARCH=386
+    ;;
+  *)
+    echo "unsupported Debian architecture: ${DEB_ARCH}" >&2
+    echo "supported Debian architectures: amd64 arm64 armhf i386" >&2
+    exit 1
+    ;;
+esac
 
-if [[ ! -f "${CLI_BIN}" ]]; then
-  echo "playit CLI binary not found: ${CLI_BIN}" >&2
-  exit 1
+if [[ -n "${DAEMON_BIN}" ]]; then
+  "${SCRIPT_DIR}/package-linux-nfpm.sh" "${CLI_BIN}" "${DAEMON_BIN}" "${NFPM_ARCH}" deb
+else
+  "${SCRIPT_DIR}/package-linux-nfpm.sh" "${CLI_BIN}" "${NFPM_ARCH}" deb
 fi
-
-if [[ ! -f "${DAEMON_BIN}" ]]; then
-  echo "playit daemon binary not found: ${DAEMON_BIN}" >&2
-  exit 1
-fi
-
-TEMP_DIR_NAME="temp-build-${DEB_ARCH}"
-
-# prepare temp build folder
-echo "PREPARE TEMP BUILD FOLDER"
-# shellcheck disable=SC2164
-cd "${SCRIPT_DIR}"
-rm -fr "${TEMP_DIR_NAME}"
-mkdir "${TEMP_DIR_NAME}"
-# shellcheck disable=SC2164
-cd "${TEMP_DIR_NAME}"
-
-INSTALL_FOLDER="/opt/playit"
-
-ROOT_CARGO_FILE="${SCRIPT_DIR}/../Cargo.toml"
-CARGO_FILE="${SCRIPT_DIR}/../packages/playit-cli/Cargo.toml"
-VERSION=$(toml get "${ROOT_CARGO_FILE}" workspace.package.version | sed "s/\"//g")
-
-DEB_PACKAGE="playit_${DEB_ARCH}"
-# shellcheck disable=SC2164
-mkdir "${DEB_PACKAGE}" && cd "${DEB_PACKAGE}"
-WK_DIR=$(pwd)
-
-# Copy over playit binary
-echo "PREPARE BINARY AND RUN SCRIPT"
-mkdir -p "${WK_DIR}${INSTALL_FOLDER}"
-
-cp "${CLI_BIN}" "${WK_DIR}${INSTALL_FOLDER}/agent"
-cp "${DAEMON_BIN}" "${WK_DIR}${INSTALL_FOLDER}/playitd"
-chmod 0755 "${WK_DIR}${INSTALL_FOLDER}/agent" "${WK_DIR}${INSTALL_FOLDER}/playitd"
-
-# Create run script
-echo "#!/bin/bash
-/opt/playit/agent \$@
-" > "${WK_DIR}${INSTALL_FOLDER}/playit"
-chmod 0755 "${WK_DIR}${INSTALL_FOLDER}/playit"
-
-# Add systemd unit
-mkdir -p "${WK_DIR}/lib/systemd/system"
-cp "${SCRIPT_DIR}/../linux/playit.service" "${WK_DIR}/lib/systemd/system/playit.service"
-
-# Add logrotate config
-mkdir -p "${WK_DIR}/etc/logrotate.d"
-cp "${SCRIPT_DIR}/../linux/logrotate.conf" "${WK_DIR}/etc/logrotate.d/playit"
-
-# build control file
-echo "BUILD DEB CONFIG FILES"
-
-mkdir -p DEBIAN
-echo "
-Package: playit
-Version: ${VERSION}
-Architecture: ${DEB_ARCH}
-Maintainer: $(toml get "${CARGO_FILE}" 'package.authors[0]' | sed "s/\"//g")
-Description: $(toml get "${CARGO_FILE}" package.description | sed "s/\"//g")
-Depends: logrotate
-" > "${WK_DIR}/DEBIAN/control"
-
-# setup script
-cat <<EOF > "${WK_DIR}/DEBIAN/postinst"
-#!/bin/bash
-set -e
-
-mkdir -p /usr/local/bin
-ln -sfn ${INSTALL_FOLDER}/playit /usr/local/bin/playit
-getent group playit >/dev/null || groupadd --system playit
-install -d -o root -g playit -m 0750 /etc/playit
-install -d -o root -g playit -m 0750 /var/log/playit
-chown root:playit /etc/playit
-chmod 0750 /etc/playit
-if [[ -f /etc/playit/playit.toml ]]; then
-  chown root:root /etc/playit/playit.toml
-  chmod 0600 /etc/playit/playit.toml
-fi
-chown root:playit /var/log/playit
-chmod 0750 /var/log/playit
-
-if ! command -v systemctl >/dev/null 2>&1; then
-  echo "systemctl is required to install playit" >&2
-  exit 1
-fi
-
-LEGACY_UNIT="/etc/systemd/system/playit.service"
-if [[ -f "\${LEGACY_UNIT}" || -L "\${LEGACY_UNIT}" ]]; then
-  BACKUP_UNIT="\${LEGACY_UNIT}.dpkg-bak.\$(date -u +%Y%m%d%H%M%S)"
-  echo "Moving legacy systemd unit \${LEGACY_UNIT} to \${BACKUP_UNIT} because it shadows the packaged unit"
-  mv "\${LEGACY_UNIT}" "\${BACKUP_UNIT}"
-elif [[ -e "\${LEGACY_UNIT}" ]]; then
-  echo "Cannot install playit: \${LEGACY_UNIT} exists but is not a file or symlink" >&2
-  echo "Remove or rename it manually, then reinstall playit." >&2
-  exit 1
-fi
-
-systemctl daemon-reload
-systemctl enable playit
-systemctl restart playit || systemctl start playit
-EOF
-chmod 0555 "${WK_DIR}/DEBIAN/postinst"
-
-# teardown script
-cat <<EOF > "${WK_DIR}/DEBIAN/prerm"
-#!/bin/bash
-if [[ -L "/usr/local/bin/playit" ]]; then
-  rm "/usr/local/bin/playit";
-fi
-EOF
-chmod 0555 "${WK_DIR}/DEBIAN/prerm"
-
-# build package
-# shellcheck disable=SC2164
-cd "${SCRIPT_DIR}/${TEMP_DIR_NAME}"
-dpkg-deb --build -Zgzip --root-owner-group "${DEB_PACKAGE}"
-
-mkdir -p "${SCRIPT_DIR}/../target/deb"
-cp "${DEB_PACKAGE}.deb" "${SCRIPT_DIR}/../target/deb"

@@ -115,6 +115,10 @@ fn socket_access_issue(socket_path: &str) -> Option<LinuxSocketAccessIssue> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Some(LinuxSocketAccessIssue::MissingSocket);
         }
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+            return socket_parent_access_issue(path)
+                .or_else(|| Some(LinuxSocketAccessIssue::InspectFailed(error.to_string())));
+        }
         Err(error) => return Some(LinuxSocketAccessIssue::InspectFailed(error.to_string())),
     };
 
@@ -135,10 +139,8 @@ fn socket_access_issue(socket_path: &str) -> Option<LinuxSocketAccessIssue> {
     }
 
     if socket_group_name == Some(PLAYIT_GROUP_NAME) {
-        match current_user_account_is_configured_for_group(socket_gid, socket_group.as_ref()) {
-            Some(true) => return Some(LinuxSocketAccessIssue::PlayitGroupRefreshRequired),
-            Some(false) => return Some(LinuxSocketAccessIssue::PlayitGroupJoinRequired),
-            None => {}
+        if let Some(issue) = playit_group_access_issue(socket_gid, socket_group.as_ref()) {
+            return Some(issue);
         }
     }
 
@@ -149,6 +151,30 @@ fn socket_access_issue(socket_path: &str) -> Option<LinuxSocketAccessIssue> {
         socket_gid,
         socket_mode,
     })
+}
+
+fn socket_parent_access_issue(path: &Path) -> Option<LinuxSocketAccessIssue> {
+    let parent = path.parent()?;
+    let metadata = fs::metadata(parent).ok()?;
+    let parent_gid = metadata.gid();
+    let parent_group = lookup_group_info(parent_gid);
+
+    if parent_group.as_ref().map(|group| group.name.as_str()) != Some(PLAYIT_GROUP_NAME) {
+        return None;
+    }
+
+    playit_group_access_issue(parent_gid, parent_group.as_ref())
+}
+
+fn playit_group_access_issue(
+    target_gid: u32,
+    group: Option<&LinuxGroupInfo>,
+) -> Option<LinuxSocketAccessIssue> {
+    match current_user_account_is_configured_for_group(target_gid, group) {
+        Some(true) => Some(LinuxSocketAccessIssue::PlayitGroupRefreshRequired),
+        Some(false) => Some(LinuxSocketAccessIssue::PlayitGroupJoinRequired),
+        None => None,
+    }
 }
 
 fn format_socket_access_issue(socket_path: &str, issue: &LinuxSocketAccessIssue) -> String {

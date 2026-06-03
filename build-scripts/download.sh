@@ -40,6 +40,21 @@ FILES=(
   playit_arm64.deb
   playit_armhf.deb
   playit_i386.deb
+
+  playit_x86_64.rpm
+  playit_aarch64.rpm
+  playit_armv7hl.rpm
+  playit_i386.rpm
+
+  playit_x86_64.apk
+  playit_aarch64.apk
+  playit_armv7.apk
+  playit_x86.apk
+
+  playit_x86_64.pkg.tar.zst
+  playit_aarch64.pkg.tar.zst
+  playit_armv7h.pkg.tar.zst
+  playit_i686.pkg.tar.zst
 )
 
 BASE_URL="https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}"

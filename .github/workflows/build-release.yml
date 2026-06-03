@@ -21,38 +21,32 @@ jobs:
             arch: x86_64-unknown-linux-musl
             artifact: playit-linux-amd64
             artifact_cli: playit-cli-linux-amd64
-            dpkg_arch: amd64
+            nfpm_arch: amd64
 
           - name: linux arm64
             os: ubuntu-latest
             arch: aarch64-unknown-linux-musl
             artifact: playit-linux-aarch64
             artifact_cli: playit-cli-linux-aarch64
-            dpkg_arch: arm64
+            nfpm_arch: arm64
 
           - name: linux arm7
             os: ubuntu-latest
             arch: armv7-unknown-linux-gnueabihf
             artifact: playit-linux-armv7
             artifact_cli: playit-cli-linux-armv7
-            dpkg_arch: armhf
+            nfpm_arch: arm7
 
           - name: linux 32bit
             os: ubuntu-latest
             arch: i686-unknown-linux-gnu
             artifact: playit-linux-i686
             artifact_cli: playit-cli-linux-i686
-            dpkg_arch: i386
+            nfpm_arch: 386
 
     runs-on: ${{ matrix.platform.os }}
     steps:
-      - uses: actions/checkout@v3
-
-      - name: Get release
-        id: get_release
-        uses: bruceadams/get-release@v1.2.3
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - uses: actions/checkout@v4
 
       - name: build release
         uses: actions-rs/cargo@v1
@@ -61,39 +55,35 @@ jobs:
           command: build
           args: --target ${{ matrix.platform.arch }} --release --all
 
-      - name: Upload Binary
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+      - uses: actions/setup-go@v5
         with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./target/${{ matrix.platform.arch }}/release/playitd
-          asset_name: ${{ matrix.platform.artifact }}
-          asset_content_type: application/octet-stream
+          go-version: stable
 
-      - name: Upload Binary (cli)
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli
-          asset_name: ${{ matrix.platform.artifact_cli }}
-          asset_content_type: application/octet-stream
+      - name: Install nFPM
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
-      - name: Package .deb
+      - name: Package Linux artifacts
         shell: bash
-        run: 'bash ./build-scripts/package-linux-deb.sh "./target/${{ matrix.platform.arch }}/release/playit-cli" "./target/${{ matrix.platform.arch }}/release/playitd" ${{ matrix.platform.dpkg_arch }}'
+        run: |
+          bash ./build-scripts/package-linux-nfpm.sh \
+            "./target/${{ matrix.platform.arch }}/release/playit-cli" \
+            "./target/${{ matrix.platform.arch }}/release/playitd" \
+            "${{ matrix.platform.nfpm_arch }}"
 
-      - name: Upload .deb
-        uses: actions/upload-release-asset@v1
+      - name: Stage Linux release assets
+        shell: bash
+        run: |
+          mkdir -p target/release-assets
+          cp "./target/${{ matrix.platform.arch }}/release/playitd" "target/release-assets/${{ matrix.platform.artifact }}"
+          cp "./target/${{ matrix.platform.arch }}/release/playit-cli" "target/release-assets/${{ matrix.platform.artifact_cli }}"
+          cp target/pkg/* target/release-assets/
+
+      - name: Upload Linux release assets
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./target/deb/playit_${{ matrix.platform.dpkg_arch }}.deb
-          asset_name: playit_${{ matrix.platform.dpkg_arch }}.deb
-          asset_content_type: application/octet-stream
+          files: target/release-assets/*
   build_windows:
     strategy:
       fail-fast: false
