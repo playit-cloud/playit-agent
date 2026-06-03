@@ -31,6 +31,9 @@ contents:
   - src: /opt/playit/playit
     dst: /usr/local/bin/playit
     type: symlink
+  - src: /opt/playit/playitd
+    dst: /usr/local/bin/playitd
+    type: symlink
   - src: ./linux/logrotate.conf
     dst: /etc/logrotate.d/playit
     file_info:

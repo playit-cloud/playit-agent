@@ -28,3 +28,7 @@ fi
 if [ -L /usr/local/bin/playit ]; then
   rm -f /usr/local/bin/playit
 fi
+
+if [ -L /usr/local/bin/playitd ]; then
+  rm -f /usr/local/bin/playitd
+fi

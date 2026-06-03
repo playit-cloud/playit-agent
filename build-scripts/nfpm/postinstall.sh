@@ -85,6 +85,7 @@ ensure_user
 
 mkdir -p /usr/local/bin /etc/playit /var/log/playit
 ln -sfn /opt/playit/playit /usr/local/bin/playit
+ln -sfn /opt/playit/playitd /usr/local/bin/playitd
 
 chown "$PLAYIT_USER:$PLAYIT_GROUP" /etc/playit /var/log/playit
 chmod 0750 /etc/playit /var/log/playit
