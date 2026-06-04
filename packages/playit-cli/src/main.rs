@@ -5,14 +5,14 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use client::{
-    AttachMode, CliTarget, ServiceManagerMode, ensure_service_waiting_for_secret,
-    provision_service_secret, run_account_login_url_command, run_attach_command, run_auto_command,
-    run_reset_command, run_secret_path_command, run_start_command, run_status_command,
-    run_stop_command,
+    AttachMode, CliTarget, ensure_service_waiting_for_secret, provision_service_secret,
+    run_account_login_url_command, run_attach_command, run_auto_command, run_reset_command,
+    run_secret_path_command, run_start_command, run_status_command, run_stop_command,
 };
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use rand::Rng;
+use service::ServiceManagerMode;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
@@ -30,6 +30,7 @@ pub static API_BASE: LazyLock<String> =
 mod client;
 #[cfg(target_os = "linux")]
 mod linux;
+mod service;
 pub mod signal_handle;
 pub mod ui;
 pub mod util;
