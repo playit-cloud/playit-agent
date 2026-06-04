@@ -39,20 +39,13 @@ contents:
     file_info:
       mode: 0644
   - src: ./linux/playit.service
-    dst: /lib/systemd/system/playit.service
-    packager: deb
+    dst: /opt/playit/share/init/systemd/playit.service
     file_info:
       mode: 0644
-  - src: ./linux/playit.service
-    dst: /usr/lib/systemd/system/playit.service
-    packager: archlinux
+  - src: ./linux/playit.openrc
+    dst: /opt/playit/share/init/openrc/playit
     file_info:
-      mode: 0644
-  - src: ./linux/playit.service
-    dst: /usr/lib/systemd/system/playit.service
-    packager: rpm
-    file_info:
-      mode: 0644
+      mode: 0755
   - dst: /etc/playit
     type: dir
     file_info:

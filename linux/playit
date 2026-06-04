@@ -1,2 +1,40 @@
 #!/bin/sh
-exec /opt/playit/agent "$@"
+set -eu
+
+MANAGER_FILE=/opt/playit/share/init/selected-manager
+
+has_service_manager_flag() {
+  for arg in "$@"; do
+    case "$arg" in
+      --systemd|--openrc)
+        return 0
+        ;;
+      --)
+        return 1
+        ;;
+    esac
+  done
+
+  return 1
+}
+
+if has_service_manager_flag "$@"; then
+  exec /opt/playit/agent "$@"
+fi
+
+manager=none
+if [ -r "$MANAGER_FILE" ]; then
+  manager="$(cat "$MANAGER_FILE" 2>/dev/null || printf '%s\n' none)"
+fi
+
+case "$manager" in
+  systemd)
+    exec /opt/playit/agent --systemd "$@"
+    ;;
+  openrc)
+    exec /opt/playit/agent --openrc "$@"
+    ;;
+  *)
+    exec /opt/playit/agent "$@"
+    ;;
+esac

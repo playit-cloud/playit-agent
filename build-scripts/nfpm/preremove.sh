@@ -25,6 +25,19 @@ if have_command systemctl; then
   systemctl disable playit || true
 fi
 
+if have_command rc-service; then
+  rc-service playit stop || true
+fi
+
+if have_command rc-update; then
+  rc-update del playit default || true
+fi
+
+rm -f /lib/systemd/system/playit.service
+rm -f /usr/lib/systemd/system/playit.service
+rm -f /etc/init.d/playit
+rm -f /opt/playit/share/init/selected-manager
+
 if [ -L /usr/local/bin/playit ]; then
   rm -f /usr/local/bin/playit
 fi

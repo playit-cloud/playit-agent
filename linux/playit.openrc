@@ -1,0 +1,21 @@
+#!/sbin/openrc-run
+
+name="Playit Agent"
+description="Playit Agent"
+
+command="/opt/playit/playitd"
+command_args="--secret-path /etc/playit/playit.toml --socket-path /run/playit/playitd.sock -l /var/log/playit/playit.log"
+command_user="playit:playit"
+command_background=true
+pidfile="/run/playit/playitd.pid"
+
+depend() {
+  need net
+  after firewall
+}
+
+start_pre() {
+  checkpath -d -m 0750 -o playit:playit /run/playit
+  checkpath -d -m 0750 -o playit:playit /etc/playit
+  checkpath -d -m 0750 -o playit:playit /var/log/playit
+}

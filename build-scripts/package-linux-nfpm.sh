@@ -142,7 +142,7 @@ for format in "${FORMATS[@]}"; do
       ;;
     apk)
       output="${OUT_DIR}/playit_${APK_ARCH}.apk"
-      config="${REPO_DIR}/build-scripts/nfpm-apk.yaml"
+      config="${REPO_DIR}/build-scripts/nfpm.yaml"
       ;;
     archlinux)
       output="${OUT_DIR}/playit_${ARCHLINUX_ARCH}.pkg.tar.zst"
