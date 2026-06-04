@@ -6,7 +6,7 @@ use std::{
 };
 
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
-use playitd::manager::is_systemd_service_active;
+use playitd::manager::{LinuxServiceManager, installed_service_is_active_with_linux_manager};
 use playitd::unix_account::{
     current_process_has_group, current_user_account, current_user_is_root, effective_gid,
     effective_uid, group_info_by_gid,
@@ -18,8 +18,9 @@ const PLAYIT_GROUP_NAME: &str = "playit";
 
 pub(crate) async fn prepare_installed_service_for_cli(
     console: Option<&mut ConsoleUi>,
+    service_manager: LinuxServiceManager,
 ) -> Result<bool, CliError> {
-    if installed_service_is_active()? {
+    if installed_service_is_active(service_manager)? {
         for _ in 0..20 {
             if IpcClient::is_running(get_default_socket_path()).await {
                 return Ok(true);
@@ -29,28 +30,33 @@ pub(crate) async fn prepare_installed_service_for_cli(
         }
 
         return Err(CliError::ServiceError(
-            installed_service_unreachable_message(),
+            installed_service_unreachable_message(service_manager),
         ));
     }
 
     if let Some(console) = console {
         let should_start = console
-            .yn_question(service_start_prompt(current_user_is_root()), Some(true))
+            .yn_question(
+                service_start_prompt(service_manager, current_user_is_root()),
+                Some(true),
+            )
             .await?;
 
         if !should_start {
-            return Err(CliError::ServiceError(
-                "The playit service is not running. Start it with `sudo systemctl start playit`, then run `playit` again."
-                    .to_string(),
-            ));
+            return Err(CliError::ServiceError(format!(
+                "The playit service is not running. Start it with `{}`, then run `playit` again.",
+                service_start_command(service_manager, false)
+            )));
         }
     }
 
     Ok(false)
 }
 
-pub(crate) fn installed_service_is_active() -> Result<bool, CliError> {
-    is_systemd_service_active()
+pub(crate) fn installed_service_is_active(
+    service_manager: LinuxServiceManager,
+) -> Result<bool, CliError> {
+    installed_service_is_active_with_linux_manager(service_manager)
         .map_err(|error| CliError::ServiceError(format!("Failed to check service status: {error}")))
 }
 
@@ -58,12 +64,8 @@ pub(crate) fn is_linux_socket_access_message(message: &str) -> bool {
     message.starts_with("The playit service is running, but")
 }
 
-fn service_start_prompt(is_root: bool) -> String {
-    let command = if is_root {
-        "systemctl start playit"
-    } else {
-        "sudo systemctl start playit"
-    };
+fn service_start_prompt(service_manager: LinuxServiceManager, is_root: bool) -> String {
+    let command = service_start_command(service_manager, is_root);
     let mut prompt = format!(
         "The playit service is not running.\nStart it now so playit can run in the background?\n\nCommand: {command}",
     );
@@ -75,13 +77,23 @@ fn service_start_prompt(is_root: bool) -> String {
     prompt
 }
 
-fn installed_service_unreachable_message() -> String {
+fn service_start_command(service_manager: LinuxServiceManager, is_root: bool) -> &'static str {
+    match (service_manager, is_root) {
+        (LinuxServiceManager::Systemd, true) => "systemctl start playit",
+        (LinuxServiceManager::Systemd, false) => "sudo systemctl start playit",
+        (LinuxServiceManager::OpenRc, true) => "rc-service playit start",
+        (LinuxServiceManager::OpenRc, false) => "sudo rc-service playit start",
+    }
+}
+
+fn installed_service_unreachable_message(service_manager: LinuxServiceManager) -> String {
     let socket_path = get_default_socket_path();
 
     match socket_access_issue(socket_path) {
-        Some(issue) => format_socket_access_issue(socket_path, &issue),
+        Some(issue) => format_socket_access_issue(socket_path, &issue, service_manager),
         None => format!(
-            "The playit service is running, but this shell cannot reach its IPC socket:\n  {socket_path}\n\nTry running `playit status` again in a few seconds. If it still fails, restart the service with:\n  sudo systemctl restart playit"
+            "The playit service is running, but this shell cannot reach its IPC socket:\n  {socket_path}\n\nTry running `playit status` again in a few seconds. If it still fails, restart the service with:\n  {}",
+            service_restart_command(service_manager)
         ),
     }
 }
@@ -177,11 +189,16 @@ fn playit_group_access_issue(
     }
 }
 
-fn format_socket_access_issue(socket_path: &str, issue: &LinuxSocketAccessIssue) -> String {
+fn format_socket_access_issue(
+    socket_path: &str,
+    issue: &LinuxSocketAccessIssue,
+    service_manager: LinuxServiceManager,
+) -> String {
     match issue {
         LinuxSocketAccessIssue::MissingSocket => {
             format!(
-                "The playit service is running, but its IPC socket does not exist yet:\n  {socket_path}\n\nRestart the service, then try again:\n  sudo systemctl restart playit"
+                "The playit service is running, but its IPC socket does not exist yet:\n  {socket_path}\n\nRestart the service, then try again:\n  {}",
+                service_restart_command(service_manager)
             )
         }
         LinuxSocketAccessIssue::InspectFailed(error) => {
@@ -191,7 +208,8 @@ fn format_socket_access_issue(socket_path: &str, issue: &LinuxSocketAccessIssue)
         }
         LinuxSocketAccessIssue::NotASocket => {
             format!(
-                "The playit service is running, but this path is not a Unix socket:\n  {socket_path}\n\nRemove or rename that file, then restart the service:\n  sudo systemctl restart playit"
+                "The playit service is running, but this path is not a Unix socket:\n  {socket_path}\n\nRemove or rename that file, then restart the service:\n  {}",
+                service_restart_command(service_manager)
             )
         }
         LinuxSocketAccessIssue::PlayitGroupJoinRequired => {
@@ -209,6 +227,13 @@ fn format_socket_access_issue(socket_path: &str, issue: &LinuxSocketAccessIssue)
         } => format!(
             "The playit service is running, but this user cannot access its IPC socket:\n  {socket_path}\n\nCurrent user uid={current_uid}, gid={current_gid}\nSocket owner uid={socket_uid}, gid={socket_gid}, mode={socket_mode:o}\n\nCheck the socket permissions or run playit from a user that can access this socket."
         ),
+    }
+}
+
+fn service_restart_command(service_manager: LinuxServiceManager) -> &'static str {
+    match service_manager {
+        LinuxServiceManager::Systemd => "sudo systemctl restart playit",
+        LinuxServiceManager::OpenRc => "sudo rc-service playit restart",
     }
 }
 

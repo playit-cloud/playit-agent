@@ -62,6 +62,13 @@ pub enum InstalledServiceState {
     Unknown,
 }
 
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxServiceManager {
+    Systemd,
+    OpenRc,
+}
+
 impl ServiceController {
     const SERVICE_LABEL: &'static str = INSTALLED_SERVICE_LABEL;
 
@@ -92,6 +99,16 @@ impl ServiceController {
 #[cfg(target_os = "linux")]
 pub fn is_systemd_service_active() -> Result<bool, ServiceManagerError> {
     linux::is_systemd_service_active()
+}
+
+#[cfg(target_os = "linux")]
+pub fn installed_service_is_active_with_linux_manager(
+    manager: LinuxServiceManager,
+) -> Result<bool, ServiceManagerError> {
+    match manager {
+        LinuxServiceManager::Systemd => linux::is_systemd_service_active(),
+        LinuxServiceManager::OpenRc => linux::is_openrc_service_active(),
+    }
 }
 
 pub fn installed_service_state() -> Result<InstalledServiceState, ServiceManagerError> {
@@ -151,6 +168,26 @@ pub async fn ensure_installed_service_running() -> Result<(), ServiceManagerErro
     }
 }
 
+#[cfg(target_os = "linux")]
+pub async fn ensure_installed_service_running_with_linux_manager(
+    manager: LinuxServiceManager,
+) -> Result<(), ServiceManagerError> {
+    if IpcClient::is_running(get_default_socket_path()).await {
+        return Ok(());
+    }
+
+    if installed_service_is_active_with_linux_manager(manager)? {
+        return Ok(());
+    }
+
+    match manager {
+        LinuxServiceManager::Systemd => linux::start_systemd_service()?,
+        LinuxServiceManager::OpenRc => linux::start_openrc_service()?,
+    }
+
+    wait_for_installed_service().await
+}
+
 pub fn stop_installed_service() -> Result<(), ServiceManagerError> {
     #[cfg(target_os = "linux")]
     {
@@ -167,6 +204,16 @@ pub fn stop_installed_service() -> Result<(), ServiceManagerError> {
     #[cfg(target_os = "windows")]
     {
         windows_stop_installed_service()
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn stop_installed_service_with_linux_manager(
+    manager: LinuxServiceManager,
+) -> Result<(), ServiceManagerError> {
+    match manager {
+        LinuxServiceManager::Systemd => linux::stop_systemd_service(),
+        LinuxServiceManager::OpenRc => linux::stop_openrc_service(),
     }
 }
 
