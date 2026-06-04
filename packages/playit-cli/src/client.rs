@@ -5,6 +5,12 @@ use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 use playit_ipc::model::{
     AgentLifecycle, LogLevel as ServiceLogLevel, ServicePhase, ServiceUpdate, SubscribeResponse,
 };
+#[cfg(target_os = "linux")]
+use playitd::manager::{
+    LinuxServiceManager, ensure_installed_service_running_with_linux_manager,
+    stop_installed_service_with_linux_manager,
+};
+#[cfg(not(target_os = "linux"))]
 use playitd::manager::{ensure_installed_service_running, stop_installed_service};
 
 #[cfg(target_os = "linux")]
@@ -19,6 +25,26 @@ const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
 pub enum AttachMode {
     Interactive,
     Stdout,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceManagerMode {
+    None,
+    Systemd,
+    OpenRc,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceManagerMode {
+    WindowsService,
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServiceManagerMode {
+    Native,
 }
 
 enum AttachErrorContext {
@@ -64,12 +90,15 @@ pub async fn run_auto_command(
     console: &mut ConsoleUi,
     target: &CliTarget,
     attach_mode: AttachMode,
+    service_manager: ServiceManagerMode,
 ) -> Result<(), CliError> {
     let start_attempt_failed = match target {
-        CliTarget::InstalledService => ensure_installed_service_running_for_cli(Some(console))
-            .await
-            .err()
-            .map(|error| error.to_string()),
+        CliTarget::InstalledService => {
+            ensure_installed_service_running_for_cli(Some(console), service_manager)
+                .await
+                .err()
+                .map(|error| error.to_string())
+        }
         CliTarget::ExplicitSocket(_) => None,
     };
 
@@ -85,7 +114,7 @@ pub async fn run_auto_command(
     match wait_for_auto_lifecycle(&mut client).await? {
         AgentLifecycle::Running(_) => {}
         AgentLifecycle::WaitingForSecret => {
-            run_setup_flow(console, target).await?;
+            run_setup_flow(console, target, service_manager).await?;
         }
         AgentLifecycle::HasInvalidSecret(error) => {
             let should_reset = console
@@ -107,7 +136,7 @@ pub async fn run_auto_command(
 
             reset_service_secret_for_setup(target).await?;
             wait_for_service_waiting_for_secret(target).await?;
-            run_setup_flow(console, target).await?;
+            run_setup_flow(console, target, service_manager).await?;
         }
         AgentLifecycle::DisabledOverLimit(_) => {
             return Err(CliError::ServiceError(format!(
@@ -339,6 +368,7 @@ fn print_detach_message() {
 pub async fn run_start_command(
     console: &mut ConsoleUi,
     target: &CliTarget,
+    service_manager: ServiceManagerMode,
 ) -> Result<(), CliError> {
     if let CliTarget::ExplicitSocket(path) = target {
         return Err(CliError::ServiceError(format!(
@@ -346,7 +376,15 @@ pub async fn run_start_command(
         )));
     }
 
-    match ensure_installed_service_running_for_cli(Some(console)).await? {
+    #[cfg(target_os = "linux")]
+    if matches!(service_manager, ServiceManagerMode::None) {
+        return Err(CliError::ServiceError(
+            "`playit start` requires a service manager. Run `playit --systemd start` or `playit --openrc start`."
+                .to_string(),
+        ));
+    }
+
+    match ensure_installed_service_running_for_cli(Some(console), service_manager).await? {
         InstalledServiceStartState::AlreadyRunning => {
             println!("The playit service is already running.")
         }
@@ -356,7 +394,10 @@ pub async fn run_start_command(
     Ok(())
 }
 
-pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
+pub async fn run_stop_command(
+    target: &CliTarget,
+    service_manager: ServiceManagerMode,
+) -> Result<(), CliError> {
     match target {
         CliTarget::InstalledService => {
             let mut direct_stop_fallback = true;
@@ -393,13 +434,37 @@ pub async fn run_stop_command(target: &CliTarget) -> Result<(), CliError> {
 
             if direct_stop_fallback {
                 #[cfg(target_os = "linux")]
-                if !linux::installed_service_is_active()? {
-                    println!("The playit service is already stopped.");
-                    return Ok(());
+                {
+                    let Some(linux_manager) = linux_service_manager(service_manager) else {
+                        return Err(no_service_manager_selected_error());
+                    };
+
+                    if !linux::installed_service_is_active(linux_manager)? {
+                        println!("The playit service is already stopped.");
+                        return Ok(());
+                    }
+
+                    if let Err(error) = stop_installed_service_with_linux_manager(linux_manager) {
+                        tracing::warn!("Failed to stop installed service: {error}");
+                    }
                 }
 
-                if let Err(error) = stop_installed_service() {
-                    tracing::warn!("Failed to stop installed service: {error}");
+                #[cfg(not(target_os = "linux"))]
+                {
+                    match service_manager {
+                        #[cfg(target_os = "windows")]
+                        ServiceManagerMode::WindowsService => {
+                            if let Err(error) = stop_installed_service() {
+                                tracing::warn!("Failed to stop installed service: {error}");
+                            }
+                        }
+                        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+                        ServiceManagerMode::Native => {
+                            if let Err(error) = stop_installed_service() {
+                                tracing::warn!("Failed to stop installed service: {error}");
+                            }
+                        }
+                    }
                 }
             }
 
@@ -497,9 +562,10 @@ pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
 pub async fn ensure_service_waiting_for_secret(
     console: &mut ConsoleUi,
     target: &CliTarget,
+    service_manager: ServiceManagerMode,
 ) -> Result<(), CliError> {
     if matches!(target, CliTarget::InstalledService) {
-        ensure_installed_service_running_for_cli(Some(console)).await?;
+        ensure_installed_service_running_for_cli(Some(console), service_manager).await?;
     }
 
     let mut client = connect_target(target).await?;
@@ -539,9 +605,10 @@ pub async fn provision_service_secret(
     console: &mut ConsoleUi,
     target: &CliTarget,
     secret: &str,
+    service_manager: ServiceManagerMode,
 ) -> Result<(), CliError> {
     if matches!(target, CliTarget::InstalledService) {
-        ensure_installed_service_running_for_cli(Some(console)).await?;
+        ensure_installed_service_running_for_cli(Some(console), service_manager).await?;
     }
 
     let mut client = connect_target(target).await?;
@@ -633,6 +700,7 @@ async fn connect_target(target: &CliTarget) -> Result<IpcClient, CliError> {
 
 async fn ensure_installed_service_running_for_cli(
     console: Option<&mut ConsoleUi>,
+    service_manager: ServiceManagerMode,
 ) -> Result<InstalledServiceStartState, CliError> {
     if IpcClient::is_running(get_default_socket_path()).await {
         return Ok(InstalledServiceStartState::AlreadyRunning);
@@ -640,16 +708,53 @@ async fn ensure_installed_service_running_for_cli(
 
     #[cfg(target_os = "linux")]
     {
-        if linux::prepare_installed_service_for_cli(console).await? {
+        if matches!(service_manager, ServiceManagerMode::None) {
+            return Err(no_service_manager_selected_error());
+        }
+
+        let linux_manager = linux_service_manager(service_manager)
+            .expect("linux service manager was checked above");
+
+        if linux::prepare_installed_service_for_cli(console, linux_manager).await? {
             return Ok(InstalledServiceStartState::AlreadyRunning);
+        }
+
+        ensure_installed_service_running_with_linux_manager(linux_manager)
+            .await
+            .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
+
+        return Ok(InstalledServiceStartState::Started);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        match service_manager {
+            #[cfg(target_os = "windows")]
+            ServiceManagerMode::WindowsService => {
+                ensure_installed_service_running().await.map_err(|error| {
+                    CliError::ServiceError(format!("Failed to start service: {error}"))
+                })?;
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+            ServiceManagerMode::Native => {
+                ensure_installed_service_running().await.map_err(|error| {
+                    CliError::ServiceError(format!("Failed to start service: {error}"))
+                })?;
+            }
         }
     }
 
-    ensure_installed_service_running()
-        .await
-        .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
-
+    #[cfg(not(target_os = "linux"))]
     Ok(InstalledServiceStartState::Started)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_service_manager(service_manager: ServiceManagerMode) -> Option<LinuxServiceManager> {
+    match service_manager {
+        ServiceManagerMode::None => None,
+        ServiceManagerMode::Systemd => Some(LinuxServiceManager::Systemd),
+        ServiceManagerMode::OpenRc => Some(LinuxServiceManager::OpenRc),
+    }
 }
 
 fn ipc_connection_error() -> CliError {
@@ -681,6 +786,9 @@ pub(crate) fn auto_attach_error(
             Some(error) if error.starts_with("The playit service is running, but") => {
                 CliError::IpcError(error.to_string())
             }
+            Some(error) if error.starts_with("The playit service is not reachable") => {
+                CliError::IpcError(error.to_string())
+            }
             Some(error) => CliError::IpcError(format!(
                 "Could not connect to the playit service. playit also tried to start it first, but startup failed: {error}"
             )),
@@ -691,6 +799,17 @@ pub(crate) fn auto_attach_error(
         },
         CliTarget::ExplicitSocket(_) => ipc_connection_error(),
     }
+}
+
+fn no_service_manager_selected_error() -> CliError {
+    CliError::ServiceError(no_service_manager_selected_message())
+}
+
+fn no_service_manager_selected_message() -> String {
+    let socket_path = get_default_socket_path();
+    format!(
+        "The playit service is not reachable at {socket_path}.\nNo service manager was selected, so playit did not try to start it.\nRun with --systemd or --openrc, or start playitd manually."
+    )
 }
 
 fn attach_lost_message(target: &CliTarget, error: &str) -> String {
@@ -742,5 +861,28 @@ fn format_log_level(level: &ServiceLogLevel) -> &'static str {
         ServiceLogLevel::Info => "INFO",
         ServiceLogLevel::Warn => "WARN",
         ServiceLogLevel::Error => "ERROR",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn linux_start_command_requires_service_manager() {
+        let mut console = ConsoleUi::new(crate::ui::UISettings { auto_answer: None });
+        let error = run_start_command(
+            &mut console,
+            &CliTarget::InstalledService,
+            ServiceManagerMode::None,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "`playit start` requires a service manager. Run `playit --systemd start` or `playit --openrc start`."
+        );
     }
 }

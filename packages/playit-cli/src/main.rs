@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use client::{
-    AttachMode, CliTarget, ensure_service_waiting_for_secret, provision_service_secret,
-    run_account_login_url_command, run_attach_command, run_auto_command, run_reset_command,
-    run_secret_path_command, run_start_command, run_status_command, run_stop_command,
+    AttachMode, CliTarget, ServiceManagerMode, ensure_service_waiting_for_secret,
+    provision_service_secret, run_account_login_url_command, run_attach_command, run_auto_command,
+    run_reset_command, run_secret_path_command, run_start_command, run_status_command,
+    run_stop_command,
 };
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
@@ -43,6 +44,14 @@ struct Cli {
     /// Override the IPC socket or named pipe used to reach playitd
     #[arg(long)]
     socket_path: Option<String>,
+
+    #[cfg(target_os = "linux")]
+    #[arg(long, conflicts_with = "openrc")]
+    systemd: bool,
+
+    #[cfg(target_os = "linux")]
+    #[arg(long, conflicts_with = "systemd")]
+    openrc: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -158,6 +167,7 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
     }
 
     let target = CliTarget::from_socket_path(cli.socket_path.clone());
+    let service_manager = service_manager_mode(&cli);
     let attach_stdout = matches!(&cli.command, Some(Commands::Attach { stdout: true, .. }));
     let stdout_mode = cli.stdout || attach_stdout;
     let attach_mode = if stdout_mode {
@@ -176,7 +186,7 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
 
     match cli.command {
         None => {
-            run_auto_command(&mut console, &target, attach_mode).await?;
+            run_auto_command(&mut console, &target, attach_mode, service_manager).await?;
         }
         Some(Commands::Attach { stdout }) => {
             let attach_mode = if cli.stdout || stdout {
@@ -187,17 +197,17 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
             run_attach_command(&target, attach_mode).await?;
         }
         Some(Commands::Start) => {
-            run_start_command(&mut console, &target).await?;
+            run_start_command(&mut console, &target, service_manager).await?;
         }
         Some(Commands::Stop) => {
-            run_stop_command(&target).await?;
+            run_stop_command(&target, service_manager).await?;
         }
         Some(Commands::Status) => {
             run_status_command(&target).await?;
         }
         Some(Commands::Version) => println!("{}", env!("CARGO_PKG_VERSION")),
         Some(Commands::Setup) => {
-            run_setup_flow(&mut console, &target).await?;
+            run_setup_flow(&mut console, &target, service_manager).await?;
         }
         Some(Commands::Reset) => {
             run_reset_command(&target).await?;
@@ -231,6 +241,26 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
     Ok(std::process::ExitCode::SUCCESS)
 }
 
+#[cfg(target_os = "linux")]
+fn service_manager_mode(cli: &Cli) -> ServiceManagerMode {
+    match (cli.systemd, cli.openrc) {
+        (true, false) => ServiceManagerMode::Systemd,
+        (false, true) => ServiceManagerMode::OpenRc,
+        (false, false) => ServiceManagerMode::None,
+        (true, true) => unreachable!("clap conflicts_with prevents this"),
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn service_manager_mode(_cli: &Cli) -> ServiceManagerMode {
+    ServiceManagerMode::WindowsService
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn service_manager_mode(_cli: &Cli) -> ServiceManagerMode {
+    ServiceManagerMode::Native
+}
+
 fn init_stdout_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     let log_filter =
         EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
@@ -243,8 +273,12 @@ fn init_stdout_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     guard
 }
 
-pub async fn run_setup_flow(console: &mut ConsoleUi, target: &CliTarget) -> Result<(), CliError> {
-    ensure_service_waiting_for_secret(console, target).await?;
+pub async fn run_setup_flow(
+    console: &mut ConsoleUi,
+    target: &CliTarget,
+    service_manager: ServiceManagerMode,
+) -> Result<(), CliError> {
+    ensure_service_waiting_for_secret(console, target, service_manager).await?;
 
     let claim_code = claim_generate();
     console
@@ -255,7 +289,7 @@ pub async fn run_setup_flow(console: &mut ConsoleUi, target: &CliTarget) -> Resu
         .await;
 
     let key = claim_exchange(console, &claim_code, ClaimAgentType::Assignable, 0).await?;
-    provision_service_secret(console, target, &key).await?;
+    provision_service_secret(console, target, &key, service_manager).await?;
 
     let api = PlayitApi::create(API_BASE.to_string(), Some(key));
     if let Ok(session) = api.login_guest().await {
@@ -456,5 +490,63 @@ impl From<ApiErrorNoFail<HttpClientError>> for CliError {
 impl From<SetupError> for CliError {
     fn from(e: SetupError) -> Self {
         CliError::TunnelSetupError(e)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_service_manager_mode_defaults_to_none() {
+        let cli = Cli::try_parse_from(["playit-cli"]).unwrap();
+
+        assert_eq!(service_manager_mode(&cli), ServiceManagerMode::None);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_service_manager_mode_accepts_systemd() {
+        let cli = Cli::try_parse_from(["playit-cli", "--systemd"]).unwrap();
+
+        assert_eq!(service_manager_mode(&cli), ServiceManagerMode::Systemd);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_service_manager_mode_accepts_openrc() {
+        let cli = Cli::try_parse_from(["playit-cli", "--openrc"]).unwrap();
+
+        assert_eq!(service_manager_mode(&cli), ServiceManagerMode::OpenRc);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_service_manager_flags_conflict() {
+        let error = match Cli::try_parse_from(["playit-cli", "--systemd", "--openrc"]) {
+            Ok(_) => panic!("expected --systemd and --openrc to conflict"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_service_manager_mode_uses_windows_service() {
+        let cli = Cli::try_parse_from(["playit-cli"]).unwrap();
+
+        assert_eq!(
+            service_manager_mode(&cli),
+            ServiceManagerMode::WindowsService
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_does_not_accept_linux_service_manager_flags() {
+        assert!(Cli::try_parse_from(["playit-cli", "--systemd"]).is_err());
+        assert!(Cli::try_parse_from(["playit-cli", "--openrc"]).is_err());
     }
 }
