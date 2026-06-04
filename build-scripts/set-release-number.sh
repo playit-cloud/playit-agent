@@ -26,3 +26,5 @@ sed -Ei \
   -e 's/("version_patch": )[0-9]+/\1'"$PATCH"'/' \
   -e 's|("release_url": "[^"]*/tag/v)[^"]+|\1'"$VERSION"'|' \
   agent-schema-release.json
+
+cargo check --all
