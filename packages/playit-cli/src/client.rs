@@ -350,7 +350,7 @@ pub async fn run_start_command(
     #[cfg(target_os = "linux")]
     if matches!(service_manager, ServiceManagerMode::None) {
         return Err(CliError::ServiceError(
-            "`playit start` requires a service manager. Run `playit --systemd start` or `playit --openrc start`."
+            "`playit start` can only start the installed service when run with --systemd or --openrc.\n\nIf you are managing playitd yourself, start it in the background and connect with --socket-path:\n  playitd --socket-path=./playit.sock --secret-path=./playit.toml\n  playit --socket-path=./playit.sock"
                 .to_string(),
         ));
     }
@@ -756,7 +756,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "`playit start` requires a service manager. Run `playit --systemd start` or `playit --openrc start`."
+            "`playit start` can only start the installed service when run with --systemd or --openrc.\n\nIf you are managing playitd yourself, start it in the background and connect with --socket-path:\n  playitd --socket-path=./playit.sock --secret-path=./playit.toml\n  playit --socket-path=./playit.sock"
         );
     }
 }

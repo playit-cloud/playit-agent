@@ -169,7 +169,7 @@ pub fn no_service_manager_selected_error() -> CliError {
 fn no_service_manager_selected_message() -> String {
     let socket_path = get_default_socket_path();
     format!(
-        "The playit service is not reachable at {socket_path}.\nNo service manager was selected, so playit did not try to start it.\nRun with --systemd or --openrc, or start playitd manually."
+        "The playit daemon is not reachable at {socket_path}.\nplayitd must be running in the background before playit can connect to it.\n\nRun with --systemd or --openrc to let playit start the installed service, or start playitd manually and connect with --socket-path:\n  playitd --socket-path=./playit.sock --secret-path=./playit.toml\n  playit --socket-path=./playit.sock"
     )
 }
 
