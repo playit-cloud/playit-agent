@@ -1,0 +1,91 @@
+# Maintainer: Patrick Lorio <patrick@playit.gg>
+
+pkgname=playit-bin
+pkgver=1.0.8
+pkgrel=1
+pkgdesc='Making it easy to play games with friends. Makes your server public'
+arch=('x86_64' 'aarch64' 'armv7h' 'i686')
+url='https://playit.gg'
+license=('BSD-2-Clause')
+depends=('logrotate')
+provides=('playit')
+conflicts=('playit')
+install="${pkgname}.install"
+
+_repo='playit-cloud/playit-agent'
+_release_base="https://github.com/${_repo}/releases/download/v${pkgver}"
+_raw_base="https://raw.githubusercontent.com/${_repo}/v${pkgver}"
+
+source=(
+  "playit::${_raw_base}/linux/playit"
+  "logrotate.conf::${_raw_base}/linux/logrotate.conf"
+  "playit.service::${_raw_base}/linux/playit.service"
+  "playit.openrc::${_raw_base}/linux/playit.openrc"
+  "LICENSE.txt::${_raw_base}/LICENSE.txt"
+)
+source_x86_64=(
+  "playit-cli-linux-amd64::${_release_base}/playit-cli-linux-amd64"
+  "playit-linux-amd64::${_release_base}/playit-linux-amd64"
+)
+source_aarch64=(
+  "playit-cli-linux-aarch64::${_release_base}/playit-cli-linux-aarch64"
+  "playit-linux-aarch64::${_release_base}/playit-linux-aarch64"
+)
+source_armv7h=(
+  "playit-cli-linux-armv7::${_release_base}/playit-cli-linux-armv7"
+  "playit-linux-armv7::${_release_base}/playit-linux-armv7"
+)
+source_i686=(
+  "playit-cli-linux-i686::${_release_base}/playit-cli-linux-i686"
+  "playit-linux-i686::${_release_base}/playit-linux-i686"
+)
+
+sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
+sha256sums_x86_64=('SKIP' 'SKIP')
+sha256sums_aarch64=('SKIP' 'SKIP')
+sha256sums_armv7h=('SKIP' 'SKIP')
+sha256sums_i686=('SKIP' 'SKIP')
+
+package() {
+  local cli_bin
+  local daemon_bin
+
+  case "${CARCH}" in
+    x86_64)
+      cli_bin='playit-cli-linux-amd64'
+      daemon_bin='playit-linux-amd64'
+      ;;
+    aarch64)
+      cli_bin='playit-cli-linux-aarch64'
+      daemon_bin='playit-linux-aarch64'
+      ;;
+    armv7h)
+      cli_bin='playit-cli-linux-armv7'
+      daemon_bin='playit-linux-armv7'
+      ;;
+    i686)
+      cli_bin='playit-cli-linux-i686'
+      daemon_bin='playit-linux-i686'
+      ;;
+    *)
+      printf 'Unsupported architecture: %s\n' "${CARCH}" >&2
+      return 1
+      ;;
+  esac
+
+  install -Dm0755 "${srcdir}/${cli_bin}" "${pkgdir}/opt/playit/agent"
+  install -Dm0755 "${srcdir}/${daemon_bin}" "${pkgdir}/opt/playit/playitd"
+  install -Dm0755 "${srcdir}/playit" "${pkgdir}/opt/playit/playit"
+
+  install -Dm0644 "${srcdir}/logrotate.conf" "${pkgdir}/etc/logrotate.d/playit"
+  install -Dm0644 "${srcdir}/playit.service" "${pkgdir}/opt/playit/share/init/systemd/playit.service"
+  install -Dm0755 "${srcdir}/playit.openrc" "${pkgdir}/opt/playit/share/init/openrc/playit"
+  install -Dm0644 "${srcdir}/LICENSE.txt" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE.txt"
+
+  install -dm0750 "${pkgdir}/etc/playit"
+  install -dm0750 "${pkgdir}/var/log/playit"
+  install -dm0755 "${pkgdir}/usr/local/bin"
+
+  ln -s /opt/playit/playit "${pkgdir}/usr/local/bin/playit"
+  ln -s /opt/playit/playitd "${pkgdir}/usr/local/bin/playitd"
+}
