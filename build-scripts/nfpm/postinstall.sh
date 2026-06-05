@@ -162,6 +162,11 @@ ln -sfn /opt/playit/playitd /usr/local/bin/playitd
 chown "$PLAYIT_USER:$PLAYIT_GROUP" /etc/playit /var/log/playit
 chmod 0750 /etc/playit /var/log/playit
 
+if [ -f /var/log/playit/playit.log ]; then
+  chown "$PLAYIT_USER:$PLAYIT_GROUP" /var/log/playit/playit.log
+  chmod 0640 /var/log/playit/playit.log
+fi
+
 manager="$(detect_init_manager)"
 mkdir -p /opt/playit/share/init
 printf '%s\n' "$manager" > "$PLAYIT_MANAGER_FILE"
