@@ -159,11 +159,11 @@ mkdir -p /usr/local/bin /etc/playit /var/log/playit
 ln -sfn /opt/playit/playit /usr/local/bin/playit
 ln -sfn /opt/playit/playitd /usr/local/bin/playitd
 
-chown "$PLAYIT_USER:$PLAYIT_GROUP" /etc/playit /var/log/playit
+chown "$PLAYIT_USER:$PLAYIT_GROUP" /etc/playit
+chown -R "$PLAYIT_USER:$PLAYIT_GROUP" /var/log/playit
 chmod 0750 /etc/playit /var/log/playit
 
 if [ -f /var/log/playit/playit.log ]; then
-  chown "$PLAYIT_USER:$PLAYIT_GROUP" /var/log/playit/playit.log
   chmod 0640 /var/log/playit/playit.log
 fi
 
