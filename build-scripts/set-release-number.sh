@@ -9,6 +9,11 @@ PACKAGES=(
   playitd
 )
 
+ARCH_PKGBUILDS=(
+  arch/build/PKGBUILD
+  arch/bin/PKGBUILD
+)
+
 # root workspace package version
 sed -Ei '/^\[workspace\.package\]/,/^\[/{s/^version = "[^"]+"/version = "'"$VERSION"'"/}' Cargo.toml
 
@@ -16,6 +21,11 @@ sed -Ei '/^\[workspace\.package\]/,/^\[/{s/^version = "[^"]+"/version = "'"$VERS
 for pkg in "${PACKAGES[@]}"; do
   find packages -name Cargo.toml -type f -print0 | xargs -0 sed -Ei \
     's/('"$pkg"' = \{[^}]*version = )"[^"]+"/\1"'"$VERSION"'"/'
+done
+
+# Arch package versions
+for pkgbuild in "${ARCH_PKGBUILDS[@]}"; do
+  sed -Ei 's/^pkgver=.*/pkgver='"$VERSION"'/' "$pkgbuild"
 done
 
 IFS=. read -r MAJOR MINOR PATCH <<<"$VERSION"
