@@ -40,11 +40,19 @@ source_i686=(
   "playit-linux-i686::${_release_base}/playit-linux-i686"
 )
 
-sha256sums=('SKIP' 'SKIP' 'SKIP' 'SKIP' 'SKIP')
-sha256sums_x86_64=('SKIP' 'SKIP')
-sha256sums_aarch64=('SKIP' 'SKIP')
-sha256sums_armv7h=('SKIP' 'SKIP')
-sha256sums_i686=('SKIP' 'SKIP')
+sha256sums=('daa9b021f23bddaa04c29532088ab3f1967591bba11ed98eb8ced4d53e67858d'
+            '22fc22988fd86ecf62cba09847442cfd628a7a6d7e6dcdffd3833f1f3cb8a9d8'
+            '8029085b8db14175a1a7a7f4f626bc224be969d6c68283de38a4942575ee2842'
+            'fd6b309c4e1008b81675a2ad0ea27e709f02f405a502816c238a73c60b497da9'
+            'f9d32c6b4a6055b2bfa48543d68119efc46ea4606f0d9cc973cb273dcd59be9c')
+sha256sums_x86_64=('ac812035d416f0d10628023ac1c2dfccc1cf4610a72fde42516ca34ad7ae9755'
+                   '544cc9b93384c81d0bbccc7ced5f855594412bd7cc72011d414b73f265fb7ce6')
+sha256sums_aarch64=('647924241fbafaa5616cf8630153f181759fe3cd95cca2821eabe659f90e5d3e'
+                    '8a1c51e72d00caec1688def8c20c1c67c714b99dff05a4147f3639d3fad61594')
+sha256sums_armv7h=('4426464a96e2708f96b0414b74b63132e0edbd682989c87f203b58451c6c4d73'
+                   '99a512d42280103133f13b6e5fb236ee07242f2d6d11da38e3a8cafd13593245')
+sha256sums_i686=('7f8e16c51bd10157b6df6676c21dd5a43054a53583af3f94a7976fe012c72d8a'
+                 'a984232367d411a9a592b9d04a81eb0a0df27994a6464f49b9393e7276b93cbd')
 
 package() {
   local cli_bin

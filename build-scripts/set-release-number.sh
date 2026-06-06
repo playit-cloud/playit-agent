@@ -14,6 +14,39 @@ ARCH_PKGBUILDS=(
   arch/bin/PKGBUILD
 )
 
+reset_arch_bin_pkgbuild_shasums() {
+  local pkgbuild="arch/bin/PKGBUILD"
+  local tmp
+
+  tmp="$(mktemp)"
+  awk '
+    BEGIN {
+      replacements["sha256sums"] = "sha256sums=(\047SKIP\047 \047SKIP\047 \047SKIP\047 \047SKIP\047 \047SKIP\047)"
+      replacements["sha256sums_x86_64"] = "sha256sums_x86_64=(\047SKIP\047 \047SKIP\047)"
+      replacements["sha256sums_aarch64"] = "sha256sums_aarch64=(\047SKIP\047 \047SKIP\047)"
+      replacements["sha256sums_armv7h"] = "sha256sums_armv7h=(\047SKIP\047 \047SKIP\047)"
+      replacements["sha256sums_i686"] = "sha256sums_i686=(\047SKIP\047 \047SKIP\047)"
+    }
+    skip {
+      if ($0 ~ /\)/) {
+        skip = 0
+      }
+      next
+    }
+    /^sha256sums(_x86_64|_aarch64|_armv7h|_i686)?=\(/ {
+      name = $0
+      sub(/=.*/, "", name)
+      print replacements[name]
+      if ($0 !~ /\)/) {
+        skip = 1
+      }
+      next
+    }
+    { print }
+  ' "$pkgbuild" > "$tmp"
+  mv "$tmp" "$pkgbuild"
+}
+
 # root workspace package version
 sed -Ei '/^\[workspace\.package\]/,/^\[/{s/^version = "[^"]+"/version = "'"$VERSION"'"/}' Cargo.toml
 
@@ -27,6 +60,7 @@ done
 for pkgbuild in "${ARCH_PKGBUILDS[@]}"; do
   sed -Ei 's/^pkgver=.*/pkgver='"$VERSION"'/' "$pkgbuild"
 done
+reset_arch_bin_pkgbuild_shasums
 
 IFS=. read -r MAJOR MINOR PATCH <<<"$VERSION"
 
