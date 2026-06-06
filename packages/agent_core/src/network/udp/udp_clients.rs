@@ -15,9 +15,13 @@ use tokio::{
     net::UdpSocket,
     sync::mpsc::{Receiver, channel},
 };
+use tokio_util::sync::CancellationToken;
 
 use crate::network::{
-    lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
+    lan_address::LanAddress,
+    origin_lookup::OriginLookup,
+    proxy_protocol::ProxyProtocolHeader,
+    upload_qos::{UploadFairness, UploadFlow},
 };
 use crate::stats::AgentStats;
 use playit_agent_proto::udp_proto::UdpFlow;
@@ -40,6 +44,8 @@ pub struct UdpClients {
 
     new_client_limiter: DefaultDirectRateLimiter,
     stats: AgentStats,
+    cancel: CancellationToken,
+    upload_fairness: UploadFairness,
 }
 
 struct Client {
@@ -49,6 +55,7 @@ struct Client {
     target_addr: SocketAddr,
     port_offset: u16,
     flow: UdpFlow,
+    upload_flow: UploadFlow,
 
     /* when dropped, rx task get killed */
     receiver: UdpReceiver,
@@ -100,6 +107,8 @@ impl UdpClients {
         lookup: Arc<OriginLookup>,
         packets: Packets,
         stats: AgentStats,
+        cancel: CancellationToken,
+        upload_fairness: UploadFairness,
     ) -> Self {
         let (origin_tx, origin_rx) = channel(2048);
 
@@ -115,6 +124,8 @@ impl UdpClients {
             rx: origin_rx,
             new_client_limiter: RateLimiter::direct(build_quota(&settings)),
             stats,
+            cancel,
+            upload_fairness,
         }
     }
 
@@ -186,10 +197,6 @@ impl UdpClients {
 
         client.from_origin_ts = now_ms;
 
-        // Track bytes going out (from origin to tunnel)
-        let packet_len = packet.packet.len() as u64;
-        self.stats.add_bytes_out(packet_len);
-
         let mut flow = client.flow;
         match &mut flow {
             UdpFlow::V4 {
@@ -210,6 +217,16 @@ impl UdpClients {
             }
             _ => unreachable!(),
         }
+
+        let packet_len = packet.packet.len();
+        let upload_len = packet_len + flow.footer_len();
+        if !client.upload_flow.acquire(upload_len, &self.cancel).await {
+            tracing::info!("UDP upload QoS acquire failed");
+            return None;
+        }
+
+        // Track bytes going out (from origin to tunnel)
+        self.stats.add_bytes_out(packet_len as u64);
 
         Some((flow, packet.packet))
     }
@@ -324,6 +341,7 @@ impl UdpClients {
             port_offset: extension.port_offset,
             receiver,
             flow: client_flow,
+            upload_flow: self.upload_fairness.register(),
             from_tunnel_ts: now_ms,
             from_origin_ts: now_ms,
         };

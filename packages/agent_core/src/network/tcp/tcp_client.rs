@@ -5,6 +5,7 @@ use tokio_util::sync::CancellationToken;
 use crate::stats::AgentStats;
 
 use super::tcp_pipe::{PipeDirection, TcpPipe};
+use crate::network::upload_qos::UploadFairness;
 
 pub struct TcpClient {
     tunn_to_origin: TcpPipe,
@@ -21,10 +22,29 @@ impl TcpClient {
         origin: TcpStream,
         stats: Option<AgentStats>,
     ) -> Self {
+        Self::create_with_stats_and_upload_flow(tunn, origin, stats, None).await
+    }
+
+    pub(super) async fn create_with_stats_and_upload_qos(
+        tunn: TcpStream,
+        origin: TcpStream,
+        stats: Option<AgentStats>,
+        upload_fairness: UploadFairness,
+    ) -> Self {
+        Self::create_with_stats_and_upload_flow(tunn, origin, stats, Some(upload_fairness)).await
+    }
+
+    async fn create_with_stats_and_upload_flow(
+        tunn: TcpStream,
+        origin: TcpStream,
+        stats: Option<AgentStats>,
+        upload_fairness: Option<UploadFairness>,
+    ) -> Self {
         let (tunn_read, tunn_write) = tunn.into_split();
         let (origin_read, origin_write) = origin.into_split();
 
         let cancel = CancellationToken::new();
+        let upload_flow = upload_fairness.map(|fairness| fairness.register());
 
         TcpClient {
             tunn_to_origin: TcpPipe::new_with_stats(
@@ -34,12 +54,13 @@ impl TcpClient {
                 stats.clone(),
                 PipeDirection::TunnelToOrigin,
             ),
-            origin_to_tunn: TcpPipe::new_with_stats(
+            origin_to_tunn: TcpPipe::new_with_stats_and_upload_flow(
                 cancel,
                 origin_read,
                 tunn_write,
                 stats,
                 PipeDirection::OriginToTunnel,
+                upload_flow,
             ),
         }
     }
