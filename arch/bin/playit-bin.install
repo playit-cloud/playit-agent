@@ -135,9 +135,9 @@ handle_legacy_systemd_unit() {
 }
 
 prepare_filesystem() {
-  mkdir -p /usr/local/bin /etc/playit /var/log/playit
-  ln -sfn /opt/playit/playit /usr/local/bin/playit
-  ln -sfn /opt/playit/playitd /usr/local/bin/playitd
+  mkdir -p /usr/bin /etc/playit /var/log/playit
+  ln -sfn /opt/playit/playit /usr/bin/playit
+  ln -sfn /opt/playit/playitd /usr/bin/playitd
 
   chown "$PLAYIT_USER:$PLAYIT_GROUP" /etc/playit
   chown -R "$PLAYIT_USER:$PLAYIT_GROUP" /var/log/playit
@@ -237,12 +237,12 @@ pre_remove() {
   rm -f /etc/init.d/playit
   rm -f /opt/playit/share/init/selected-manager
 
-  if [ -L /usr/local/bin/playit ]; then
-    rm -f /usr/local/bin/playit
+  if [ -L /usr/bin/playit ]; then
+    rm -f /usr/bin/playit
   fi
 
-  if [ -L /usr/local/bin/playitd ]; then
-    rm -f /usr/local/bin/playitd
+  if [ -L /usr/bin/playitd ]; then
+    rm -f /usr/bin/playitd
   fi
 }
 

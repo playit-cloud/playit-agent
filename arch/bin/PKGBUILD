@@ -8,7 +8,7 @@ arch=('x86_64' 'aarch64' 'armv7h' 'i686')
 url='https://playit.gg'
 license=('BSD-2-Clause')
 depends=('logrotate')
-provides=('playit')
+provides=("playit=${pkgver}")
 conflicts=('playit')
 install="${pkgname}.install"
 
@@ -84,8 +84,8 @@ package() {
 
   install -dm0750 "${pkgdir}/etc/playit"
   install -dm0750 "${pkgdir}/var/log/playit"
-  install -dm0755 "${pkgdir}/usr/local/bin"
+  install -dm0755 "${pkgdir}/usr/bin"
 
-  ln -s /opt/playit/playit "${pkgdir}/usr/local/bin/playit"
-  ln -s /opt/playit/playitd "${pkgdir}/usr/local/bin/playitd"
+  ln -s /opt/playit/playit "${pkgdir}/usr/bin/playit"
+  ln -s /opt/playit/playitd "${pkgdir}/usr/bin/playitd"
 }
