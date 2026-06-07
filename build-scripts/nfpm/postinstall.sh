@@ -5,7 +5,8 @@ PLAYIT_USER=playit
 PLAYIT_GROUP=playit
 PLAYIT_HOME=/var/lib/playit
 PLAYIT_MANAGER_FILE=/opt/playit/share/init/selected-manager
-SYSUSERS_CONFIG=/opt/playit/share/init/systemd/playit.sysusers
+PACKAGED_SYSUSERS_CONFIG=/opt/playit/share/init/systemd/playit.sysusers
+SYSUSERS_CONFIG=/usr/lib/sysusers.d/playit.conf
 SYSTEMD_TEMPLATE=/opt/playit/share/init/systemd/playit.service
 OPENRC_TEMPLATE=/opt/playit/share/init/openrc/playit
 OPENRC_SERVICE=/etc/init.d/playit
@@ -78,6 +79,11 @@ ensure_sysusers_user() {
   if ! have_command systemd-sysusers; then
     echo "Cannot provision ${PLAYIT_USER} user with systemd-sysusers: command not found" >&2
     exit 1
+  fi
+
+  if [ ! -f "$SYSUSERS_CONFIG" ]; then
+    mkdir -p "$(dirname "$SYSUSERS_CONFIG")"
+    install -m 0644 "$PACKAGED_SYSUSERS_CONFIG" "$SYSUSERS_CONFIG"
   fi
 
   systemd-sysusers "$SYSUSERS_CONFIG"
