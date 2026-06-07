@@ -17,7 +17,7 @@ options=('!lto')
 _repo='playit-cloud/playit-agent'
 _source_dir="playit-agent-${pkgver}"
 source=("${pkgname}-${pkgver}.tar.gz::https://github.com/${_repo}/archive/refs/tags/v${pkgver}.tar.gz")
-sha256sums=('9f32e5be5781e6d8918a8478b180a5a7552a83de880601910a6e71f02de0912c')
+sha256sums=('SKIP')
 
 prepare() {
   cd "${srcdir}/${_source_dir}"

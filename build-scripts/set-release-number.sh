@@ -47,6 +47,30 @@ reset_arch_bin_pkgbuild_shasums() {
   mv "$tmp" "$pkgbuild"
 }
 
+reset_arch_build_pkgbuild_shasums() {
+  local pkgbuild="arch/build/PKGBUILD"
+  local tmp
+
+  tmp="$(mktemp)"
+  awk '
+    skip {
+      if ($0 ~ /\)/) {
+        skip = 0
+      }
+      next
+    }
+    /^sha256sums=\(/ {
+      print "sha256sums=(\047SKIP\047)"
+      if ($0 !~ /\)/) {
+        skip = 1
+      }
+      next
+    }
+    { print }
+  ' "$pkgbuild" > "$tmp"
+  mv "$tmp" "$pkgbuild"
+}
+
 # root workspace package version
 sed -Ei '/^\[workspace\.package\]/,/^\[/{s/^version = "[^"]+"/version = "'"$VERSION"'"/}' Cargo.toml
 
@@ -61,6 +85,7 @@ for pkgbuild in "${ARCH_PKGBUILDS[@]}"; do
   sed -Ei 's/^pkgver=.*/pkgver='"$VERSION"'/' "$pkgbuild"
 done
 reset_arch_bin_pkgbuild_shasums
+reset_arch_build_pkgbuild_shasums
 
 IFS=. read -r MAJOR MINOR PATCH <<<"$VERSION"
 
