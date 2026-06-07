@@ -97,7 +97,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             .try_timeout(Duration::from_secs(10))
             .await?;
 
-        tracing::debug!(old = %self.control.conn.pong_latest.tunnel_addr, new = %connected.pong_latest.tunnel_addr, "update control address");
+        tracing::info!(old = %self.control.conn.pong_latest.tunnel_addr, new = %connected.pong_latest.tunnel_addr, "update control address");
         connected.reset_established(&mut self.control, registered);
 
         Ok(true)
@@ -225,7 +225,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         }
 
         if self.last_pong != 0 && now_milli() - self.last_pong > 6_000 {
-            tracing::debug!("timeout waiting for pong");
+            tracing::warn!("timeout waiting for pong");
 
             self.last_pong = 0;
             self.control.set_expired();

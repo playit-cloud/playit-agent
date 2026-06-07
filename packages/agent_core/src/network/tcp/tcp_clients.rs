@@ -191,7 +191,7 @@ impl Worker {
                     let client_id = self.next_client_id;
                     self.next_client_id = client_id + 1;
 
-                    tracing::debug!(?details, id = client_id, "New TCP Client");
+                    tracing::info!(?details, id = client_id, "New TCP Client");
 
                     let Some(found) = self.lookup.lookup(details.tunnel_id, true).await else {
                         tracing::debug!(
