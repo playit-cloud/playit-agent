@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://nfpm.goreleaser.com/schema.json
-name: playit
+name: playit-openrc
 arch: ${PLAYIT_NFPM_ARCH}
 platform: linux
 version: ${PLAYIT_VERSION}
@@ -13,7 +13,9 @@ homepage: https://playit.gg
 license: BSD-2-Clause
 depends:
   - logrotate
-  - systemd
+  - openrc
+conflicts:
+  - playit
 contents:
   - src: ${PLAYIT_CLI_BIN}
     dst: /opt/playit/agent
@@ -39,22 +41,24 @@ contents:
     dst: /etc/logrotate.d/playit
     file_info:
       mode: 0644
-  - src: ./linux/playit.sysusers
-    dst: /usr/lib/sysusers.d/playit.conf
+  - src: ./linux/playit.openrc
+    dst: /etc/init.d/playit
     file_info:
-      mode: 0644
-  - src: ./linux/playit.service
-    dst: /usr/lib/systemd/system/playit.service
-    file_info:
-      mode: 0644
+      mode: 0755
   - dst: /etc/playit
     type: dir
     file_info:
       mode: 0750
       owner: playit
       group: playit
+  - dst: /var/log/playit
+    type: dir
+    file_info:
+      mode: 0750
+      owner: playit
+      group: playit
 scripts:
-  preinstall: ./build-scripts/nfpm/preinstall.sh
-  postinstall: ./build-scripts/nfpm/postinstall.sh
-  preremove: ./build-scripts/nfpm/preremove.sh
-  postremove: ./build-scripts/nfpm/postremove.sh
+  preinstall: ./build-scripts/nfpm/openrc/preinstall.sh
+  postinstall: ./build-scripts/nfpm/openrc/postinstall.sh
+  preremove: ./build-scripts/nfpm/openrc/preremove.sh
+  postremove: ./build-scripts/nfpm/openrc/postremove.sh

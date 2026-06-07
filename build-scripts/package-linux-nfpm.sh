@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
 
 usage() {
-  echo "usage: $0 <playit-cli-binary> [playitd-binary] <nfpm-arch> [format ...]" >&2
+  echo "usage: $0 <playit-cli-binary> [playitd-binary] <nfpm-arch> [deb|rpm|apk|apk-openrc|archlinux ...]" >&2
 }
 
 if [[ $# -lt 2 ]]; then
@@ -55,7 +55,7 @@ fi
 
 FORMATS=("$@")
 if [[ ${#FORMATS[@]} -eq 0 ]]; then
-  FORMATS=(deb rpm apk archlinux)
+  FORMATS=(deb rpm apk apk-openrc archlinux)
 fi
 
 case "${NFPM_ARCH}" in
@@ -144,13 +144,17 @@ for format in "${FORMATS[@]}"; do
       output="${OUT_DIR}/playit_${APK_ARCH}.apk"
       config="${REPO_DIR}/build-scripts/nfpm.yaml"
       ;;
+    apk-openrc)
+      output="${OUT_DIR}/playit-openrc_${APK_ARCH}.apk"
+      config="${REPO_DIR}/build-scripts/nfpm-openrc.yaml"
+      ;;
     archlinux)
       output="${OUT_DIR}/playit_${ARCHLINUX_ARCH}.pkg.tar.zst"
       config="${REPO_DIR}/build-scripts/nfpm.yaml"
       ;;
     *)
       echo "unsupported nFPM package format: ${format}" >&2
-      echo "supported formats: deb rpm apk archlinux" >&2
+      echo "supported formats: deb rpm apk apk-openrc archlinux" >&2
       exit 1
       ;;
   esac
@@ -158,6 +162,11 @@ for format in "${FORMATS[@]}"; do
   echo "Building ${format} package: ${output}"
   (
     cd "${REPO_DIR}"
-    nfpm package --config "${config}" --packager "${format}" --target "${output}"
+    packager="${format}"
+    if [[ "${packager}" == "apk-openrc" ]]; then
+      packager=apk
+    fi
+
+    nfpm package --config "${config}" --packager "${packager}" --target "${output}"
   )
 done
