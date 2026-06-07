@@ -29,10 +29,10 @@ contents:
     file_info:
       mode: 0755
   - src: /opt/playit/playit
-    dst: /usr/local/bin/playit
+    dst: /usr/bin/playit
     type: symlink
   - src: /opt/playit/playitd
-    dst: /usr/local/bin/playitd
+    dst: /usr/bin/playitd
     type: symlink
   - src: ./linux/logrotate.conf
     dst: /etc/logrotate.d/playit

@@ -72,6 +72,11 @@ ensure_user() {
 }
 
 ensure_sysusers_user() {
+  if [ ! -f "$SYSUSERS_CONFIG" ]; then
+    mkdir -p "$(dirname "$SYSUSERS_CONFIG")"
+    install -m 0644 "$PACKAGED_SYSUSERS_CONFIG" "$SYSUSERS_CONFIG"
+  fi
+
   if user_exists && group_exists; then
     return 0
   fi
@@ -79,11 +84,6 @@ ensure_sysusers_user() {
   if ! have_command systemd-sysusers; then
     echo "Cannot provision ${PLAYIT_USER} user with systemd-sysusers: command not found" >&2
     exit 1
-  fi
-
-  if [ ! -f "$SYSUSERS_CONFIG" ]; then
-    mkdir -p "$(dirname "$SYSUSERS_CONFIG")"
-    install -m 0644 "$PACKAGED_SYSUSERS_CONFIG" "$SYSUSERS_CONFIG"
   fi
 
   systemd-sysusers "$SYSUSERS_CONFIG"
@@ -184,9 +184,9 @@ case "$manager" in
     ;;
 esac
 
-mkdir -p /usr/local/bin /etc/playit /var/log/playit
-ln -sfn /opt/playit/playit /usr/local/bin/playit
-ln -sfn /opt/playit/playitd /usr/local/bin/playitd
+mkdir -p /usr/bin /etc/playit /var/log/playit
+ln -sfn /opt/playit/playit /usr/bin/playit
+ln -sfn /opt/playit/playitd /usr/bin/playitd
 
 chown "$PLAYIT_USER:$PLAYIT_GROUP" /etc/playit
 chown -R "$PLAYIT_USER:$PLAYIT_GROUP" /var/log/playit

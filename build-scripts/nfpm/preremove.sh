@@ -38,6 +38,14 @@ rm -f /usr/lib/systemd/system/playit.service
 rm -f /etc/init.d/playit
 rm -f /opt/playit/share/init/selected-manager
 
+if [ -L /usr/bin/playit ]; then
+  rm -f /usr/bin/playit
+fi
+
+if [ -L /usr/bin/playitd ]; then
+  rm -f /usr/bin/playitd
+fi
+
 if [ -L /usr/local/bin/playit ]; then
   rm -f /usr/local/bin/playit
 fi
