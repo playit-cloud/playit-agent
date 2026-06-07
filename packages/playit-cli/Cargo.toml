@@ -31,9 +31,9 @@ crossterm = "0.28"
 ratatui = "0.29"
 dotenv = "0.15.0"
 
-playit-agent-core = { path = "../agent_core", version = "1.0.8" }
-playit-ipc = { path = "../playit-ipc", version = "1.0.8" }
-playitd = { path = "../playitd", version = "1.0.8" }
+playit-agent-core = { path = "../agent_core", version = "1.0.9" }
+playit-ipc = { path = "../playit-ipc", version = "1.0.9" }
+playitd = { path = "../playitd", version = "1.0.9" }
 playit-agent-proto = { path = "../agent_proto", version = "1.3.0" }
 playit-api-client = { path = "../api_client", version = "0.2.0" }
 # playit-ping-monitor = { path = "../ping_monitor" }

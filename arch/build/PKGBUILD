@@ -1,7 +1,7 @@
 # Maintainer: Patrick Lorio <patrick@playit.gg>
 
 pkgname=playit
-pkgver=1.0.8
+pkgver=1.0.9
 pkgrel=1
 pkgdesc='Making it easy to play games with friends. Makes your server public'
 arch=('x86_64' 'aarch64' 'armv7h' 'i686')
