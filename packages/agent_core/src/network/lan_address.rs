@@ -20,16 +20,16 @@ impl LanAddress {
 
             match socket.bind(SocketAddrV4::new(local_ip, 0).into()) {
                 Err(e) => {
-                    tracing::warn!(
-                        "Failed to bind connection to special local address to support IP based banning: {:?}",
+                    tracing::debug!(
+                        "could not bind special loopback address; continuing without per-client loopback IP support: {:?}",
                         e
                     );
                 }
                 Ok(_) => {
                     match socket.connect(host).await {
                         Err(e) => {
-                            tracing::warn!(
-                                "Failed to establish connection using special lan {} for flow {:?} {:?}",
+                            tracing::debug!(
+                                "could not connect using special loopback address {}; continuing with normal local address for flow {:?}: {:?}",
                                 local_ip,
                                 (peer, host),
                                 e
@@ -41,7 +41,7 @@ impl LanAddress {
             }
         }
 
-        tracing::warn!(is_loopback, host_ip = %host.ip(), special_lan_ip, "not using special lan address");
+        tracing::debug!(is_loopback, host_ip = %host.ip(), special_lan_ip, "not using special lan address");
         match TcpStream::connect(host).await {
             Err(e) => {
                 tracing::error!(
@@ -79,8 +79,8 @@ impl LanAddress {
                 Err(bad_port_error) => {
                     match UdpSocket::bind(SocketAddrV4::new(local_ip, 0)).await {
                         Ok(v) => {
-                            tracing::warn!(
-                                "Failed to bind UDP port to {} to have connections survive agent restart: {:?}",
+                            tracing::debug!(
+                                "could not bind preferred UDP source port {}; continuing with a random local port: {:?}",
                                 local_port,
                                 bad_port_error
                             );
@@ -88,8 +88,8 @@ impl LanAddress {
                         }
                         Err(bad_local_ip_err) => {
                             let v = UdpSocket::bind(SocketAddrV4::new(0.into(), 0)).await?;
-                            tracing::warn!(
-                                "Failed to bind UDP to special local address, in-game ip banning will not work: {:?}",
+                            tracing::debug!(
+                                "could not bind special loopback address for UDP; continuing without per-client loopback IP support: {:?}",
                                 bad_local_ip_err
                             );
                             Ok(v)
@@ -117,7 +117,10 @@ impl LanAddress {
                 Ok(v) => Ok(v),
                 Err(bad_port_error) => {
                     let v = UdpSocket::bind(fallback_addr).await?;
-                    tracing::warn!("Failed to bind UDP to special port: {:?}", bad_port_error);
+                    tracing::debug!(
+                        "could not bind preferred UDP source port; continuing with a random local port: {:?}",
+                        bad_port_error
+                    );
                     Ok(v)
                 }
             }

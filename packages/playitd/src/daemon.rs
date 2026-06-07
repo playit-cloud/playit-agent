@@ -79,6 +79,29 @@ enum LoadedSecret {
     Invalid(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RunningSummary {
+    tunnel_count: usize,
+    pending_tunnel_count: usize,
+    disabled_tunnel_count: usize,
+    account_status: &'static str,
+}
+
+impl RunningSummary {
+    fn from_state(state: &AgentState) -> Self {
+        Self {
+            tunnel_count: state.tunnels.len(),
+            pending_tunnel_count: state.pending_tunnels.len(),
+            disabled_tunnel_count: state
+                .tunnels
+                .iter()
+                .filter(|tunnel| tunnel.is_disabled)
+                .count(),
+            account_status: service_account_status_label(&state.account_status),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct VersionDetails {
     pub variant_id: String,
@@ -603,7 +626,8 @@ async fn build_agent_with_reprovisioning(
                 }
             }
             Err(error) => {
-                let message = format!("Failed to create agent: {error:?}");
+                let message = setup_error_user_message(&error);
+                tracing::error!(?error, %message, "failed to start playit agent");
                 let service_error = daemon_error(ServiceErrorCode::Internal, message.clone(), true);
                 publish_runtime_state(
                     &runtime.state_cache,
@@ -771,6 +795,7 @@ async fn broadcast_agent_state(
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(3));
     let mut guest_login_link: Option<(String, u64)> = None;
+    let mut last_running_summary: Option<RunningSummary> = None;
 
     loop {
         tokio::select! {
@@ -838,6 +863,30 @@ async fn broadcast_agent_state(
                             login_link,
                             start_time,
                         };
+
+                        let summary = RunningSummary::from_state(&state);
+                        if last_running_summary.as_ref() != Some(&summary) {
+                            if last_running_summary.is_none() {
+                                tracing::info!(
+                                    agent_id = %state.agent_id,
+                                    tunnel_count = summary.tunnel_count,
+                                    pending_tunnel_count = summary.pending_tunnel_count,
+                                    disabled_tunnel_count = summary.disabled_tunnel_count,
+                                    account_status = summary.account_status,
+                                    "playit connected; tunnels loaded"
+                                );
+                            } else {
+                                tracing::info!(
+                                    agent_id = %state.agent_id,
+                                    tunnel_count = summary.tunnel_count,
+                                    pending_tunnel_count = summary.pending_tunnel_count,
+                                    disabled_tunnel_count = summary.disabled_tunnel_count,
+                                    account_status = summary.account_status,
+                                    "playit tunnel state updated"
+                                );
+                            }
+                            last_running_summary = Some(summary);
+                        }
 
                         let lifecycle = AgentLifecycle::Running(state);
                         state_cache.set_lifecycle(lifecycle.clone()).await;
@@ -1132,9 +1181,59 @@ fn daemon_error(code: ServiceErrorCode, message: String, retryable: bool) -> Ser
     }
 }
 
+fn service_account_status_label(status: &ServiceAccountStatus) -> &'static str {
+    match status {
+        ServiceAccountStatus::Unknown => "unknown",
+        ServiceAccountStatus::Guest => "guest",
+        ServiceAccountStatus::EmailNotVerified => "email_not_verified",
+        ServiceAccountStatus::Verified => "verified",
+    }
+}
+
 fn agent_disabled_over_limit_message() -> String {
     "This account is over the agent limit. Delete an unused agent or upgrade the account, then the service will retry."
         .to_string()
+}
+
+fn setup_error_user_message(error: &SetupError) -> String {
+    match error {
+        SetupError::FailedToConnect => {
+            "Could not connect to playit tunnel servers. Check your internet connection, firewall, VPN, or DNS settings, then restart playit.".to_string()
+        }
+        SetupError::RequestError(_) => {
+            "Could not reach the playit API. Check your internet connection or try again later.".to_string()
+        }
+        SetupError::ApiError(ApiResponseError::Auth(AuthError::InvalidAgentKey | AuthError::NoLongerValid)) => {
+            "The configured playit secret is no longer valid. Run `playit setup` to provision a new secret.".to_string()
+        }
+        SetupError::ApiError(error) => {
+            format!("The playit API rejected the agent startup request: {error}")
+        }
+        SetupError::ApiFail(payload)
+            if matches!(
+                serde_json::from_str::<ProtoRegisterError>(payload),
+                Ok(ProtoRegisterError::AgentDisabledOverLimit)
+            ) =>
+        {
+            agent_disabled_over_limit_message()
+        }
+        SetupError::ApiFail(_) => {
+            "The playit API rejected the agent registration request. Check your account and tunnel configuration, then try again.".to_string()
+        }
+        SetupError::Timeout(_) => {
+            "Timed out while connecting to playit. Check your network/firewall and try again.".to_string()
+        }
+        SetupError::IoError(error) => {
+            format!("Could not open a required network socket: {error}")
+        }
+        SetupError::AttemptingToAuthWithOldFlow
+        | SetupError::FailedToDecodeSignedAgentRegisterHex
+        | SetupError::NoResponseFromAuthenticate
+        | SetupError::RegisterInvalidSignature
+        | SetupError::RegisterUnauthorized => {
+            format!("Failed to start the playit agent: {error}")
+        }
+    }
 }
 
 fn is_invalid_agent_secret_error(error: &SetupError) -> bool {
@@ -1262,9 +1361,14 @@ fn create_log_parent_dir(path: &Path) -> Result<(), String> {
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::{DaemonOptions, run_daemon};
+    use super::{DaemonOptions, RunningSummary, run_daemon, setup_error_user_message};
+    use playit_agent_core::agent_control::errors::{SetupError, TimeoutSource};
+    use playit_api_client::api::{ApiResponseError, AuthError, ProtoRegisterError};
     use playit_ipc::ipc::IpcClient;
-    use playit_ipc::model::{AgentLifecycle, ServicePhase};
+    use playit_ipc::model::{
+        AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ServicePhase,
+        TunnelState,
+    };
 
     fn unique_test_path(name: &str, extension: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -1276,6 +1380,79 @@ mod tests {
                 .as_nanos(),
             extension,
         ))
+    }
+
+    #[test]
+    fn setup_error_message_handles_connection_failure() {
+        let message = setup_error_user_message(&SetupError::FailedToConnect);
+
+        assert!(message.contains("Could not connect to playit tunnel servers"));
+        assert!(message.contains("firewall"));
+    }
+
+    #[test]
+    fn setup_error_message_handles_timeout() {
+        let message = setup_error_user_message(&SetupError::Timeout(TimeoutSource {
+            file_name: "test.rs",
+            line_no: 1,
+        }));
+
+        assert!(message.contains("Timed out while connecting to playit"));
+    }
+
+    #[test]
+    fn setup_error_message_handles_io_error() {
+        let message = setup_error_user_message(&SetupError::IoError(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "address already in use",
+        )));
+
+        assert!(message.contains("Could not open a required network socket"));
+        assert!(message.contains("address already in use"));
+    }
+
+    #[test]
+    fn setup_error_message_handles_invalid_secret() {
+        let message = setup_error_user_message(&SetupError::ApiError(ApiResponseError::Auth(
+            AuthError::NoLongerValid,
+        )));
+
+        assert!(message.contains("secret is no longer valid"));
+        assert!(message.contains("playit setup"));
+    }
+
+    #[test]
+    fn setup_error_message_handles_agent_limit() {
+        let payload = serde_json::to_string(&ProtoRegisterError::AgentDisabledOverLimit).unwrap();
+        let message = setup_error_user_message(&SetupError::ApiFail(payload));
+
+        assert!(message.contains("over the agent limit"));
+    }
+
+    #[test]
+    fn running_summary_counts_tunnel_state() {
+        let state = AgentState {
+            account_status: ServiceAccountStatus::Verified,
+            tunnels: vec![
+                TunnelState {
+                    is_disabled: false,
+                    ..TunnelState::default()
+                },
+                TunnelState {
+                    is_disabled: true,
+                    ..TunnelState::default()
+                },
+            ],
+            pending_tunnels: vec![Default::default()],
+            ..AgentState::default()
+        };
+
+        let summary = RunningSummary::from_state(&state);
+
+        assert_eq!(summary.tunnel_count, 2);
+        assert_eq!(summary.pending_tunnel_count, 1);
+        assert_eq!(summary.disabled_tunnel_count, 1);
+        assert_eq!(summary.account_status, "verified");
     }
 
     #[cfg(target_os = "windows")]

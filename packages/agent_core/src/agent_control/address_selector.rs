@@ -25,7 +25,7 @@ impl<IO: PacketIO> AddressSelector<IO> {
         let mut buffer: Vec<u8> = Vec::new();
 
         for addr in self.options {
-            tracing::info!(?addr, "trying to establish tunnel connection");
+            tracing::debug!(?addr, "trying to establish tunnel connection");
 
             let is_ip6 = addr.is_ipv6();
             let attempts = if is_ip6 { 1 } else { 3 };
@@ -78,7 +78,7 @@ impl<IO: PacketIO> AddressSelector<IO> {
 
                                     match msg.content {
                                         ControlResponse::Pong(pong) => {
-                                            tracing::info!(
+                                            tracing::debug!(
                                                 ?pong,
                                                 "got initial pong from tunnel server"
                                             );
@@ -108,7 +108,7 @@ impl<IO: PacketIO> AddressSelector<IO> {
                             tracing::error!(?error, "failed to receive UDP packet");
                         }
                         Err(_) => {
-                            tracing::warn!(%addr, "waited {}ms for pong", (i + 1) * 500);
+                            tracing::debug!(%addr, "waited {}ms for pong", (i + 1) * 500);
                         }
                     }
                 }

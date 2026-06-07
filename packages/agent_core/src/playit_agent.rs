@@ -123,7 +123,7 @@ impl PlayitAgent {
                         break;
                     };
                     if sent {
-                        tracing::info!("udp channel requires auth, sent auth request");
+                        tracing::debug!("udp channel requires auth, sent auth request");
                     }
                 }
 
@@ -151,7 +151,7 @@ impl PlayitAgent {
                         }
                     }
                     Some(TunnelControlEvent::UdpChannelDetails(udp_details)) => {
-                        tracing::info!("udp session details received");
+                        tracing::debug!("udp session details received");
                         let _ = udp_session_tx.try_send(udp_details);
                     }
                     None => {}
@@ -184,7 +184,7 @@ impl PlayitAgent {
                     }
                     session_opt = udp_session_rx.recv() => {
                         let Some(session) = session_opt else {
-                            tracing::warn!("udp session channel closed");
+                            tracing::debug!("udp session channel closed");
                             break;
                         };
                         udp_channel.update_session(session).await;

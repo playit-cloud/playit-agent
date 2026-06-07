@@ -171,7 +171,7 @@ impl Worker {
             let event = tokio::select! {
                 recv_opt = self.events.recv() => {
                     let Some(event) = recv_opt else {
-                        tracing::info!("TcpClients worker closed because event channel closed");
+                        tracing::debug!("TcpClients worker closed because event channel closed");
                         break;
                     };
                     event
@@ -181,7 +181,7 @@ impl Worker {
                     Event::ClearOld
                 },
                 _ = self.cancel.cancelled() => {
-                    tracing::info!("TcpClients worker closed via cancel");
+                    tracing::debug!("TcpClients worker closed via cancel");
                     break
                 },
             };
@@ -191,10 +191,10 @@ impl Worker {
                     let client_id = self.next_client_id;
                     self.next_client_id = client_id + 1;
 
-                    tracing::info!(?details, id = client_id, "New TCP Client");
+                    tracing::debug!(?details, id = client_id, "New TCP Client");
 
                     let Some(found) = self.lookup.lookup(details.tunnel_id, true).await else {
-                        tracing::info!(
+                        tracing::debug!(
                             tunnel_id = details.tunnel_id,
                             "Could not find tunnel for new client"
                         );
@@ -341,14 +341,23 @@ impl Worker {
                             Ok(Err(error)) => {
                                 tracing::error!(
                                     ?error,
-                                    "io error failed to connect to origin: {:?}",
-                                    origin_addr
+                                    %origin_addr,
+                                    tunnel_id = details.tunnel_id,
+                                    port_offset = details.port_offset,
+                                    source_addr = %details.peer_addr,
+                                    "failed to connect to local TCP server; check that your server is running and listening on the configured local address"
                                 );
                                 tcp_errors().new_client_origin_connect_error.inc();
                                 return;
                             }
                             Err(_) => {
-                                tracing::error!("timeout connecting to origin: {}", origin_addr);
+                                tracing::error!(
+                                    %origin_addr,
+                                    tunnel_id = details.tunnel_id,
+                                    port_offset = details.port_offset,
+                                    source_addr = %details.peer_addr,
+                                    "timed out connecting to local TCP server; check firewall rules and that the server is listening on the configured local address"
+                                );
                                 tcp_errors().new_client_origin_connect_timeout.inc();
                                 return;
                             }
@@ -430,17 +439,17 @@ impl Worker {
                         let since_orig = now.max(last_use.origin_to_tunn) - last_use.origin_to_tunn;
 
                         if 90_000 < since_tunn && 30_000 < since_orig {
-                            tracing::info!(id = client.id, "clear old: 90s since tunnel data");
+                            tracing::debug!(id = client.id, "clear old: 90s since tunnel data");
                             return false;
                         }
 
                         if 90_000 < since_orig && 30_000 < since_tunn {
-                            tracing::info!(id = client.id, "clear old: 90s since origin data");
+                            tracing::debug!(id = client.id, "clear old: 90s since origin data");
                             return false;
                         }
 
                         if 60_000 < since_tunn && 60_000 < since_orig {
-                            tracing::info!(id = client.id, "clear old: 60s since any data");
+                            tracing::debug!(id = client.id, "clear old: 60s since any data");
                             return false;
                         }
 

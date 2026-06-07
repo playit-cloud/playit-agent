@@ -97,7 +97,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             .try_timeout(Duration::from_secs(10))
             .await?;
 
-        tracing::info!(old = %self.control.conn.pong_latest.tunnel_addr, new = %connected.pong_latest.tunnel_addr, "update control address");
+        tracing::debug!(old = %self.control.conn.pong_latest.tunnel_addr, new = %connected.pong_latest.tunnel_addr, "update control address");
         connected.reset_established(&mut self.control, registered);
 
         Ok(true)
@@ -123,7 +123,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
 
     pub async fn update(&mut self) -> Option<TunnelControlEvent> {
         if let Some(reason) = self.control.is_expired() {
-            tracing::warn!(?reason, "session expired");
+            tracing::warn!(?reason, "control session expired; reconnecting");
 
             if let Err(error) = self
                 .control
@@ -164,7 +164,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         if interval < now - self.last_keep_alive {
             self.last_keep_alive = now;
 
-            tracing::info!(time_till_expire, "send KeepAlive");
+            tracing::debug!(time_till_expire, "send KeepAlive");
             if let Err(error) = self
                 .control
                 .send_keep_alive(100)
@@ -192,14 +192,14 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                         return Some(TunnelControlEvent::UdpChannelDetails(details));
                     }
                     ControlResponse::Unauthorized => {
-                        tracing::info!("session no longer authorized");
+                        tracing::debug!("session no longer authorized");
                         self.control.set_expired();
                     }
                     ControlResponse::Pong(pong) => {
                         self.last_pong = now_milli();
 
                         if pong.client_addr != self.control.pong_at_auth.client_addr {
-                            tracing::info!(
+                            tracing::debug!(
                                 new_client = %pong.client_addr,
                                 old_client = %self.control.pong_at_auth.client_addr,
                                 "client ip changed"
@@ -225,7 +225,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         }
 
         if self.last_pong != 0 && now_milli() - self.last_pong > 6_000 {
-            tracing::info!("timeout waiting for pong");
+            tracing::debug!("timeout waiting for pong");
 
             self.last_pong = 0;
             self.control.set_expired();

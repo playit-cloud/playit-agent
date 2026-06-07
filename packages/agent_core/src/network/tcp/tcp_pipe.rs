@@ -123,7 +123,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
             // Keep the pipe cooperative when both sockets stay continuously ready.
             tokio::select! {
                 _ = self.cancel.cancelled() => {
-                    tracing::info!("TcpPipe cancelled");
+                    tracing::debug!("TcpPipe cancelled");
                     break;
                 }
                 _ = tokio::task::yield_now() => {}
@@ -134,7 +134,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
                 .run_until_cancelled(self.from.read(&mut buffer[..]))
                 .await
             else {
-                tracing::info!("TcpPipe cancelled");
+                tracing::debug!("TcpPipe cancelled");
                 break;
             };
 
@@ -147,7 +147,7 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
             };
 
             if byte_count == 0 {
-                tracing::info!("pipe ended due to EOF");
+                tracing::debug!("pipe ended due to EOF");
                 break;
             }
 

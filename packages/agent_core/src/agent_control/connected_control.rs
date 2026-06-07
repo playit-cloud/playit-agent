@@ -157,7 +157,7 @@ impl<IO: PacketIO> ConnectedControl<IO> {
                         }
                     }
                     ControlResponse::RequestQueued => {
-                        tracing::info!("register queued, waiting 1s");
+                        tracing::debug!("register queued, waiting 1s");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         break;
                     }
