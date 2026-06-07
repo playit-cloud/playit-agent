@@ -8,6 +8,15 @@ have_command() {
   command -v "$1" >/dev/null 2>&1
 }
 
+remove_symlink_to_target() {
+  path="$1"
+  target="$2"
+
+  if [ -L "$path" ] && [ "$(readlink "$path")" = "$target" ]; then
+    rm -f "$path"
+  fi
+}
+
 handle_legacy_systemd_unit() {
   LEGACY_UNIT=/etc/systemd/system/playit.service
   if [ -f "$LEGACY_UNIT" ] || [ -L "$LEGACY_UNIT" ]; then
@@ -100,21 +109,10 @@ pre_remove() {
   remove_legacy_unit_path /lib/systemd/system/playit.service
   rm -f /opt/playit/share/init/selected-manager
 
-  if [ -L /usr/bin/playit ]; then
-    rm -f /usr/bin/playit
-  fi
-
-  if [ -L /usr/bin/playitd ]; then
-    rm -f /usr/bin/playitd
-  fi
-
-  if [ -L /usr/local/bin/playit ]; then
-    rm -f /usr/local/bin/playit
-  fi
-
-  if [ -L /usr/local/bin/playitd ]; then
-    rm -f /usr/local/bin/playitd
-  fi
+  remove_symlink_to_target /usr/bin/playit /opt/playit/playit
+  remove_symlink_to_target /usr/bin/playitd /opt/playit/playitd
+  remove_symlink_to_target /usr/local/bin/playit /opt/playit/playit
+  remove_symlink_to_target /usr/local/bin/playitd /opt/playit/playitd
 }
 
 post_remove() {
