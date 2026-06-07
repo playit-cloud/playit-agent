@@ -1,0 +1,6 @@
+ARG BASE_IMAGE=docker.io/library/archlinux:base-devel
+FROM ${BASE_IMAGE}
+
+RUN pacman -Syu --noconfirm --needed ca-certificates pacman-contrib sudo \
+  && rm -rf /var/cache/pacman/pkg/* /var/lib/pacman/sync/* \
+  && useradd -m builder

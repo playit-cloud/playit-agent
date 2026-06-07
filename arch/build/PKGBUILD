@@ -8,22 +8,25 @@ arch=('x86_64' 'aarch64' 'armv7h' 'i686')
 url='https://playit.gg'
 license=('BSD-2-Clause')
 depends=('logrotate' 'systemd')
-makedepends=('cargo' 'git')
+makedepends=('cargo')
 conflicts=('playit-bin')
 install="${pkgname}.install"
+# ring's native objects can fail to link with Arch package LTO enabled.
+options=('!lto')
 
 _repo='playit-cloud/playit-agent'
-source=("${pkgname}-${pkgver}::git+https://github.com/${_repo}.git#tag=v${pkgver}")
+_source_dir="playit-agent-${pkgver}"
+source=("${pkgname}-${pkgver}.tar.gz::https://github.com/${_repo}/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
 prepare() {
-  cd "${srcdir}/${pkgname}-${pkgver}"
+  cd "${srcdir}/${_source_dir}"
 
-  cargo fetch --locked --target "${CARCH}-unknown-linux-gnu"
+  cargo fetch --locked
 }
 
 build() {
-  cd "${srcdir}/${pkgname}-${pkgver}"
+  cd "${srcdir}/${_source_dir}"
 
   export CARGO_TARGET_DIR=target
   cargo build --frozen --release --package playit-cli --bin playit-cli
@@ -31,7 +34,7 @@ build() {
 }
 
 package() {
-  cd "${srcdir}/${pkgname}-${pkgver}"
+  cd "${srcdir}/${_source_dir}"
 
   install -Dm0755 target/release/playit-cli "${pkgdir}/opt/playit/agent"
   install -Dm0755 target/release/playitd "${pkgdir}/opt/playit/playitd"

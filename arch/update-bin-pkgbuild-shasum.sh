@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-IMAGE="${PLAYIT_ARCH_TEST_IMAGE:-docker.io/library/alpine:latest}"
+IMAGE="${PLAYIT_ARCH_PKGBUILD_IMAGE:-${PLAYIT_ARCH_TEST_IMAGE:-localhost/playit-arch-pkgbuild-tools:latest}}"
+BASE_IMAGE="${PLAYIT_ARCH_PKGBUILD_BASE_IMAGE:-docker.io/library/archlinux:base-devel}"
+CONTAINERFILE="${PLAYIT_ARCH_PKGBUILD_CONTAINERFILE:-arch/Containerfile}"
 SCRIPT_PATH="${BASH_SOURCE[0]}"
 REPO_DIR="$(cd -- "$(dirname -- "${SCRIPT_PATH}")/.." && pwd)"
 PKGBUILD_PATH="arch/bin/PKGBUILD"
@@ -10,11 +12,12 @@ usage() {
   cat >&2 <<EOF
 usage: $0 [--inside-container]
 
-Updates sha256sums in ${PKGBUILD_PATH} by running makepkg --geninteg
-inside an Alpine container.
+Updates sha256sums in ${PKGBUILD_PATH} with updpkgsums from pacman-contrib.
 
 Environment:
-  PLAYIT_ARCH_TEST_IMAGE  Container image to use (default: ${IMAGE})
+  PLAYIT_ARCH_PKGBUILD_IMAGE          Container image to run (default: ${IMAGE})
+  PLAYIT_ARCH_PKGBUILD_BASE_IMAGE     Base image used when building the image (default: ${BASE_IMAGE})
+  PLAYIT_ARCH_PKGBUILD_CONTAINERFILE  Containerfile to build (default: ${CONTAINERFILE})
 EOF
 }
 
@@ -29,14 +32,19 @@ if [[ "${1:-}" != "--inside-container" ]]; then
     exit 1
   fi
 
+  if ! podman image exists "${IMAGE}"; then
+    podman build \
+      --build-arg "BASE_IMAGE=${BASE_IMAGE}" \
+      --tag "${IMAGE}" \
+      --file "${REPO_DIR}/${CONTAINERFILE}" \
+      "${REPO_DIR}"
+  fi
+
   exec podman run --rm \
     --volume "${REPO_DIR}:/work:Z" \
     --workdir /work \
     "${IMAGE}" \
-    /bin/sh -ceu '
-      apk add --no-cache bash ca-certificates curl fakeroot git pacman sudo
-      exec bash arch/update-bin-pkgbuild-shasum.sh --inside-container
-    '
+    /bin/bash -ceu 'exec bash arch/update-bin-pkgbuild-shasum.sh --inside-container'
 fi
 
 require_file() {
@@ -44,58 +52,6 @@ require_file() {
     echo "missing required file: $1" >&2
     exit 1
   fi
-}
-
-extract_sha256sums() {
-  awk '
-    /^sha256sums(_x86_64|_aarch64|_armv7h|_i686)?=\(/ {
-      print
-      if ($0 !~ /\)/) {
-        in_block = 1
-      }
-      next
-    }
-    in_block {
-      print
-      if ($0 ~ /\)/) {
-        in_block = 0
-      }
-    }
-  ' "$1"
-}
-
-replace_sha256sums() {
-  local pkgbuild="$1"
-  local sums_file="$2"
-  local tmp
-
-  tmp="$(mktemp)"
-  awk -v sums_file="${sums_file}" '
-    BEGIN {
-      while ((getline line < sums_file) > 0) {
-        generated = generated line ORS
-      }
-      close(sums_file)
-    }
-    skip {
-      if ($0 ~ /\)/) {
-        skip = 0
-      }
-      next
-    }
-    /^sha256sums(_x86_64|_aarch64|_armv7h|_i686)?=\(/ {
-      if (!inserted) {
-        printf "%s", generated
-        inserted = 1
-      }
-      if ($0 !~ /\)/) {
-        skip = 1
-      }
-      next
-    }
-    { print }
-  ' "${pkgbuild}" > "${tmp}"
-  mv "${tmp}" "${pkgbuild}"
 }
 
 require_file "${PKGBUILD_PATH}"
@@ -109,22 +65,15 @@ trap 'rm -rf "${work_dir}"' EXIT
 mkdir -p "${work_dir}/pkg"
 cp "${PKGBUILD_PATH}" arch/bin/playit-bin.install "${work_dir}/pkg/"
 
-adduser -D builder >/dev/null
+id -u builder >/dev/null 2>&1 || useradd -m builder
 chown -R builder:builder "${work_dir}"
 
 (
   cd "${work_dir}/pkg"
-  sudo -u builder makepkg --geninteg > "${work_dir}/makepkg-geninteg.out"
+  sudo -u builder updpkgsums PKGBUILD
 )
 
-extract_sha256sums "${work_dir}/makepkg-geninteg.out" > "${work_dir}/sha256sums.out"
-
-if [[ ! -s "${work_dir}/sha256sums.out" ]]; then
-  echo "makepkg did not produce sha256sums output" >&2
-  exit 1
-fi
-
-replace_sha256sums "${PKGBUILD_PATH}" "${work_dir}/sha256sums.out"
+cp "${work_dir}/pkg/PKGBUILD" "${PKGBUILD_PATH}"
 bash -n "${PKGBUILD_PATH}"
 
 echo "Updated ${PKGBUILD_PATH} sha256sums"
