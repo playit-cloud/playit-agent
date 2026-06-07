@@ -1,1 +1,1 @@
-u playit - "playit service user" /var/lib/playit /usr/sbin/nologin
+u playit - "playit service user" /nonexistent /usr/sbin/nologin

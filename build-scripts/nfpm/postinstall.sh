@@ -3,7 +3,7 @@ set -eu
 
 PLAYIT_USER=playit
 PLAYIT_GROUP=playit
-PLAYIT_HOME=/var/lib/playit
+PLAYIT_HOME=/nonexistent
 PLAYIT_MANAGER_FILE=/opt/playit/share/init/selected-manager
 PACKAGED_SYSUSERS_CONFIG=/opt/playit/share/init/systemd/playit.sysusers
 SYSUSERS_CONFIG=/usr/lib/sysusers.d/playit.conf

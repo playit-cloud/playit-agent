@@ -3,7 +3,7 @@ set -eu
 
 PLAYIT_USER=playit
 PLAYIT_GROUP=playit
-PLAYIT_HOME=/var/lib/playit
+PLAYIT_HOME=/nonexistent
 
 have_command() {
   command -v "$1" >/dev/null 2>&1
