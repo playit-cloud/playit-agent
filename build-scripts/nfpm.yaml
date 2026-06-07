@@ -39,7 +39,7 @@ contents:
     file_info:
       mode: 0644
   - src: ./linux/playit.sysusers
-    dst: /usr/lib/sysusers.d/playit.conf
+    dst: /opt/playit/share/init/systemd/playit.sysusers
     file_info:
       mode: 0644
   - src: ./linux/playit.service
