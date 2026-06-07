@@ -126,23 +126,21 @@ assert_package_layout() {
   assert_path "${pkgdir}/opt/playit/agent"
   assert_path "${pkgdir}/opt/playit/playitd"
   assert_path "${pkgdir}/opt/playit/playit"
-  assert_path "${pkgdir}/opt/playit/share/init/systemd/playit.service"
-  assert_path "${pkgdir}/opt/playit/share/init/openrc/playit"
   assert_path "${pkgdir}/etc/logrotate.d/playit"
+  assert_path "${pkgdir}/usr/lib/systemd/system/playit.service"
+  assert_path "${pkgdir}/usr/lib/sysusers.d/playit.conf"
   assert_path "${pkgdir}/usr/share/licenses/${license_dir}/LICENSE.txt"
   assert_path "${pkgdir}/etc/playit"
-  assert_path "${pkgdir}/var/log/playit"
   assert_symlink "${pkgdir}/usr/bin/playit" /opt/playit/playit
   assert_symlink "${pkgdir}/usr/bin/playitd" /opt/playit/playitd
 
   assert_mode "${pkgdir}/opt/playit/agent" 755
   assert_mode "${pkgdir}/opt/playit/playitd" 755
   assert_mode "${pkgdir}/opt/playit/playit" 755
-  assert_mode "${pkgdir}/opt/playit/share/init/systemd/playit.service" 644
-  assert_mode "${pkgdir}/opt/playit/share/init/openrc/playit" 755
   assert_mode "${pkgdir}/etc/logrotate.d/playit" 644
+  assert_mode "${pkgdir}/usr/lib/systemd/system/playit.service" 644
+  assert_mode "${pkgdir}/usr/lib/sysusers.d/playit.conf" 644
   assert_mode "${pkgdir}/etc/playit" 750
-  assert_mode "${pkgdir}/var/log/playit" 750
 }
 
 test_bin_pkgbuild() {
