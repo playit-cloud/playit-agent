@@ -13,7 +13,7 @@ conflicts=('playit')
 install="${pkgname}.install"
 
 _repo='playit-cloud/playit-agent'
-_release_base="https://github.com/${_repo}/releases/download/v${pkgver}"
+_release_base="https://builds.playit.gg/${pkgver}"
 _raw_base="https://raw.githubusercontent.com/${_repo}/v${pkgver}"
 
 source=(
