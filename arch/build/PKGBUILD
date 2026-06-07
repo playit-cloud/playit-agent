@@ -1,0 +1,50 @@
+# Maintainer: Patrick Lorio <patrick@playit.gg>
+
+pkgname=playit
+pkgver=1.0.8
+pkgrel=1
+pkgdesc='Making it easy to play games with friends. Makes your server public'
+arch=('x86_64' 'aarch64' 'armv7h' 'i686')
+url='https://playit.gg'
+license=('BSD-2-Clause')
+depends=('logrotate' 'systemd')
+makedepends=('cargo' 'git')
+conflicts=('playit-bin')
+install="${pkgname}.install"
+
+_repo='playit-cloud/playit-agent'
+source=("${pkgname}-${pkgver}::git+https://github.com/${_repo}.git#tag=v${pkgver}")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+
+  cargo fetch --locked --target "${CARCH}-unknown-linux-gnu"
+}
+
+build() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release --package playit-cli --bin playit-cli
+  cargo build --frozen --release --package playitd --bin playitd
+}
+
+package() {
+  cd "${srcdir}/${pkgname}-${pkgver}"
+
+  install -Dm0755 target/release/playit-cli "${pkgdir}/opt/playit/agent"
+  install -Dm0755 target/release/playitd "${pkgdir}/opt/playit/playitd"
+  install -Dm0755 linux/playit "${pkgdir}/opt/playit/playit"
+
+  install -Dm0644 linux/logrotate.conf "${pkgdir}/etc/logrotate.d/playit"
+  install -Dm0644 linux/playit.service "${pkgdir}/usr/lib/systemd/system/playit.service"
+  install -Dm0644 linux/playit.sysusers "${pkgdir}/usr/lib/sysusers.d/playit.conf"
+  install -Dm0644 LICENSE.txt "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE.txt"
+
+  install -dm0750 "${pkgdir}/etc/playit"
+  install -dm0755 "${pkgdir}/usr/bin"
+
+  ln -s /opt/playit/playit "${pkgdir}/usr/bin/playit"
+  ln -s /opt/playit/playitd "${pkgdir}/usr/bin/playitd"
+}
