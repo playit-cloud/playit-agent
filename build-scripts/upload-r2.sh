@@ -37,7 +37,7 @@ for name in "${REQUIRED_ENV[@]}"; do
   fi
 done
 
-"${SCRIPT_DIR}/download.sh" "$VERSION"
+bash "${SCRIPT_DIR}/download.sh" "$VERSION"
 
 DOWNLOAD_DIR="${REPO_ROOT}/target/downloads"
 
