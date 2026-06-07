@@ -119,6 +119,21 @@ assert_mode() {
   fi
 }
 
+assert_array_contains() {
+  local needle="$1"
+  shift
+
+  local value
+  for value in "$@"; do
+    if [[ "${value}" == "${needle}" ]]; then
+      return
+    fi
+  done
+
+  echo "expected array value missing: ${needle}" >&2
+  exit 1
+}
+
 assert_package_layout() {
   local pkgdir="$1"
   local license_dir="$2"
@@ -157,6 +172,7 @@ test_bin_pkgbuild() {
     CARCH=x86_64
     # shellcheck disable=SC1091
     source arch/bin/PKGBUILD
+    assert_array_contains playit-debug "${conflicts[@]}"
     download_sources "${srcdir}" "${source[@]}" "${source_x86_64[@]}"
     package
     assert_package_layout "${pkgdir}" playit-bin
@@ -199,6 +215,7 @@ test_build_pkgbuild() {
     CARCH=x86_64
     # shellcheck disable=SC1091
     source arch/build/PKGBUILD
+    assert_array_contains playit-bin-debug "${conflicts[@]}"
 
     download_sources "${srcdir}" "${source[@]}"
     extract_sources "${srcdir}" "${source[@]}"

@@ -9,7 +9,7 @@ url='https://playit.gg'
 license=('BSD-2-Clause')
 depends=('logrotate' 'systemd')
 makedepends=('cargo')
-conflicts=('playit-bin')
+conflicts=('playit-bin' 'playit-bin-debug')
 install="${pkgname}.install"
 # ring's native objects can fail to link with Arch package LTO enabled.
 options=('!lto')

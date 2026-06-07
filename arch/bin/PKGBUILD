@@ -9,7 +9,7 @@ url='https://playit.gg'
 license=('BSD-2-Clause')
 depends=('logrotate' 'systemd')
 provides=("playit=${pkgver}")
-conflicts=('playit')
+conflicts=('playit' 'playit-debug')
 install="${pkgname}.install"
 
 _repo='playit-cloud/playit-agent'
