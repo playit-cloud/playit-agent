@@ -167,10 +167,27 @@ test_bin_pkgbuild() {
   rm -rf "${test_dir}"
 }
 
+extract_sources() {
+  local source_dir="$1"
+  shift
+
+  local source_entry
+  for source_entry in "$@"; do
+    local name
+    name="$(source_name "${source_entry}")"
+
+    case "${name}" in
+      *.tar|*.tar.gz|*.tgz|*.tar.bz2|*.tar.xz|*.tar.zst)
+        tar -xf "${source_dir}/${name}" -C "${source_dir}"
+        ;;
+    esac
+  done
+}
+
 test_build_pkgbuild() {
   echo "==> Testing arch/build PKGBUILD"
 
-  local test_dir srcdir pkgdir source_entry url clone_url clone_dir
+  local test_dir srcdir pkgdir
   test_dir="$(mktemp -d)"
   srcdir="${test_dir}/src"
   pkgdir="${test_dir}/pkg"
@@ -183,15 +200,10 @@ test_build_pkgbuild() {
     # shellcheck disable=SC1091
     source arch/build/PKGBUILD
 
-    source_entry="${source[0]}"
-    url="$(source_url "${source_entry}")"
-    clone_url="${url#git+}"
-    clone_url="${clone_url%%#*}"
-    clone_dir="${srcdir}/$(source_name "${source_entry}")"
-    git clone --depth 1 --branch "v${pkgver}" "${clone_url}" "${clone_dir}"
+    download_sources "${srcdir}" "${source[@]}"
+    extract_sources "${srcdir}" "${source[@]}"
 
     export CARGO_HOME="${test_dir}/cargo-home"
-    export CARGO_TARGET_DIR="${clone_dir}/target"
 
     prepare
     build
