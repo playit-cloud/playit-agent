@@ -123,7 +123,7 @@ impl OriginIp {
                             ?error,
                             %hostname,
                             port,
-                            "failed to resolve origin hostname"
+                            "failed to resolve configured local hostname for tunnel; check the tunnel local address or local DNS configuration"
                         );
                         return None;
                     }

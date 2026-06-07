@@ -276,7 +276,13 @@ impl UdpClients {
         let socket = match key.create_socket(special_lan, target_addr).await {
             Ok(socket) => Arc::new(socket),
             Err(error) => {
-                tracing::error!(?error, "failed to create socket");
+                tracing::error!(
+                    ?error,
+                    target_addr = %target_addr,
+                    source_addr = %key.source_addr,
+                    tunnel_id = key.tunnel_id,
+                    "failed to open local UDP socket for tunnel traffic"
+                );
                 return;
             }
         };

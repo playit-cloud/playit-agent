@@ -174,7 +174,7 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
         self.registered = registered;
         self.pong_at_auth = self.conn.pong_latest.clone();
 
-        tracing::info!(
+        tracing::debug!(
             last_pong = ?self.pong_at_auth,
             "authenticate control"
         );
@@ -192,7 +192,7 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
         if let ControlFeed::Response(res) = &feed {
             match &res.content {
                 ControlResponse::AgentRegistered(registered) => {
-                    tracing::info!(details = ?registered, "agent registered");
+                    tracing::debug!(details = ?registered, "agent registered");
                     self.registered = registered.clone();
                 }
                 ControlResponse::Pong(pong) => {
