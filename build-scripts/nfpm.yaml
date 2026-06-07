@@ -14,6 +14,12 @@ license: BSD-2-Clause
 depends:
   - logrotate
   - systemd
+overrides:
+  apk:
+    depends:
+      - logrotate
+      - systemd
+      - "!playit-openrc"
 contents:
   - src: ${PLAYIT_CLI_BIN}
     dst: /opt/playit/agent
