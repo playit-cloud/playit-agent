@@ -11,6 +11,8 @@ depends=('logrotate' 'systemd')
 makedepends=('cargo' 'git')
 conflicts=('playit-bin')
 install="${pkgname}.install"
+# ring's native objects can fail to link with Arch package LTO enabled.
+options=('!lto')
 
 _repo='playit-cloud/playit-agent'
 source=("${pkgname}-${pkgver}::git+https://github.com/${_repo}.git#tag=v${pkgver}")
@@ -19,7 +21,7 @@ sha256sums=('SKIP')
 prepare() {
   cd "${srcdir}/${pkgname}-${pkgver}"
 
-  cargo fetch --locked --target "${CARCH}-unknown-linux-gnu"
+  cargo fetch --locked
 }
 
 build() {
