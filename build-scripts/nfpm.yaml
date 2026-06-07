@@ -38,6 +38,10 @@ contents:
     dst: /etc/logrotate.d/playit
     file_info:
       mode: 0644
+  - src: ./linux/playit.sysusers
+    dst: /usr/lib/sysusers.d/playit.conf
+    file_info:
+      mode: 0644
   - src: ./linux/playit.service
     dst: /opt/playit/share/init/systemd/playit.service
     file_info:

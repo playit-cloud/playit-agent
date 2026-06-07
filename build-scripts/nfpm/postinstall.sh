@@ -5,6 +5,7 @@ PLAYIT_USER=playit
 PLAYIT_GROUP=playit
 PLAYIT_HOME=/var/lib/playit
 PLAYIT_MANAGER_FILE=/opt/playit/share/init/selected-manager
+SYSUSERS_CONFIG=/usr/lib/sysusers.d/playit.conf
 SYSTEMD_TEMPLATE=/opt/playit/share/init/systemd/playit.service
 OPENRC_TEMPLATE=/opt/playit/share/init/openrc/playit
 OPENRC_SERVICE=/etc/init.d/playit
@@ -67,6 +68,19 @@ ensure_user() {
     echo "Cannot create ${PLAYIT_USER} user: useradd/adduser not found" >&2
     exit 1
   fi
+}
+
+ensure_sysusers_user() {
+  if user_exists && group_exists; then
+    return 0
+  fi
+
+  if ! have_command systemd-sysusers; then
+    echo "Cannot provision ${PLAYIT_USER} user with systemd-sysusers: command not found" >&2
+    exit 1
+  fi
+
+  systemd-sysusers "$SYSUSERS_CONFIG"
 }
 
 is_fresh_install() {
@@ -152,8 +166,17 @@ handle_legacy_systemd_unit() {
   fi
 }
 
-ensure_group
-ensure_user
+manager="$(detect_init_manager)"
+
+case "$manager" in
+  systemd)
+    ensure_sysusers_user
+    ;;
+  *)
+    ensure_group
+    ensure_user
+    ;;
+esac
 
 mkdir -p /usr/local/bin /etc/playit /var/log/playit
 ln -sfn /opt/playit/playit /usr/local/bin/playit
@@ -167,7 +190,6 @@ if [ -f /var/log/playit/playit.log ]; then
   chmod 0640 /var/log/playit/playit.log
 fi
 
-manager="$(detect_init_manager)"
 mkdir -p /opt/playit/share/init
 printf '%s\n' "$manager" > "$PLAYIT_MANAGER_FILE"
 chmod 0644 "$PLAYIT_MANAGER_FILE"
