@@ -2,6 +2,7 @@ PLAYIT_USER=playit
 PLAYIT_GROUP=playit
 PLAYIT_HOME=/nonexistent
 PLAYIT_MANAGER_FILE=/opt/playit/share/init/selected-manager
+SYSUSERS_CONFIG=/usr/lib/sysusers.d/playit.conf
 SYSTEMD_UNIT=/usr/lib/systemd/system/playit.service
 
 have_command() {
@@ -102,8 +103,12 @@ remove_legacy_unit_path() {
 }
 
 provision_user() {
-  ensure_group
-  ensure_user
+  if have_command systemd-sysusers; then
+    systemd-sysusers "$SYSUSERS_CONFIG"
+  else
+    ensure_group
+    ensure_user
+  fi
 }
 
 prepare_filesystem() {

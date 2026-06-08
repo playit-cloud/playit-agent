@@ -4,6 +4,8 @@ set -eu
 PLAYIT_USER=playit
 PLAYIT_GROUP=playit
 PLAYIT_HOME=/nonexistent
+SYSUSERS_CONFIG=/usr/lib/sysusers.d/playit.conf
+SYSUSERS_SHELL=/usr/sbin/nologin
 
 have_command() {
   command -v "$1" >/dev/null 2>&1
@@ -66,5 +68,11 @@ ensure_user() {
   fi
 }
 
-ensure_group
-ensure_user
+if have_command systemd-sysusers && [ -f "$SYSUSERS_CONFIG" ]; then
+  systemd-sysusers "$SYSUSERS_CONFIG"
+elif have_command systemd-sysusers; then
+  systemd-sysusers --inline "u ${PLAYIT_USER} - \"playit service user\" ${PLAYIT_HOME} ${SYSUSERS_SHELL}"
+else
+  ensure_group
+  ensure_user
+fi

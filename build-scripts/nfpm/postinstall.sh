@@ -5,6 +5,7 @@ PLAYIT_USER=playit
 PLAYIT_GROUP=playit
 PLAYIT_HOME=/nonexistent
 PLAYIT_MANAGER_FILE=/opt/playit/share/init/selected-manager
+SYSUSERS_CONFIG=/usr/lib/sysusers.d/playit.conf
 SYSTEMD_UNIT=/usr/lib/systemd/system/playit.service
 
 have_command() {
@@ -68,6 +69,15 @@ ensure_user() {
   fi
 }
 
+provision_user() {
+  if have_command systemd-sysusers; then
+    systemd-sysusers "$SYSUSERS_CONFIG"
+  else
+    ensure_group
+    ensure_user
+  fi
+}
+
 is_fresh_install() {
   case "${1:-}" in
     ""|0|1|install)
@@ -110,8 +120,7 @@ remove_legacy_unit_path() {
   rm -f "$legacy_unit"
 }
 
-ensure_group
-ensure_user
+provision_user
 
 mkdir -p /usr/bin /etc/playit /opt/playit/share/init
 ln -sfn /opt/playit/playit /usr/bin/playit
