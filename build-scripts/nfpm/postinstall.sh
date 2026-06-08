@@ -60,12 +60,13 @@ fi
 
 systemd-sysusers "$SYSUSERS_CONFIG"
 
-mkdir -p /usr/bin /etc/playit /opt/playit/share/init
+mkdir -p /usr/bin /etc/playit /var/log/playit /opt/playit/share/init
 ln -sfn /opt/playit/playit /usr/bin/playit
 ln -sfn /opt/playit/playitd /usr/bin/playitd
 
 chown "$PLAYIT_USER:$PLAYIT_GROUP" /etc/playit
-chmod 0750 /etc/playit
+chown -R "$PLAYIT_USER:$PLAYIT_GROUP" /var/log/playit
+chmod 0750 /etc/playit /var/log/playit
 
 if [ -f /var/log/playit/playit.log ]; then
   chmod 0640 /var/log/playit/playit.log
