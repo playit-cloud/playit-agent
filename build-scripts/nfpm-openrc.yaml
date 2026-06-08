@@ -46,6 +46,14 @@ contents:
     dst: /etc/init.d/playit
     file_info:
       mode: 0755
+  - src: ./linux/playit.service
+    dst: /opt/playit/share/init/systemd/playit.service
+    file_info:
+      mode: 0644
+  - src: ./linux/playit.openrc
+    dst: /opt/playit/share/init/openrc/playit
+    file_info:
+      mode: 0755
   - dst: /etc/playit
     type: dir
     file_info:

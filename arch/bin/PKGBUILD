@@ -9,7 +9,7 @@ pkgdesc='Tool to make your locally running game server public (Binary Version)'
 arch=('x86_64' 'aarch64' 'armv7h' 'i686')
 url='https://playit.gg'
 license=('BSD-2-Clause')
-depends=('logrotate' 'systemd')
+depends=('logrotate')
 provides=("playit=${pkgver}")
 conflicts=('playit' 'playit-debug')
 install="${pkgname}.install"
@@ -22,6 +22,7 @@ source=(
   "playit::${_raw_base}/linux/playit"
   "logrotate.conf::${_raw_base}/linux/logrotate.conf"
   "playit.service::${_raw_base}/linux/playit.service"
+  "playit.openrc::${_raw_base}/linux/playit.openrc"
   "playit.sysusers::${_raw_base}/linux/playit.sysusers"
   "LICENSE.txt::${_raw_base}/LICENSE.txt"
 )
@@ -45,6 +46,7 @@ source_i686=(
 sha256sums=('daa9b021f23bddaa04c29532088ab3f1967591bba11ed98eb8ced4d53e67858d'
             '0e22e81c51c31325dd2acff4ec7399ceede0e83384547457ef64ec52fa72cdd1'
             '066b84e12162c344eb602cc4550447bf7ee05c8b6d2975ea94e356fc9977050d'
+            'fd6b309c4e1008b81675a2ad0ea27e709f02f405a502816c238a73c60b497da9'
             'a07e7ae69701e99224bfcd8a464b028c7e7eef241017900701b70ac903e42d39'
             'f9d32c6b4a6055b2bfa48543d68119efc46ea4606f0d9cc973cb273dcd59be9c')
 sha256sums_x86_64=('4d1e9584c7c771f0f4727fca435376c2c07b1bf84149eba2ac00bd8c3100ba25'
@@ -89,6 +91,8 @@ package() {
 
   install -Dm0644 "${srcdir}/logrotate.conf" "${pkgdir}/etc/logrotate.d/playit"
   install -Dm0644 "${srcdir}/playit.service" "${pkgdir}/usr/lib/systemd/system/playit.service"
+  install -Dm0644 "${srcdir}/playit.service" "${pkgdir}/opt/playit/share/init/systemd/playit.service"
+  install -Dm0755 "${srcdir}/playit.openrc" "${pkgdir}/opt/playit/share/init/openrc/playit"
   install -Dm0644 "${srcdir}/playit.sysusers" "${pkgdir}/usr/lib/sysusers.d/playit.conf"
   install -Dm0644 "${srcdir}/LICENSE.txt" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE.txt"
 
