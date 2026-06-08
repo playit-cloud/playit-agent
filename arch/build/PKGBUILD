@@ -3,7 +3,7 @@
 # Contributor: Amirul Fitri <tounghacker@gmail.com>
 
 pkgname=playit
-pkgver=1.0.9
+pkgver=1.0.10
 pkgrel=1
 pkgdesc='Tool to make your locally running game server public'
 arch=('x86_64' 'aarch64' 'armv7h' 'i686')
