@@ -19,20 +19,22 @@ impl LanAddress {
             let socket = TcpSocket::new_v4()?;
 
             match socket.bind(SocketAddrV4::new(local_ip, 0).into()) {
-                Err(e) => {
+                Err(error) => {
                     tracing::debug!(
-                        "could not bind special loopback address; continuing without per-client loopback IP support: {:?}",
-                        e
+                        ?error,
+                        %local_ip,
+                        "could not bind per-client loopback ip; falling back to default local address"
                     );
                 }
                 Ok(_) => {
                     match socket.connect(host).await {
-                        Err(e) => {
+                        Err(error) => {
                             tracing::debug!(
-                                "could not connect using special loopback address {}; continuing with normal local address for flow {:?}: {:?}",
-                                local_ip,
-                                (peer, host),
-                                e
+                                ?error,
+                                %local_ip,
+                                %peer,
+                                %host,
+                                "could not connect via per-client loopback ip; falling back to default local address"
                             );
                         }
                         v => return v,
@@ -41,15 +43,21 @@ impl LanAddress {
             }
         }
 
-        tracing::debug!(is_loopback, host_ip = %host.ip(), special_lan_ip, "not using special lan address");
+        tracing::trace!(
+            is_loopback,
+            host_ip = %host.ip(),
+            special_lan_ip,
+            "connecting to origin without special loopback address"
+        );
         match TcpStream::connect(host).await {
-            Err(e) => {
-                tracing::error!(
-                    "Failed to establish connection for flow {:?} {:?}. Is your server running?",
-                    (peer, host),
-                    e
+            Err(error) => {
+                tracing::warn!(
+                    ?error,
+                    %peer,
+                    %host,
+                    "failed to connect to local origin server; is the server running and listening on the configured address?"
                 );
-                Err(e)
+                Err(error)
             }
             v => v,
         }
@@ -80,17 +88,19 @@ impl LanAddress {
                     match UdpSocket::bind(SocketAddrV4::new(local_ip, 0)).await {
                         Ok(v) => {
                             tracing::debug!(
-                                "could not bind preferred UDP source port {}; continuing with a random local port: {:?}",
+                                error = ?bad_port_error,
+                                %local_ip,
                                 local_port,
-                                bad_port_error
+                                "could not bind preferred UDP source port on per-client loopback ip; using a random local port"
                             );
                             Ok(v)
                         }
                         Err(bad_local_ip_err) => {
                             let v = UdpSocket::bind(SocketAddrV4::new(0.into(), 0)).await?;
                             tracing::debug!(
-                                "could not bind special loopback address for UDP; continuing without per-client loopback IP support: {:?}",
-                                bad_local_ip_err
+                                error = ?bad_local_ip_err,
+                                %local_ip,
+                                "could not bind per-client loopback ip for UDP; falling back to default local address"
                             );
                             Ok(v)
                         }
@@ -118,8 +128,9 @@ impl LanAddress {
                 Err(bad_port_error) => {
                     let v = UdpSocket::bind(fallback_addr).await?;
                     tracing::debug!(
-                        "could not bind preferred UDP source port; continuing with a random local port: {:?}",
-                        bad_port_error
+                        error = ?bad_port_error,
+                        local_port,
+                        "could not bind preferred UDP source port; using a random local port"
                     );
                     Ok(v)
                 }

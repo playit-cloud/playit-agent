@@ -11,6 +11,7 @@ use tokio::{
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::{
     network::{
@@ -171,7 +172,7 @@ impl Worker {
             let event = tokio::select! {
                 recv_opt = self.events.recv() => {
                     let Some(event) = recv_opt else {
-                        tracing::debug!("TcpClients worker closed because event channel closed");
+                        tracing::debug!("tcp clients worker stopping: event channel closed");
                         break;
                     };
                     event
@@ -181,7 +182,7 @@ impl Worker {
                     Event::ClearOld
                 },
                 _ = self.cancel.cancelled() => {
-                    tracing::debug!("TcpClients worker closed via cancel");
+                    tracing::debug!("tcp clients worker stopping: cancelled");
                     break
                 },
             };
@@ -191,12 +192,22 @@ impl Worker {
                     let client_id = self.next_client_id;
                     self.next_client_id = client_id + 1;
 
-                    tracing::info!(?details, id = client_id, "New TCP Client");
+                    let claim_addr = details.claim_instructions.address;
+                    tracing::info!(
+                        client_id,
+                        source_addr = %details.peer_addr,
+                        tunnel_addr = %details.connect_addr,
+                        tunnel_id = details.tunnel_id,
+                        port_offset = details.port_offset,
+                        %claim_addr,
+                        "new tcp client requested by tunnel"
+                    );
 
                     let Some(found) = self.lookup.lookup(details.tunnel_id, true).await else {
                         tracing::debug!(
+                            client_id,
                             tunnel_id = details.tunnel_id,
-                            "Could not find tunnel for new client"
+                            "no local tunnel mapping for new client; tunnel may have been removed or disabled"
                         );
                         tcp_errors().new_client_origin_not_found.inc();
                         continue;
@@ -221,7 +232,10 @@ impl Worker {
                         }
                         _ => {
                             tracing::error!(
-                                "Tunnel server provide miss match protol versions for peer and connect addr"
+                                client_id,
+                                source_addr = %details.peer_addr,
+                                tunnel_addr = %details.connect_addr,
+                                "tunnel server sent mismatched IP versions for peer and connect addresses; this is a protocol bug"
                             );
                             tcp_errors().invalid_proto_match.inc();
                             continue;
@@ -233,13 +247,19 @@ impl Worker {
                     let event_tx = self.events_tx.clone();
                     let stats = self.stats.clone();
                     let cancel = self.cancel.child_token();
+                    let connection_span = tracing::info_span!(
+                        "tcp_connection",
+                        client_id,
+                        source_addr = %details.peer_addr,
+                        tunnel_addr = %details.connect_addr,
+                        tunnel_id = details.tunnel_id,
+                        port_offset = details.port_offset,
+                    );
                     tokio::spawn(async move {
                         let Some(origin_addr) = found.resolve_local(details.port_offset).await
                         else {
-                            tracing::error!(
-                                port_offset = details.port_offset,
-                                tunnel_id = details.tunnel_id,
-                                "port offset not valid for tunnel"
+                            tracing::warn!(
+                                "tunnel sent port offset outside the configured range; check tunnel port_count and the agent config"
                             );
                             tcp_errors().new_client_invalid_port_offset.inc();
                             return;
@@ -251,29 +271,36 @@ impl Worker {
                             _ = cancel.cancelled() => return,
                             res = tokio::time::timeout(
                                 Duration::from_secs(8),
-                                TcpStream::connect(details.claim_instructions.address),
+                                TcpStream::connect(claim_addr),
                             ) => res,
                         };
 
                         let mut tunn_stream = match conn_res {
                             Ok(Ok(stream)) => stream,
                             Err(_) => {
-                                tracing::error!("timeout connecting to claim address");
+                                tracing::warn!(
+                                    %claim_addr,
+                                    "timed out (8s) connecting to playit tunnel server to claim client"
+                                );
                                 tcp_errors().new_client_claim_connect_timeout.inc();
                                 return;
                             }
                             Ok(Err(error)) => {
-                                tracing::error!(?error, "io error connecting to claim address");
+                                tracing::warn!(
+                                    ?error,
+                                    %claim_addr,
+                                    "failed to connect to playit tunnel server to claim client"
+                                );
                                 tcp_errors().new_client_claim_connect_error.inc();
                                 return;
                             }
                         };
 
                         if let Err(error) = tunn_stream.set_nodelay(setting_tcp_no_delay) {
-                            tracing::error!(
+                            tracing::debug!(
                                 ?error,
-                                "failed to set tunn tcp no delay, value: {}",
-                                setting_tcp_no_delay
+                                tcp_no_delay = setting_tcp_no_delay,
+                                "could not set TCP_NODELAY on tunnel-side socket; continuing without it"
                             );
                             tcp_errors().new_client_set_tunnel_no_delay_error.inc();
                         }
@@ -290,14 +317,18 @@ impl Worker {
                         match send_res {
                             Ok(Ok(_)) => {}
                             Err(_) => {
-                                tracing::error!("timeout sending claim token");
+                                tracing::warn!(
+                                    %claim_addr,
+                                    "timed out (8s) sending claim token to playit tunnel server"
+                                );
                                 tcp_errors().new_client_send_claim_timeout.inc();
                                 return;
                             }
                             Ok(Err(error)) => {
-                                tracing::error!(
+                                tracing::warn!(
                                     ?error,
-                                    "io error sending claim instruction to claim address"
+                                    %claim_addr,
+                                    "failed to send claim token to playit tunnel server"
                                 );
                                 tcp_errors().new_client_send_claim_error.inc();
                                 return;
@@ -315,12 +346,19 @@ impl Worker {
                         match confirm_res {
                             Ok(Ok(_)) => {}
                             Err(_) => {
-                                tracing::error!("timeout reading claim token response");
+                                tracing::warn!(
+                                    %claim_addr,
+                                    "timed out (4s) waiting for claim acknowledgement from playit tunnel server"
+                                );
                                 tcp_errors().new_client_claim_expect_timeout.inc();
                                 return;
                             }
                             Ok(Err(error)) => {
-                                tracing::error!(?error, "io error reading claim response");
+                                tracing::warn!(
+                                    ?error,
+                                    %claim_addr,
+                                    "failed to read claim acknowledgement from playit tunnel server"
+                                );
                                 tcp_errors().new_client_claim_expect_error.inc();
                                 return;
                             }
@@ -339,24 +377,18 @@ impl Worker {
                         let mut origin_stream = match connect_res {
                             Ok(Ok(stream)) => stream,
                             Ok(Err(error)) => {
-                                tracing::error!(
+                                tracing::warn!(
                                     ?error,
                                     %origin_addr,
-                                    tunnel_id = details.tunnel_id,
-                                    port_offset = details.port_offset,
-                                    source_addr = %details.peer_addr,
-                                    "failed to connect to local TCP server; check that your server is running and listening on the configured local address"
+                                    "failed to connect to local origin server; check that your server is running and listening on the configured local address"
                                 );
                                 tcp_errors().new_client_origin_connect_error.inc();
                                 return;
                             }
                             Err(_) => {
-                                tracing::error!(
+                                tracing::warn!(
                                     %origin_addr,
-                                    tunnel_id = details.tunnel_id,
-                                    port_offset = details.port_offset,
-                                    source_addr = %details.peer_addr,
-                                    "timed out connecting to local TCP server; check firewall rules and that the server is listening on the configured local address"
+                                    "timed out (2s) connecting to local origin server; check firewall rules and that the server is listening on the configured local address"
                                 );
                                 tcp_errors().new_client_origin_connect_timeout.inc();
                                 return;
@@ -364,7 +396,11 @@ impl Worker {
                         };
 
                         if let Err(error) = origin_stream.set_nodelay(true) {
-                            tracing::error!(?error, "failed to set origin tcp no delay");
+                            tracing::debug!(
+                                ?error,
+                                %origin_addr,
+                                "could not set TCP_NODELAY on origin-side socket; continuing without it"
+                            );
                             tcp_errors().new_client_set_origin_no_delay_error.inc();
                         }
 
@@ -393,12 +429,19 @@ impl Worker {
                         match proxy_write_res {
                             Ok(Ok(_)) => {}
                             Err(_) => {
-                                tracing::error!("timeout sending proxy protocol header");
+                                tracing::warn!(
+                                    %origin_addr,
+                                    "timed out (2s) sending PROXY protocol header to origin"
+                                );
                                 tcp_errors().new_client_write_proxy_proto_timeout.inc();
                                 return;
                             }
                             Ok(Err(error)) => {
-                                tracing::error!(?error, "failed to write proxy protocol header");
+                                tracing::warn!(
+                                    ?error,
+                                    %origin_addr,
+                                    "failed to send PROXY protocol header to origin"
+                                );
                                 tcp_errors().new_client_write_proxy_proto_error.inc();
                                 return;
                             }
@@ -407,6 +450,7 @@ impl Worker {
                         let tcp_client =
                             TcpClient::create_with_stats(tunn_stream, origin_stream, Some(stats))
                                 .await;
+                        tracing::debug!(%origin_addr, "tcp tunnel and origin connected; piping traffic");
                         let event = Event::ConnectedClient(Client {
                             id: client_id,
                             added_at: now_milli(),
@@ -421,7 +465,7 @@ impl Worker {
                             _ = cancel.cancelled() => return,
                             res = event_tx.send(event) => res,
                         };
-                    });
+                    }.instrument(connection_span));
                 }
                 Event::GetDetails(resp) => {
                     let _ = resp.send(self.clients.iter().map(Client::details).collect());
@@ -439,24 +483,42 @@ impl Worker {
                         let since_orig = now.max(last_use.origin_to_tunn) - last_use.origin_to_tunn;
 
                         if 90_000 < since_tunn && 30_000 < since_orig {
-                            tracing::debug!(id = client.id, "clear old: 90s since tunnel data");
+                            tracing::debug!(
+                                client_id = client.id,
+                                source_addr = %client.source_addr,
+                                origin_addr = %client.origin_addr,
+                                since_tunn_ms = since_tunn,
+                                "closing idle tcp client: 90s without tunnel-to-origin data"
+                            );
                             return false;
                         }
 
                         if 90_000 < since_orig && 30_000 < since_tunn {
-                            tracing::debug!(id = client.id, "clear old: 90s since origin data");
+                            tracing::debug!(
+                                client_id = client.id,
+                                source_addr = %client.source_addr,
+                                origin_addr = %client.origin_addr,
+                                since_orig_ms = since_orig,
+                                "closing idle tcp client: 90s without origin-to-tunnel data"
+                            );
                             return false;
                         }
 
                         if 60_000 < since_tunn && 60_000 < since_orig {
-                            tracing::debug!(id = client.id, "clear old: 60s since any data");
+                            tracing::debug!(
+                                client_id = client.id,
+                                source_addr = %client.source_addr,
+                                origin_addr = %client.origin_addr,
+                                since_tunn_ms = since_tunn,
+                                since_orig_ms = since_orig,
+                                "closing idle tcp client: 60s without traffic in either direction"
+                            );
                             return false;
                         }
 
                         true
                     });
 
-                    // Update active TCP connection count
                     self.stats.set_tcp(self.clients.len() as u32);
                 }
             }
