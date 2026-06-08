@@ -134,6 +134,19 @@ assert_array_contains() {
   exit 1
 }
 
+assert_array_not_contains() {
+  local needle="$1"
+  shift
+
+  local value
+  for value in "$@"; do
+    if [[ "${value}" == "${needle}" ]]; then
+      echo "unexpected array value present: ${needle}" >&2
+      exit 1
+    fi
+  done
+}
+
 assert_package_layout() {
   local pkgdir="$1"
   local license_dir="$2"
@@ -143,6 +156,8 @@ assert_package_layout() {
   assert_path "${pkgdir}/opt/playit/playit"
   assert_path "${pkgdir}/etc/logrotate.d/playit"
   assert_path "${pkgdir}/usr/lib/systemd/system/playit.service"
+  assert_path "${pkgdir}/opt/playit/share/init/systemd/playit.service"
+  assert_path "${pkgdir}/opt/playit/share/init/openrc/playit"
   assert_path "${pkgdir}/usr/lib/sysusers.d/playit.conf"
   assert_path "${pkgdir}/usr/share/licenses/${license_dir}/LICENSE.txt"
   assert_path "${pkgdir}/etc/playit"
@@ -154,6 +169,8 @@ assert_package_layout() {
   assert_mode "${pkgdir}/opt/playit/playit" 755
   assert_mode "${pkgdir}/etc/logrotate.d/playit" 644
   assert_mode "${pkgdir}/usr/lib/systemd/system/playit.service" 644
+  assert_mode "${pkgdir}/opt/playit/share/init/systemd/playit.service" 644
+  assert_mode "${pkgdir}/opt/playit/share/init/openrc/playit" 755
   assert_mode "${pkgdir}/usr/lib/sysusers.d/playit.conf" 644
   assert_mode "${pkgdir}/etc/playit" 750
 }
@@ -173,6 +190,8 @@ test_bin_pkgbuild() {
     # shellcheck disable=SC1091
     source arch/bin/PKGBUILD
     assert_array_contains playit-debug "${conflicts[@]}"
+    assert_array_contains logrotate "${depends[@]}"
+    assert_array_not_contains systemd "${depends[@]}"
     download_sources "${srcdir}" "${source[@]}" "${source_x86_64[@]}"
     package
     assert_package_layout "${pkgdir}" playit-bin
@@ -216,6 +235,8 @@ test_build_pkgbuild() {
     # shellcheck disable=SC1091
     source arch/build/PKGBUILD
     assert_array_contains playit-bin-debug "${conflicts[@]}"
+    assert_array_contains logrotate "${depends[@]}"
+    assert_array_not_contains systemd "${depends[@]}"
 
     download_sources "${srcdir}" "${source[@]}"
     extract_sources "${srcdir}" "${source[@]}"
@@ -242,6 +263,8 @@ bash -n arch/bin/PKGBUILD
 bash -n arch/bin/playit-bin.install
 bash -n arch/build/PKGBUILD
 bash -n arch/build/playit.install
+sh -n build-scripts/nfpm/preinstall.sh
+sh -n build-scripts/nfpm/postinstall.sh
 
 test_bin_pkgbuild
 test_build_pkgbuild
