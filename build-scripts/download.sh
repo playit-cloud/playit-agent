@@ -55,11 +55,6 @@ FILES=(
   playit-openrc_aarch64.apk
   playit-openrc_armv7.apk
   playit-openrc_x86.apk
-
-  playit_x86_64.pkg.tar.zst
-  playit_aarch64.pkg.tar.zst
-  playit_armv7h.pkg.tar.zst
-  playit_i686.pkg.tar.zst
 )
 
 BASE_URL="https://github.com/playit-cloud/playit-agent/releases/download/v${VERSION}"
