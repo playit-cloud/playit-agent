@@ -14,6 +14,7 @@ use playit_agent_core::{
             packets::Packets, udp_channel::UdpChannel, udp_clients::UdpClients,
             udp_settings::UdpSettings,
         },
+        upload_qos::UploadFairness,
     },
     stats::AgentStats,
 };
@@ -23,6 +24,7 @@ use playit_agent_proto::{
     udp_proto::{UDP_CHANNEL_ESTABLISH_ID, UdpFlow, UdpFlowExtension},
 };
 use tokio::{net::UdpSocket, time::timeout};
+use tokio_util::sync::CancellationToken;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(3);
 const STRESS_TIMEOUT: Duration = Duration::from_secs(30);
@@ -57,11 +59,15 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
         .await;
 
     let stats = AgentStats::new();
+    let cancel = CancellationToken::new();
+    let upload_fairness = UploadFairness::new(cancel.child_token());
     let mut udp_clients = UdpClients::new(
         UdpSettings::default(),
         lookup,
         Packets::new(64),
         stats.clone(),
+        cancel,
+        upload_fairness,
     );
     let mut udp_channel = UdpChannel::new(Packets::new(64))
         .await
@@ -188,11 +194,15 @@ async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
         .await;
 
     let stats = AgentStats::new();
+    let cancel = CancellationToken::new();
+    let upload_fairness = UploadFairness::new(cancel.child_token());
     let mut udp_clients = UdpClients::new(
         UdpSettings::default(),
         lookup,
         Packets::new(64),
         stats.clone(),
+        cancel,
+        upload_fairness,
     );
     let mut udp_channel = UdpChannel::new(Packets::new(64))
         .await
@@ -278,11 +288,15 @@ async fn encapsulated_udp_tunnel_isolates_multiple_parallel_flows_and_recovers_t
         .await;
 
     let stats = AgentStats::new();
+    let cancel = CancellationToken::new();
+    let upload_fairness = UploadFairness::new(cancel.child_token());
     let mut udp_clients = UdpClients::new(
         UdpSettings::default(),
         lookup,
         Packets::new(128),
         stats.clone(),
+        cancel,
+        upload_fairness,
     );
     let mut udp_channel = UdpChannel::new(Packets::new(128))
         .await
@@ -388,11 +402,15 @@ async fn udp_tunnel_stress_reports_bitrate_by_packet_size() {
         .await;
 
     let stats = AgentStats::new();
+    let cancel = CancellationToken::new();
+    let upload_fairness = UploadFairness::new(cancel.child_token());
     let mut udp_clients = UdpClients::new(
         UdpSettings::default(),
         lookup,
         Packets::new(4096),
         stats.clone(),
+        cancel,
+        upload_fairness,
     );
     let mut udp_channel = UdpChannel::new(Packets::new(4096))
         .await
