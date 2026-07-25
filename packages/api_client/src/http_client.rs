@@ -1,4 +1,5 @@
 use std::panic::Location;
+use std::sync::Arc;
 
 use reqwest::StatusCode;
 use serde::Serialize;
@@ -7,30 +8,18 @@ use tokio::sync::RwLock;
 
 use crate::api::{ApiResult, PlayitHttpClient};
 
+#[derive(Clone)]
 pub struct HttpClient {
     api_base: String,
-    auth_header: RwLock<Option<String>>,
+    auth_header: Arc<RwLock<Option<String>>>,
     client: reqwest::Client,
-}
-
-impl Clone for HttpClient {
-    fn clone(&self) -> Self {
-        Self {
-            api_base: self.api_base.clone(),
-            auth_header: match self.auth_header.try_read() {
-                Ok(v) => RwLock::new(v.clone()),
-                _ => RwLock::new(None),
-            },
-            client: self.client.clone(),
-        }
-    }
 }
 
 impl HttpClient {
     pub fn new(api_base: String, auth_header: Option<String>) -> Self {
         HttpClient {
             api_base,
-            auth_header: RwLock::new(auth_header),
+            auth_header: Arc::new(RwLock::new(auth_header)),
             client: reqwest::Client::new(),
         }
     }
@@ -42,6 +31,33 @@ impl HttpClient {
     pub async fn remove_auth(&self) {
         let mut lock = self.auth_header.write().await;
         let _ = lock.take();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HttpClient;
+
+    #[tokio::test]
+    async fn clone_while_auth_is_write_locked_shares_auth_state() {
+        let client = HttpClient::new(
+            "https://example.invalid".to_string(),
+            Some("initial".to_string()),
+        );
+
+        let mut auth = client.auth_header.write().await;
+        let cloned = client.clone();
+        *auth = Some("updated".to_string());
+        drop(auth);
+
+        assert_eq!(
+            cloned.auth_header.read().await.as_deref(),
+            Some("updated"),
+            "cloning must never silently drop authentication"
+        );
+
+        cloned.remove_auth().await;
+        assert_eq!(*client.auth_header.read().await, None);
     }
 }
 
