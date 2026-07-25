@@ -1,4 +1,6 @@
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,6 +12,10 @@ use interprocess::local_socket::{
 use interprocess::os::windows::local_socket::ListenerOptionsExt;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
+use playit_api_client::api::{
+    AssignedAgentCreate, ClaimAgentType, ClaimSetupResponse, PortType, ReqClaimExchange,
+    ReqClaimSetup, ReqTunnelsCreate, ReqTunnelsDelete, TunnelOriginCreate,
+};
 use playit_ipc::endpoint::IpcEndpoint;
 use playit_ipc::ipc::{
     EventEnvelope, HelloEnvelope, IPC_VERSION, IncomingRequestEnvelope, IpcError, IpcFrameWriter,
@@ -17,10 +23,12 @@ use playit_ipc::ipc::{
     framed_parts, get_default_socket_path, is_known_request_type, protocol_info, try_connect,
 };
 use playit_ipc::model::{
-    AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ConnectionStats, SecretPathResponse,
-    ServiceError, ServiceErrorCode, ServiceStatus, ServiceUpdate, SubscribeResponse,
-    SubscriptionSnapshot,
+    AccountLoginUrlResponse, AccountResponse, AccountStatus, AgentLifecycle, ClaimResponse,
+    CommandResponse, ConnectionStats, SecretPathResponse, ServiceError, ServiceErrorCode,
+    ServiceStatus, ServiceUpdate, SubscribeResponse, SubscriptionSnapshot, TunnelCreateResponse,
+    TunnelListResponse, TunnelProtocol,
 };
+use rand::Rng;
 use serde_json::json;
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -86,6 +94,7 @@ pub struct IpcServer {
     secret_reset_error: ServiceError,
     api: RwLock<Option<PlayitApi>>,
     guest_login_cache: RwLock<Option<(String, u64)>>,
+    claim_code: Arc<RwLock<Option<String>>>,
 }
 
 impl IpcServer {
@@ -130,6 +139,7 @@ impl IpcServer {
             secret_reset_error,
             api: RwLock::new(None),
             guest_login_cache: RwLock::new(None),
+            claim_code: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -305,6 +315,25 @@ impl IpcServer {
             ServiceRequest::GetState => {
                 RequestOutcome::respond(ServiceResponse::State(self.state_cache.lifecycle().await))
             }
+            ServiceRequest::GetTunnels => {
+                RequestOutcome::respond(self.tunnel_list_response().await)
+            }
+            ServiceRequest::CreateTunnel {
+                local_port,
+                protocol,
+                local_address,
+                name,
+            } => RequestOutcome::respond(
+                self.create_tunnel_response(local_port, protocol, local_address, name)
+                    .await,
+            ),
+            ServiceRequest::DeleteTunnel { tunnel_id } => {
+                RequestOutcome::respond(self.delete_tunnel_response(tunnel_id).await)
+            }
+            ServiceRequest::GetAccount => RequestOutcome::respond(self.account_response().await),
+            ServiceRequest::StartClaim => {
+                RequestOutcome::respond(self.start_claim_response().await)
+            }
             ServiceRequest::Stop => {
                 tracing::info!("Stop request received, initiating shutdown");
                 self.cancel_token.cancel();
@@ -331,6 +360,216 @@ impl IpcServer {
                 RequestOutcome::respond(self.account_login_url_response().await)
             }
         }
+    }
+
+    async fn tunnel_list_response(&self) -> ServiceResponse {
+        match self.state_cache.lifecycle().await {
+            AgentLifecycle::Running(state) => ServiceResponse::Tunnels(TunnelListResponse {
+                tunnels: state.tunnels,
+                pending_tunnels: state.pending_tunnels,
+            }),
+            lifecycle => ServiceResponse::Error(protocol_error(
+                ServiceErrorCode::ApiUnavailable,
+                format!("Tunnel data is not available while the service is {lifecycle:?}"),
+                true,
+            )),
+        }
+    }
+
+    async fn create_tunnel_response(
+        &self,
+        local_port: u16,
+        protocol: TunnelProtocol,
+        local_address: Option<String>,
+        name: Option<String>,
+    ) -> ServiceResponse {
+        if local_port == 0 {
+            return ServiceResponse::Error(protocol_error(
+                ServiceErrorCode::InvalidTunnelRequest,
+                "local_port must be between 1 and 65535".to_string(),
+                false,
+            ));
+        }
+
+        let local_address = local_address.unwrap_or_else(|| "127.0.0.1".to_string());
+        let local_ip = match IpAddr::from_str(local_address.trim()) {
+            Ok(local_ip) => local_ip,
+            Err(_) => {
+                return ServiceResponse::Error(protocol_error(
+                    ServiceErrorCode::InvalidTunnelRequest,
+                    format!("local_address is not a valid IP address: {local_address}"),
+                    false,
+                ));
+            }
+        };
+
+        let agent_id = match self.state_cache.lifecycle().await {
+            AgentLifecycle::Running(state) => match uuid::Uuid::parse_str(&state.agent_id) {
+                Ok(agent_id) => agent_id,
+                Err(_) => {
+                    return ServiceResponse::Error(protocol_error(
+                        ServiceErrorCode::ApiUnavailable,
+                        "The running agent has not reported a valid agent ID yet".to_string(),
+                        true,
+                    ));
+                }
+            },
+            lifecycle => {
+                return ServiceResponse::Error(protocol_error(
+                    ServiceErrorCode::ApiUnavailable,
+                    format!("Cannot create a tunnel while the service is {lifecycle:?}"),
+                    true,
+                ));
+            }
+        };
+
+        let Some(api) = self.api.read().await.clone() else {
+            return ServiceResponse::Error(protocol_error(
+                ServiceErrorCode::ApiUnavailable,
+                "The playit API is not ready yet".to_string(),
+                true,
+            ));
+        };
+
+        let request = ReqTunnelsCreate {
+            name: name.filter(|value| !value.trim().is_empty()),
+            tunnel_type: None,
+            port_type: match protocol {
+                TunnelProtocol::Tcp => PortType::Tcp,
+                TunnelProtocol::Udp => PortType::Udp,
+                TunnelProtocol::Both => PortType::Both,
+            },
+            port_count: 1,
+            origin: TunnelOriginCreate::Agent(AssignedAgentCreate {
+                agent_id,
+                local_ip,
+                local_port: Some(local_port),
+            }),
+            enabled: true,
+            alloc: None,
+            firewall_id: None,
+            proxy_protocol: None,
+        };
+
+        match api.tunnels_create(request).await {
+            Ok(tunnel_id) => ServiceResponse::CreateTunnel(TunnelCreateResponse {
+                tunnel_id: tunnel_id.id.to_string(),
+                message: Some("Tunnel creation accepted".to_string()),
+            }),
+            Err(error) => ServiceResponse::Error(protocol_error(
+                ServiceErrorCode::ApiUnavailable,
+                format!("The playit API rejected tunnel creation: {error:?}"),
+                true,
+            )),
+        }
+    }
+
+    async fn delete_tunnel_response(&self, tunnel_id: String) -> ServiceResponse {
+        let tunnel_id = match uuid::Uuid::parse_str(tunnel_id.trim()) {
+            Ok(tunnel_id) => tunnel_id,
+            Err(_) => {
+                return ServiceResponse::Error(protocol_error(
+                    ServiceErrorCode::InvalidTunnelRequest,
+                    "tunnel_id must be a valid UUID".to_string(),
+                    false,
+                ));
+            }
+        };
+
+        let Some(api) = self.api.read().await.clone() else {
+            return ServiceResponse::Error(protocol_error(
+                ServiceErrorCode::ApiUnavailable,
+                "The playit API is not ready yet".to_string(),
+                true,
+            ));
+        };
+
+        match api.tunnels_delete(ReqTunnelsDelete { tunnel_id }).await {
+            Ok(()) => ServiceResponse::DeleteTunnel(CommandResponse {
+                accepted: true,
+                message: Some("Tunnel deletion accepted".to_string()),
+            }),
+            Err(error) => {
+                let message = format!("The playit API rejected tunnel deletion: {error:?}");
+                let not_found = message.contains("TunnelNotFound");
+                let code = if not_found {
+                    ServiceErrorCode::TunnelNotFound
+                } else {
+                    ServiceErrorCode::ApiUnavailable
+                };
+                ServiceResponse::Error(protocol_error(code, message, !not_found))
+            }
+        }
+    }
+
+    async fn account_response(&self) -> ServiceResponse {
+        let claim_url = self.claim_url().await;
+        let account = match self.state_cache.lifecycle().await {
+            AgentLifecycle::Running(state) => AccountResponse {
+                status: state.account_status,
+                agent_id: (!state.agent_id.is_empty()).then_some(state.agent_id),
+                login_link: state.login_link,
+                claim_url,
+            },
+            _ => AccountResponse {
+                status: AccountStatus::Unknown,
+                agent_id: None,
+                login_link: None,
+                claim_url,
+            },
+        };
+        ServiceResponse::Account(account)
+    }
+
+    async fn start_claim_response(&self) -> ServiceResponse {
+        if !matches!(
+            self.state_cache.lifecycle().await,
+            AgentLifecycle::WaitingForSecret
+        ) {
+            return ServiceResponse::Error(secret_provisioning_state_error(
+                &self.state_cache.lifecycle().await,
+            ));
+        }
+
+        let Some(secret_provision_tx) = self.secret_provision_tx.clone() else {
+            return ServiceResponse::Error(self.secret_provision_error.clone());
+        };
+
+        let mut claim_code = self.claim_code.write().await;
+        if let Some(code) = claim_code.as_ref() {
+            return ServiceResponse::Claim(ClaimResponse {
+                claim_url: format!("https://playit.gg/claim/{code}"),
+            });
+        }
+
+        let code = generate_claim_code();
+        *claim_code = Some(code.clone());
+        drop(claim_code);
+
+        let claim_code_state = self.claim_code.clone();
+        let cancel_token = self.cancel_token.clone();
+        let claim_code_for_task = code.clone();
+        tokio::spawn(async move {
+            run_claim_flow(
+                claim_code_for_task,
+                secret_provision_tx,
+                claim_code_state,
+                cancel_token,
+            )
+            .await;
+        });
+
+        ServiceResponse::Claim(ClaimResponse {
+            claim_url: format!("https://playit.gg/claim/{code}"),
+        })
+    }
+
+    async fn claim_url(&self) -> Option<String> {
+        self.claim_code
+            .read()
+            .await
+            .as_ref()
+            .map(|code| format!("https://playit.gg/claim/{code}"))
     }
 
     async fn subscribe_response(&self) -> ServiceResponse {
@@ -506,6 +745,101 @@ impl IpcServer {
     }
 }
 
+fn generate_claim_code() -> String {
+    let mut buffer = [0u8; 5];
+    rand::rng().fill(&mut buffer);
+    hex::encode(buffer)
+}
+
+async fn run_claim_flow(
+    code: String,
+    secret_provision_tx: mpsc::Sender<SecretProvisionRequest>,
+    claim_code_state: Arc<RwLock<Option<String>>>,
+    cancel_token: CancellationToken,
+) {
+    const CLAIM_TIMEOUT: u64 = 10 * 60 * 1000;
+    let api = PlayitApi::create(api_base(), None);
+    let expires_at = now_milli().saturating_add(CLAIM_TIMEOUT);
+
+    'setup: loop {
+        if cancel_token.is_cancelled() || now_milli() >= expires_at {
+            break;
+        }
+
+        match api
+            .claim_setup(ReqClaimSetup {
+                code: code.clone(),
+                agent_type: ClaimAgentType::SelfManaged,
+                version: format!("playit {}", env!("CARGO_PKG_VERSION")),
+            })
+            .await
+        {
+            Ok(ClaimSetupResponse::WaitingForUserVisit)
+            | Ok(ClaimSetupResponse::WaitingForUser) => {
+                if !claim_poll_delay(&cancel_token, Duration::from_millis(250)).await {
+                    break;
+                }
+            }
+            Ok(ClaimSetupResponse::UserRejected) => {
+                tracing::warn!("Agent claim was rejected in the browser");
+                break;
+            }
+            Ok(ClaimSetupResponse::UserAccepted) => loop {
+                if cancel_token.is_cancelled() || now_milli() >= expires_at {
+                    break 'setup;
+                }
+
+                match api
+                    .claim_exchange(ReqClaimExchange { code: code.clone() })
+                    .await
+                {
+                    Ok(secret) => {
+                        let (response_tx, response_rx) = oneshot::channel();
+                        if secret_provision_tx
+                            .send(SecretProvisionRequest {
+                                secret: secret.secret_key,
+                                response_tx,
+                            })
+                            .await
+                            .is_err()
+                        {
+                            tracing::warn!("Secret provisioning channel closed during agent claim");
+                        } else if !matches!(response_rx.await, Ok(Ok(()))) {
+                            tracing::warn!("Claimed agent secret could not be provisioned");
+                        }
+                        break 'setup;
+                    }
+                    Err(error) => {
+                        tracing::debug!(?error, "Waiting for claimed agent secret");
+                        if !claim_poll_delay(&cancel_token, Duration::from_secs(1)).await {
+                            break 'setup;
+                        }
+                    }
+                }
+            },
+            Err(error) => {
+                tracing::debug!(?error, "Waiting for browser agent claim");
+                if !claim_poll_delay(&cancel_token, Duration::from_secs(1)).await {
+                    break;
+                }
+            }
+        }
+    }
+
+    *claim_code_state.write().await = None;
+}
+
+async fn claim_poll_delay(cancel_token: &CancellationToken, delay: Duration) -> bool {
+    tokio::select! {
+        _ = cancel_token.cancelled() => false,
+        _ = tokio::time::sleep(delay) => true,
+    }
+}
+
+fn api_base() -> String {
+    dotenv::var("API_BASE").unwrap_or_else(|_| "https://api.playit.gg".to_string())
+}
+
 struct RequestOutcome {
     response: ServiceResponse,
     subscribed: bool,
@@ -622,17 +956,28 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     fn test_socket_path(name: &str) -> String {
-        std::env::temp_dir()
-            .join(format!(
-                "playitd-ipc-{name}-{}-{}.sock",
-                std::process::id(),
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ))
-            .display()
-            .to_string()
+        let unique = format!(
+            "playitd-ipc-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        #[cfg(target_os = "windows")]
+        {
+            // Windows local sockets are named pipes, not filesystem sockets.
+            format!(r"\\.\pipe\{unique}")
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::env::temp_dir()
+                .join(format!("{unique}.sock"))
+                .display()
+                .to_string()
+        }
     }
 
     async fn spawn_test_server(
