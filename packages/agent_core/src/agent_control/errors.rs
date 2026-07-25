@@ -107,6 +107,9 @@ impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for SetupError {
 impl From<ApiErrorNoFail<HttpClientError>> for SetupError {
     fn from(value: ApiErrorNoFail<HttpClientError>) -> Self {
         match value {
+            ApiErrorNoFail::UnexpectedFail => {
+                SetupError::ApiFail("unexpected API fail response".to_string())
+            }
             ApiErrorNoFail::ApiError(api) => SetupError::ApiError(api),
             ApiErrorNoFail::ClientError(error) => SetupError::RequestError(error),
         }

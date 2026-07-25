@@ -1,4 +1,5 @@
 use std::panic::Location;
+use std::time::Duration;
 
 use reqwest::StatusCode;
 use serde::Serialize;
@@ -12,6 +13,9 @@ pub struct HttpClient {
     auth_header: RwLock<Option<String>>,
     client: reqwest::Client,
 }
+
+const MAX_REQUEST_ATTEMPTS: usize = 3;
+const RETRY_DELAY: Duration = Duration::from_millis(250);
 
 impl Clone for HttpClient {
     fn clone(&self) -> Self {
@@ -54,34 +58,69 @@ impl PlayitHttpClient for HttpClient {
         path: &str,
         req: Req,
     ) -> Result<ApiResult<Res, Err>, Self::Error> {
-        let mut builder = self.client.post(format!("{}{}", self.api_base, path));
-
-        {
-            let lock = self.auth_header.read().await;
-
-            if let Some(auth_header) = &*lock {
-                builder = builder.header(reqwest::header::AUTHORIZATION, auth_header);
-            }
-        }
-
+        let body = serde_json::to_value(req).map_err(HttpClientError::SerializeError)?;
         let res = async move {
-            builder = builder.json(&req);
-            let request = builder.build()?;
+            for attempt in 0..MAX_REQUEST_ATTEMPTS {
+                let mut builder = self.client.post(format!("{}{}", self.api_base, path));
 
-            let response = self.client.execute(request).await?;
+                {
+                    let lock = self.auth_header.read().await;
 
-            let response_status = response.status();
-            if response_status == StatusCode::TOO_MANY_REQUESTS {
-                return Err(HttpClientError::TooManyRequests);
+                    if let Some(auth_header) = &*lock {
+                        builder = builder.header(reqwest::header::AUTHORIZATION, auth_header);
+                    }
+                }
+
+                let request = builder.json(&body).build()?;
+                let response = match self.client.execute(request).await {
+                    Ok(response) => response,
+                    Err(error)
+                        if attempt + 1 < MAX_REQUEST_ATTEMPTS
+                            && (error.is_connect() || error.is_timeout()) =>
+                    {
+                        tracing::debug!(
+                            attempt = attempt + 1,
+                            max_attempts = MAX_REQUEST_ATTEMPTS,
+                            ?error,
+                            "retrying transient API request failure"
+                        );
+                        tokio::time::sleep(RETRY_DELAY * (attempt as u32 + 1)).await;
+                        continue;
+                    }
+                    Err(error) => return Err(HttpClientError::RequestError(error)),
+                };
+
+                let response_status = response.status();
+                let response_txt = response.text().await?;
+
+                if (response_status == StatusCode::TOO_MANY_REQUESTS
+                    || response_status.is_server_error())
+                    && attempt + 1 < MAX_REQUEST_ATTEMPTS
+                {
+                    tracing::debug!(
+                        attempt = attempt + 1,
+                        max_attempts = MAX_REQUEST_ATTEMPTS,
+                        status = %response_status,
+                        "retrying transient API response"
+                    );
+                    tokio::time::sleep(RETRY_DELAY * (attempt as u32 + 1)).await;
+                    continue;
+                }
+
+                if response_status == StatusCode::TOO_MANY_REQUESTS {
+                    return Err(HttpClientError::TooManyRequests);
+                }
+
+                let result: ApiResult<Res, Err> =
+                    serde_json::from_str(&response_txt).map_err(|e| {
+                        tracing::error!("failed to parse json:\n{}", response_txt);
+                        HttpClientError::ParseError(e, response_status, response_txt)
+                    })?;
+
+                return Ok(result);
             }
 
-            let response_txt = response.text().await?;
-            let result: ApiResult<Res, Err> = serde_json::from_str(&response_txt).map_err(|e| {
-                tracing::error!("failed to parse json:\n{}", response_txt);
-                HttpClientError::ParseError(e, response_status, response_txt.to_string())
-            })?;
-
-            Ok::<_, Self::Error>(result)
+            unreachable!("request loop always returns after the final attempt")
         }
         .await;
 
@@ -100,6 +139,21 @@ pub enum HttpClientError {
     RequestError(reqwest::Error),
     TooManyRequests,
 }
+
+impl std::fmt::Display for HttpClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SerializeError(error) => write!(f, "failed to serialize API request: {error}"),
+            Self::ParseError(error, status, _) => {
+                write!(f, "failed to parse API response ({status}): {error}")
+            }
+            Self::RequestError(error) => write!(f, "API request failed: {error}"),
+            Self::TooManyRequests => write!(f, "API rate limit exceeded"),
+        }
+    }
+}
+
+impl std::error::Error for HttpClientError {}
 
 impl From<reqwest::Error> for HttpClientError {
     fn from(value: reqwest::Error) -> Self {
