@@ -150,10 +150,10 @@ fn socket_access_issue(socket_path: &str) -> Option<LinuxSocketAccessIssue> {
         return None;
     }
 
-    if socket_group_name == Some(PLAYIT_GROUP_NAME) {
-        if let Some(issue) = playit_group_access_issue(socket_gid, socket_group.as_ref()) {
-            return Some(issue);
-        }
+    if socket_group_name == Some(PLAYIT_GROUP_NAME)
+        && let Some(issue) = playit_group_access_issue(socket_gid, socket_group.as_ref())
+    {
+        return Some(issue);
     }
 
     Some(LinuxSocketAccessIssue::GenericPermissionDenied {

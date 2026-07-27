@@ -72,7 +72,7 @@ pub async fn ensure_installed_service_running_for_cli(
             .await
             .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
 
-        return Ok(InstalledServiceStartState::Started);
+        Ok(InstalledServiceStartState::Started)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -115,7 +115,7 @@ pub fn stop_installed_service_for_cli(
             tracing::warn!("Failed to stop installed service: {error}");
         }
 
-        return Ok(InstalledServiceStopState::StopRequested);
+        Ok(InstalledServiceStopState::StopRequested)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -148,7 +148,7 @@ pub fn installed_service_is_active_for_cli(
             return Err(no_service_manager_selected_error());
         };
 
-        return linux::installed_service_is_active(linux_manager);
+        linux::installed_service_is_active(linux_manager)
     }
 
     #[cfg(not(target_os = "linux"))]

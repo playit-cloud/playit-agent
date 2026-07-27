@@ -23,6 +23,7 @@ impl HmacSha256 {
         HmacSha256(Hmac::<Sha256>::new_from_slice(secret).unwrap())
     }
 
+    #[allow(clippy::result_unit_err)]
     pub fn verify(&self, data: &[u8], sig: &[u8]) -> Result<(), ()> {
         let mut mac = self.0.clone();
         mac.update(data);

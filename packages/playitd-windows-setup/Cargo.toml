@@ -6,6 +6,9 @@ authors = ["Patrick Lorio <patrick@playit.gg>"]
 description = "Windows installer provisioning helper for playit"
 repository = "https://github.com/playit-cloud/playit-agent"
 
+[lints]
+workspace = true
+
 [dependencies]
 playitd = { path = "../playitd", version = "1.0.10" }
 

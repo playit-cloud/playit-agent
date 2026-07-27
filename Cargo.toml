@@ -34,6 +34,12 @@ futures-util = "0.3"
 message-encoding = "0.2.2"
 dirs = "6.0"
 
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
+
 [profile.release]
 strip = "debuginfo"
 opt-level = "z"

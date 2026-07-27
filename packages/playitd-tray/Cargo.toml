@@ -6,6 +6,9 @@ authors = ["Patrick Lorio <patrick@playit.gg>"]
 description = "Windows tray application for managing the playit background service"
 repository = "https://github.com/playit-cloud/playit-agent"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio = { workspace = true }
 kanal = "0.1.1"

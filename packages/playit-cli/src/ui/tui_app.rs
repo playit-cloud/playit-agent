@@ -103,6 +103,12 @@ pub struct TuiApp {
     terminal: Option<Terminal<CrosstermBackend<Stdout>>>,
 }
 
+impl Default for TuiApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TuiApp {
     pub fn new() -> Self {
         Self {
@@ -216,10 +222,10 @@ impl TuiApp {
 
         self.draw().map_err(CliError::RenderError)?;
 
-        if event::poll(Duration::from_millis(50)).map_err(CliError::RenderError)? {
-            if let Event::Key(key) = event::read().map_err(CliError::RenderError)? {
-                self.handle_key_event(key);
-            }
+        if event::poll(Duration::from_millis(50)).map_err(CliError::RenderError)?
+            && let Event::Key(key) = event::read().map_err(CliError::RenderError)?
+        {
+            self.handle_key_event(key);
         }
 
         let signal = get_signal_handle();

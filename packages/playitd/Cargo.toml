@@ -6,6 +6,9 @@ authors = ["Patrick Lorio <patrick@playit.gg>"]
 description = "Shared daemon, IPC, and service management for playit"
 repository = "https://github.com/playit-cloud/playit-agent"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio = { workspace = true }
 tokio-util = { workspace = true }

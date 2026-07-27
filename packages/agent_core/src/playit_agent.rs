@@ -226,23 +226,21 @@ impl PlayitAgent {
 
         cancel_token.cancel();
 
-        if !tunnel_done {
-            if tokio::time::timeout(Duration::from_secs(5), &mut tunnel_task)
+        if !tunnel_done
+            && tokio::time::timeout(Duration::from_secs(5), &mut tunnel_task)
                 .await
                 .is_err()
-            {
-                tunnel_task.abort();
-                let _ = tunnel_task.await;
-            }
+        {
+            tunnel_task.abort();
+            let _ = tunnel_task.await;
         }
-        if !udp_done {
-            if tokio::time::timeout(Duration::from_secs(5), &mut udp_task)
+        if !udp_done
+            && tokio::time::timeout(Duration::from_secs(5), &mut udp_task)
                 .await
                 .is_err()
-            {
-                udp_task.abort();
-                let _ = udp_task.await;
-            }
+        {
+            udp_task.abort();
+            let _ = udp_task.await;
         }
     }
 }
