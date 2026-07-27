@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 use playit_ipc::model::{
     AgentLifecycle, LogLevel as ServiceLogLevel, ServicePhase, ServiceUpdate, SubscribeResponse,
@@ -320,15 +320,42 @@ fn apply_tui_update(tui: &mut TuiApp, update: ServiceUpdate) {
 }
 
 fn apply_stdout_update(update: ServiceUpdate) {
-    if let ServiceUpdate::Log(entry) = update {
+    if let ServiceUpdate::Log(entry) = update
+        && stdout_log_enabled(&entry.level)
+    {
         println!(
-            "{} {:>5} {}: {}",
+            "{} {:>5} {}",
             format_timestamp_millis(entry.timestamp),
             format_log_level(&entry.level),
-            entry.target,
             entry.message
         );
     }
+}
+
+fn stdout_log_enabled(level: &ServiceLogLevel) -> bool {
+    let configured = std::env::var("PLAYIT_LOG")
+        .ok()
+        .and_then(|filter| {
+            filter.split(',').find_map(|directive| {
+                match directive.trim().to_ascii_lowercase().as_str() {
+                    "trace" => Some(0),
+                    "debug" => Some(1),
+                    "info" => Some(2),
+                    "warn" => Some(3),
+                    "error" => Some(4),
+                    _ => None,
+                }
+            })
+        })
+        .unwrap_or(2);
+    let entry = match level {
+        ServiceLogLevel::Trace => 0,
+        ServiceLogLevel::Debug => 1,
+        ServiceLogLevel::Info => 2,
+        ServiceLogLevel::Warn => 3,
+        ServiceLogLevel::Error => 4,
+    };
+    entry >= configured
 }
 
 fn print_detach_message() {
@@ -701,8 +728,8 @@ fn attach_lost_message(target: &CliTarget, error: &str) -> String {
 }
 
 fn format_timestamp_millis(millis: u64) -> String {
-    DateTime::<Utc>::from_timestamp_millis(millis as i64)
-        .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())
+    DateTime::from_timestamp_millis(millis as i64)
+        .map(|dt| dt.with_timezone(&Local).format("%H:%M:%S").to_string())
         .unwrap_or_else(|| format!("{millis}ms"))
 }
 

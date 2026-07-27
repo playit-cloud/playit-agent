@@ -106,25 +106,25 @@ impl<IO: PacketIO> ConnectedControl<IO> {
             .await?;
 
             for _ in 0..5 {
-                let mesage =
+                let message =
                     match tokio::time::timeout(Duration::from_millis(500), self.recv()).await {
                         Ok(Ok(msg)) => msg,
                         Ok(Err(error)) => {
-                            tracing::error!(?error, "got error reading from socket");
+                            tracing::debug!(?error, "Failed to read registration response");
                             break;
                         }
                         Err(_) => {
-                            tracing::error!("timeout waiting for register response");
+                            tracing::debug!("Timed out waiting for registration response");
                             continue;
                         }
                     };
 
-                let response = match mesage {
+                let response = match message {
                     ControlFeed::Response(response) if response.request_id == request_id => {
                         response
                     }
                     other => {
-                        tracing::error!(?other, "got unexpected response from register request");
+                        tracing::debug!(?other, "Ignoring unexpected registration response");
                         continue;
                     }
                 };
@@ -162,7 +162,7 @@ impl<IO: PacketIO> ConnectedControl<IO> {
                         break;
                     }
                     other => {
-                        tracing::error!(?other, "expected AgentRegistered but got something else");
+                        tracing::debug!(?other, "Registration returned an unexpected response");
                         continue;
                     }
                 };

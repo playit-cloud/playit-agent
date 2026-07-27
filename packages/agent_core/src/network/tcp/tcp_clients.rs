@@ -11,17 +11,21 @@ use tokio::{
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
+use tracing::Instrument;
 
 use crate::{
     network::{
         lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
     },
     stats::AgentStats,
-    utils::now_milli,
+    utils::{
+        now_milli,
+        recovery_log::{FailureLog, RecoveryLog},
+    },
 };
 
 use super::{
-    tcp_client::{TcpClient, TcpClientStat},
+    tcp_client::{TcpClient, TcpClientClose, TcpClientStat},
     tcp_errors::tcp_errors,
     tcp_settings::TcpSettings,
 };
@@ -52,6 +56,7 @@ struct Worker {
     cancel: CancellationToken,
     settings: TcpSettings,
     stats: AgentStats,
+    origin_failure_logs: RecoveryLog,
 
     clients: Vec<Client>,
     next_client_id: u64,
@@ -101,6 +106,7 @@ enum Event {
     ClearOld,
     NewClient(NewClient),
     ConnectedClient(Client),
+    ClientClosed { id: u64, close: TcpClientClose },
     GetDetails(tokio::sync::oneshot::Sender<Vec<TcpClientDetails>>),
 }
 
@@ -123,6 +129,7 @@ impl TcpClients {
                 cancel: cancel.child_token(),
                 settings,
                 stats,
+                origin_failure_logs: RecoveryLog::default(),
                 clients: Vec::with_capacity(32),
             }
             .start(),
@@ -191,7 +198,7 @@ impl Worker {
                     let client_id = self.next_client_id;
                     self.next_client_id = client_id + 1;
 
-                    tracing::info!(?details, id = client_id, "New TCP Client");
+                    tracing::debug!(?details, id = client_id, "New TCP client");
 
                     let Some(found) = self.lookup.lookup(details.tunnel_id, true).await else {
                         tracing::debug!(
@@ -220,8 +227,8 @@ impl Worker {
                             }
                         }
                         _ => {
-                            tracing::error!(
-                                "Tunnel server provide miss match protol versions for peer and connect addr"
+                            tracing::warn!(
+                                "Tunnel server provided mismatched IP versions for the client and tunnel addresses"
                             );
                             tcp_errors().invalid_proto_match.inc();
                             continue;
@@ -232,18 +239,27 @@ impl Worker {
 
                     let event_tx = self.events_tx.clone();
                     let stats = self.stats.clone();
+                    let origin_failure_logs = self.origin_failure_logs.clone();
                     let cancel = self.cancel.child_token();
+                    let connection_span = tracing::debug_span!(
+                        "tcp_client",
+                        id = client_id,
+                        tunnel_id = details.tunnel_id,
+                        peer = %details.peer_addr,
+                        origin = tracing::field::Empty,
+                    );
                     tokio::spawn(async move {
                         let Some(origin_addr) = found.resolve_local(details.port_offset).await
                         else {
-                            tracing::error!(
+                            tracing::debug!(
                                 port_offset = details.port_offset,
                                 tunnel_id = details.tunnel_id,
-                                "port offset not valid for tunnel"
+                                "Port offset is not valid for tunnel"
                             );
                             tcp_errors().new_client_invalid_port_offset.inc();
                             return;
                         };
+                        tracing::Span::current().record("origin", tracing::field::display(origin_addr));
 
                         /* connect to tunnel server */
 
@@ -258,21 +274,21 @@ impl Worker {
                         let mut tunn_stream = match conn_res {
                             Ok(Ok(stream)) => stream,
                             Err(_) => {
-                                tracing::error!("timeout connecting to claim address");
+                                tracing::debug!("Timed out connecting to claim address");
                                 tcp_errors().new_client_claim_connect_timeout.inc();
                                 return;
                             }
                             Ok(Err(error)) => {
-                                tracing::error!(?error, "io error connecting to claim address");
+                                tracing::debug!(?error, "Failed to connect to claim address");
                                 tcp_errors().new_client_claim_connect_error.inc();
                                 return;
                             }
                         };
 
                         if let Err(error) = tunn_stream.set_nodelay(setting_tcp_no_delay) {
-                            tracing::error!(
+                            tracing::debug!(
                                 ?error,
-                                "failed to set tunn tcp no delay, value: {}",
+                                "Failed to set tunnel TCP no-delay to {}",
                                 setting_tcp_no_delay
                             );
                             tcp_errors().new_client_set_tunnel_no_delay_error.inc();
@@ -290,14 +306,14 @@ impl Worker {
                         match send_res {
                             Ok(Ok(_)) => {}
                             Err(_) => {
-                                tracing::error!("timeout sending claim token");
+                                tracing::debug!("Timed out sending claim token");
                                 tcp_errors().new_client_send_claim_timeout.inc();
                                 return;
                             }
                             Ok(Err(error)) => {
-                                tracing::error!(
+                                tracing::debug!(
                                     ?error,
-                                    "io error sending claim instruction to claim address"
+                                    "Failed to send claim instruction"
                                 );
                                 tcp_errors().new_client_send_claim_error.inc();
                                 return;
@@ -315,12 +331,12 @@ impl Worker {
                         match confirm_res {
                             Ok(Ok(_)) => {}
                             Err(_) => {
-                                tracing::error!("timeout reading claim token response");
+                                tracing::debug!("Timed out reading claim response");
                                 tcp_errors().new_client_claim_expect_timeout.inc();
                                 return;
                             }
                             Ok(Err(error)) => {
-                                tracing::error!(?error, "io error reading claim response");
+                                tracing::debug!(?error, "Failed to read claim response");
                                 tcp_errors().new_client_claim_expect_error.inc();
                                 return;
                             }
@@ -339,32 +355,28 @@ impl Worker {
                         let mut origin_stream = match connect_res {
                             Ok(Ok(stream)) => stream,
                             Ok(Err(error)) => {
-                                tracing::error!(
-                                    ?error,
-                                    %origin_addr,
-                                    tunnel_id = details.tunnel_id,
-                                    port_offset = details.port_offset,
-                                    source_addr = %details.peer_addr,
-                                    "failed to connect to local TCP server; check that your server is running and listening on the configured local address"
+                                log_origin_failure(
+                                    &origin_failure_logs,
+                                    details.tunnel_id,
+                                    origin_addr,
+                                    &error.to_string(),
                                 );
                                 tcp_errors().new_client_origin_connect_error.inc();
                                 return;
                             }
                             Err(_) => {
-                                tracing::error!(
-                                    %origin_addr,
-                                    tunnel_id = details.tunnel_id,
-                                    port_offset = details.port_offset,
-                                    source_addr = %details.peer_addr,
-                                    "timed out connecting to local TCP server; check firewall rules and that the server is listening on the configured local address"
+                                log_origin_failure(
+                                    &origin_failure_logs,
+                                    details.tunnel_id,
+                                    origin_addr,
+                                    "connection timed out",
                                 );
                                 tcp_errors().new_client_origin_connect_timeout.inc();
                                 return;
                             }
                         };
-
                         if let Err(error) = origin_stream.set_nodelay(true) {
-                            tracing::error!(?error, "failed to set origin tcp no delay");
+                            tracing::debug!(?error, "Failed to set local TCP no-delay");
                             tcp_errors().new_client_set_origin_no_delay_error.inc();
                         }
 
@@ -393,20 +405,38 @@ impl Worker {
                         match proxy_write_res {
                             Ok(Ok(_)) => {}
                             Err(_) => {
-                                tracing::error!("timeout sending proxy protocol header");
+                                log_origin_failure(
+                                    &origin_failure_logs,
+                                    details.tunnel_id,
+                                    origin_addr,
+                                    "proxy-protocol header timed out; check that the local server proxy-protocol setting matches the tunnel",
+                                );
                                 tcp_errors().new_client_write_proxy_proto_timeout.inc();
                                 return;
                             }
                             Ok(Err(error)) => {
-                                tracing::error!(?error, "failed to write proxy protocol header");
+                                log_origin_failure(
+                                    &origin_failure_logs,
+                                    details.tunnel_id,
+                                    origin_addr,
+                                    &format!(
+                                        "proxy-protocol header failed: {error}; check that the local server proxy-protocol setting matches the tunnel"
+                                    ),
+                                );
                                 tcp_errors().new_client_write_proxy_proto_error.inc();
                                 return;
                             }
                         }
+                        log_origin_recovery(
+                            &origin_failure_logs,
+                            details.tunnel_id,
+                            origin_addr,
+                        );
 
                         let tcp_client =
                             TcpClient::create_with_stats(tunn_stream, origin_stream, Some(stats))
                                 .await;
+                        let close_handle = tcp_client.close_handle();
                         let event = Event::ConnectedClient(Client {
                             id: client_id,
                             added_at: now_milli(),
@@ -421,7 +451,14 @@ impl Worker {
                             _ = cancel.cancelled() => return,
                             res = event_tx.send(event) => res,
                         };
-                    });
+                        let close = close_handle.wait().await;
+                        let _ = event_tx
+                            .send(Event::ClientClosed {
+                                id: client_id,
+                                close,
+                            })
+                            .await;
+                    }.instrument(connection_span));
                 }
                 Event::GetDetails(resp) => {
                     let _ = resp.send(self.clients.iter().map(Client::details).collect());
@@ -430,26 +467,70 @@ impl Worker {
                     self.clients.push(client);
                     self.stats.set_tcp(self.clients.len() as u32);
                 }
+                Event::ClientClosed { id, close } => {
+                    let Some(index) = self.clients.iter().position(|client| client.id == id) else {
+                        continue;
+                    };
+                    let client = self.clients.swap_remove(index);
+                    let duration_secs = now_milli().saturating_sub(client.added_at) / 1_000;
+                    let bytes = client.tcp.bytes_written();
+                    let reason = close
+                        .initiating_close
+                        .error
+                        .as_deref()
+                        .unwrap_or("connection closed");
+                    tracing::debug!(
+                        id,
+                        tunnel_id = client.tunnel_id,
+                        peer = %client.source_addr,
+                        origin = %client.origin_addr,
+                        closed_by = %close.closed_by,
+                        close_kind = ?close.initiating_close.kind,
+                        error_kind = ?close.initiating_close.error_kind,
+                        duration_secs,
+                        bytes_in = bytes.tunn_to_origin,
+                        bytes_out = bytes.origin_to_tunn,
+                        reason,
+                        "Connection from {} closed by {} after {duration_secs}s ({} bytes received, {} bytes sent)",
+                        client.source_addr,
+                        close.closed_by,
+                        bytes.tunn_to_origin,
+                        bytes.origin_to_tunn,
+                    );
+                    self.stats.set_tcp(self.clients.len() as u32);
+                }
                 Event::ClearOld => {
                     let now = now_milli();
                     self.clients.retain(|client| {
+                        if client.tcp.is_closed() {
+                            return true;
+                        }
                         let last_use = client.tcp.last_use();
 
                         let since_tunn = now.max(last_use.tunn_to_origin) - last_use.tunn_to_origin;
                         let since_orig = now.max(last_use.origin_to_tunn) - last_use.origin_to_tunn;
 
                         if 90_000 < since_tunn && 30_000 < since_orig {
-                            tracing::debug!(id = client.id, "clear old: 90s since tunnel data");
+                            tracing::debug!(
+                                id = client.id,
+                                "Removing idle connection after 90s without client data"
+                            );
                             return false;
                         }
 
                         if 90_000 < since_orig && 30_000 < since_tunn {
-                            tracing::debug!(id = client.id, "clear old: 90s since origin data");
+                            tracing::debug!(
+                                id = client.id,
+                                "Removing idle connection after 90s without local server data"
+                            );
                             return false;
                         }
 
                         if 60_000 < since_tunn && 60_000 < since_orig {
-                            tracing::debug!(id = client.id, "clear old: 60s since any data");
+                            tracing::debug!(
+                                id = client.id,
+                                "Removing idle connection after 60s without traffic"
+                            );
                             return false;
                         }
 
@@ -462,4 +543,38 @@ impl Worker {
             }
         }
     }
+}
+
+fn origin_failure_key(tunnel_id: u64, origin_addr: SocketAddr) -> String {
+    format!("{tunnel_id}:{origin_addr}")
+}
+
+fn log_origin_failure(logs: &RecoveryLog, tunnel_id: u64, origin_addr: SocketAddr, error: &str) {
+    let key = origin_failure_key(tunnel_id, origin_addr);
+    match logs.record_failure(key, now_milli()) {
+        FailureLog::Warn => tracing::warn!(
+            "Could not connect to your local server at {origin_addr} ({error}). Is it running?"
+        ),
+        FailureLog::WarnWithRepeats(repeats) => tracing::warn!(
+            "Still cannot connect to your local server at {origin_addr} ({error}; repeated {repeats} times). Is it running?"
+        ),
+        FailureLog::Debug => tracing::debug!(
+            %origin_addr,
+            tunnel_id,
+            error,
+            "Repeated local TCP server connection failure"
+        ),
+    }
+}
+
+fn log_origin_recovery(logs: &RecoveryLog, tunnel_id: u64, origin_addr: SocketAddr) {
+    let key = origin_failure_key(tunnel_id, origin_addr);
+    let Some(recovery) = logs.record_recovery(&key, now_milli()) else {
+        return;
+    };
+    let unavailable_secs = recovery.unavailable_for_ms / 1_000;
+    tracing::info!(
+        suppressed_failures = recovery.suppressed,
+        "Local server at {origin_addr} is reachable again (unavailable {unavailable_secs}s)"
+    );
 }

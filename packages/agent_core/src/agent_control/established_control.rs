@@ -196,6 +196,14 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
                     self.registered = registered.clone();
                 }
                 ControlResponse::Pong(pong) => {
+                    if self.pong_at_auth.session_expire_at.is_none()
+                        && pong.session_expire_at.is_some()
+                    {
+                        // The first authenticated pong establishes the flow baseline. Until this
+                        // arrives, SessionNotSetup is the expected startup state.
+                        self.pong_at_auth = pong.clone();
+                    }
+
                     let now = now_milli();
                     let rtt = (now.max(pong.request_now) - pong.request_now) as u32;
 
@@ -206,7 +214,8 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
                     if 10_000 < self.clock_offset.abs() {
                         tracing::warn!(
                             offset = self.clock_offset,
-                            "local timestamp if over 10 seconds off"
+                            "System clock is off by {}s. If tunnels misbehave, sync your system time",
+                            self.clock_offset.abs() / 1_000
                         );
                     }
 

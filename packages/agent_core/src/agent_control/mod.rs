@@ -251,7 +251,7 @@ impl AuthResource for AuthApi {
                 platform: current_platform(),
             })
             .await
-            .with_error(|error| tracing::error!(?error, "failed to sign and register"))?;
+            .with_error(|error| tracing::debug!(?error, "Failed to sign and register agent"))?;
 
         Ok(res)
     }

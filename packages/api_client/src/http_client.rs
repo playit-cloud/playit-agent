@@ -77,7 +77,12 @@ impl PlayitHttpClient for HttpClient {
 
             let response_txt = response.text().await?;
             let result: ApiResult<Res, Err> = serde_json::from_str(&response_txt).map_err(|e| {
-                tracing::error!("failed to parse json:\n{}", response_txt);
+                let preview: String = response_txt.chars().take(512).collect();
+                tracing::debug!(
+                    status = %response_status,
+                    body = %preview,
+                    "Failed to parse API response"
+                );
                 HttpClientError::ParseError(e, response_status, response_txt.to_string())
             })?;
 
@@ -86,7 +91,11 @@ impl PlayitHttpClient for HttpClient {
         .await;
 
         if let Err(error) = &res {
-            tracing::error!(?error, request = %std::any::type_name::<Req>(), "API call failed");
+            tracing::debug!(
+                error = %error,
+                request = %std::any::type_name::<Req>(),
+                "API call failed"
+            );
         }
 
         res
@@ -104,5 +113,18 @@ pub enum HttpClientError {
 impl From<reqwest::Error> for HttpClientError {
     fn from(value: reqwest::Error) -> Self {
         HttpClientError::RequestError(value)
+    }
+}
+
+impl std::fmt::Display for HttpClientError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SerializeError(error) => write!(f, "failed to serialize request: {error}"),
+            Self::ParseError(error, status, _) => {
+                write!(f, "failed to parse response with status {status}: {error}")
+            }
+            Self::RequestError(error) => write!(f, "request failed: {error}"),
+            Self::TooManyRequests => f.write_str("API rate limit exceeded"),
+        }
     }
 }

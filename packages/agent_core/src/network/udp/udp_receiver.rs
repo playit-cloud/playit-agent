@@ -125,7 +125,7 @@ impl<I: PacketRx> Task<I> {
                 Err(error) => {
                     let now = tokio::time::Instant::now();
                     if next_error_log_allowed <= now {
-                        tracing::warn!(?error, id = self.id, "failed to receive UDP packet");
+                        tracing::debug!(?error, id = self.id, "Failed to receive UDP packet");
                         next_error_log_allowed = now + Duration::from_secs(1);
                     }
 

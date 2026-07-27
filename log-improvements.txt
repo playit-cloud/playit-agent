@@ -1,0 +1,477 @@
+================================================================================
+PLAYIT AGENT — LOG IMPROVEMENT PLAN
+================================================================================
+Date: 2026-07-24
+Scope: packages/agent_core, packages/playitd, packages/playit-cli,
+       packages/api_client, packages/playit-ipc
+
+--------------------------------------------------------------------------------
+1. WHY THIS MATTERS / WHERE USERS SEE LOGS
+--------------------------------------------------------------------------------
+Logs in this project are not developer-only output. They are shown directly to
+end users (mostly game-server hosts, often non-technical) on four surfaces:
+
+  a) playitd stderr — Docker (docker/entrypoint.sh runs playitd with logs to
+     stderr) and anyone running playitd by hand. This is the primary surface
+     for Docker users and the one where confusion is worst.
+  b) playitd log file — /var/log/playit/playit.log for systemd/OpenRC installs
+     (linux/playit.service, linux/playit.openrc).
+  c) playit-cli TUI — the "Service Logs" panel in tui_app.rs renders the last
+     lines of everything the daemon broadcasts over IPC (logging.rs
+     IpcBroadcastLayer), color-coded by level.
+  d) playit-cli stdout mode — `playit -s` / `playit attach -s` prints the same
+     IPC log stream line by line.
+
+Because every tracing event in the daemon is fanned out to users, log level IS
+the user interface: [ERROR] in red means "something is broken" to a user, even
+when the code only meant "one of several connection attempts didn't work".
+
+--------------------------------------------------------------------------------
+2. AUDIT: WHAT A USER SEES TODAY ON A NORMAL, SUCCESSFUL STARTUP
+--------------------------------------------------------------------------------
+Traced through the actual startup path. On a typical IPv4-only network (the
+majority of home connections), a HEALTHY startup produces:
+
+  INFO  Starting playitd  socket_path: None, secret_path: ...   (daemon.rs:383)
+        - "socket_path: None" is a Debug-print of the CLI Option, not the
+          resolved path. Looks broken; the resolved path exists in
+          StatusContext but isn't used here.
+
+  Then, from AddressSelector (agent_control/address_selector.rs), because
+  AuthApi::get_control_addresses() (agent_control/mod.rs:259-274) puts ALL
+  IPv6 targets BEFORE IPv4 targets:
+
+  ERROR failed to send initial ping        (address_selector.rs:47)  and/or
+  ERROR timeout waiting for pong           (address_selector.rs:116)
+  ERROR failed to ping tunnel server       (address_selector.rs:119)
+        - repeated once per unreachable IPv6 address, every startup, on
+          networks with no IPv6. Pure noise on the happy path.
+
+  When the IPv4 attempt then SUCCEEDS:
+  DEBUG got initial pong from tunnel server (address_selector.rs:81) — hidden
+  DEBUG authenticate control                (established_control.rs:177) — hidden
+  DEBUG agent registered                    (established_control.rs:195) — hidden
+  DEBUG udp session details received        (playit_agent.rs:154) — hidden
+
+  Then on the FIRST control loop iteration:
+  WARN  control session expired; reconnecting  reason=SessionNotSetup
+        (maintained_control.rs:126)
+        - This fires on EVERY startup: the initial pre-auth pong always has
+          session_expire_at == None, so EstablishedControl::is_expired()
+          (established_control.rs:124-135) returns SessionNotSetup the first
+          time update() runs. This is the startup warning users report.
+          Nothing was expired; this is the normal first authentication.
+
+  The only INFO-level "success" is daemon.rs:870 "playit connected; tunnels
+  loaded" — but it comes from the API polling loop (broadcast_agent_state),
+  fires up to 3s later, is phrased with raw structured fields
+  (agent_id=... tunnel_count=...), and does not exist at all for users of
+  agent_core outside playitd.
+
+Net effect: a perfectly working agent prints 1-6 ERRORs, a WARN, and no
+human-readable "you are connected" — the exact confusion reported.
+
+--------------------------------------------------------------------------------
+3. AUDIT: OTHER PROBLEM AREAS (with locations)
+--------------------------------------------------------------------------------
+3.1 No tunnel address feedback
+    Users' #1 question is "what address do people connect to?". The daemon
+    knows (broadcast_agent_state builds TunnelState with display_address and
+    destination, daemon.rs:816-839) but never logs it. Only the TUI shows it;
+    Docker/stdout users never see their tunnel addresses in logs.
+
+3.2 Reconnect/offline spam with no state transitions
+    When the network drops while running:
+      - "failed to send ping" ERROR up to ~1/sec (maintained_control.rs:150)
+      - "timeout waiting for pong" WARN repeatedly (maintained_control.rs:228)
+      - "Failed to load agent data" ERROR every 3s (daemon.rs:895)
+      - "failed to reload_control_addr" ERROR every 30s (playit_agent.rs:137)
+    There is no single "connection to playit.gg lost, retrying…" and no
+    "connection restored (offline for Xs)". Users see an unbounded wall of
+    different-looking errors for one condition, and no confirmation when it
+    heals (it heals silently at DEBUG).
+
+3.3 Per-connection noise at INFO
+    tcp_clients.rs:194: tracing::info!(?details, id = client_id, "New TCP
+    Client") dumps the entire NewClient struct (peer addr, claim instruction
+    internals) on every player join. In the TUI/stdout stream this is the
+    loudest recurring line, it leaks protocol internals users can't read, and
+    it burns the daemon's global log rate budget (2/sec, burst 32 — see 3.5),
+    which can starve genuinely important messages.
+
+3.4 Level misuse: transient/retryable events logged as ERROR
+    Everything in the "expected retry" category is ERROR today:
+      - address_selector.rs (all listed above)
+      - connected_control.rs:113,117,127 (retry loop internals: "timeout
+        waiting for register response" fires inside a 5x retry loop)
+      - maintained_control.rs:118,134,150,174,214
+      - api errors: http_client.rs:89 logs EVERY API call failure as ERROR
+        including ApiError::Fail responses that callers handle as normal flow
+        (e.g. claim polling in playit-cli waits on Fail responses), and
+        http_client.rs:80 dumps the full HTTP response body into the log.
+    Meanwhile REAL user-action problems (invalid secret, agent over limit)
+    are logged as WARN in daemon.rs:565,596.
+
+3.5 The rate limiter drops messages silently and indiscriminately
+    playitd/src/logging.rs: a single global limiter (2/sec, burst 32) filters
+    ALL events for BOTH the file/stderr writer and the IPC stream. A burst of
+    routine INFO (e.g. 40 players joining) silently swallows a following
+    ERROR. Nothing is emitted to indicate messages were dropped.
+
+3.6 Message text quality
+      - Typos/dev-speak shown to users:
+        "Tunnel server provide miss match protol versions..." (tcp_clients.rs:224)
+        "local timestamp if over 10 seconds off" (established_control.rs:209)
+        "failed to reload_control_addr" (playit_agent.rs:137)
+        "clear old: 90s since tunnel data" (tcp_clients.rs:442-452, DEBUG but
+        still broadcast if the filter is lowered)
+        leftover debug field `test = ?()` (address_selector.rs:103)
+        "no Ctrl+C handler set, closing program" (signal_handle.rs:68)
+      - Inconsistent voice: "Starting playitd" vs "failed to ping tunnel
+        server" vs "New TCP Client" vs "playit connected; tunnels loaded".
+      - Structured-field dumps (?error, ?details, ?other) render raw Rust
+        Debug output in front of users on every surface.
+
+3.7 TCP connection closes are logged as context-free errors, with no
+    indication of WHICH side closed
+    When an established TCP connection ends, the user often sees:
+      ERROR failed to read data   error=Os { code: 104, kind:
+            ConnectionReset, … }                       (tcp_pipe.rs:144)
+      ERROR failed to write data  …BrokenPipe…         (tcp_pipe.rs:155)
+    Problems:
+      - A player quitting abruptly (ConnectionReset) or the local server
+        dropping a connection is NORMAL lifecycle, not an error — yet it is
+        the most common red line users see during regular play.
+      - The message carries no client id, peer address, tunnel, or origin
+        address (the pipe task is spawned without a tracing span,
+        tcp_pipe.rs:69-79), so even at the right level it is undiagnosable.
+      - Crucially, it never says which side closed: the tunnel/client side
+        (playit server / game client) or the origin side (the user's local
+        server). That distinction is THE debugging signal — "your local
+        server closed the connection" vs "the client disconnected" point at
+        completely different fixes. The information already exists: each
+        pipe knows its PipeDirection (tcp_pipe.rs:16-21) and whether the
+        close came from its read half or its write half; it just isn't used
+        for logging (direction is only used for stats routing).
+      - Clean closes (EOF, tcp_pipe.rs:150) are DEBUG with no context, and
+        there is no per-connection "closed" summary at all. Closed clients
+        linger in TcpClients until the 60-90s idle sweep whose logs are
+        cryptic ("clear old: 90s since tunnel data", tcp_clients.rs:442-452).
+      - Half-close is not propagated: on EOF one pipe just stops; the writer
+        side is never shutdown(), and the paired pipe keeps running until
+        it too dies or the idle sweep reaps it — which also delays/garbles
+        any close reporting.
+
+3.8 IPC/TUI rendering details
+      - MessageVisitor (playitd/src/logging.rs:16-46) appends fields after
+        the message: "New TCP Client, details=NewClient { … }, id=3" — long
+        unwrapped lines in a 10-row panel (tui_app.rs render_logs has no
+        wrapping and drops the overflow).
+      - The TUI shows the module target ("tcp_clients:") which means nothing
+        to users.
+      - The TUI displays DEBUG/TRACE too if PLAYIT_LOG is lowered; the panel
+        should stay curated regardless of the daemon's file-log verbosity.
+
+--------------------------------------------------------------------------------
+4. TARGET DESIGN
+--------------------------------------------------------------------------------
+4.1 Level policy (write this into CONTRIBUTING or a module doc, enforce in
+    review):
+
+    ERROR — the agent cannot do its job and/or the user must act.
+            Examples: invalid/expired secret, account over agent limit,
+            could not bind a socket, all connection attempts exhausted.
+            Rule of thumb: if the agent will silently recover, it is NOT an
+            error.
+    WARN  — degraded but self-recovering, or suspicious config worth a look.
+            Examples: connection lost (reconnecting), clock skew, tunnel
+            hostname doesn't resolve, rate limit clamped.
+            Every WARN about a transient state MUST be paired with an INFO
+            when the state recovers.
+    INFO  — lifecycle milestones a user should see, once per transition:
+            starting, connected, tunnels listed, tunnel config changed,
+            reconnected, shutting down, shutdown complete.
+    DEBUG — everything developers need: retries, individual attempts,
+            per-connection lifecycle, keep-alives, protocol details.
+    TRACE — packet-level noise.
+
+4.2 Message style guide:
+      - Full sentences or clear phrases, sentence case, no trailing period
+        needed. Never module/function names, never Rust Debug dumps at
+        INFO/WARN/ERROR (keep ?error fields at DEBUG; at user levels convert
+        the error to a human string).
+      - Say what happened + what it means + (for WARN/ERROR) what happens
+        next or what the user should do. Examples:
+          "Connected to playit.gg (tunnel server 209.x.x.x, ping 34ms)"
+          "Tunnel ready: craft.ply.gg:25565 -> 127.0.0.1:25565"
+          "Lost connection to playit.gg, reconnecting…"
+          "Reconnected to playit.gg (was offline 42s)"
+          "Secret key is no longer valid. Run `playit setup` to fix."
+      - One INFO per state transition, not per attempt/iteration.
+
+4.3 Connection-state tracking instead of per-attempt logging
+    Introduce a small state machine (in MaintainedControl or a wrapper) with
+    states: Connecting / Connected / Reconnecting / Offline. Log ONLY on
+    transitions:
+      Connecting  -> Connected     INFO  "Connected to playit.gg …"
+      Connected   -> Reconnecting  WARN  "Lost connection … reconnecting"
+      Reconnecting-> Connected     INFO  "Reconnected … (offline Xs)"
+      Reconnecting after N minutes ERROR "Still unable to reach playit.gg
+                                          after 5m. Check your internet
+                                          connection / firewall (UDP 5525)."
+    All the per-attempt messages inside the transitions drop to DEBUG.
+
+--------------------------------------------------------------------------------
+5. CONCRETE CHANGES (ordered, by file)
+--------------------------------------------------------------------------------
+PHASE 1 — kill the false alarms, add the success signal (small, high value)
+
+  1. agent_control/address_selector.rs
+     - Demote ALL per-address failures to DEBUG (lines 47, 64, 72, 92, 100,
+       103, 108, 116, 119). Remove the stray `test = ?()` field (103).
+     - Add one WARN only when a whole address family fails but another
+       succeeds is NOT worth a warn — say nothing; add context to the final
+       SetupError::FailedToConnect instead (which addresses were tried).
+     - Optional quick win: try IPv4 first, or probe families concurrently,
+       since IPv6-first ordering is what manufactures the failures
+       (mod.rs get_control_addresses puts targets6 first). At minimum skip
+       IPv6 targets when DualStackUdpSocket.ip6 is None.
+     - On success, INFO once: "Connected to playit.gg tunnel server
+       {addr} (ping {rtt}ms)". (Either here or from the state machine in
+       4.3 — pick ONE place.)
+
+  2. agent_control/maintained_control.rs
+     - update() line 126: do not WARN for ExpiredReason::SessionNotSetup on
+       the first authentication — that is the normal path. Either
+       authenticate before entering the update loop's "expired" branch, or
+       special-case SessionNotSetup-at-startup to DEBUG
+       ("performing initial session authentication").
+     - Lines 118/134/150/174/214: demote individual send/parse failures to
+       DEBUG; feed them into the connection state machine (4.3) which owns
+       the single user-facing WARN/INFO pair.
+     - Line 228 "timeout waiting for pong": this is the real "connection
+       lost" trigger — route it through the state machine transition WARN
+       with the friendly message, not a bare "timeout waiting for pong".
+
+  3. agent_control/connected_control.rs
+     - Lines 113, 117, 127, 165: DEBUG (they are inside retry loops; the
+       caller reports the final outcome).
+     - Fix "mesage" variable typo while touching the file.
+
+  4. established_control.rs
+     - Line 195 "agent registered": keep DEBUG (the state machine logs the
+       user-facing connect); line 207 clock warning: keep WARN but reword:
+       "System clock is off by {n}s. If tunnels misbehave, sync your system
+       time." Fix the "if"->"is" typo.
+
+  5. playitd/src/daemon.rs
+     - Line 383 "Starting playitd": log the RESOLVED socket path and secret
+       path from status_context (avoid `socket_path: None`), plus version:
+       "Starting playitd v1.0.10 (socket /run/playit/playitd.sock, secret
+       /etc/playit/playit.toml)".
+     - Lines 870-889: reword the first Running summary to plain language and
+       ALSO log each tunnel at INFO once (and whenever the set changes):
+         "Tunnel ready: {display_address} -> {destination}"
+         "Tunnel disabled: {display_address} ({reason})"
+       This gives Docker/stdout users their addresses. Keep the count-style
+       structured fields as fields, but make the message text self-standing.
+     - Line 895 "Failed to load agent data" (every 3s while offline): log
+       state-change only — WARN on first failure ("Cannot reach the playit
+       API, retrying…"), DEBUG for repeats, INFO on recovery.
+     - Lines 565, 596: invalid secret / over-limit deserve ERROR (user must
+       act), with the existing good remediation text
+       (setup_error_user_message already has the right wording — reuse it).
+
+  6. api_client/src/http_client.rs
+     - Line 89: demote to DEBUG. Callers decide user-facing severity (they
+       already do: daemon maps SetupError to friendly text; claim polling
+       treats Fail as normal).
+     - Line 80: demote to DEBUG and truncate the body (e.g. 512 bytes).
+
+  7. agent_core/src/playit_agent.rs
+     - Line 137 "failed to reload_control_addr": DEBUG (routine 30s check),
+       state machine covers real outages.
+
+PHASE 2 — per-connection noise & message quality
+
+  8. network/tcp/tcp_clients.rs
+     - Line 194 New TCP Client: change to DEBUG with the struct dump; if we
+       want user visibility of player joins, add a compact INFO with only
+       peer IP and tunnel: "New connection from {peer} on {tunnel}" — but
+       consider making that opt-in (PLAYIT_LOG=info,connections=on style or
+       just leave at DEBUG; the TUI already shows live connection counts).
+     - Lines 223-241, 261-401 (claim/connect failures): these matter to
+       users when their local server is down. Collapse to ONE clear WARN per
+       failure with plain text: "Could not connect to your local server at
+       {origin_addr} ({error}). Is it running?" — and rate-dedupe per tunnel
+       (first occurrence + "repeated N times" summary) rather than per
+       connection attempt.
+     - Fix typo line 224 ("provide miss match protol").
+     - Lines 442-452 idle cleanup: keep DEBUG, reword to plain English.
+
+  9. TCP close attribution — report WHICH side closed the connection
+     (tcp_pipe.rs, tcp_client.rs, tcp_clients.rs; fixes 3.7)
+
+     a) Classify the close in the pipe worker (tcp_pipe.rs). Replace the
+        bare break-with-error-log with a computed close reason:
+          enum PipeClosed { Eof, ReadError(io::Error),
+                            WriteError(io::Error), Cancelled }
+        Combine it with the pipe's existing PipeDirection to derive who
+        closed, from the agent's point of view:
+          TunnelToOrigin + Eof/ReadError   -> closed by tunnel/client side
+          TunnelToOrigin + WriteError      -> closed by local server
+          OriginToTunnel + Eof/ReadError   -> closed by local server
+          OriginToTunnel + WriteError      -> closed by tunnel/client side
+        Store the outcome in the pipe's Shared state (alongside
+        last_activity) so TcpClient can read it after the fact, e.g.
+        OnceLock<PipeClosed> or a small atomic enum + captured error text.
+
+     b) Expose it from TcpClient (tcp_client.rs): add
+        close_reason() -> Option<ClosedBy> that inspects both pipes and
+        resolves which side initiated (whichever pipe finished first with
+        Eof/ReadError wins; WriteError on one side corroborates the other).
+        Track a created_at timestamp so duration can be reported.
+
+     c) Treat expected close errors as closes, not errors. io::ErrorKind
+        ConnectionReset / BrokenPipe / ConnectionAborted / UnexpectedEof are
+        normal ends of a connection: log at DEBUG inside the pipe (now with
+        direction + reason), never ERROR. Only genuinely unexpected kinds
+        (e.g. OutOfMemory, permission) stay WARN. All pipe logs today
+        (tcp_pipe.rs:126,137,144,150,155) become DEBUG and self-describing:
+          "pipe closed: local server -> tunnel, reason=connection reset by
+           local server"
+
+     d) Give pipe tasks a tracing span. Spawn the two pipes inside
+        tracing::debug_span!("tcp_client", id, tunnel_id, peer = %source,
+        origin = %origin_addr) (instrument the futures in
+        TcpClient::create_with_stats — the span fields are all available at
+        the tcp_clients.rs:407 call site; pass them in or construct the
+        span there). Every DEBUG line above then carries full context.
+
+     e) Emit ONE user-facing close summary per connection, promptly.
+        Have TcpClient signal completion (the shared CancellationToken +
+        a oneshot/Notify when the first pipe finishes, or let TcpClients
+        poll is_closed() cheaply on its existing 15s sweep — prefer the
+        notification so the log is timely). On close, TcpClients logs a
+        single line and removes the client immediately instead of waiting
+        for the 60-90s idle sweep:
+          DEBUG (default) / INFO (matching whatever visibility item 8
+          chooses for "new connection"):
+          "Connection from {peer} closed by {game client | local server |
+           tunnel} ({duration}s, {bytes_in} received, {bytes_out} sent)"
+        Wording note: say "game client" / "local server" — never "origin"
+        or "claim" in user-facing text. When the close came from the tunnel
+        side we cannot distinguish the remote game client from the playit
+        tunnel infrastructure, so phrase it as the client side generically
+        ("closed by the connecting client") unless the error kind implies
+        infrastructure (e.g. tunnel keep-alive loss elsewhere).
+
+     f) Propagate half-close correctly so attribution is accurate. On Eof,
+        call shutdown() on the write half (`to`) and keep the paired pipe
+        running (a client may legitimately half-close and still receive
+        data); only on read/write ERROR cancel the shared token to tear
+        down both pipes. This makes "who closed first" well-defined and
+        prevents zombie half-open clients that today only die via the
+        idle sweep — and lets the idle-sweep DEBUG messages
+        (tcp_clients.rs:442-452) become the rare case they were meant for.
+
+     g) Keep the tcp_errors() counters as-is (they feed diagnostics), but
+        consider adding closed_by_origin / closed_by_tunnel counters so
+        support can see the ratio without log access.
+
+ 10. network/udp/udp_clients.rs / udp_receiver.rs / origin_lookup.rs /
+     name_lookup.rs
+     - Same treatment: local-origin failures become actionable WARNs with
+       the target address in plain text; per-packet issues DEBUG.
+     - origin_lookup.rs:122 hostname resolution failure: good content
+       already; ensure it dedupes (fires per resolve attempt today).
+
+ 11. playitd/src/logging.rs (rate limiting + formatting)
+     - Filter the IPC/file stream by level severity when budget is tight:
+       never drop WARN/ERROR due to rate limiting; only rate-limit
+       INFO-and-below.
+     - When events are dropped, emit a synthetic entry: "…{n} log messages
+       suppressed (rate limit)".
+     - MessageVisitor: cap rendered field length; skip fields at INFO+ whose
+       names start with a convention (or simply prefer self-contained
+       message text per style guide so fields are additive, not required).
+
+PHASE 3 — surface polish
+
+ 12. playit-cli TUI (tui_app.rs)
+     - Filter the Service Logs panel to INFO+ regardless of daemon filter
+       (keep everything in the buffer; maybe add a keybind to toggle debug).
+     - Drop the module target prefix from rendered lines; show time + level
+       + message. Enable wrapping or truncate with ellipsis.
+     - Consider a dedicated one-line connection status ("Connected — 3
+       tunnels — ping 34ms") in the header fed by lifecycle, so users don't
+       need to read logs at all for the happy path.
+ 13. playit-cli stdout mode (client.rs apply_stdout_update)
+     - Same INFO+ default; honor PLAYIT_LOG for people who want more.
+     - Shorter timestamp (local HH:MM:SS, not RFC3339 micros).
+ 14. signal_handle.rs:68 "no Ctrl+C handler set, closing program" ->
+     "Shutting down (Ctrl+C)". Line 73 -> "Force exiting".
+ 15. docker/entrypoint.sh: no change needed, but verify the Phase 1 result
+     reads well end-to-end in `docker logs`: the goal is that a fresh Docker
+     run shows exactly:
+        Starting playitd v…
+        Connected to playit.gg (…)
+        Tunnel ready: xxx.ply.gg:12345 -> 127.0.0.1:25565
+     and nothing red.
+
+--------------------------------------------------------------------------------
+6. TESTING / VERIFICATION PLAN
+--------------------------------------------------------------------------------
+  - Unit tests: setup_error_user_message tests already exist (daemon.rs
+    tests) — extend the pattern: add tests asserting the connection state
+    machine emits exactly one WARN on loss and one INFO on recovery
+    (capture with tracing_subscriber test writer or tracing-test).
+  - Add a "startup log transcript" integration test: run the daemon against
+    a mock/unreachable API with a captured subscriber and assert NO
+    WARN/ERROR events occur before the first connection failure would be
+    definitive, and that a successful mock connect yields the Connected INFO.
+  - Manual matrix (documented in the PR):
+      * IPv4-only network, valid secret  -> zero WARN/ERROR, Connected+Tunnel
+        lines present (stderr + TUI + `playit -s`).
+      * Pull network cable mid-run       -> single WARN, silence, single INFO
+        on recovery with offline duration.
+      * Invalid secret                    -> single ERROR with `playit setup`
+        remediation, daemon state = HasInvalidSecret.
+      * Local game server down, player connects -> one actionable WARN
+        naming the local address, deduped on retry storm.
+      * Player connects then quits abruptly -> NO ERROR lines; one close
+        summary attributing the close to the client side.
+      * Kill the local server while a player is connected -> close summary
+        attributing the close to the local server.
+      * Docker first-run                  -> transcript matches item 15.
+  - Close-attribution unit tests (tcp_pipe/tcp_client are generic over
+    AsyncRead/AsyncWrite, so this is testable with tokio::io::duplex):
+      * origin read returns Ok(0)          -> ClosedBy::LocalServer, Eof
+      * tunnel read returns ConnectionReset-> ClosedBy::Client, reset
+      * origin write returns BrokenPipe    -> ClosedBy::LocalServer
+      * Eof on one direction propagates shutdown() to the writer and the
+        opposite pipe keeps flowing (half-close preserved)
+      * no WARN/ERROR events emitted for reset/broken-pipe closes.
+  - Grep gate: after the change, `grep -rn 'error!' packages/agent_core`
+    should only match conditions that end the agent or require user action;
+    review each remaining hit against the policy in 4.1.
+
+--------------------------------------------------------------------------------
+7. RISKS / NOTES
+--------------------------------------------------------------------------------
+  - Demoting messages to DEBUG hides them from the default file log too.
+    Support workflows that relied on ERROR spam for diagnosis should use
+    PLAYIT_LOG=debug; consider defaulting the FILE log (not the IPC/user
+    stream) to debug level to keep diagnostics while cleaning the user view
+    (two filters instead of the current shared one in init_tracing,
+    daemon.rs:1262-1305 — the layer split already exists, only the filter
+    placement changes).
+  - The connection state machine must be careful not to flap (require ~2
+    consecutive pong timeouts before declaring loss; the 6s pong timeout in
+    maintained_control.rs:227 is a reasonable existing signal).
+  - Keep structured fields on all events (they cost nothing in the file log
+    and help support); the rule is only that the MESSAGE TEXT must stand on
+    its own for users.
+  - agent_core is published as a library; changing log levels is not a
+    breaking API change but note it in the changelog since downstream
+    consumers may filter on current levels.

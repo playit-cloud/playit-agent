@@ -5,6 +5,7 @@ pub mod ip_bytes;
 pub mod key_to_id;
 pub mod name_lookup;
 pub mod non_overlapping;
+pub(crate) mod recovery_log;
 pub mod shuffle;
 
 pub fn now_milli() -> u64 {

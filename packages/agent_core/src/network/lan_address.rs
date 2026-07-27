@@ -44,7 +44,7 @@ impl LanAddress {
         tracing::debug!(is_loopback, host_ip = %host.ip(), special_lan_ip, "not using special lan address");
         match TcpStream::connect(host).await {
             Err(e) => {
-                tracing::error!(
+                tracing::debug!(
                     "Failed to establish connection for flow {:?} {:?}. Is your server running?",
                     (peer, host),
                     e

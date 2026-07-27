@@ -21,6 +21,46 @@ pub struct MaintainedControl<I: PacketIO, A: AuthResource> {
     last_pong: u64,
     last_udp_auth: u64,
     last_control_targets: Vec<SocketAddr>,
+    connection_state: ControlConnectionState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ControlConnectionState {
+    Connecting,
+    Connected,
+    Reconnecting { since: u64 },
+    Offline { since: u64 },
+}
+
+const OFFLINE_ERROR_AFTER_MS: u64 = 5 * 60 * 1_000;
+
+impl ControlConnectionState {
+    fn disconnected(self, now_ms: u64) -> (Self, bool) {
+        if self == Self::Connected {
+            (Self::Reconnecting { since: now_ms }, true)
+        } else {
+            (self, false)
+        }
+    }
+
+    fn connected(self) -> (Self, Option<u64>) {
+        let outage_started = match self {
+            Self::Reconnecting { since } | Self::Offline { since } => Some(since),
+            Self::Connecting | Self::Connected => None,
+        };
+        (Self::Connected, outage_started)
+    }
+
+    fn escalated(self, now_ms: u64) -> (Self, bool) {
+        match self {
+            Self::Reconnecting { since }
+                if now_ms.saturating_sub(since) >= OFFLINE_ERROR_AFTER_MS =>
+            {
+                (Self::Offline { since }, true)
+            }
+            _ => (self, false),
+        }
+    }
 }
 
 impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
@@ -31,19 +71,25 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             .try_timeout(Duration::from_secs(10))
             .await?;
 
+        let control_addr = setup.control_addr();
+        let initial_pong = setup.pong();
+        let initial_rtt = now_milli().saturating_sub(initial_pong.request_now);
         let control_channel = setup
             .auth_into_established(auth)
             .try_timeout(Duration::from_secs(10))
             .await?;
 
-        Ok(MaintainedControl {
+        let mut maintained = MaintainedControl {
             control: control_channel,
             last_keep_alive: 0,
             last_ping: 0,
-            last_pong: 0,
+            last_pong: now_milli(),
             last_udp_auth: 0,
             last_control_targets: addresses,
-        })
+            connection_state: ControlConnectionState::Connecting,
+        };
+        maintained.mark_connected(control_addr, initial_rtt);
+        Ok(maintained)
     }
 
     pub async fn reload_control_addr<E: Into<SetupError>, C: Future<Output = Result<I, E>>>(
@@ -97,7 +143,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             .try_timeout(Duration::from_secs(10))
             .await?;
 
-        tracing::info!(old = %self.control.conn.pong_latest.tunnel_addr, new = %connected.pong_latest.tunnel_addr, "update control address");
+        tracing::debug!(old = %self.control.conn.pong_latest.tunnel_addr, new = %connected.pong_latest.tunnel_addr, "Updated control address");
         connected.reset_established(&mut self.control, registered);
 
         Ok(true)
@@ -115,7 +161,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             .try_timeout(Duration::from_secs(5))
             .await
         {
-            tracing::error!(?error, "failed to send setup udp channel request");
+            tracing::debug!(?error, "Failed to send UDP channel setup request");
         }
 
         true
@@ -123,17 +169,26 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
 
     pub async fn update(&mut self) -> Option<TunnelControlEvent> {
         if let Some(reason) = self.control.is_expired() {
-            tracing::warn!(?reason, "control session expired; reconnecting");
+            if reason == super::established_control::ExpiredReason::SessionNotSetup {
+                tracing::debug!("Waiting for the initial authenticated pong");
+            } else {
+                self.mark_disconnected();
+                if let Err(error) = self
+                    .control
+                    .authenticate()
+                    .try_timeout(Duration::from_secs(5))
+                    .await
+                {
+                    tracing::debug!(?error, "Failed to reauthenticate control session");
+                    self.maybe_mark_offline();
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    return None;
+                }
 
-            if let Err(error) = self
-                .control
-                .authenticate()
-                .try_timeout(Duration::from_secs(5))
-                .await
-            {
-                tracing::error!(?error, "failed to authenticate");
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                return None;
+                self.last_pong = now_milli();
+                let addr = self.control.conn.control_addr();
+                let ping = self.control.current_ping.unwrap_or_default() as u64;
+                self.mark_connected(addr, ping);
             }
         }
 
@@ -147,7 +202,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                 .try_timeout(Duration::from_secs(1))
                 .await
             {
-                tracing::error!(?error, "failed to send ping");
+                tracing::debug!(?error, "Failed to send ping");
             }
         }
 
@@ -171,7 +226,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                 .try_timeout(Duration::from_secs(1))
                 .await
             {
-                tracing::error!(?error, "failed to send KeepAlive");
+                tracing::debug!(?error, "Failed to send keep-alive");
             }
         }
 
@@ -211,7 +266,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                     }
                 },
                 Ok(Err(error)) => {
-                    tracing::error!(?error, "failed to parse response");
+                    tracing::debug!(?error, "Failed to parse control response");
                 }
                 Err(_) => {
                     timeouts += 1;
@@ -225,13 +280,80 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         }
 
         if self.last_pong != 0 && now_milli() - self.last_pong > 6_000 {
-            tracing::warn!("timeout waiting for pong");
-
+            self.mark_disconnected();
             self.last_pong = 0;
             self.control.set_expired();
         }
 
+        self.maybe_mark_offline();
         None
+    }
+
+    fn mark_disconnected(&mut self) {
+        let (state, changed) = self.connection_state.disconnected(now_milli());
+        self.connection_state = state;
+        if changed {
+            tracing::warn!("Lost connection to playit.gg, reconnecting");
+        }
+    }
+
+    fn mark_connected(&mut self, address: SocketAddr, rtt_ms: u64) {
+        let previous = self.connection_state;
+        let (state, outage_started) = previous.connected();
+        self.connection_state = state;
+
+        match previous {
+            ControlConnectionState::Connecting => {
+                tracing::info!("Connected to playit.gg (tunnel server {address}, ping {rtt_ms}ms)")
+            }
+            ControlConnectionState::Reconnecting { since }
+            | ControlConnectionState::Offline { since } => {
+                let offline_secs =
+                    now_milli().saturating_sub(outage_started.unwrap_or(since)) / 1_000;
+                tracing::info!(
+                    "Reconnected to playit.gg (was offline {offline_secs}s, tunnel server {address}, ping {rtt_ms}ms)"
+                );
+            }
+            ControlConnectionState::Connected => {}
+        }
+    }
+
+    fn maybe_mark_offline(&mut self) {
+        let (state, changed) = self.connection_state.escalated(now_milli());
+        self.connection_state = state;
+        if changed {
+            tracing::error!(
+                "Still unable to reach playit.gg after 5m. Check your internet connection and firewall rules for UDP port 5525"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ControlConnectionState, OFFLINE_ERROR_AFTER_MS};
+
+    #[test]
+    fn connection_state_emits_one_loss_and_one_escalation() {
+        let (state, lost) = ControlConnectionState::Connected.disconnected(10);
+        assert!(lost);
+        let (state, lost_again) = state.disconnected(20);
+        assert!(!lost_again);
+
+        let (state, early) = state.escalated(10 + OFFLINE_ERROR_AFTER_MS - 1);
+        assert!(!early);
+        let (state, escalated) = state.escalated(10 + OFFLINE_ERROR_AFTER_MS);
+        assert!(escalated);
+        let (_, escalated_again) = state.escalated(10 + OFFLINE_ERROR_AFTER_MS + 1);
+        assert!(!escalated_again);
+    }
+
+    #[test]
+    fn connection_state_retains_outage_start_for_recovery() {
+        let (state, _) = ControlConnectionState::Connected.disconnected(42);
+        let (state, since) = state.connected();
+        assert_eq!(state, ControlConnectionState::Connected);
+        assert_eq!(since, Some(42));
     }
 }
 

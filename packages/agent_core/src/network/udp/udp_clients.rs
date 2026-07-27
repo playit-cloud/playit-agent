@@ -20,6 +20,10 @@ use crate::network::{
     lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
 };
 use crate::stats::AgentStats;
+use crate::utils::{
+    now_milli,
+    recovery_log::{FailureLog, RecoveryLog},
+};
 use playit_agent_proto::udp_proto::UdpFlow;
 
 use super::{
@@ -40,6 +44,7 @@ pub struct UdpClients {
 
     new_client_limiter: DefaultDirectRateLimiter,
     stats: AgentStats,
+    origin_failure_logs: RecoveryLog,
 }
 
 struct Client {
@@ -115,6 +120,7 @@ impl UdpClients {
             rx: origin_rx,
             new_client_limiter: RateLimiter::direct(build_quota(&settings)),
             stats,
+            origin_failure_logs: RecoveryLog::default(),
         }
     }
 
@@ -274,15 +280,39 @@ impl UdpClients {
             && origin.proxy_protocol.is_none();
 
         let socket = match key.create_socket(special_lan, target_addr).await {
-            Ok(socket) => Arc::new(socket),
+            Ok(socket) => {
+                let failure_key = format!("{}:{target_addr}", key.tunnel_id);
+                if let Some(recovery) = self
+                    .origin_failure_logs
+                    .record_recovery(&failure_key, now_milli())
+                {
+                    let unavailable_secs = recovery.unavailable_for_ms / 1_000;
+                    tracing::info!(
+                        suppressed_failures = recovery.suppressed,
+                        "Local UDP server at {target_addr} is reachable again (unavailable {unavailable_secs}s)"
+                    );
+                }
+                Arc::new(socket)
+            }
             Err(error) => {
-                tracing::error!(
-                    ?error,
-                    target_addr = %target_addr,
-                    source_addr = %key.source_addr,
-                    tunnel_id = key.tunnel_id,
-                    "failed to open local UDP socket for tunnel traffic"
-                );
+                let failure_key = format!("{}:{target_addr}", key.tunnel_id);
+                match self
+                    .origin_failure_logs
+                    .record_failure(failure_key, now_milli())
+                {
+                    FailureLog::Warn => tracing::warn!(
+                        "Could not open a UDP connection to your local server at {target_addr} ({error}). Check the tunnel address and firewall"
+                    ),
+                    FailureLog::WarnWithRepeats(repeats) => tracing::warn!(
+                        "Still cannot open a UDP connection to your local server at {target_addr} ({error}; repeated {repeats} times)"
+                    ),
+                    FailureLog::Debug => tracing::debug!(
+                        %target_addr,
+                        tunnel_id = key.tunnel_id,
+                        ?error,
+                        "Repeated local UDP socket failure"
+                    ),
+                }
                 return;
             }
         };

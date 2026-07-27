@@ -1,10 +1,11 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
-use crate::logging::{IpcBroadcastLayer, log_rate_limit_filter};
+use crate::logging::IpcBroadcastLayer;
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
@@ -30,6 +31,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::layer::{Layer, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
 
@@ -80,24 +82,60 @@ enum LoadedSecret {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct RunningSummary {
-    tunnel_count: usize,
-    pending_tunnel_count: usize,
-    disabled_tunnel_count: usize,
-    account_status: &'static str,
+struct TunnelLogSnapshot {
+    destination: String,
+    is_disabled: bool,
+    disabled_reason: Option<String>,
 }
 
-impl RunningSummary {
-    fn from_state(state: &AgentState) -> Self {
-        Self {
-            tunnel_count: state.tunnels.len(),
-            pending_tunnel_count: state.pending_tunnels.len(),
-            disabled_tunnel_count: state
-                .tunnels
-                .iter()
-                .filter(|tunnel| tunnel.is_disabled)
-                .count(),
-            account_status: service_account_status_label(&state.account_status),
+fn tunnel_log_snapshot(state: &AgentState) -> BTreeMap<String, TunnelLogSnapshot> {
+    state
+        .tunnels
+        .iter()
+        .map(|tunnel| {
+            (
+                tunnel.display_address.clone(),
+                TunnelLogSnapshot {
+                    destination: tunnel.destination.clone(),
+                    is_disabled: tunnel.is_disabled,
+                    disabled_reason: tunnel.disabled_reason.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+fn log_tunnel_changes(
+    previous: Option<&BTreeMap<String, TunnelLogSnapshot>>,
+    current: &BTreeMap<String, TunnelLogSnapshot>,
+) {
+    if previous.is_none() && current.is_empty() {
+        tracing::info!("No tunnels are configured. Add one at playit.gg");
+        return;
+    }
+
+    if let Some(previous) = previous {
+        for address in previous
+            .keys()
+            .filter(|address| !current.contains_key(*address))
+        {
+            tracing::info!("Tunnel removed: {address}");
+        }
+    }
+
+    for (address, tunnel) in current {
+        if previous.and_then(|items| items.get(address)) == Some(tunnel) {
+            continue;
+        }
+
+        if tunnel.is_disabled {
+            let reason = tunnel
+                .disabled_reason
+                .as_deref()
+                .unwrap_or("reason unavailable");
+            tracing::info!("Tunnel disabled: {address} ({reason})");
+        } else {
+            tracing::info!("Tunnel ready: {address} -> {}", tunnel.destination);
         }
     }
 }
@@ -365,8 +403,7 @@ async fn initialize_runtime(
         start_time,
     };
 
-    let log_filter =
-        EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
+    let log_filter = EnvFilter::try_from_env("PLAYIT_LOG").ok();
     let use_ansi = matches!(platform, Platform::Linux | Platform::Docker);
     let log_guard = init_tracing(
         log_filter,
@@ -380,11 +417,16 @@ async fn initialize_runtime(
 
     let _ = help_register_version(&version_string, &options.version.variant_id);
 
+    let secret_path = status_context
+        .secret_path
+        .as_deref()
+        .unwrap_or("not configured");
     tracing::info!(
-        socket_path = ?options.socket_path,
-        secret_path = ?status_context.secret_path,
+        socket_path = %status_context.socket_path,
+        secret_path,
         version = %version_string,
-        "Starting playitd"
+        "Starting playitd v{version_string} (socket {}, secret {secret_path})",
+        status_context.socket_path
     );
 
     let cancel_token = CancellationToken::new();
@@ -562,13 +604,13 @@ async fn build_agent_with_reprovisioning(
                 if secret_source.allows_ipc_provisioning()
                     && is_invalid_agent_secret_error(&error) =>
             {
-                tracing::warn!(?error, "configured agent secret is no longer valid");
-
                 let service_error = daemon_error(
                     ServiceErrorCode::InvalidSecret,
                     "The configured playit secret is no longer valid. Run `playit setup` to provision a new secret.".to_string(),
                     true,
                 );
+                tracing::error!("{}", service_error.message);
+                tracing::debug!(?error, "Agent secret validation failed");
                 publish_runtime_state(
                     &runtime.state_cache,
                     &runtime.event_tx,
@@ -593,15 +635,15 @@ async fn build_agent_with_reprovisioning(
                 secret_code = secret;
             }
             Err(error) if is_agent_disabled_over_limit_error(&error) => {
-                tracing::warn!(
-                    ?error,
-                    "agent disabled because the account is over the agent limit"
-                );
-
                 let service_error = daemon_error(
                     ServiceErrorCode::AgentDisabledOverLimit,
                     agent_disabled_over_limit_message(),
                     true,
+                );
+                tracing::error!("{}", service_error.message);
+                tracing::debug!(
+                    ?error,
+                    "Agent is disabled because the account is over its limit"
                 );
                 publish_runtime_state(
                     &runtime.state_cache,
@@ -627,7 +669,8 @@ async fn build_agent_with_reprovisioning(
             }
             Err(error) => {
                 let message = setup_error_user_message(&error);
-                tracing::error!(?error, %message, "failed to start playit agent");
+                tracing::error!("{message}");
+                tracing::debug!(?error, "Failed to start playit agent");
                 let service_error = daemon_error(ServiceErrorCode::Internal, message.clone(), true);
                 publish_runtime_state(
                     &runtime.state_cache,
@@ -795,13 +838,20 @@ async fn broadcast_agent_state(
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(3));
     let mut guest_login_link: Option<(String, u64)> = None;
-    let mut last_running_summary: Option<RunningSummary> = None;
+    let mut last_tunnels: Option<BTreeMap<String, TunnelLogSnapshot>> = None;
+    let mut api_unavailable_since: Option<u64> = None;
 
     loop {
         tokio::select! {
             _ = interval.tick() => {
                 match api.v1_agents_rundata().await {
                     Ok(mut api_data) => {
+                        if let Some(since) = api_unavailable_since.take() {
+                            let unavailable_secs = now_milli().saturating_sub(since) / 1_000;
+                            tracing::info!(
+                                "Reconnected to the playit API (was unavailable {unavailable_secs}s)"
+                            );
+                        }
                         lookup.update_from_run_data(&api_data).await;
 
                         let login_link = match api_data.permissions.account_status {
@@ -864,35 +914,23 @@ async fn broadcast_agent_state(
                             start_time,
                         };
 
-                        let summary = RunningSummary::from_state(&state);
-                        if last_running_summary.as_ref() != Some(&summary) {
-                            if last_running_summary.is_none() {
-                                tracing::info!(
-                                    agent_id = %state.agent_id,
-                                    tunnel_count = summary.tunnel_count,
-                                    pending_tunnel_count = summary.pending_tunnel_count,
-                                    disabled_tunnel_count = summary.disabled_tunnel_count,
-                                    account_status = summary.account_status,
-                                    "playit connected; tunnels loaded"
-                                );
-                            } else {
-                                tracing::info!(
-                                    agent_id = %state.agent_id,
-                                    tunnel_count = summary.tunnel_count,
-                                    pending_tunnel_count = summary.pending_tunnel_count,
-                                    disabled_tunnel_count = summary.disabled_tunnel_count,
-                                    account_status = summary.account_status,
-                                    "playit tunnel state updated"
-                                );
-                            }
-                            last_running_summary = Some(summary);
+                        let tunnels = tunnel_log_snapshot(&state);
+                        if last_tunnels.as_ref() != Some(&tunnels) {
+                            log_tunnel_changes(last_tunnels.as_ref(), &tunnels);
+                            last_tunnels = Some(tunnels);
                         }
 
                         let lifecycle = AgentLifecycle::Running(state);
                         state_cache.set_lifecycle(lifecycle.clone()).await;
                         let _ = event_tx.send(ServiceUpdate::Lifecycle(lifecycle));
                     }
-                    Err(error) => tracing::error!(?error, "Failed to load agent data"),
+                    Err(error) => {
+                        if api_unavailable_since.is_none() {
+                            api_unavailable_since = Some(now_milli());
+                            tracing::warn!("Cannot reach the playit API, retrying");
+                        }
+                        tracing::debug!(?error, "Failed to load agent data");
+                    }
                 }
             }
             _ = cancel_token.cancelled() => break,
@@ -1181,15 +1219,6 @@ fn daemon_error(code: ServiceErrorCode, message: String, retryable: bool) -> Ser
     }
 }
 
-fn service_account_status_label(status: &ServiceAccountStatus) -> &'static str {
-    match status {
-        ServiceAccountStatus::Unknown => "unknown",
-        ServiceAccountStatus::Guest => "guest",
-        ServiceAccountStatus::EmailNotVerified => "email_not_verified",
-        ServiceAccountStatus::Verified => "verified",
-    }
-}
-
 fn agent_disabled_over_limit_message() -> String {
     "This account is over the agent limit. Delete an unused agent or upgrade the account, then the service will retry."
         .to_string()
@@ -1260,7 +1289,7 @@ fn is_agent_disabled_over_limit_error(error: &SetupError) -> bool {
 }
 
 fn init_tracing(
-    log_filter: EnvFilter,
+    log_filter: Option<EnvFilter>,
     use_ansi: bool,
     event_tx: broadcast::Sender<ServiceUpdate>,
     log_path: Option<&Path>,
@@ -1271,15 +1300,12 @@ fn init_tracing(
             let (non_blocking, guard) = tracing_appender::non_blocking(writer);
 
             tracing_subscriber::registry()
-                .with(log_filter)
+                .with(IpcBroadcastLayer::new(event_tx).with_filter(LevelFilter::DEBUG))
                 .with(
-                    IpcBroadcastLayer::new(event_tx)
-                        .and_then(
-                            tracing_subscriber::fmt::layer()
-                                .with_ansi(use_ansi)
-                                .with_writer(non_blocking),
-                        )
-                        .with_filter(log_rate_limit_filter()),
+                    tracing_subscriber::fmt::layer()
+                        .with_ansi(use_ansi)
+                        .with_writer(non_blocking)
+                        .with_filter(log_filter.unwrap_or_else(|| EnvFilter::new("debug"))),
                 )
                 .init();
 
@@ -1287,15 +1313,12 @@ fn init_tracing(
         }
         None => {
             tracing_subscriber::registry()
-                .with(log_filter)
+                .with(IpcBroadcastLayer::new(event_tx).with_filter(LevelFilter::DEBUG))
                 .with(
-                    IpcBroadcastLayer::new(event_tx)
-                        .and_then(
-                            tracing_subscriber::fmt::layer()
-                                .with_ansi(use_ansi)
-                                .with_writer(std::io::stderr),
-                        )
-                        .with_filter(log_rate_limit_filter()),
+                    tracing_subscriber::fmt::layer()
+                        .with_ansi(use_ansi)
+                        .with_writer(std::io::stderr)
+                        .with_filter(log_filter.unwrap_or_else(|| EnvFilter::new("info"))),
                 )
                 .init();
 
@@ -1361,14 +1384,11 @@ fn create_log_parent_dir(path: &Path) -> Result<(), String> {
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::{DaemonOptions, RunningSummary, run_daemon, setup_error_user_message};
+    use super::{DaemonOptions, run_daemon, setup_error_user_message, tunnel_log_snapshot};
     use playit_agent_core::agent_control::errors::{SetupError, TimeoutSource};
     use playit_api_client::api::{ApiResponseError, AuthError, ProtoRegisterError};
     use playit_ipc::ipc::IpcClient;
-    use playit_ipc::model::{
-        AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ServicePhase,
-        TunnelState,
-    };
+    use playit_ipc::model::{AgentLifecycle, AgentState, ServicePhase, TunnelState};
 
     fn unique_test_path(name: &str, extension: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
@@ -1430,29 +1450,30 @@ mod tests {
     }
 
     #[test]
-    fn running_summary_counts_tunnel_state() {
+    fn tunnel_snapshot_tracks_user_visible_state() {
         let state = AgentState {
-            account_status: ServiceAccountStatus::Verified,
             tunnels: vec![
                 TunnelState {
+                    display_address: "one.ply.gg:1".into(),
+                    destination: "127.0.0.1:1".into(),
                     is_disabled: false,
                     ..TunnelState::default()
                 },
                 TunnelState {
+                    display_address: "two.ply.gg:2".into(),
+                    destination: "127.0.0.1:2".into(),
                     is_disabled: true,
+                    disabled_reason: Some("disabled for test".into()),
                     ..TunnelState::default()
                 },
             ],
-            pending_tunnels: vec![Default::default()],
             ..AgentState::default()
         };
 
-        let summary = RunningSummary::from_state(&state);
-
-        assert_eq!(summary.tunnel_count, 2);
-        assert_eq!(summary.pending_tunnel_count, 1);
-        assert_eq!(summary.disabled_tunnel_count, 1);
-        assert_eq!(summary.account_status, "verified");
+        let snapshot = tunnel_log_snapshot(&state);
+        assert_eq!(snapshot.len(), 2);
+        assert_eq!(snapshot["one.ply.gg:1"].destination, "127.0.0.1:1");
+        assert!(snapshot["two.ply.gg:2"].is_disabled);
     }
 
     #[cfg(target_os = "windows")]

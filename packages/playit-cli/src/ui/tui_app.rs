@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::io::{self, Stdout, stdout};
 use std::time::Duration;
 
+use chrono::{DateTime, Local};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
@@ -365,7 +366,16 @@ impl TuiApp {
     }
 
     fn render_logs(frame: &mut Frame, area: Rect, log_entries: &[LogEntry]) {
-        let title = format!(" Service Logs ({}) [following] ", log_entries.len());
+        let visible_logs: Vec<_> = log_entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.level,
+                    LogLevel::Info | LogLevel::Warn | LogLevel::Error
+                )
+            })
+            .collect();
+        let title = format!(" Service Logs ({}) [following] ", visible_logs.len());
 
         let block = Block::default()
             .title(title)
@@ -373,8 +383,9 @@ impl TuiApp {
             .border_style(Style::default().fg(Color::DarkGray));
 
         let inner_height = area.height.saturating_sub(2) as usize;
-        let start = log_entries.len().saturating_sub(inner_height);
-        let visible_entries = log_entries.iter().skip(start).take(inner_height);
+        let start = visible_logs.len().saturating_sub(inner_height);
+        let visible_entries = visible_logs.into_iter().skip(start).take(inner_height);
+        let max_width = area.width.saturating_sub(2) as usize;
 
         let lines: Vec<Line> = visible_entries
             .map(|entry| {
@@ -386,16 +397,20 @@ impl TuiApp {
                     LogLevel::Trace => Style::default().fg(Color::DarkGray),
                 };
 
+                let timestamp = DateTime::from_timestamp_millis(entry.timestamp as i64)
+                    .map(|dt| dt.with_timezone(&Local).format("%H:%M:%S").to_string())
+                    .unwrap_or_else(|| "--:--:--".to_string());
+                let prefix = format!("{timestamp} [{}] ", level_label(&entry.level));
+                let available = max_width.saturating_sub(prefix.chars().count());
+                let message = truncate_with_ellipsis(&entry.message, available);
+
                 Line::from(vec![
-                    Span::styled(format!("[{}] ", level_label(&entry.level)), level_style),
                     Span::styled(
-                        format!(
-                            "{}: ",
-                            entry.target.split("::").last().unwrap_or(&entry.target)
-                        ),
+                        format!("{timestamp} "),
                         Style::default().fg(Color::DarkGray),
                     ),
-                    Span::raw(&entry.message),
+                    Span::styled(format!("[{}] ", level_label(&entry.level)), level_style),
+                    Span::raw(message),
                 ])
             })
             .collect();
@@ -475,6 +490,19 @@ impl TuiApp {
         frame.render_widget(paragraph, chunks[1]);
         render_help_bar(frame, chunks[2], quit_confirm);
     }
+}
+
+fn truncate_with_ellipsis(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+
+    let mut value: String = value.chars().take(max_chars.saturating_sub(1)).collect();
+    value.push('…');
+    value
 }
 
 fn status_message(status: &ServiceStatus) -> Option<String> {
@@ -597,5 +625,17 @@ impl From<ServiceConnectionStats> for ConnectionStats {
 impl Drop for TuiApp {
     fn drop(&mut self) {
         let _ = self.restore_terminal();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_with_ellipsis;
+
+    #[test]
+    fn log_lines_are_truncated_to_terminal_width() {
+        assert_eq!(truncate_with_ellipsis("abcdef", 4), "abc…");
+        assert_eq!(truncate_with_ellipsis("abc", 4), "abc");
+        assert_eq!(truncate_with_ellipsis("abc", 0), "");
     }
 }

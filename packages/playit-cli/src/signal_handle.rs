@@ -62,15 +62,15 @@ impl SignalHandle {
                     break;
                 }
 
-                tracing::info!("received Ctrl+C signal");
+                tracing::debug!("Received Ctrl+C signal");
 
                 if inner.confirm_close.load(Ordering::SeqCst) == 0 {
-                    tracing::info!("no Ctrl+C handler set, closing program");
+                    tracing::info!("Shutting down (Ctrl+C)");
                     std::process::exit(0);
                 }
 
                 if inner.close_requested.swap(true, Ordering::SeqCst) {
-                    tracing::info!("Close requested twice, exiting program");
+                    tracing::info!("Force exiting");
                     std::process::exit(0);
                 }
             }

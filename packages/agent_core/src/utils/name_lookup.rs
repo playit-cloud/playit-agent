@@ -29,7 +29,7 @@ async fn ip_lookup(name: &str) -> Vec<SocketAddr> {
     let iter = match lookup_host(name).await {
         Ok(v) => v,
         Err(error) => {
-            tracing::error!(?error, %name, "failed to perform hostname lookup");
+            tracing::debug!(?error, %name, "Failed to perform hostname lookup");
             return vec![];
         }
     };

@@ -134,7 +134,7 @@ impl PlayitAgent {
                     let reload =
                         control.reload_control_addr(async { DualStackUdpSocket::new().await });
                     if let Some(Err(error)) = tunnel_cancel.run_until_cancelled(reload).await {
-                        tracing::error!(?error, "failed to reload_control_addr");
+                        tracing::debug!(?error, "Failed to refresh control addresses");
                     }
                 }
 

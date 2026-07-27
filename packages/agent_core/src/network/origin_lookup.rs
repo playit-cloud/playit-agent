@@ -3,12 +3,20 @@ use std::{
     fmt::Display,
     net::{IpAddr, SocketAddr},
     str::FromStr,
+    sync::OnceLock,
 };
 
 use playit_agent_proto::PortProto;
 use playit_api_client::api::{AgentRunDataV1, AgentTunnelV1, PortType, ProxyProtocol, TunnelType};
 use tokio::net::lookup_host;
 use tokio::sync::RwLock;
+
+use crate::utils::{
+    now_milli,
+    recovery_log::{FailureLog, RecoveryLog},
+};
+
+static ORIGIN_RESOLUTION_LOGS: OnceLock<RecoveryLog> = OnceLock::new();
 
 #[derive(Default)]
 pub struct OriginLookup {
@@ -116,22 +124,58 @@ impl OriginIp {
         match self {
             OriginIp::IpAddress(ip) => Some(SocketAddr::new(*ip, port)),
             OriginIp::Hostname(hostname) => {
+                let failure_key = format!("{hostname}:{port}");
                 let mut addrs = match lookup_host((hostname.as_str(), port)).await {
                     Ok(addrs) => addrs,
                     Err(error) => {
-                        tracing::error!(
-                            ?error,
-                            %hostname,
-                            port,
-                            "failed to resolve configured local hostname for tunnel; check the tunnel local address or local DNS configuration"
-                        );
+                        log_resolution_failure(&failure_key, hostname, port, &error.to_string());
                         return None;
                     }
                 };
 
-                addrs.next()
+                let address = addrs.next();
+                if address.is_some() {
+                    if let Some(recovery) = ORIGIN_RESOLUTION_LOGS
+                        .get_or_init(RecoveryLog::default)
+                        .record_recovery(&failure_key, now_milli())
+                    {
+                        let unavailable_secs = recovery.unavailable_for_ms / 1_000;
+                        tracing::info!(
+                            suppressed_failures = recovery.suppressed,
+                            "Configured local hostname {hostname}:{port} resolves again (unavailable {unavailable_secs}s)"
+                        );
+                    }
+                } else {
+                    log_resolution_failure(
+                        &failure_key,
+                        hostname,
+                        port,
+                        "DNS returned no addresses",
+                    );
+                }
+                address
             }
         }
+    }
+}
+
+fn log_resolution_failure(key: &str, hostname: &str, port: u16, error: &str) {
+    match ORIGIN_RESOLUTION_LOGS
+        .get_or_init(RecoveryLog::default)
+        .record_failure(key.to_string(), now_milli())
+    {
+        FailureLog::Warn => tracing::warn!(
+            "Could not resolve the configured local hostname {hostname}:{port} ({error}). Check the tunnel address and local DNS"
+        ),
+        FailureLog::WarnWithRepeats(repeats) => tracing::warn!(
+            "Still cannot resolve the configured local hostname {hostname}:{port} ({error}; repeated {repeats} times)"
+        ),
+        FailureLog::Debug => tracing::debug!(
+            %hostname,
+            port,
+            error,
+            "Repeated local hostname resolution failure"
+        ),
     }
 }
 
