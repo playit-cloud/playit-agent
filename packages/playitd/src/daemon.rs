@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::guest_login::GuestLoginCache;
 use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
 use crate::logging::{IpcBroadcastLayer, log_rate_limit_filter};
 use playit_agent_core::agent_control::errors::SetupError;
@@ -14,10 +15,11 @@ use playit_agent_core::network::udp::udp_settings::UdpSettings;
 use playit_agent_core::playit_agent::{PlayitAgent, PlayitAgentSettings};
 use playit_agent_core::stats::AgentStats;
 use playit_agent_core::utils::now_milli;
-use playit_api_client::PlayitApi;
 use playit_api_client::api::{
     AccountStatus, AgentVersion, ApiResponseError, AuthError, Platform, ProtoRegisterError,
 };
+use playit_api_client::{PlayitApi, default_api_base};
+use playit_ipc::agent_over_limit_guidance;
 use playit_ipc::ipc::{IpcError, get_default_socket_path, protocol_info};
 use playit_ipc::model::{
     AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ConnectionStats,
@@ -320,6 +322,7 @@ struct DaemonRuntime {
     _log_guard: Option<WorkerGuard>,
     agent_version: AgentVersion,
     platform: Platform,
+    guest_login_cache: Arc<GuestLoginCache>,
 }
 
 struct AgentRuntime {
@@ -367,6 +370,7 @@ async fn initialize_runtime(
 
     let agent_version = parse_agent_version(&version_string, &options.version.variant_id)
         .map_err(|error| DaemonError::SetupError(error.to_string()))?;
+    let guest_login_cache = Arc::new(GuestLoginCache::default());
 
     tracing::info!(
         socket_path = ?options.socket_path,
@@ -385,6 +389,7 @@ async fn initialize_runtime(
             secret_provision_tx,
             secret_source.secret_provision_error(),
             secret_source.secret_reset_error(),
+            guest_login_cache.clone(),
         )
         .await
         .map_err(DaemonError::Ipc)?,
@@ -414,6 +419,7 @@ async fn initialize_runtime(
         _log_guard: log_guard,
         agent_version,
         platform,
+        guest_login_cache,
     })
 }
 
@@ -524,7 +530,7 @@ async fn build_agent_with_reprovisioning(
     let mut secret_code = secret_code;
 
     loop {
-        let api = PlayitApi::create(api_base(), Some(secret_code.clone()));
+        let api = PlayitApi::create(default_api_base(), Some(secret_code.clone()));
         runtime.ipc_server.set_api(api.clone()).await;
 
         if let Ok(data) = api.v1_agents_rundata().await {
@@ -534,7 +540,7 @@ async fn build_agent_with_reprovisioning(
         let settings = PlayitAgentSettings {
             udp_settings: UdpSettings::default(),
             tcp_settings: TcpSettings::default(),
-            api_url: api_base(),
+            api_url: default_api_base(),
             secret_key: secret_code.clone(),
             agent_version: runtime.agent_version.clone(),
             platform: runtime.platform,
@@ -662,6 +668,7 @@ async fn run_until_shutdown(
             token,
             runtime.start_time,
             runtime.version_string.clone(),
+            runtime.guest_login_cache.clone(),
         ))
     };
 
@@ -784,9 +791,9 @@ async fn broadcast_agent_state(
     cancel_token: CancellationToken,
     start_time: u64,
     version_string: String,
+    guest_login_cache: Arc<GuestLoginCache>,
 ) {
     let mut interval = tokio::time::interval(Duration::from_secs(3));
-    let mut guest_login_link: Option<(String, u64)> = None;
     let mut last_running_summary: Option<RunningSummary> = None;
 
     loop {
@@ -798,7 +805,7 @@ async fn broadcast_agent_state(
 
                         let login_link = match api_data.permissions.account_status {
                             AccountStatus::Guest => {
-                                get_cached_guest_login_link(&api, &mut guest_login_link).await
+                                guest_login_cache.get_or_create(&api).await.ok()
                             }
                             _ => None,
                         };
@@ -889,31 +896,6 @@ async fn broadcast_agent_state(
             }
             _ = cancel_token.cancelled() => break,
         }
-    }
-}
-
-fn api_base() -> String {
-    dotenv::var("API_BASE").unwrap_or_else(|_| "https://api.playit.gg".to_string())
-}
-
-async fn get_cached_guest_login_link(
-    api: &PlayitApi,
-    guest_login_link: &mut Option<(String, u64)>,
-) -> Option<String> {
-    let now = now_milli();
-    match guest_login_link {
-        Some((link, ts)) if now.saturating_sub(*ts) < 15_000 => Some(link.clone()),
-        _ => match api.login_guest().await {
-            Ok(session) => {
-                let link = format!(
-                    "https://playit.gg/login/guest-account/{}",
-                    session.session_key
-                );
-                *guest_login_link = Some((link.clone(), now));
-                Some(link)
-            }
-            Err(_) => None,
-        },
     }
 }
 
@@ -1179,8 +1161,10 @@ fn service_account_status_label(status: &ServiceAccountStatus) -> &'static str {
 }
 
 fn agent_disabled_over_limit_message() -> String {
-    "This account is over the agent limit. Delete an unused agent or upgrade the account, then the service will retry."
-        .to_string()
+    format!(
+        "This account is over the agent limit. The service will retry.\n{}",
+        agent_over_limit_guidance()
+    )
 }
 
 fn setup_error_user_message(error: &SetupError) -> String {

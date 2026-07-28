@@ -8,6 +8,10 @@ pub mod ip_resource;
 
 pub type PlayitApi = PlayitApiClient<HttpClient>;
 
+pub fn default_api_base() -> String {
+    dotenv::var("API_BASE").unwrap_or_else(|_| "https://api.playit.gg".to_string())
+}
+
 impl PlayitApi {
     pub fn create(api_base: String, secret: Option<String>) -> Self {
         PlayitApiClient::new(HttpClient::new(

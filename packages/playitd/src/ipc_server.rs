@@ -25,8 +25,8 @@ use serde_json::json;
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
-const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
+use crate::guest_login::GuestLoginCache;
+use playit_ipc::agent_over_limit_guidance;
 
 #[derive(Default)]
 pub struct StateCache {
@@ -85,7 +85,7 @@ pub struct IpcServer {
     secret_provision_error: ServiceError,
     secret_reset_error: ServiceError,
     api: RwLock<Option<PlayitApi>>,
-    guest_login_cache: RwLock<Option<(String, u64)>>,
+    guest_login_cache: Arc<GuestLoginCache>,
 }
 
 impl IpcServer {
@@ -97,6 +97,7 @@ impl IpcServer {
         secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
         secret_provision_error: ServiceError,
         secret_reset_error: ServiceError,
+        guest_login_cache: Arc<GuestLoginCache>,
     ) -> Result<Self, IpcError> {
         let socket_path = socket_path.unwrap_or_else(|| get_default_socket_path().to_string());
         let endpoint = IpcEndpoint::parse(socket_path.clone());
@@ -129,7 +130,7 @@ impl IpcServer {
             secret_provision_error,
             secret_reset_error,
             api: RwLock::new(None),
-            guest_login_cache: RwLock::new(None),
+            guest_login_cache,
         })
     }
 
@@ -473,15 +474,6 @@ impl IpcServer {
     }
 
     async fn get_account_login_url(&self) -> Result<String, ServiceError> {
-        {
-            let cache = self.guest_login_cache.read().await;
-            if let Some((link, ts)) = &*cache
-                && now_milli().saturating_sub(*ts) < 15_000
-            {
-                return Ok(link.clone());
-            }
-        }
-
         let api = self.api.read().await.clone().ok_or_else(|| {
             protocol_error(
                 ServiceErrorCode::InvalidRequest,
@@ -490,20 +482,16 @@ impl IpcServer {
             )
         })?;
 
-        let session = api.login_guest().await.map_err(|error| {
-            protocol_error(
-                ServiceErrorCode::Internal,
-                format!("Failed to create login URL: {error:?}"),
-                true,
-            )
-        })?;
-
-        let link = format!(
-            "https://playit.gg/login/guest-account/{}",
-            session.session_key
-        );
-        *self.guest_login_cache.write().await = Some((link.clone(), now_milli()));
-        Ok(link)
+        self.guest_login_cache
+            .get_or_create(&api)
+            .await
+            .map_err(|error| {
+                protocol_error(
+                    ServiceErrorCode::Internal,
+                    format!("Failed to create login URL: {error}"),
+                    true,
+                )
+            })
     }
 }
 
@@ -547,12 +535,6 @@ fn invalid_request_type_error(request_type: &str) -> ServiceError {
     }
 }
 
-fn over_limit_guidance() -> String {
-    format!(
-        "Delete unused agents: {ACCOUNT_AGENTS_URL}\nIncrease your agent limit: {ACCOUNT_UPGRADE_URL}"
-    )
-}
-
 fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
     match lifecycle {
         AgentLifecycle::WaitingForSecret => protocol_error(
@@ -573,7 +555,7 @@ fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
             ServiceErrorCode::ProvisioningUnavailable,
             format!(
                 "Setup is unavailable because this account is over the agent limit.\n{}\nReason: {}",
-                over_limit_guidance(),
+                agent_over_limit_guidance(),
                 error.message
             ),
             false,
@@ -610,7 +592,7 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{IpcServer, protocol_error, try_connect};
+    use super::{GuestLoginCache, IpcServer, protocol_error, try_connect};
     use interprocess::local_socket::tokio::prelude::*;
     use playit_ipc::endpoint::IpcEndpoint;
     use playit_ipc::ipc::{
@@ -664,6 +646,7 @@ mod tests {
                     "secret reset unavailable".to_string(),
                     false,
                 ),
+                Arc::new(GuestLoginCache::default()),
             )
             .await
             .unwrap(),
