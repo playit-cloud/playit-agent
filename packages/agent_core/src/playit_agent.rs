@@ -61,11 +61,11 @@ impl PlayitAgent {
 
         let tunnel_packets = Packets::new(1024 * 8);
         let origin_packets = Packets::new(1024 * 8);
-        let udp_channel = UdpChannel::new(tunnel_packets)
+        let stats = AgentStats::new();
+        let udp_channel = UdpChannel::new(tunnel_packets, stats.clone())
             .await
             .map_err(SetupError::IoError)?;
 
-        let stats = AgentStats::new();
         let udp_clients = UdpClients::new(
             settings.udp_settings,
             lookup.clone(),

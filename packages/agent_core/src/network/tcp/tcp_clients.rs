@@ -22,7 +22,6 @@ use crate::{
 
 use super::{
     tcp_client::{TcpClient, TcpClientStat},
-    tcp_errors::tcp_errors,
     tcp_settings::TcpSettings,
 };
 
@@ -43,6 +42,7 @@ pub struct TcpClients {
     events_tx: Sender<Event>,
     new_client_limiter: DefaultDirectRateLimiter,
     cancel: CancellationToken,
+    stats: AgentStats,
 }
 
 struct Worker {
@@ -122,7 +122,7 @@ impl TcpClients {
                 events_tx: events_tx.clone(),
                 cancel: cancel.child_token(),
                 settings,
-                stats,
+                stats: stats.clone(),
                 clients: Vec::with_capacity(32),
             }
             .start(),
@@ -132,6 +132,7 @@ impl TcpClients {
             new_client_limiter: RateLimiter::direct(quota),
             events_tx,
             cancel,
+            stats,
         }
     }
 
@@ -146,7 +147,7 @@ impl TcpClients {
 
     pub async fn handle_new_client(&self, new_client: NewClient) {
         if self.new_client_limiter.check().is_err() {
-            tcp_errors().new_client_rate_limited.inc();
+            self.stats.tcp_errors().new_client_rate_limited.inc();
             return;
         }
 
@@ -165,6 +166,7 @@ impl Drop for TcpClients {
 
 impl Worker {
     pub async fn start(mut self) {
+        let stats = self.stats.clone();
         let mut next_clear = Instant::now() + Duration::from_secs(15);
 
         loop {
@@ -198,7 +200,7 @@ impl Worker {
                             tunnel_id = details.tunnel_id,
                             "Could not find tunnel for new client"
                         );
-                        tcp_errors().new_client_origin_not_found.inc();
+                        stats.tcp_errors().new_client_origin_not_found.inc();
                         continue;
                     };
 
@@ -223,7 +225,7 @@ impl Worker {
                             tracing::error!(
                                 "Tunnel server provide miss match protol versions for peer and connect addr"
                             );
-                            tcp_errors().invalid_proto_match.inc();
+                            stats.tcp_errors().invalid_proto_match.inc();
                             continue;
                         }
                     };
@@ -241,7 +243,7 @@ impl Worker {
                                 tunnel_id = details.tunnel_id,
                                 "port offset not valid for tunnel"
                             );
-                            tcp_errors().new_client_invalid_port_offset.inc();
+                            stats.tcp_errors().new_client_invalid_port_offset.inc();
                             return;
                         };
 
@@ -259,12 +261,12 @@ impl Worker {
                             Ok(Ok(stream)) => stream,
                             Err(_) => {
                                 tracing::error!("timeout connecting to claim address");
-                                tcp_errors().new_client_claim_connect_timeout.inc();
+                                stats.tcp_errors().new_client_claim_connect_timeout.inc();
                                 return;
                             }
                             Ok(Err(error)) => {
                                 tracing::error!(?error, "io error connecting to claim address");
-                                tcp_errors().new_client_claim_connect_error.inc();
+                                stats.tcp_errors().new_client_claim_connect_error.inc();
                                 return;
                             }
                         };
@@ -275,7 +277,10 @@ impl Worker {
                                 "failed to set tunn tcp no delay, value: {}",
                                 setting_tcp_no_delay
                             );
-                            tcp_errors().new_client_set_tunnel_no_delay_error.inc();
+                            stats
+                                .tcp_errors()
+                                .new_client_set_tunnel_no_delay_error
+                                .inc();
                         }
 
                         /* send token to tunnel server to claim client */
@@ -291,7 +296,7 @@ impl Worker {
                             Ok(Ok(_)) => {}
                             Err(_) => {
                                 tracing::error!("timeout sending claim token");
-                                tcp_errors().new_client_send_claim_timeout.inc();
+                                stats.tcp_errors().new_client_send_claim_timeout.inc();
                                 return;
                             }
                             Ok(Err(error)) => {
@@ -299,7 +304,7 @@ impl Worker {
                                     ?error,
                                     "io error sending claim instruction to claim address"
                                 );
-                                tcp_errors().new_client_send_claim_error.inc();
+                                stats.tcp_errors().new_client_send_claim_error.inc();
                                 return;
                             }
                         }
@@ -316,12 +321,12 @@ impl Worker {
                             Ok(Ok(_)) => {}
                             Err(_) => {
                                 tracing::error!("timeout reading claim token response");
-                                tcp_errors().new_client_claim_expect_timeout.inc();
+                                stats.tcp_errors().new_client_claim_expect_timeout.inc();
                                 return;
                             }
                             Ok(Err(error)) => {
                                 tracing::error!(?error, "io error reading claim response");
-                                tcp_errors().new_client_claim_expect_error.inc();
+                                stats.tcp_errors().new_client_claim_expect_error.inc();
                                 return;
                             }
                         }
@@ -347,7 +352,7 @@ impl Worker {
                                     source_addr = %details.peer_addr,
                                     "failed to connect to local TCP server; check that your server is running and listening on the configured local address"
                                 );
-                                tcp_errors().new_client_origin_connect_error.inc();
+                                stats.tcp_errors().new_client_origin_connect_error.inc();
                                 return;
                             }
                             Err(_) => {
@@ -358,14 +363,17 @@ impl Worker {
                                     source_addr = %details.peer_addr,
                                     "timed out connecting to local TCP server; check firewall rules and that the server is listening on the configured local address"
                                 );
-                                tcp_errors().new_client_origin_connect_timeout.inc();
+                                stats.tcp_errors().new_client_origin_connect_timeout.inc();
                                 return;
                             }
                         };
 
                         if let Err(error) = origin_stream.set_nodelay(true) {
                             tracing::error!(?error, "failed to set origin tcp no delay");
-                            tcp_errors().new_client_set_origin_no_delay_error.inc();
+                            stats
+                                .tcp_errors()
+                                .new_client_set_origin_no_delay_error
+                                .inc();
                         }
 
                         let proxy_write_res = match found.proxy_protocol {
@@ -394,12 +402,15 @@ impl Worker {
                             Ok(Ok(_)) => {}
                             Err(_) => {
                                 tracing::error!("timeout sending proxy protocol header");
-                                tcp_errors().new_client_write_proxy_proto_timeout.inc();
+                                stats
+                                    .tcp_errors()
+                                    .new_client_write_proxy_proto_timeout
+                                    .inc();
                                 return;
                             }
                             Ok(Err(error)) => {
                                 tracing::error!(?error, "failed to write proxy protocol header");
-                                tcp_errors().new_client_write_proxy_proto_error.inc();
+                                stats.tcp_errors().new_client_write_proxy_proto_error.inc();
                                 return;
                             }
                         }

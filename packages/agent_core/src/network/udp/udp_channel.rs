@@ -16,13 +16,11 @@ use tokio::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::{
     agent_control::{DualStackUdpSocket, PacketIO},
+    stats::AgentStats,
     utils::now_milli,
 };
 
-use super::{
-    packets::{Packet, Packets},
-    udp_errors::udp_errors,
-};
+use super::packets::{Packet, Packets};
 
 pub struct UdpChannel {
     session_tx: Sender<UdpChannelDetails>,
@@ -44,6 +42,7 @@ struct SendTask {
     session_rx: Receiver<UdpChannelDetails>,
     send_rx: Receiver<(UdpFlow, Packet)>,
     shared: Arc<Shared>,
+    stats: AgentStats,
 }
 
 struct RecvTask {
@@ -51,10 +50,11 @@ struct RecvTask {
     packets: Packets,
     recv_tx: Sender<(UdpFlow, Packet)>,
     shared: Arc<Shared>,
+    stats: AgentStats,
 }
 
 impl UdpChannel {
-    pub async fn new(packets: Packets) -> Result<Self, std::io::Error> {
+    pub async fn new(packets: Packets, stats: AgentStats) -> Result<Self, std::io::Error> {
         let socket = Arc::new(DualStackUdpSocket::new().await?);
 
         let (session_tx, session_rx) = channel(32);
@@ -71,6 +71,7 @@ impl UdpChannel {
                 session_rx,
                 send_rx,
                 shared: shared.clone(),
+                stats: stats.clone(),
             }
             .start(),
         );
@@ -80,6 +81,7 @@ impl UdpChannel {
                 packets,
                 recv_tx,
                 shared: shared.clone(),
+                stats,
             }
             .start(),
         );
@@ -193,7 +195,7 @@ impl SendTask {
 
     async fn send_establish(&self) {
         let Some(session) = self.session.as_ref() else {
-            udp_errors().establish_no_session.inc();
+            self.stats.udp_errors().establish_no_session.inc();
             return;
         };
 
@@ -207,20 +209,20 @@ impl SendTask {
             .await
             .is_err()
         {
-            udp_errors().establish_send_io_error.inc();
+            self.stats.udp_errors().establish_send_io_error.inc();
         }
     }
 
     async fn send(&self, flow: UdpFlow, mut packet: Packet) {
         let Some(session) = self.session.as_ref() else {
-            udp_errors().no_session_send_fail.inc();
+            self.stats.udp_errors().no_session_send_fail.inc();
             return;
         };
 
         let og_len = packet.len();
         let remaining = &mut packet.full_slice_mut()[og_len..];
         if !flow.write_to(remaining) {
-            udp_errors().tail_append_fail.inc();
+            self.stats.udp_errors().tail_append_fail.inc();
             return;
         }
 
@@ -234,7 +236,7 @@ impl SendTask {
             .await
             .is_err()
         {
-            udp_errors().send_io_error.inc();
+            self.stats.udp_errors().send_io_error.inc();
         }
     }
 }
@@ -245,18 +247,18 @@ impl RecvTask {
 
         loop {
             let Ok((bytes, source)) = self.socket.recv_from(packet.full_slice_mut()).await else {
-                udp_errors().recv_io_error.inc();
+                self.stats.udp_errors().recv_io_error.inc();
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 continue;
             };
 
             let Some(session_addr) = *self.shared.session_tunnel_addr.read().unwrap() else {
-                udp_errors().recv_with_no_session.inc();
+                self.stats.udp_errors().recv_with_no_session.inc();
                 continue;
             };
 
             if session_addr != source {
-                udp_errors().recv_source_no_match.inc();
+                self.stats.udp_errors().recv_source_no_match.inc();
                 continue;
             }
 
@@ -271,9 +273,9 @@ impl RecvTask {
                 }
                 Err(id) => {
                     if id.is_none() {
-                        udp_errors().recv_too_small.inc();
+                        self.stats.udp_errors().recv_too_small.inc();
                     } else {
-                        udp_errors().recv_invalid_footer_id.inc();
+                        self.stats.udp_errors().recv_invalid_footer_id.inc();
                     }
                     continue;
                 }
