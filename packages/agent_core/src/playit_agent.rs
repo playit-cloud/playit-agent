@@ -9,6 +9,8 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
+use playit_api_client::api::{AgentVersion, Platform};
+
 use crate::agent_control::errors::SetupError;
 use crate::agent_control::maintained_control::{MaintainedControl, TunnelControlEvent};
 use crate::agent_control::{AuthApi, DualStackUdpSocket};
@@ -37,6 +39,8 @@ pub struct PlayitAgent {
 pub struct PlayitAgentSettings {
     pub api_url: String,
     pub secret_key: String,
+    pub agent_version: AgentVersion,
+    pub platform: Platform,
     pub tcp_settings: TcpSettings,
     pub udp_settings: UdpSettings,
 }
@@ -47,7 +51,12 @@ impl PlayitAgent {
         lookup: Arc<OriginLookup>,
     ) -> Result<Self, SetupError> {
         let io = DualStackUdpSocket::new().await?;
-        let auth = AuthApi::new(settings.api_url, settings.secret_key);
+        let auth = AuthApi::new(
+            settings.api_url,
+            settings.secret_key,
+            settings.agent_version,
+            settings.platform,
+        );
         let control = MaintainedControl::setup(io, auth).await?;
 
         let tunnel_packets = Packets::new(1024 * 8);

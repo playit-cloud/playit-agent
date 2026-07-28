@@ -10,6 +10,8 @@ use std::env;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use playit_agent_core::agent_control::address_selector::AddressSelector;
+use playit_agent_core::agent_control::platform::current_platform;
+use playit_agent_core::agent_control::version::current_agent_version;
 use playit_agent_core::agent_control::{AuthApi, AuthResource, DualStackUdpSocket};
 
 const CHECK_MTU_SIZES: [u32; 5] = [1200, 1300, 1400, 1420, 1480];
@@ -36,7 +38,12 @@ async fn run() -> Result<(), String> {
         .map_err(|error| format!("failed to create UDP socket: {error}"))?;
 
     println!("fetching control addresses");
-    let auth = AuthApi::new(api_url, secret_key);
+    let auth = AuthApi::new(
+        api_url,
+        secret_key,
+        current_agent_version(),
+        current_platform(),
+    );
     let control_addresses = auth
         .get_control_addresses()
         .await

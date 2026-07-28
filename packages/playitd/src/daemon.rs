@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,7 +6,8 @@ use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
 use crate::logging::{IpcBroadcastLayer, log_rate_limit_filter};
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::agent_control::platform::current_platform;
-use playit_agent_core::agent_control::version::{help_register_version, register_platform};
+pub use playit_agent_core::agent_control::version::DEFAULT_VARIANT_ID;
+use playit_agent_core::agent_control::version::parse_agent_version;
 use playit_agent_core::network::origin_lookup::{OriginLookup, OriginResource, OriginTarget};
 use playit_agent_core::network::tcp::tcp_settings::TcpSettings;
 use playit_agent_core::network::udp::udp_settings::UdpSettings;
@@ -16,7 +16,7 @@ use playit_agent_core::stats::AgentStats;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
 use playit_api_client::api::{
-    AccountStatus, ApiResponseError, AuthError, Platform, ProtoRegisterError,
+    AccountStatus, AgentVersion, ApiResponseError, AuthError, Platform, ProtoRegisterError,
 };
 use playit_ipc::ipc::{IpcError, get_default_socket_path, protocol_info};
 use playit_ipc::model::{
@@ -33,7 +33,6 @@ use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::{Layer, SubscriberExt};
 use tracing_subscriber::util::SubscriberInitExt;
 
-pub const DEFAULT_VARIANT_ID: &str = "308943e8-faef-4835-a2ba-270351f72aa3";
 const AGENT_LIMIT_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 #[cfg(target_os = "windows")]
 const WINDOWS_LOG_MAX_FILE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
@@ -116,25 +115,13 @@ impl VersionDetails {
     }
 
     pub fn from_version_string(version: &str, variant_id: &str) -> Result<Self, String> {
-        let mut parts = version.split('-').next().unwrap_or(version).split('.');
-        let major = parts
-            .next()
-            .ok_or_else(|| format!("missing major version in {version}"))
-            .and_then(parse_version_part)?;
-        let minor = parts
-            .next()
-            .ok_or_else(|| format!("missing minor version in {version}"))
-            .and_then(parse_version_part)?;
-        let patch = parts
-            .next()
-            .ok_or_else(|| format!("missing patch version in {version}"))
-            .and_then(parse_version_part)?;
+        let parsed = parse_agent_version(version, variant_id).map_err(|error| error.to_string())?;
 
         Ok(Self {
-            variant_id: variant_id.to_string(),
-            major,
-            minor,
-            patch,
+            variant_id: parsed.variant_id.to_string(),
+            major: parsed.version_major,
+            minor: parsed.version_minor,
+            patch: parsed.version_patch,
         })
     }
 
@@ -331,6 +318,8 @@ struct DaemonRuntime {
     state_cache: Arc<StateCache>,
     event_tx: broadcast::Sender<ServiceUpdate>,
     _log_guard: Option<WorkerGuard>,
+    agent_version: AgentVersion,
+    platform: Platform,
 }
 
 struct AgentRuntime {
@@ -376,9 +365,8 @@ async fn initialize_runtime(
     )
     .map_err(DaemonError::SetupError)?;
 
-    register_platform(platform);
-
-    let _ = help_register_version(&version_string, &options.version.variant_id);
+    let agent_version = parse_agent_version(&version_string, &options.version.variant_id)
+        .map_err(|error| DaemonError::SetupError(error.to_string()))?;
 
     tracing::info!(
         socket_path = ?options.socket_path,
@@ -424,6 +412,8 @@ async fn initialize_runtime(
         state_cache,
         event_tx,
         _log_guard: log_guard,
+        agent_version,
+        platform,
     })
 }
 
@@ -546,6 +536,8 @@ async fn build_agent_with_reprovisioning(
             tcp_settings: TcpSettings::default(),
             api_url: api_base(),
             secret_key: secret_code.clone(),
+            agent_version: runtime.agent_version.clone(),
+            platform: runtime.platform,
         };
 
         match PlayitAgent::new(settings, lookup.clone()).await {
@@ -1126,10 +1118,6 @@ fn validate_secret(secret: &str) -> Result<String, String> {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SecretConfig {
     secret_key: String,
-}
-
-fn parse_version_part(part: &str) -> Result<u32, String> {
-    u32::from_str(part).map_err(|error| format!("Invalid version component {part}: {error}"))
 }
 
 struct StatusContext {
