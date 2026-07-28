@@ -403,13 +403,13 @@ pub async fn run_stop_command(
                 }
             }
 
-            if direct_stop_fallback {
-                if matches!(
+            if direct_stop_fallback
+                && matches!(
                     stop_installed_service_for_cli(service_manager)?,
                     InstalledServiceStopState::AlreadyStopped
-                ) {
-                    return Ok(());
-                }
+                )
+            {
+                return Ok(());
             }
 
             tokio::time::sleep(Duration::from_millis(500)).await;

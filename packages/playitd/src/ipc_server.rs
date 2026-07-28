@@ -263,6 +263,7 @@ impl IpcServer {
         }
     }
 
+    #[allow(clippy::result_large_err)]
     fn validate_request_envelope(
         &self,
         envelope: IncomingRequestEnvelope,
@@ -474,10 +475,10 @@ impl IpcServer {
     async fn get_account_login_url(&self) -> Result<String, ServiceError> {
         {
             let cache = self.guest_login_cache.read().await;
-            if let Some((link, ts)) = &*cache {
-                if now_milli().saturating_sub(*ts) < 15_000 {
-                    return Ok(link.clone());
-                }
+            if let Some((link, ts)) = &*cache
+                && now_milli().saturating_sub(*ts) < 15_000
+            {
+                return Ok(link.clone());
             }
         }
 

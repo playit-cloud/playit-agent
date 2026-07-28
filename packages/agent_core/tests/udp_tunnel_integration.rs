@@ -508,6 +508,7 @@ impl FlowCase {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drive_parallel_flows(
     tunnel_server: &UdpSocket,
     origin_server: &UdpSocket,
@@ -635,6 +636,7 @@ async fn establish_virtual_client(
     virtual_addr
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn measure_tunnel_to_origin_bitrate(
     tunnel_server: &UdpSocket,
     origin_server: &UdpSocket,
@@ -687,6 +689,7 @@ async fn measure_tunnel_to_origin_bitrate(
     ThroughputResult::new(elapsed, expected_bytes, expected_tunnel_bytes)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn measure_origin_to_tunnel_bitrate(
     origin_server: &UdpSocket,
     tunnel_server: &UdpSocket,

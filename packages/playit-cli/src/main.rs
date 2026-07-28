@@ -312,7 +312,7 @@ pub async fn run_setup_flow(
 pub fn claim_generate() -> String {
     let mut buffer = [0u8; 5];
     rand::rng().fill(&mut buffer);
-    hex::encode(&buffer)
+    hex::encode(buffer)
 }
 
 pub fn claim_url(code: &str) -> Result<String, CliError> {

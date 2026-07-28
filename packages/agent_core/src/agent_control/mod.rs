@@ -130,10 +130,10 @@ impl DualStackUdpSocket {
 
 impl PacketIO for DualStackUdpSocket {
     async fn send_to(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize> {
-        if target.is_ipv6() {
-            if let Some(ip6) = &self.ip6 {
-                return ip6.send_to(buf, target).await;
-            }
+        if target.is_ipv6()
+            && let Some(ip6) = &self.ip6
+        {
+            return ip6.send_to(buf, target).await;
         }
         self.ip4.send_to(buf, target).await
     }
@@ -141,7 +141,7 @@ impl PacketIO for DualStackUdpSocket {
     async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
         let sel = self.next.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
-        if sel % 2 == 0 {
+        if sel.is_multiple_of(2) {
             PoolBoth {
                 buffer: buf,
                 a: self.ip6.as_ref(),
@@ -176,22 +176,22 @@ impl Future for PoolBoth<'_> {
 
         let mut buf = ReadBuf::new(buffer);
 
-        if let Some(a) = a {
-            if let Poll::Ready(ready) = a.poll_recv_from(cx, &mut buf) {
-                return match ready {
-                    Ok(addr) => Poll::Ready(Ok((buf.filled().len(), addr))),
-                    Err(error) => Poll::Ready(Err(error)),
-                };
-            }
+        if let Some(a) = a
+            && let Poll::Ready(ready) = a.poll_recv_from(cx, &mut buf)
+        {
+            return match ready {
+                Ok(addr) => Poll::Ready(Ok((buf.filled().len(), addr))),
+                Err(error) => Poll::Ready(Err(error)),
+            };
         }
 
-        if let Some(b) = b {
-            if let Poll::Ready(ready) = b.poll_recv_from(cx, &mut buf) {
-                return match ready {
-                    Ok(addr) => Poll::Ready(Ok((buf.filled().len(), addr))),
-                    Err(error) => Poll::Ready(Err(error)),
-                };
-            }
+        if let Some(b) = b
+            && let Poll::Ready(ready) = b.poll_recv_from(cx, &mut buf)
+        {
+            return match ready {
+                Ok(addr) => Poll::Ready(Ok((buf.filled().len(), addr))),
+                Err(error) => Poll::Ready(Err(error)),
+            };
         }
 
         Poll::Pending

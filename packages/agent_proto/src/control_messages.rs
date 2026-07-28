@@ -646,7 +646,7 @@ fn read_and_verify_mtu_pattern<T: Read>(read: &mut T, len: usize) -> std::io::Re
         read.read_exact(&mut buffer[..size])?;
 
         let offset = &MTU_TEST_PATTERN[i % MTU_PATTERN_SIZE..];
-        if !(&buffer[..size]).eq(&offset[..size]) {
+        if !buffer[..size].eq(&offset[..size]) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 "invalid mtu test pattern",
@@ -710,10 +710,7 @@ impl MessageEncoding for AgentPortMappingFound {
             1 => Ok(AgentPortMappingFound::ToAgent(AgentSessionId::read_from(
                 read,
             )?)),
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "unknown AgentPortMappingFound id",
-            )),
+            _ => Err(std::io::Error::other("unknown AgentPortMappingFound id")),
         }
     }
 }
@@ -969,12 +966,12 @@ mod test {
         match rng.next_u32() % 7 {
             0 => ControlRequest::Ping(Ping {
                 now: rng.next_u64(),
-                current_ping: if rng.next_u32() % 2 == 0 {
+                current_ping: if rng.next_u32().is_multiple_of(2) {
                     Some(rng.next_u32())
                 } else {
                     None
                 },
-                session_id: if rng.next_u32() % 2 == 0 {
+                session_id: if rng.next_u32().is_multiple_of(2) {
                     Some(AgentSessionId {
                         session_id: rng.next_u64(),
                         account_id: rng.next_u64() % (i64::MAX as u64),
@@ -1283,5 +1280,4 @@ mod test {
         let err = ControlRequest::read_from(&mut &buffer[..]).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
-
 }

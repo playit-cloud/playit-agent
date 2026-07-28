@@ -114,11 +114,11 @@ pub fn installed_service_is_active_with_linux_manager(
 pub fn installed_service_state() -> Result<InstalledServiceState, ServiceManagerError> {
     #[cfg(target_os = "linux")]
     {
-        return Ok(if linux::is_systemd_service_active()? {
+        Ok(if linux::is_systemd_service_active()? {
             InstalledServiceState::Running
         } else {
             InstalledServiceState::Stopped
-        });
+        })
     }
 
     #[cfg(target_os = "windows")]
@@ -150,7 +150,7 @@ pub async fn ensure_installed_service_running() -> Result<(), ServiceManagerErro
         }
 
         linux::start_systemd_service()?;
-        return wait_for_installed_service().await;
+        wait_for_installed_service().await
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -191,7 +191,7 @@ pub async fn ensure_installed_service_running_with_linux_manager(
 pub fn stop_installed_service() -> Result<(), ServiceManagerError> {
     #[cfg(target_os = "linux")]
     {
-        return linux::stop_systemd_service();
+        linux::stop_systemd_service()
     }
 
     #[cfg(not(target_os = "linux"))]

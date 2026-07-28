@@ -10,9 +10,7 @@ pub static AGENT_VERSION: OnceLock<AgentVersion> = OnceLock::new();
 pub static PLATFORM: OnceLock<Platform> = OnceLock::new();
 
 pub fn get_platform() -> Platform {
-    PLATFORM
-        .get_or_init(|| agent_control::current_platform())
-        .clone()
+    *PLATFORM.get_or_init(agent_control::current_platform)
 }
 
 pub fn register_platform(platform: Platform) {
