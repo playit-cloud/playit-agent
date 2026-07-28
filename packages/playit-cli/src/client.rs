@@ -5,6 +5,7 @@ use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 use playit_ipc::model::{
     AgentLifecycle, LogLevel as ServiceLogLevel, ServicePhase, ServiceUpdate, SubscribeResponse,
 };
+use playit_ipc::{AGENT_OVER_LIMIT_TITLE, agent_over_limit_guidance};
 
 #[cfg(target_os = "linux")]
 use crate::linux;
@@ -14,9 +15,6 @@ use crate::service::{
 };
 use crate::ui::{ConnectionStats, ConsoleUi, TuiApp};
 use crate::{CliError, run_setup_flow};
-
-const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
-const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachMode {
@@ -718,14 +716,8 @@ fn format_service_phase(phase: &ServicePhase) -> &'static str {
     }
 }
 
-fn agent_over_limit_guidance() -> String {
-    format!(
-        "Delete unused agents: {ACCOUNT_AGENTS_URL}\nIncrease your agent limit: {ACCOUNT_UPGRADE_URL}"
-    )
-}
-
 fn agent_over_limit_title() -> &'static str {
-    "The playit service cannot start because this account is over the agent limit."
+    AGENT_OVER_LIMIT_TITLE
 }
 
 fn format_log_level(level: &ServiceLogLevel) -> &'static str {

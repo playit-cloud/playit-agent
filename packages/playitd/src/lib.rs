@@ -1,4 +1,5 @@
 pub mod daemon;
+pub mod guest_login;
 mod ipc_server;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;

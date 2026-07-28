@@ -32,8 +32,6 @@ urlencoding = "2.1"
 serde_yml = "0.0.12"
 crossterm = "0.28"
 ratatui = "0.29"
-dotenv = "0.15.0"
-
 playit-agent-core = { path = "../agent_core", version = "1.0.10" }
 playit-ipc = { path = "../playit-ipc", version = "1.0.10" }
 playitd = { path = "../playitd", version = "1.0.10" }

@@ -1939,6 +1939,7 @@ version = "0.2.0"
 dependencies = [
  "byteorder",
  "chrono",
+ "dotenv",
  "reqwest",
  "rustls",
  "serde",
@@ -1957,7 +1958,6 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs 6.0.0",
- "dotenv",
  "hex",
  "playit-agent-core",
  "playit-agent-proto",
@@ -2002,7 +2002,6 @@ version = "1.0.10"
 dependencies = [
  "clap",
  "dirs 6.0.0",
- "dotenv",
  "governor",
  "hex",
  "interprocess",

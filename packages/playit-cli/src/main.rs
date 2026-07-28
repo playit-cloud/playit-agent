@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::sync::LazyLock;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -18,13 +17,10 @@ use uuid::Uuid;
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::http_client::HttpClientError;
-use playit_api_client::{PlayitApi, api::*};
+use playit_api_client::{PlayitApi, api::*, default_api_base};
 
 use crate::signal_handle::get_signal_handle;
 use crate::ui::{ConsoleUi, UISettings};
-
-pub static API_BASE: LazyLock<String> =
-    LazyLock::new(|| dotenv::var("API_BASE").unwrap_or("https://api.playit.gg".to_string()));
 
 mod client;
 #[cfg(target_os = "linux")]
@@ -279,7 +275,7 @@ pub async fn run_setup_flow(
     let key = claim_exchange(console, &claim_code, ClaimAgentType::Assignable, 0).await?;
     provision_service_secret(console, target, &key, service_manager).await?;
 
-    let api = PlayitApi::create(API_BASE.to_string(), Some(key));
+    let api = PlayitApi::create(default_api_base(), Some(key));
     if let Ok(session) = api.login_guest().await {
         console
             .write_screen(format!(
@@ -316,7 +312,7 @@ pub async fn claim_exchange(
     agent_type: ClaimAgentType,
     wait_sec: u32,
 ) -> Result<String, CliError> {
-    let api = PlayitApi::create(API_BASE.to_string(), None);
+    let api = PlayitApi::create(default_api_base(), None);
 
     let end_at = if wait_sec == 0 {
         u64::MAX

@@ -25,8 +25,6 @@ use crate::CliError;
 use crate::signal_handle::get_signal_handle;
 
 const SERVICE_LOG_CAPACITY: usize = 500;
-const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
-const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
 
 /// Data about the running agent
 #[derive(Clone, Default)]
@@ -525,14 +523,8 @@ fn service_phase_label(status: &ServiceStatus) -> &'static str {
     }
 }
 
-fn agent_over_limit_guidance() -> String {
-    format!(
-        "Delete unused agents: {ACCOUNT_AGENTS_URL}\nIncrease your agent limit: {ACCOUNT_UPGRADE_URL}"
-    )
-}
-
 fn agent_over_limit_title() -> &'static str {
-    "The playit service cannot start because this account is over the agent limit."
+    AGENT_OVER_LIMIT_TITLE
 }
 
 fn level_label(level: &LogLevel) -> &'static str {
@@ -605,3 +597,4 @@ impl Drop for TuiApp {
         let _ = self.restore_terminal();
     }
 }
+use playit_ipc::{AGENT_OVER_LIMIT_TITLE, agent_over_limit_guidance};
