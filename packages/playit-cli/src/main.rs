@@ -10,7 +10,6 @@ use client::{
     run_secret_path_command, run_start_command, run_status_command, run_stop_command,
 };
 use playit_agent_core::agent_control::platform::current_platform;
-use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use rand::Rng;
 use service::ServiceManagerMode;
 use tracing_subscriber::EnvFilter;
@@ -154,18 +153,6 @@ async fn main() -> std::process::ExitCode {
 
 async fn run_cli() -> Result<std::process::ExitCode, CliError> {
     let cli = Cli::parse();
-
-    /* register docker */
-    {
-        let platform = current_platform();
-
-        register_platform(platform);
-
-        help_register_version(
-            env!("CARGO_PKG_VERSION"),
-            "308943e8-faef-4835-a2ba-270351f72aa3",
-        );
-    }
 
     let target = CliTarget::from_socket_path(cli.socket_path.clone());
     let service_manager = service_manager_mode(&cli);

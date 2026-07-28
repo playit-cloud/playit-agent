@@ -8,15 +8,14 @@ use std::{
 use errors::SetupError;
 use playit_agent_proto::control_messages::Pong;
 use tokio::{io::ReadBuf, net::UdpSocket};
-use version::get_version;
 
 pub use playit_api_client::api::SignedAgentKey;
 use playit_api_client::{
     PlayitApi,
-    api::{ReqAgentsRoutingGet, ReqProtoRegister},
+    api::{AgentVersion, Platform, ReqAgentsRoutingGet, ReqProtoRegister},
 };
 
-use crate::{agent_control::platform::current_platform, utils::error_helper::ErrorHelper};
+use crate::utils::error_helper::ErrorHelper;
 
 pub mod errors;
 
@@ -229,12 +228,23 @@ pub trait AuthResource: Clone {
 #[derive(Clone)]
 pub struct AuthApi {
     client: PlayitApi,
+    agent_version: AgentVersion,
+    platform: Platform,
 }
 
 impl AuthApi {
-    pub fn new(api_url: String, secret_key: String) -> Self {
+    pub fn new(
+        api_url: String,
+        secret_key: String,
+        agent_version: AgentVersion,
+        platform: Platform,
+    ) -> Self {
         let client = PlayitApi::create(api_url, Some(secret_key));
-        AuthApi { client }
+        AuthApi {
+            client,
+            agent_version,
+            platform,
+        }
     }
 }
 
@@ -247,8 +257,8 @@ impl AuthResource for AuthApi {
                 client_addr: pong.client_addr,
                 tunnel_addr: pong.tunnel_addr,
                 proto_version: 2,
-                version: get_version(),
-                platform: current_platform(),
+                version: self.agent_version.clone(),
+                platform: self.platform,
             })
             .await
             .with_error(|error| tracing::error!(?error, "failed to sign and register"))?;
