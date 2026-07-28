@@ -63,7 +63,7 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
         Packets::new(64),
         stats.clone(),
     );
-    let mut udp_channel = UdpChannel::new(Packets::new(64))
+    let mut udp_channel = UdpChannel::new(Packets::new(64), stats.clone())
         .await
         .expect("create udp channel");
 
@@ -194,7 +194,7 @@ async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
         Packets::new(64),
         stats.clone(),
     );
-    let mut udp_channel = UdpChannel::new(Packets::new(64))
+    let mut udp_channel = UdpChannel::new(Packets::new(64), stats.clone())
         .await
         .expect("create udp channel");
 
@@ -284,7 +284,7 @@ async fn encapsulated_udp_tunnel_isolates_multiple_parallel_flows_and_recovers_t
         Packets::new(128),
         stats.clone(),
     );
-    let mut udp_channel = UdpChannel::new(Packets::new(128))
+    let mut udp_channel = UdpChannel::new(Packets::new(128), stats.clone())
         .await
         .expect("create udp channel");
 
@@ -394,7 +394,7 @@ async fn udp_tunnel_stress_reports_bitrate_by_packet_size() {
         Packets::new(4096),
         stats.clone(),
     );
-    let mut udp_channel = UdpChannel::new(Packets::new(4096))
+    let mut udp_channel = UdpChannel::new(Packets::new(4096), stats.clone())
         .await
         .expect("create udp channel");
 

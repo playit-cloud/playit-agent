@@ -1,10 +1,6 @@
-use std::sync::{Arc, LazyLock};
-
 use serde::Serialize;
 
 use crate::network::errors::IntCounter;
-
-static _ERRORS: LazyLock<Arc<TcpErrors>> = LazyLock::new(|| Arc::new(TcpErrors::default()));
 
 #[derive(Default, Debug, Serialize)]
 pub struct TcpErrors {
@@ -24,8 +20,4 @@ pub struct TcpErrors {
     pub new_client_set_origin_no_delay_error: IntCounter,
     pub new_client_write_proxy_proto_timeout: IntCounter,
     pub new_client_write_proxy_proto_error: IntCounter,
-}
-
-pub fn tcp_errors() -> &'static TcpErrors {
-    &_ERRORS
 }

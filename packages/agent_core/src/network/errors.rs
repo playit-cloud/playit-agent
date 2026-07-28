@@ -18,4 +18,8 @@ impl IntCounter {
     pub fn inc(&self) {
         self.0.fetch_add(1, Ordering::AcqRel);
     }
+
+    pub fn value(&self) -> u64 {
+        self.0.load(Ordering::Acquire)
+    }
 }

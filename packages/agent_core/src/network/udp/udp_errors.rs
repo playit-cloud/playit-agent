@@ -1,10 +1,6 @@
-use std::sync::{Arc, LazyLock};
-
 use serde::Serialize;
 
 use crate::network::errors::IntCounter;
-
-static _ERRORS: LazyLock<Arc<UdpErrors>> = LazyLock::new(|| Arc::new(UdpErrors::default()));
 
 #[derive(Default, Debug, Serialize)]
 pub struct UdpErrors {
@@ -29,8 +25,4 @@ pub struct UdpErrors {
     pub origin_reject_port_too_high: IntCounter,
     pub origin_send_io_error: IntCounter,
     pub origin_v1_proxy_protocol: IntCounter,
-}
-
-pub fn udp_errors() -> &'static UdpErrors {
-    &_ERRORS
 }

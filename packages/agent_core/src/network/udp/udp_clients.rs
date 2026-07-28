@@ -24,7 +24,6 @@ use playit_agent_proto::udp_proto::UdpFlow;
 
 use super::{
     packets::{Packet, Packets},
-    udp_errors::udp_errors,
     udp_receiver::{UdpReceivedPacket, UdpReceiver, UdpReceiverSetup},
     udp_settings::UdpSettings,
 };
@@ -168,17 +167,17 @@ impl UdpClients {
         packet: UdpReceivedPacket,
     ) -> Option<(UdpFlow, Packet)> {
         let Some(client) = self.virtual_clients.get_mut(unpack_slot(packet.rx_id)) else {
-            udp_errors().origin_client_missing.inc();
+            self.stats.udp_errors().origin_client_missing.inc();
             return None;
         };
 
         if client.id != packet.rx_id {
-            udp_errors().origin_reject_bad_id.inc();
+            self.stats.udp_errors().origin_reject_bad_id.inc();
             return None;
         }
 
         if packet.from != client.target_addr {
-            udp_errors().origin_reject_addr_differ.inc();
+            self.stats.udp_errors().origin_reject_addr_differ.inc();
             return None;
         }
 
@@ -247,7 +246,7 @@ impl UdpClients {
                     .await
                     .is_err()
                 {
-                    udp_errors().origin_send_io_error.inc();
+                    self.stats.udp_errors().origin_send_io_error.inc();
                 }
 
                 self.stats.add_bytes_in(packet_len);
@@ -262,7 +261,7 @@ impl UdpClients {
         }
 
         if self.new_client_limiter.check().is_err() {
-            udp_errors().new_client_ratelimit.inc();
+            self.stats.udp_errors().new_client_ratelimit.inc();
             return;
         }
 
@@ -336,7 +335,7 @@ impl UdpClients {
 
         if let Some(proto) = origin.proxy_protocol {
             if proto != ProxyProtocol::ProxyProtocolV2 {
-                udp_errors().origin_v1_proxy_protocol.inc();
+                self.stats.udp_errors().origin_v1_proxy_protocol.inc();
             } else {
                 let header = ProxyProtocolHeader::from_udp_flow(&flow);
 
@@ -346,7 +345,7 @@ impl UdpClients {
                     .expect("Failed to write proxy proto header to Vec");
 
                 if client.socket.send_to(&buffer, target_addr).await.is_err() {
-                    udp_errors().origin_send_io_error.inc();
+                    self.stats.udp_errors().origin_send_io_error.inc();
                 }
             }
         }
@@ -357,7 +356,7 @@ impl UdpClients {
             .await
             .is_err()
         {
-            udp_errors().origin_send_io_error.inc();
+            self.stats.udp_errors().origin_send_io_error.inc();
         }
 
         self.virtual_client_lookup.insert(
