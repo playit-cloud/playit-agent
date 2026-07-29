@@ -783,6 +783,7 @@ async fn broadcast_stats(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn broadcast_agent_state(
     api: PlayitApi,
     lookup: Arc<OriginLookup>,
@@ -1336,6 +1337,7 @@ mod tests {
     use super::{DaemonOptions, RunningSummary, run_daemon, setup_error_user_message};
     use playit_agent_core::agent_control::errors::{SetupError, TimeoutSource};
     use playit_api_client::api::{ApiResponseError, AuthError, ProtoRegisterError};
+    use playit_api_client::http_client::HttpClientError;
     use playit_ipc::ipc::IpcClient;
     use playit_ipc::model::{
         AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ServicePhase,
@@ -1399,6 +1401,44 @@ mod tests {
         let message = setup_error_user_message(&SetupError::ApiFail(payload));
 
         assert!(message.contains("over the agent limit"));
+    }
+
+    #[test]
+    fn setup_error_message_handles_generic_api_failures() {
+        let message = setup_error_user_message(&SetupError::ApiFail(
+            r#"{"type":"unexpected_future_failure"}"#.to_string(),
+        ));
+
+        assert!(message.contains("rejected the agent registration request"));
+    }
+
+    #[test]
+    fn setup_error_message_handles_api_and_request_failures() {
+        let api_message = setup_error_user_message(&SetupError::ApiError(
+            ApiResponseError::Validation("invalid request".to_string()),
+        ));
+        assert!(api_message.contains("rejected the agent startup request"));
+
+        let json_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let request_message = setup_error_user_message(&SetupError::RequestError(
+            HttpClientError::SerializeError(json_error),
+        ));
+        assert!(request_message.contains("Could not reach the playit API"));
+    }
+
+    #[test]
+    fn setup_error_message_handles_control_protocol_failures() {
+        let errors = [
+            SetupError::AttemptingToAuthWithOldFlow,
+            SetupError::FailedToDecodeSignedAgentRegisterHex,
+            SetupError::NoResponseFromAuthenticate,
+            SetupError::RegisterInvalidSignature,
+            SetupError::RegisterUnauthorized,
+        ];
+
+        for error in errors {
+            assert!(setup_error_user_message(&error).contains("Failed to start the playit agent"));
+        }
     }
 
     #[test]
