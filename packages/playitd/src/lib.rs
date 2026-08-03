@@ -1,4 +1,5 @@
 pub mod daemon;
+pub mod errors;
 pub mod guest_login;
 mod ipc_server;
 #[cfg(target_os = "linux")]
@@ -15,6 +16,7 @@ pub use daemon::{
     DEFAULT_VARIANT_ID, DaemonOptions, VersionDetails, VersionOverrideFile, load_version_overrides,
     run_daemon,
 };
+pub use errors::DaemonError;
 pub use paths::default_secret_path;
 
 #[cfg(target_os = "macos")]
