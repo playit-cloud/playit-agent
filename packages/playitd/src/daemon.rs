@@ -1182,15 +1182,10 @@ fn setup_error_user_message(error: &SetupError) -> String {
         SetupError::ApiError(error) => {
             format!("The playit API rejected the agent startup request: {error}")
         }
-        SetupError::ApiFail(payload)
-            if matches!(
-                serde_json::from_str::<ProtoRegisterError>(payload),
-                Ok(ProtoRegisterError::AgentDisabledOverLimit)
-            ) =>
-        {
+        SetupError::ApiFail(ProtoRegisterError::AgentDisabledOverLimit) => {
             agent_disabled_over_limit_message()
         }
-        SetupError::ApiFail(_) => {
+        SetupError::ApiFail(_) | SetupError::RawApiFail(_) => {
             "The playit API rejected the agent registration request. Check your account and tunnel configuration, then try again.".to_string()
         }
         SetupError::Timeout(_) => {
@@ -1218,17 +1213,10 @@ fn is_invalid_agent_secret_error(error: &SetupError) -> bool {
     )
 }
 
-fn parse_proto_register_error(error: &SetupError) -> Option<ProtoRegisterError> {
-    match error {
-        SetupError::ApiFail(payload) => serde_json::from_str(payload).ok(),
-        _ => None,
-    }
-}
-
 fn is_agent_disabled_over_limit_error(error: &SetupError) -> bool {
     matches!(
-        parse_proto_register_error(error),
-        Some(ProtoRegisterError::AgentDisabledOverLimit)
+        error,
+        SetupError::ApiFail(ProtoRegisterError::AgentDisabledOverLimit)
     )
 }
 
@@ -1397,15 +1385,16 @@ mod tests {
 
     #[test]
     fn setup_error_message_handles_agent_limit() {
-        let payload = serde_json::to_string(&ProtoRegisterError::AgentDisabledOverLimit).unwrap();
-        let message = setup_error_user_message(&SetupError::ApiFail(payload));
+        let message = setup_error_user_message(&SetupError::ApiFail(
+            ProtoRegisterError::AgentDisabledOverLimit,
+        ));
 
         assert!(message.contains("over the agent limit"));
     }
 
     #[test]
     fn setup_error_message_handles_generic_api_failures() {
-        let message = setup_error_user_message(&SetupError::ApiFail(
+        let message = setup_error_user_message(&SetupError::RawApiFail(
             r#"{"type":"unexpected_future_failure"}"#.to_string(),
         ));
 
