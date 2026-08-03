@@ -89,6 +89,7 @@ pub struct IpcServer {
 }
 
 impl IpcServer {
+    #[allow(clippy::too_many_arguments)]
     pub async fn new_with_sender(
         socket_path: Option<String>,
         cancel_token: CancellationToken,
