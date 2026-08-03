@@ -1912,6 +1912,7 @@ dependencies = [
  "serde_json",
  "slab",
  "slotmap",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "toml 0.9.12+spec-1.1.0",

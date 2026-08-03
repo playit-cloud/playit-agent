@@ -25,6 +25,7 @@ byteorder = { workspace = true }
 chrono = { workspace = true }
 futures-util = { workspace = true }
 message-encoding = { workspace = true }
+thiserror = { workspace = true }
 
 playit-agent-proto = { path = "../agent_proto", version = "1.3.0" }
 playit-api-client = { path = "../api_client", version = "0.2.0" }
