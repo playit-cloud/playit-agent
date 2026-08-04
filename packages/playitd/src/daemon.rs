@@ -1548,4 +1548,56 @@ mod tests {
         let _ = std::fs::remove_file(&secret_path);
         let _ = std::fs::remove_file(&socket_path);
     }
+
+    #[tokio::test]
+    async fn file_secret_can_be_provisioned_over_ipc() {
+        let secret_path = unique_test_path("provision-secret", "toml");
+        let socket_path = unique_test_path("provision-secret", "sock")
+            .display()
+            .to_string();
+        let _ = std::fs::remove_file(&secret_path);
+        let _ = std::fs::remove_file(&socket_path);
+
+        let mut daemon_handle = tokio::spawn(run_daemon(DaemonOptions {
+            secret: None,
+            secret_path: Some(secret_path.clone()),
+            socket_path: Some(socket_path.clone()),
+            log_path: None,
+            platform_docker: false,
+            ..DaemonOptions::default()
+        }));
+
+        let mut client = wait_for_waiting_for_secret(&socket_path).await;
+        let secret = "0123456789abcdef0123456789abcdef";
+        let response = client.set_secret(secret).await.unwrap();
+        assert!(response.accepted, "{response:?}");
+
+        let content = tokio::fs::read_to_string(&secret_path).await.unwrap();
+        let parsed: toml::Value = toml::from_str(&content).unwrap();
+        assert_eq!(parsed["secret_key"].as_str(), Some(secret));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&secret_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        let stop_response = client.stop().await.unwrap();
+        assert!(stop_response.accepted);
+        if tokio::time::timeout(Duration::from_secs(5), &mut daemon_handle)
+            .await
+            .is_err()
+        {
+            daemon_handle.abort();
+            let _ = daemon_handle.await;
+        }
+
+        let _ = std::fs::remove_file(&secret_path);
+        let _ = std::fs::remove_file(&socket_path);
+    }
 }
