@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::errors::{DaemonError, LoggingError, SecretError};
 use crate::guest_login::GuestLoginCache;
 use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
 use crate::logging::{IpcBroadcastLayer, log_rate_limit_filter};
@@ -20,7 +21,7 @@ use playit_api_client::api::{
 };
 use playit_api_client::{PlayitApi, default_api_base};
 use playit_ipc::agent_over_limit_guidance;
-use playit_ipc::ipc::{IpcError, get_default_socket_path, protocol_info};
+use playit_ipc::ipc::{get_default_socket_path, protocol_info};
 use playit_ipc::model::{
     AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ConnectionStats,
     NoticeState, PendingTunnelState, ServiceError, ServiceErrorCode, ServicePhase, ServiceStatus,
@@ -153,31 +154,6 @@ pub struct VersionOverrideFile {
     pub major: Option<u32>,
     pub minor: Option<u32>,
     pub patch: Option<u32>,
-}
-
-#[derive(Debug)]
-pub enum DaemonError {
-    Ipc(IpcError),
-    SecretError(String),
-    SetupError(String),
-}
-
-impl std::fmt::Display for DaemonError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Ipc(e) => write!(f, "IPC error: {e}"),
-            Self::SecretError(e) => write!(f, "Secret error: {e}"),
-            Self::SetupError(e) => write!(f, "Setup error: {e}"),
-        }
-    }
-}
-
-impl std::error::Error for DaemonError {}
-
-impl From<IpcError> for DaemonError {
-    fn from(e: IpcError) -> Self {
-        Self::Ipc(e)
-    }
 }
 
 pub async fn load_version_overrides(path: &Path) -> Result<VersionOverrideFile, String> {
@@ -366,10 +342,10 @@ async fn initialize_runtime(
         event_tx.clone(),
         options.log_path.as_deref(),
     )
-    .map_err(DaemonError::SetupError)?;
+    .map_err(DaemonError::Logging)?;
 
     let agent_version = parse_agent_version(&version_string, &options.version.variant_id)
-        .map_err(|error| DaemonError::SetupError(error.to_string()))?;
+        .map_err(|error| DaemonError::Runtime(error.to_string()))?;
     let guest_login_cache = Arc::new(GuestLoginCache::default());
 
     tracing::info!(
@@ -459,7 +435,7 @@ async fn resolve_startup_secret(
             .await;
 
             if !secret_source.allows_ipc_provisioning() {
-                return Err(DaemonError::SecretError(error));
+                return Err(DaemonError::Secret(error.into()));
             }
 
             let secret = wait_for_startup_secret(runtime, secret_source, secret_rx).await?;
@@ -477,8 +453,8 @@ async fn wait_for_startup_secret(
     secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
 ) -> Result<Option<String>, DaemonError> {
     let Some(secret_path) = secret_source.secret_path() else {
-        return Err(DaemonError::SecretError(
-            "No secret source available for startup".to_string(),
+        return Err(DaemonError::Secret(
+            "No secret source available for startup".into(),
         ));
     };
 
@@ -506,7 +482,7 @@ async fn wait_for_provisioned_secret(
 
     match wait_for_secret_provisioning(secret_path, secret_rx, &runtime.cancel_token)
         .await
-        .map_err(DaemonError::SecretError)?
+        .map_err(DaemonError::Secret)?
     {
         Some(secret) => {
             publish_starting(runtime).await;
@@ -638,7 +614,7 @@ async fn build_agent_with_reprovisioning(
                     AgentLifecycle::Error(service_error),
                 )
                 .await;
-                return Err(DaemonError::SetupError(message));
+                return Err(DaemonError::Runtime(message));
             }
         }
     }
@@ -713,10 +689,10 @@ async fn run_until_shutdown(
 
     match shutdown_reason {
         ShutdownReason::Requested => Ok(()),
-        ShutdownReason::AgentStopped(Ok(())) => Err(DaemonError::SetupError(
+        ShutdownReason::AgentStopped(Ok(())) => Err(DaemonError::Runtime(
             "playit agent task stopped unexpectedly".to_string(),
         )),
-        ShutdownReason::AgentStopped(Err(error)) => Err(DaemonError::SetupError(format!(
+        ShutdownReason::AgentStopped(Err(error)) => Err(DaemonError::Runtime(format!(
             "playit agent task failed: {error}"
         ))),
     }
@@ -925,7 +901,7 @@ async fn wait_for_secret_provisioning(
     secret_path: &Path,
     provision_rx: &mut mpsc::Receiver<SecretProvisionRequest>,
     cancel_token: &CancellationToken,
-) -> Result<Option<String>, String> {
+) -> Result<Option<String>, SecretError> {
     tracing::info!(
         secret_path = %secret_path.display(),
         "Waiting for frontend secret provisioning over IPC"
@@ -935,11 +911,11 @@ async fn wait_for_secret_provisioning(
         tokio::select! {
             maybe_request = provision_rx.recv() => {
                 let Some(request) = maybe_request else {
-                    return Err("Secret provisioning channel closed".to_string());
+                    return Err("Secret provisioning channel closed".into());
                 };
 
                 let result = persist_secret_file(secret_path, &request.secret).await;
-                let ack = result.as_ref().map(|_| ()).map_err(Clone::clone);
+                let ack = result.as_ref().map(|_| ()).map_err(ToString::to_string);
                 let _ = request.response_tx.send(ack);
 
                 match result {
@@ -959,7 +935,7 @@ async fn wait_for_secret_provisioning(
     }
 }
 
-async fn persist_secret_file(path: &Path, secret: &str) -> Result<(), String> {
+async fn persist_secret_file(path: &Path, secret: &str) -> Result<(), SecretError> {
     let secret = validate_secret(secret.trim())?;
 
     if let Some(parent) = path
@@ -967,10 +943,10 @@ async fn persist_secret_file(path: &Path, secret: &str) -> Result<(), String> {
         .filter(|parent| !parent.as_os_str().is_empty())
     {
         tokio::fs::create_dir_all(parent).await.map_err(|error| {
-            format!(
+            SecretError(format!(
                 "Failed to create secret directory {}: {error}",
                 parent.display()
-            )
+            ))
         })?;
     }
 
@@ -979,10 +955,10 @@ async fn persist_secret_file(path: &Path, secret: &str) -> Result<(), String> {
             secret_key: secret.clone(),
         })
         .map_err(|error| {
-            format!(
+            SecretError(format!(
                 "Failed to serialize secret file {}: {error}",
                 path.display()
-            )
+            ))
         })?
     } else {
         secret
@@ -992,17 +968,17 @@ async fn persist_secret_file(path: &Path, secret: &str) -> Result<(), String> {
 }
 
 #[cfg(unix)]
-async fn secure_write_secret_file(path: &Path, content: &[u8]) -> Result<(), String> {
+async fn secure_write_secret_file(path: &Path, content: &[u8]) -> Result<(), SecretError> {
     let path = path.to_path_buf();
     let content = content.to_vec();
 
     tokio::task::spawn_blocking(move || secure_write_secret_file_blocking(&path, &content))
         .await
-        .map_err(|error| format!("Failed to join secret file writer task: {error}"))?
+        .map_err(|error| SecretError(format!("Failed to join secret file writer task: {error}")))?
 }
 
 #[cfg(unix)]
-fn secure_write_secret_file_blocking(path: &Path, content: &[u8]) -> Result<(), String> {
+fn secure_write_secret_file_blocking(path: &Path, content: &[u8]) -> Result<(), SecretError> {
     use std::io::Write;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
@@ -1027,39 +1003,39 @@ fn secure_write_secret_file_blocking(path: &Path, content: &[u8]) -> Result<(), 
             .mode(0o600)
             .open(&tmp_path)
             .map_err(|error| {
-                format!(
+                SecretError(format!(
                     "Failed to create temporary secret file {}: {error}",
                     tmp_path.display()
-                )
+                ))
             })?;
 
         file.write_all(content).map_err(|error| {
-            format!(
+            SecretError(format!(
                 "Failed to write temporary secret file {}: {error}",
                 tmp_path.display()
-            )
+            ))
         })?;
         file.sync_all().map_err(|error| {
-            format!(
+            SecretError(format!(
                 "Failed to sync temporary secret file {}: {error}",
                 tmp_path.display()
-            )
+            ))
         })?;
         drop(file);
 
         std::fs::rename(&tmp_path, path).map_err(|error| {
-            format!(
+            SecretError(format!(
                 "Failed to replace secret file {} with {}: {error}",
                 path.display(),
                 tmp_path.display()
-            )
+            ))
         })?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
             |error| {
-                format!(
+                SecretError(format!(
                     "Failed to set secret file permissions on {}: {error}",
                     path.display()
-                )
+                ))
             },
         )?;
 
@@ -1074,10 +1050,13 @@ fn secure_write_secret_file_blocking(path: &Path, content: &[u8]) -> Result<(), 
 }
 
 #[cfg(not(unix))]
-async fn secure_write_secret_file(path: &Path, content: &[u8]) -> Result<(), String> {
-    tokio::fs::write(path, content)
-        .await
-        .map_err(|error| format!("Failed to write secret file {}: {error}", path.display()))
+async fn secure_write_secret_file(path: &Path, content: &[u8]) -> Result<(), SecretError> {
+    tokio::fs::write(path, content).await.map_err(|error| {
+        SecretError(format!(
+            "Failed to write secret file {}: {error}",
+            path.display()
+        ))
+    })
 }
 
 fn parse_secret_file(content: &str) -> Result<String, ()> {
@@ -1090,11 +1069,14 @@ fn parse_secret_file(content: &str) -> Result<String, ()> {
     validate_secret(config.secret_key.trim()).map_err(|_| ())
 }
 
-fn validate_secret(secret: &str) -> Result<String, String> {
+fn validate_secret(secret: &str) -> Result<String, SecretError> {
     hex::decode(secret)
         .map(|_| secret.to_string())
         .map_err(|_| {
-            "The secret is not valid. It should be the key generated by playit setup.".to_string()
+            SecretError(
+                "The secret is not valid. It should be the key generated by playit setup."
+                    .to_string(),
+            )
         })
 }
 
@@ -1225,7 +1207,7 @@ fn init_tracing(
     use_ansi: bool,
     event_tx: broadcast::Sender<ServiceUpdate>,
     log_path: Option<&Path>,
-) -> Result<Option<WorkerGuard>, String> {
+) -> Result<Option<WorkerGuard>, LoggingError> {
     match log_path {
         Some(path) => {
             let writer = log_file_writer(path)?;
@@ -1266,7 +1248,9 @@ fn init_tracing(
 }
 
 #[cfg(target_os = "windows")]
-fn log_file_writer(path: &Path) -> Result<tracing_rolling_file::RollingFileAppenderBase, String> {
+fn log_file_writer(
+    path: &Path,
+) -> Result<tracing_rolling_file::RollingFileAppenderBase, LoggingError> {
     windows_log_file_writer_with_limits(
         path,
         WINDOWS_LOG_MAX_FILE_SIZE_BYTES,
@@ -1279,7 +1263,7 @@ fn windows_log_file_writer_with_limits(
     path: &Path,
     max_file_size_bytes: u64,
     max_rotated_files: usize,
-) -> Result<tracing_rolling_file::RollingFileAppenderBase, String> {
+) -> Result<tracing_rolling_file::RollingFileAppenderBase, LoggingError> {
     create_log_parent_dir(path)?;
 
     Ok(tracing_rolling_file::RollingFileAppenderBase::builder()
@@ -1288,33 +1272,35 @@ fn windows_log_file_writer_with_limits(
         .condition_max_file_size(max_file_size_bytes)
         .build()
         .map_err(|error| {
-            format!(
+            LoggingError(format!(
                 "Failed to create log file writer {}: {error}",
                 path.display()
-            )
+            ))
         })?)
 }
 
 #[cfg(not(target_os = "windows"))]
-fn log_file_writer(path: &Path) -> Result<tracing_appender::rolling::RollingFileAppender, String> {
+fn log_file_writer(
+    path: &Path,
+) -> Result<tracing_appender::rolling::RollingFileAppender, LoggingError> {
     create_log_parent_dir(path)?;
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
         .and_then(|file| file.to_str())
-        .ok_or_else(|| format!("Invalid --log-path {}", path.display()))?;
+        .ok_or_else(|| LoggingError(format!("Invalid --log-path {}", path.display())))?;
 
     Ok(tracing_appender::rolling::never(parent, file_name))
 }
 
-fn create_log_parent_dir(path: &Path) -> Result<(), String> {
+fn create_log_parent_dir(path: &Path) -> Result<(), LoggingError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     std::fs::create_dir_all(parent).map_err(|error| {
-        format!(
+        LoggingError(format!(
             "Failed to create log directory {}: {error}",
             parent.display()
-        )
+        ))
     })
 }
 
