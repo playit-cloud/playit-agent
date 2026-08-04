@@ -12,7 +12,6 @@ use playit_agent_core::agent_control::platform::current_platform;
 use rand::Rng;
 use service::ServiceManagerMode;
 use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
 
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::utils::now_milli;
@@ -413,24 +412,10 @@ pub async fn claim_exchange(
 #[derive(Debug)]
 pub enum CliError {
     InvalidClaimCode,
-    NotImplemented,
-    MissingSecret,
-    MalformedSecret,
-    InvalidSecret,
     RenderError(std::io::Error),
-    SecretFileLoadError,
-    SecretFileWriteError(std::io::Error),
-    SecretFilePathMissing,
-    InvalidPortType,
-    InvalidPortCount,
-    InvalidMappingOverride,
     AgentClaimRejected,
-    InvalidConfigFile,
-    TunnelNotFound(Uuid),
     TimedOut,
     AnswerNotProvided,
-    TunnelOverwrittenAlready(Uuid),
-    ResourceNotFoundAfterCreate(Uuid),
     RequestError(HttpClientError),
     ApiError(ApiResponseError),
     ApiFail(String),
@@ -444,10 +429,19 @@ impl Error for CliError {}
 impl Display for CliError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidClaimCode => write!(f, "The claim code is invalid."),
+            Self::RenderError(error) => write!(f, "Terminal interface error: {error}"),
+            Self::AgentClaimRejected => {
+                write!(f, "The playit API rejected the agent claim request.")
+            }
+            Self::TimedOut => write!(f, "The operation timed out."),
+            Self::AnswerNotProvided => write!(f, "No answer was provided."),
+            Self::RequestError(error) => write!(f, "Could not reach the playit API: {error}"),
+            Self::ApiError(error) => write!(f, "The playit API returned an error: {error}"),
+            Self::TunnelSetupError(error) => write!(f, "Failed to start the playit agent: {error}"),
             Self::ServiceError(message) | Self::IpcError(message) | Self::ApiFail(message) => {
                 write!(f, "{message}")
             }
-            _ => write!(f, "{:?}", self),
         }
     }
 }
@@ -457,7 +451,10 @@ impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for CliError {
         match e {
             ApiError::ApiError(e) => CliError::ApiError(e),
             ApiError::ClientError(e) => CliError::RequestError(e),
-            ApiError::Fail(fail) => CliError::ApiFail(serde_json::to_string(&fail).unwrap()),
+            ApiError::Fail(fail) => CliError::ApiFail(
+                serde_json::to_string(&fail)
+                    .unwrap_or_else(|_| "The API rejected the request.".to_string()),
+            ),
         }
     }
 }
@@ -480,6 +477,22 @@ impl From<SetupError> for CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_errors_have_human_readable_messages() {
+        let cases = [
+            (CliError::InvalidClaimCode, "claim code"),
+            (CliError::AgentClaimRejected, "rejected"),
+            (CliError::TimedOut, "timed out"),
+            (CliError::AnswerNotProvided, "No answer"),
+        ];
+
+        for (error, expected) in cases {
+            let rendered = error.to_string();
+            assert!(rendered.contains(expected), "{rendered}");
+            assert!(!rendered.contains("CliError"));
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

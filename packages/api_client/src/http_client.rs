@@ -109,11 +109,15 @@ impl PlayitHttpClient for HttpClient {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum HttpClientError {
+    #[error("failed to serialize API request: {0}")]
     SerializeError(serde_json::Error),
+    #[error("failed to parse API response with status {1}: {0}")]
     ParseError(serde_json::Error, StatusCode, String),
+    #[error("HTTP request failed: {0}")]
     RequestError(reqwest::Error),
+    #[error("the API rate limit was exceeded")]
     TooManyRequests,
 }
 
