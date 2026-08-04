@@ -1,14 +1,27 @@
 use std::num::NonZeroU32;
+use std::path::Path;
 use std::sync::Arc;
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use playit_ipc::model::{LogEntry, LogLevel, ServiceUpdate};
 use tokio::sync::broadcast;
 use tracing::{Event, Metadata, Subscriber};
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::EnvFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::dynamic_filter_fn;
 use tracing_subscriber::layer::Context;
-use tracing_subscriber::layer::Filter;
+use tracing_subscriber::layer::{Filter, SubscriberExt};
+use tracing_subscriber::util::SubscriberInitExt;
+
+use crate::errors::LoggingError;
+
+#[cfg(target_os = "windows")]
+const WINDOWS_LOG_MAX_FILE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+#[cfg(target_os = "windows")]
+const WINDOWS_LOG_MAX_TOTAL_FILES: usize = 3;
+#[cfg(target_os = "windows")]
+const WINDOWS_LOG_MAX_ROTATED_FILES: usize = WINDOWS_LOG_MAX_TOTAL_FILES - 1;
 
 pub const LOG_RATE_LIMIT_PER_SECOND: u32 = 2;
 pub const LOG_RATE_LIMIT_BURST: u32 = 32;
@@ -117,6 +130,102 @@ impl<S: Subscriber> Layer<S> for IpcBroadcastLayer {
             timestamp: now_milli(),
         }));
     }
+}
+
+pub(crate) fn init_tracing(
+    log_filter: EnvFilter,
+    use_ansi: bool,
+    event_tx: broadcast::Sender<ServiceUpdate>,
+    log_path: Option<&Path>,
+) -> Result<Option<WorkerGuard>, LoggingError> {
+    match log_path {
+        Some(path) => {
+            let writer = log_file_writer(path)?;
+            let (non_blocking, guard) = tracing_appender::non_blocking(writer);
+            let _ = tracing_subscriber::registry()
+                .with(log_filter)
+                .with(
+                    IpcBroadcastLayer::new(event_tx)
+                        .and_then(
+                            tracing_subscriber::fmt::layer()
+                                .with_ansi(use_ansi)
+                                .with_writer(non_blocking),
+                        )
+                        .with_filter(log_rate_limit_filter()),
+                )
+                .try_init();
+            Ok(Some(guard))
+        }
+        None => {
+            let _ = tracing_subscriber::registry()
+                .with(log_filter)
+                .with(
+                    IpcBroadcastLayer::new(event_tx)
+                        .and_then(
+                            tracing_subscriber::fmt::layer()
+                                .with_ansi(use_ansi)
+                                .with_writer(std::io::stderr),
+                        )
+                        .with_filter(log_rate_limit_filter()),
+                )
+                .try_init();
+            Ok(None)
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn log_file_writer(
+    path: &Path,
+) -> Result<tracing_rolling_file::RollingFileAppenderBase, LoggingError> {
+    windows_log_file_writer_with_limits(
+        path,
+        WINDOWS_LOG_MAX_FILE_SIZE_BYTES,
+        WINDOWS_LOG_MAX_ROTATED_FILES,
+    )
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn windows_log_file_writer_with_limits(
+    path: &Path,
+    max_file_size_bytes: u64,
+    max_rotated_files: usize,
+) -> Result<tracing_rolling_file::RollingFileAppenderBase, LoggingError> {
+    create_log_parent_dir(path)?;
+    Ok(tracing_rolling_file::RollingFileAppenderBase::builder()
+        .filename(path.display().to_string())
+        .max_filecount(max_rotated_files)
+        .condition_max_file_size(max_file_size_bytes)
+        .build()
+        .map_err(|error| {
+            LoggingError(format!(
+                "Failed to create log file writer {}: {error}",
+                path.display()
+            ))
+        })?)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn log_file_writer(
+    path: &Path,
+) -> Result<tracing_appender::rolling::RollingFileAppender, LoggingError> {
+    create_log_parent_dir(path)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path
+        .file_name()
+        .and_then(|file| file.to_str())
+        .ok_or_else(|| LoggingError(format!("Invalid --log-path {}", path.display())))?;
+    Ok(tracing_appender::rolling::never(parent, file_name))
+}
+
+fn create_log_parent_dir(path: &Path) -> Result<(), LoggingError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|error| {
+        LoggingError(format!(
+            "Failed to create log directory {}: {error}",
+            parent.display()
+        ))
+    })
 }
 
 #[cfg(test)]

@@ -7,17 +7,20 @@ pub(crate) mod linux;
 pub mod logging;
 pub mod manager;
 pub mod paths;
+mod publisher;
+mod supervisor;
 #[cfg(unix)]
 pub mod unix_account;
+pub mod version;
 #[cfg(target_os = "windows")]
 pub mod windows;
 
-pub use daemon::{
-    DEFAULT_VARIANT_ID, DaemonOptions, VersionDetails, VersionOverrideFile, load_version_overrides,
-    run_daemon,
-};
+pub use daemon::{DaemonOptions, run_daemon};
 pub use errors::DaemonError;
 pub use paths::default_secret_path;
+pub use version::{
+    DEFAULT_VARIANT_ID, VersionDetails, VersionOverrideFile, load_version_overrides,
+};
 
 #[cfg(target_os = "macos")]
 pub use paths::{
