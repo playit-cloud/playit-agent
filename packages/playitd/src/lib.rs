@@ -8,6 +8,7 @@ pub mod logging;
 pub mod manager;
 pub mod paths;
 mod publisher;
+mod secret;
 mod supervisor;
 #[cfg(unix)]
 pub mod unix_account;
