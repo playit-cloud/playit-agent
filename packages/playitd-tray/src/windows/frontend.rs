@@ -326,10 +326,7 @@ fn process_backend_responses(hwnd: HWND) {
                 return;
             };
 
-            match state.response_rx.try_recv() {
-                Ok(response) => Some(response),
-                Err(_) => None,
-            }
+            state.response_rx.try_recv().ok()
         };
 
         let Some(response) = next_response else {

@@ -128,7 +128,7 @@ pub fn installed_service_state() -> Result<InstalledServiceState, ServiceManager
 
     #[cfg(target_os = "windows")]
     {
-        return windows_installed_service_state();
+        windows_installed_service_state()
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]

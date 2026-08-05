@@ -36,12 +36,6 @@ use tracing_subscriber::EnvFilter;
 
 use crate::version::VersionDetails;
 const AGENT_LIMIT_RETRY_INTERVAL: Duration = Duration::from_secs(30);
-#[cfg(target_os = "windows")]
-const WINDOWS_LOG_MAX_FILE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
-#[cfg(target_os = "windows")]
-const WINDOWS_LOG_MAX_TOTAL_FILES: usize = 3;
-#[cfg(target_os = "windows")]
-const WINDOWS_LOG_MAX_ROTATED_FILES: usize = WINDOWS_LOG_MAX_TOTAL_FILES - 1;
 
 #[derive(Debug, Clone)]
 pub struct DaemonOptions {

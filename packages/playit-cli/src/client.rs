@@ -768,11 +768,10 @@ fn format_log_level(level: &ServiceLogLevel) -> &'static str {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn linux_start_command_requires_service_manager() {
         let mut console = ConsoleUi::new(crate::ui::UISettings { auto_answer: None });

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(unix)]
 use playit_agent_core::utils::now_milli;
 use playit_ipc::model::{ServiceError, ServiceErrorCode};
 use tokio::sync::{mpsc, oneshot};
