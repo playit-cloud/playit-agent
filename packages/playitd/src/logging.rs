@@ -192,7 +192,7 @@ pub(crate) fn windows_log_file_writer_with_limits(
     max_rotated_files: usize,
 ) -> Result<tracing_rolling_file::RollingFileAppenderBase, LoggingError> {
     create_log_parent_dir(path)?;
-    Ok(tracing_rolling_file::RollingFileAppenderBase::builder()
+    tracing_rolling_file::RollingFileAppenderBase::builder()
         .filename(path.display().to_string())
         .max_filecount(max_rotated_files)
         .condition_max_file_size(max_file_size_bytes)
@@ -202,7 +202,7 @@ pub(crate) fn windows_log_file_writer_with_limits(
                 "Failed to create log file writer {}: {error}",
                 path.display()
             ))
-        })?)
+        })
 }
 
 #[cfg(not(target_os = "windows"))]

@@ -45,6 +45,9 @@ pub async fn ensure_installed_service_running_for_cli(
     console: Option<&mut ConsoleUi>,
     service_manager: ServiceManagerMode,
 ) -> Result<InstalledServiceStartState, CliError> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = console;
+
     if IpcClient::is_running(get_default_socket_path()).await {
         return Ok(InstalledServiceStartState::AlreadyRunning);
     }
@@ -114,6 +117,10 @@ pub fn stop_installed_service_for_cli(
 
     #[cfg(not(target_os = "linux"))]
     {
+        if !installed_service_is_active_for_cli(service_manager)? {
+            return Ok(InstalledServiceStopState::AlreadyStopped);
+        }
+
         match service_manager {
             #[cfg(target_os = "windows")]
             ServiceManagerMode::WindowsService => {
@@ -156,10 +163,12 @@ pub fn installed_service_is_active_for_cli(
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn no_service_manager_selected_error() -> CliError {
     CliError::ServiceError(no_service_manager_selected_message())
 }
 
+#[cfg(target_os = "linux")]
 fn no_service_manager_selected_message() -> String {
     let socket_path = get_default_socket_path();
     format!(
@@ -178,11 +187,10 @@ pub(crate) fn linux_service_manager(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn linux_service_manager_mode_maps_to_systemd() {
         assert_eq!(
