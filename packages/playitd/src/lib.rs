@@ -1,3 +1,8 @@
+//! Background daemon orchestration for the playit agent and IPC server.
+//!
+//! Frontends should depend on `playit-ipc` for daemon communication and on
+//! `playit-service-manager` for installed-service control, not on this crate.
+
 pub mod daemon;
 pub mod errors;
 pub mod guest_login;
