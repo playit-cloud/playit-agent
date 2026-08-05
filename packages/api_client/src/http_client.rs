@@ -66,7 +66,7 @@ impl PlayitHttpClient for HttpClient {
 
     async fn call<Req: Serialize + Send, Res: DeserializeOwned, Err: DeserializeOwned>(
         &self,
-        _caller: &'static Location<'static>,
+        caller: &'static Location<'static>,
         path: &str,
         req: Req,
     ) -> Result<ApiResult<Res, Err>, Self::Error> {
@@ -102,7 +102,14 @@ impl PlayitHttpClient for HttpClient {
         .await;
 
         if let Err(error) = &res {
-            tracing::error!(?error, request = %std::any::type_name::<Req>(), "API call failed");
+            tracing::error!(
+                ?error,
+                request = %std::any::type_name::<Req>(),
+                caller_file = caller.file(),
+                caller_line = caller.line(),
+                caller_column = caller.column(),
+                "API call failed"
+            );
         }
 
         res
