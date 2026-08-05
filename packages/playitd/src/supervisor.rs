@@ -1,14 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::errors::{DaemonError, SecretError};
+use crate::errors::DaemonError;
 use crate::guest_login::GuestLoginCache;
-use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
+use crate::ipc_server::{IpcServer, IpcServerConfig, StateCache};
 use crate::logging::init_tracing;
 use crate::publisher::{
     AgentStatePublisher, StatusContext, broadcast_stats, publish_runtime_state,
 };
+use crate::secret::{LoadedSecret, SecretProvisioning, SecretStore};
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::parse_agent_version;
@@ -27,7 +28,7 @@ use playit_ipc::ipc::get_default_socket_path;
 use playit_ipc::model::{
     AgentLifecycle, ServiceError, ServiceErrorCode, ServicePhase, ServiceUpdate,
 };
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing_appender::non_blocking::WorkerGuard;
@@ -66,107 +67,24 @@ impl Default for DaemonOptions {
     }
 }
 
-#[derive(Debug, Clone)]
-enum SecretSource {
-    Inline { secret: String },
-    File { path: PathBuf },
-}
-
-#[derive(Debug, Clone)]
-enum LoadedSecret {
-    Ready(String),
-    Missing,
-    Invalid(String),
-}
-
-impl SecretSource {
-    fn from_options(options: &DaemonOptions) -> Self {
-        match options.secret.clone() {
-            Some(secret) => Self::Inline { secret },
-            None => Self::File {
-                path: options
-                    .secret_path
-                    .clone()
-                    .unwrap_or_else(crate::paths::default_secret_path),
-            },
-        }
-    }
-
-    fn secret_path(&self) -> Option<&Path> {
-        match self {
-            Self::Inline { .. } => None,
-            Self::File { path } => Some(path.as_path()),
-        }
-    }
-
-    fn allows_ipc_provisioning(&self) -> bool {
-        matches!(self, Self::File { .. })
-    }
-
-    async fn load(&self) -> LoadedSecret {
-        match self {
-            Self::Inline { secret } => match validate_secret(secret.trim()) {
-                Ok(secret) => LoadedSecret::Ready(secret),
-                Err(error) => {
-                    LoadedSecret::Invalid(format!("Invalid secret passed via --secret: {error}"))
-                }
-            },
-            Self::File { path } => load_secret_from_path(path).await,
-        }
-    }
-
-    fn secret_provision_error(&self) -> ServiceError {
-        match self {
-            Self::Inline { .. } => daemon_error(
-                ServiceErrorCode::SecretPinned,
-                "Secret provisioning is unavailable because playitd was started with --secret."
-                    .to_string(),
-                false,
-            ),
-            Self::File { .. } => daemon_error(
-                ServiceErrorCode::ProvisioningUnavailable,
-                "Secret provisioning is unavailable".to_string(),
-                true,
-            ),
-        }
-    }
-
-    fn secret_reset_error(&self) -> ServiceError {
-        match self {
-            Self::Inline { .. } => daemon_error(
-                ServiceErrorCode::SecretPinned,
-                "Secret reset is unavailable because playitd was started with --secret."
-                    .to_string(),
-                false,
-            ),
-            Self::File { path } => daemon_error(
-                ServiceErrorCode::SecretWriteFailed,
-                format!("Failed to access secret file {}", path.display()),
-                true,
-            ),
-        }
-    }
-}
-
 pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
-    let secret_source = SecretSource::from_options(&options);
-    let (secret_provision_tx, mut secret_rx) = if secret_source.allows_ipc_provisioning() {
-        let (secret_tx, secret_rx) = mpsc::channel::<SecretProvisionRequest>(8);
-        (Some(secret_tx), Some(secret_rx))
-    } else {
-        (None, None)
-    };
-    let mut runtime = initialize_runtime(&options, &secret_source, secret_provision_tx).await?;
+    let (secret_store, mut secret_provisioning) =
+        SecretStore::from_options(options.secret.clone(), options.secret_path.clone());
+    let mut runtime = initialize_runtime(&options, secret_store.clone()).await?;
 
     let Some(secret_code) =
-        resolve_startup_secret(&mut runtime, &secret_source, &mut secret_rx).await?
+        resolve_startup_secret(&mut runtime, &secret_store, &mut secret_provisioning).await?
     else {
         return Ok(());
     };
 
-    let Some(agent) =
-        build_agent_with_reprovisioning(&mut runtime, &secret_source, &mut secret_rx, secret_code)
-            .await?
+    let Some(agent) = build_agent_with_reprovisioning(
+        &mut runtime,
+        &secret_store,
+        &mut secret_provisioning,
+        secret_code,
+    )
+    .await?
     else {
         return Ok(());
     };
@@ -208,8 +126,7 @@ struct AgentRuntime {
 
 async fn initialize_runtime(
     options: &DaemonOptions,
-    secret_source: &SecretSource,
-    secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
+    secret_store: Arc<SecretStore>,
 ) -> Result<DaemonRuntime, DaemonError> {
     let start_time = now_milli();
     let (event_tx, _) = broadcast::channel::<ServiceUpdate>(256);
@@ -220,9 +137,7 @@ async fn initialize_runtime(
         current_platform()
     };
     let status_context = StatusContext {
-        secret_path: secret_source
-            .secret_path()
-            .map(|path| path.display().to_string()),
+        secret_path: secret_store.path().map(|path| path.display().to_string()),
         socket_path: options
             .socket_path
             .clone()
@@ -255,16 +170,13 @@ async fn initialize_runtime(
 
     let cancel_token = CancellationToken::new();
     let ipc_server = Arc::new(
-        IpcServer::new_with_sender(
-            options.socket_path.clone(),
-            cancel_token.clone(),
+        IpcServer::new(IpcServerConfig {
+            socket_path: options.socket_path.clone(),
+            cancel_token: cancel_token.clone(),
             event_tx,
-            secret_source.secret_path().map(PathBuf::from),
-            secret_provision_tx,
-            secret_source.secret_provision_error(),
-            secret_source.secret_reset_error(),
-            guest_login_cache.clone(),
-        )
+            secret_store,
+            guest_login_cache: guest_login_cache.clone(),
+        })
         .await
         .map_err(DaemonError::Ipc)?,
     );
@@ -299,16 +211,17 @@ async fn initialize_runtime(
 
 async fn resolve_startup_secret(
     runtime: &mut DaemonRuntime,
-    secret_source: &SecretSource,
-    secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
+    secret_store: &SecretStore,
+    secret_provisioning: &mut SecretProvisioning,
 ) -> Result<Option<String>, DaemonError> {
-    match secret_source.load().await {
+    match secret_store.load().await {
         LoadedSecret::Ready(secret) => {
             publish_starting(runtime).await;
             Ok(Some(secret))
         }
         LoadedSecret::Missing => {
-            let secret = wait_for_startup_secret(runtime, secret_source, secret_rx).await?;
+            let secret =
+                wait_for_startup_secret(runtime, secret_store, secret_provisioning).await?;
             if secret.is_none() {
                 tracing::info!("playitd shutdown before provisioning completed");
             }
@@ -318,7 +231,7 @@ async fn resolve_startup_secret(
             let service_error = daemon_error(
                 ServiceErrorCode::InvalidSecret,
                 error.clone(),
-                secret_source.allows_ipc_provisioning(),
+                secret_store.supports_provisioning(),
             );
             publish_runtime_state(
                 &runtime.state_cache,
@@ -332,11 +245,12 @@ async fn resolve_startup_secret(
             )
             .await;
 
-            if !secret_source.allows_ipc_provisioning() {
+            if !secret_store.supports_provisioning() {
                 return Err(DaemonError::Secret(error.into()));
             }
 
-            let secret = wait_for_startup_secret(runtime, secret_source, secret_rx).await?;
+            let secret =
+                wait_for_startup_secret(runtime, secret_store, secret_provisioning).await?;
             if secret.is_none() {
                 tracing::info!("playitd shutdown before invalid secret was corrected");
             }
@@ -347,15 +261,9 @@ async fn resolve_startup_secret(
 
 async fn wait_for_startup_secret(
     runtime: &mut DaemonRuntime,
-    secret_source: &SecretSource,
-    secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
+    secret_store: &SecretStore,
+    secret_provisioning: &mut SecretProvisioning,
 ) -> Result<Option<String>, DaemonError> {
-    let Some(secret_path) = secret_source.secret_path() else {
-        return Err(DaemonError::Secret(
-            "No secret source available for startup".into(),
-        ));
-    };
-
     publish_runtime_state(
         &runtime.state_cache,
         &runtime.event_tx,
@@ -366,19 +274,16 @@ async fn wait_for_startup_secret(
     )
     .await;
 
-    wait_for_provisioned_secret(runtime, secret_path, secret_rx).await
+    wait_for_provisioned_secret(runtime, secret_store, secret_provisioning).await
 }
 
 async fn wait_for_provisioned_secret(
     runtime: &mut DaemonRuntime,
-    secret_path: &Path,
-    secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
+    secret_store: &SecretStore,
+    secret_provisioning: &mut SecretProvisioning,
 ) -> Result<Option<String>, DaemonError> {
-    let secret_rx = secret_rx
-        .as_mut()
-        .expect("file-backed secret mode must enable provisioning");
-
-    match wait_for_secret_provisioning(secret_path, secret_rx, &runtime.cancel_token)
+    match secret_provisioning
+        .wait(secret_store, &runtime.cancel_token)
         .await
         .map_err(DaemonError::Secret)?
     {
@@ -396,8 +301,8 @@ async fn wait_for_provisioned_secret(
 
 async fn build_agent_with_reprovisioning(
     runtime: &mut DaemonRuntime,
-    secret_source: &SecretSource,
-    secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
+    secret_store: &SecretStore,
+    secret_provisioning: &mut SecretProvisioning,
     secret_code: String,
 ) -> Result<Option<AgentRuntime>, DaemonError> {
     let lookup = Arc::new(OriginLookup::default());
@@ -431,7 +336,7 @@ async fn build_agent_with_reprovisioning(
                 }));
             }
             Err(error)
-                if secret_source.allows_ipc_provisioning()
+                if secret_store.supports_provisioning()
                     && is_invalid_agent_secret_error(&error) =>
             {
                 tracing::warn!(?error, "configured agent secret is no longer valid");
@@ -453,11 +358,8 @@ async fn build_agent_with_reprovisioning(
                 )
                 .await;
 
-                let secret_path = secret_source
-                    .secret_path()
-                    .expect("file-backed secret mode must provide a secret path");
                 let Some(secret) =
-                    wait_for_provisioned_secret(runtime, secret_path, secret_rx).await?
+                    wait_for_provisioned_secret(runtime, secret_store, secret_provisioning).await?
                 else {
                     tracing::info!("playitd shutdown before reprovisioning completed");
                     return Ok(None);
@@ -632,215 +534,6 @@ async fn await_ipc_shutdown(runtime: &mut DaemonRuntime) {
     if let Some(handle) = runtime.ipc_handle.take() {
         let _ = handle.await;
     }
-}
-
-async fn load_secret_from_path(path: &Path) -> LoadedSecret {
-    let content = match tokio::fs::read_to_string(path).await {
-        Ok(content) => content,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return LoadedSecret::Missing,
-        Err(error) => {
-            return LoadedSecret::Invalid(format!(
-                "Failed to read secret file {}: {error}",
-                path.display()
-            ));
-        }
-    };
-
-    match parse_secret_file(&content) {
-        Ok(secret) => LoadedSecret::Ready(secret),
-        Err(()) => LoadedSecret::Invalid(format!(
-            "Invalid secret file at {}. Remove or replace it with a valid secret.",
-            path.display()
-        )),
-    }
-}
-
-async fn wait_for_secret_provisioning(
-    secret_path: &Path,
-    provision_rx: &mut mpsc::Receiver<SecretProvisionRequest>,
-    cancel_token: &CancellationToken,
-) -> Result<Option<String>, SecretError> {
-    tracing::info!(
-        secret_path = %secret_path.display(),
-        "Waiting for frontend secret provisioning over IPC"
-    );
-
-    loop {
-        tokio::select! {
-            maybe_request = provision_rx.recv() => {
-                let Some(request) = maybe_request else {
-                    return Err("Secret provisioning channel closed".into());
-                };
-
-                let result = persist_secret_file(secret_path, &request.secret).await;
-                let ack = result.as_ref().map(|_| ()).map_err(ToString::to_string);
-                let _ = request.response_tx.send(ack);
-
-                match result {
-                    Ok(()) => {
-                        tracing::info!(secret_path = %secret_path.display(), "Secret provisioned successfully");
-                        return Ok(Some(request.secret));
-                    }
-                    Err(error) => {
-                        tracing::error!(secret_path = %secret_path.display(), "{error}");
-                    }
-                }
-            }
-            _ = cancel_token.cancelled() => {
-                return Ok(None);
-            }
-        }
-    }
-}
-
-async fn persist_secret_file(path: &Path, secret: &str) -> Result<(), SecretError> {
-    let secret = validate_secret(secret.trim())?;
-
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        tokio::fs::create_dir_all(parent).await.map_err(|error| {
-            SecretError(format!(
-                "Failed to create secret directory {}: {error}",
-                parent.display()
-            ))
-        })?;
-    }
-
-    let content = if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
-        toml::to_string(&SecretConfig {
-            secret_key: secret.clone(),
-        })
-        .map_err(|error| {
-            SecretError(format!(
-                "Failed to serialize secret file {}: {error}",
-                path.display()
-            ))
-        })?
-    } else {
-        secret
-    };
-
-    secure_write_secret_file(path, content.as_bytes()).await
-}
-
-#[cfg(unix)]
-async fn secure_write_secret_file(path: &Path, content: &[u8]) -> Result<(), SecretError> {
-    let path = path.to_path_buf();
-    let content = content.to_vec();
-
-    tokio::task::spawn_blocking(move || secure_write_secret_file_blocking(&path, &content))
-        .await
-        .map_err(|error| SecretError(format!("Failed to join secret file writer task: {error}")))?
-}
-
-#[cfg(unix)]
-fn secure_write_secret_file_blocking(path: &Path, content: &[u8]) -> Result<(), SecretError> {
-    use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-
-    let parent = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("playit.toml");
-    let tmp_path = parent.join(format!(
-        ".{file_name}.tmp-{}-{}",
-        std::process::id(),
-        now_milli()
-    ));
-
-    let result = (|| {
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&tmp_path)
-            .map_err(|error| {
-                SecretError(format!(
-                    "Failed to create temporary secret file {}: {error}",
-                    tmp_path.display()
-                ))
-            })?;
-
-        file.write_all(content).map_err(|error| {
-            SecretError(format!(
-                "Failed to write temporary secret file {}: {error}",
-                tmp_path.display()
-            ))
-        })?;
-        file.sync_all().map_err(|error| {
-            SecretError(format!(
-                "Failed to sync temporary secret file {}: {error}",
-                tmp_path.display()
-            ))
-        })?;
-        drop(file);
-
-        std::fs::rename(&tmp_path, path).map_err(|error| {
-            SecretError(format!(
-                "Failed to replace secret file {} with {}: {error}",
-                path.display(),
-                tmp_path.display()
-            ))
-        })?;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(
-            |error| {
-                SecretError(format!(
-                    "Failed to set secret file permissions on {}: {error}",
-                    path.display()
-                ))
-            },
-        )?;
-
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
-    }
-
-    result
-}
-
-#[cfg(not(unix))]
-async fn secure_write_secret_file(path: &Path, content: &[u8]) -> Result<(), SecretError> {
-    tokio::fs::write(path, content).await.map_err(|error| {
-        SecretError(format!(
-            "Failed to write secret file {}: {error}",
-            path.display()
-        ))
-    })
-}
-
-fn parse_secret_file(content: &str) -> Result<String, ()> {
-    let trimmed = content.trim();
-    if let Ok(secret) = validate_secret(trimmed) {
-        return Ok(secret);
-    }
-
-    let config = toml::from_str::<SecretConfig>(content).map_err(|_| ())?;
-    validate_secret(config.secret_key.trim()).map_err(|_| ())
-}
-
-fn validate_secret(secret: &str) -> Result<String, SecretError> {
-    hex::decode(secret)
-        .map(|_| secret.to_string())
-        .map_err(|_| {
-            SecretError(
-                "The secret is not valid. It should be the key generated by playit setup."
-                    .to_string(),
-            )
-        })
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct SecretConfig {
-    secret_key: String,
 }
 
 fn daemon_error(code: ServiceErrorCode, message: String, retryable: bool) -> ServiceError {

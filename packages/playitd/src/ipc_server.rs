@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,10 +22,11 @@ use playit_ipc::model::{
     SubscriptionSnapshot,
 };
 use serde_json::json;
-use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
+use tokio::sync::{RwLock, broadcast};
 use tokio_util::sync::CancellationToken;
 
 use crate::guest_login::GuestLoginCache;
+use crate::secret::SecretStore;
 use playit_ipc::agent_over_limit_guidance;
 
 #[derive(Default)]
@@ -69,9 +70,12 @@ impl StateCache {
     }
 }
 
-pub struct SecretProvisionRequest {
-    pub secret: String,
-    pub response_tx: oneshot::Sender<Result<(), String>>,
+pub(crate) struct IpcServerConfig {
+    pub(crate) socket_path: Option<String>,
+    pub(crate) cancel_token: CancellationToken,
+    pub(crate) event_tx: broadcast::Sender<ServiceUpdate>,
+    pub(crate) secret_store: Arc<SecretStore>,
+    pub(crate) guest_login_cache: Arc<GuestLoginCache>,
 }
 
 pub struct IpcServer {
@@ -80,27 +84,16 @@ pub struct IpcServer {
     start_time: u64,
     cancel_token: CancellationToken,
     state_cache: Arc<StateCache>,
-    secret_path: Option<PathBuf>,
-    secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
-    secret_provision_error: ServiceError,
-    secret_reset_error: ServiceError,
+    secret_store: Arc<SecretStore>,
     api: RwLock<Option<PlayitApi>>,
     guest_login_cache: Arc<GuestLoginCache>,
 }
 
 impl IpcServer {
-    #[allow(clippy::too_many_arguments)]
-    pub async fn new_with_sender(
-        socket_path: Option<String>,
-        cancel_token: CancellationToken,
-        event_tx: broadcast::Sender<ServiceUpdate>,
-        secret_path: Option<PathBuf>,
-        secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
-        secret_provision_error: ServiceError,
-        secret_reset_error: ServiceError,
-        guest_login_cache: Arc<GuestLoginCache>,
-    ) -> Result<Self, IpcError> {
-        let socket_path = socket_path.unwrap_or_else(|| get_default_socket_path().to_string());
+    pub(crate) async fn new(config: IpcServerConfig) -> Result<Self, IpcError> {
+        let socket_path = config
+            .socket_path
+            .unwrap_or_else(|| get_default_socket_path().to_string());
         let endpoint = IpcEndpoint::parse(socket_path.clone());
 
         if try_connect(&endpoint).await.is_ok() {
@@ -121,17 +114,14 @@ impl IpcServer {
         }
 
         Ok(Self {
-            event_tx,
+            event_tx: config.event_tx,
             socket_path,
             start_time: now_milli(),
-            cancel_token,
+            cancel_token: config.cancel_token,
             state_cache: Arc::new(StateCache::default()),
-            secret_path,
-            secret_provision_tx,
-            secret_provision_error,
-            secret_reset_error,
+            secret_store: config.secret_store,
             api: RwLock::new(None),
-            guest_login_cache,
+            guest_login_cache: config.guest_login_cache,
         })
     }
 
@@ -325,8 +315,8 @@ impl IpcServer {
             ServiceRequest::GetSecretPath => {
                 RequestOutcome::respond(ServiceResponse::SecretPath(SecretPathResponse {
                     secret_path: self
-                        .secret_path
-                        .as_ref()
+                        .secret_store
+                        .path()
                         .map(|path| path.display().to_string()),
                 }))
             }
@@ -357,33 +347,12 @@ impl IpcServer {
             return ServiceResponse::Error(secret_provisioning_state_error(&lifecycle));
         }
 
-        let Some(secret_provision_tx) = &self.secret_provision_tx else {
-            return ServiceResponse::Error(self.secret_provision_error.clone());
-        };
-
-        let (response_tx, response_rx) = oneshot::channel();
-        if secret_provision_tx
-            .send(SecretProvisionRequest {
-                secret,
-                response_tx,
-            })
-            .await
-            .is_err()
-        {
-            return ServiceResponse::Error(provisioning_unavailable_error());
-        }
-
-        match response_rx.await {
-            Ok(Ok(())) => ServiceResponse::SetSecret(CommandResponse {
+        match self.secret_store.provision(secret).await {
+            Ok(()) => ServiceResponse::SetSecret(CommandResponse {
                 accepted: true,
                 message: Some("secret provisioned".to_string()),
             }),
-            Ok(Err(message)) => ServiceResponse::Error(protocol_error(
-                ServiceErrorCode::SecretWriteFailed,
-                message,
-                true,
-            )),
-            Err(_) => ServiceResponse::Error(provisioning_unavailable_error()),
+            Err(error) => ServiceResponse::Error(error),
         }
     }
 
@@ -450,28 +419,7 @@ impl IpcServer {
     }
 
     async fn reset_secret(&self) -> Result<String, ServiceError> {
-        let Some(secret_path) = &self.secret_path else {
-            return Err(self.secret_reset_error.clone());
-        };
-
-        match tokio::fs::remove_file(secret_path).await {
-            Ok(()) => Ok(format!(
-                "Deleted secret file at {}. Restart playitd to reprovision a new secret.",
-                secret_path.display()
-            )),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(format!(
-                "Secret file was already absent at {}.",
-                secret_path.display()
-            )),
-            Err(error) => Err(protocol_error(
-                ServiceErrorCode::SecretWriteFailed,
-                format!(
-                    "Failed to delete secret file {}: {error}",
-                    secret_path.display()
-                ),
-                true,
-            )),
-        }
+        self.secret_store.reset().await
     }
 
     async fn get_account_login_url(&self) -> Result<String, ServiceError> {
@@ -517,14 +465,6 @@ fn protocol_error(code: ServiceErrorCode, message: String, retryable: bool) -> S
         retryable,
         details: None,
     }
-}
-
-fn provisioning_unavailable_error() -> ServiceError {
-    protocol_error(
-        ServiceErrorCode::ProvisioningUnavailable,
-        "playitd is no longer waiting for secret provisioning".to_string(),
-        true,
-    )
 }
 
 fn invalid_request_type_error(request_type: &str) -> ServiceError {
@@ -593,7 +533,8 @@ mod tests {
     use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{GuestLoginCache, IpcServer, protocol_error, try_connect};
+    use super::{GuestLoginCache, IpcServer, IpcServerConfig, try_connect};
+    use crate::secret::SecretStore;
     use interprocess::local_socket::tokio::prelude::*;
     use playit_ipc::endpoint::IpcEndpoint;
     use playit_ipc::ipc::{
@@ -630,25 +571,16 @@ mod tests {
         let socket_path = test_socket_path(name);
         let cancel_token = CancellationToken::new();
         let (event_tx, _) = broadcast::channel(8);
+        let (secret_store, _) =
+            SecretStore::from_options(Some("0123456789abcdef0123456789abcdef".to_string()), None);
         let server = Arc::new(
-            IpcServer::new_with_sender(
-                Some(socket_path.clone()),
-                cancel_token.clone(),
+            IpcServer::new(IpcServerConfig {
+                socket_path: Some(socket_path.clone()),
+                cancel_token: cancel_token.clone(),
                 event_tx,
-                None,
-                None,
-                protocol_error(
-                    ServiceErrorCode::ProvisioningUnavailable,
-                    "provisioning unavailable".to_string(),
-                    false,
-                ),
-                protocol_error(
-                    ServiceErrorCode::SecretWriteFailed,
-                    "secret reset unavailable".to_string(),
-                    false,
-                ),
-                Arc::new(GuestLoginCache::default()),
-            )
+                secret_store,
+                guest_login_cache: Arc::new(GuestLoginCache::default()),
+            })
             .await
             .unwrap(),
         );
