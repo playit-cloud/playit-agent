@@ -782,31 +782,29 @@ mod tests {
     }
 
     async fn wait_for_waiting_for_secret(socket_path: &str) -> IpcClient {
-        let mut last_lifecycle = None;
-
-        for _ in 0..50 {
-            match IpcClient::connect_with_path(socket_path).await {
-                Ok(mut client) => match client.lifecycle().await {
-                    Ok(AgentLifecycle::WaitingForSecret) => return client,
-                    Ok(lifecycle) => {
-                        last_lifecycle = Some(format!("{lifecycle:?}"));
-                    }
-                    Err(error) => {
-                        last_lifecycle = Some(format!("lifecycle error: {error}"));
-                    }
-                },
-                Err(error) => {
-                    last_lifecycle = Some(format!("connect error: {error}"));
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut interval = tokio::time::interval(Duration::from_millis(50));
+            loop {
+                interval.tick().await;
+                if let Ok(mut client) = IpcClient::connect_with_path(socket_path).await
+                    && let Ok(Some(_)) = client
+                        .wait_for_lifecycle(Duration::from_secs(5), |lifecycle| {
+                            matches!(lifecycle, AgentLifecycle::WaitingForSecret)
+                        })
+                        .await
+                {
+                    return client;
                 }
             }
+        })
+        .await;
 
-            tokio::time::sleep(Duration::from_millis(100)).await;
+        match result {
+            Ok(client) => client,
+            Err(_) => {
+                panic!("daemon did not report WaitingForSecret over IPC within five seconds")
+            }
         }
-
-        panic!(
-            "daemon did not report WaitingForSecret over IPC; last observed state: {}",
-            last_lifecycle.unwrap_or_else(|| "none".to_string())
-        );
     }
 
     #[tokio::test]

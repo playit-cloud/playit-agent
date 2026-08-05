@@ -282,7 +282,6 @@ pub async fn run_setup_flow(
                 session.session_key
             ))
             .await;
-        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 
     console

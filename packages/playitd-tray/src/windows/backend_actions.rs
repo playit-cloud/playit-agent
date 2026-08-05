@@ -115,7 +115,6 @@ async fn stop_service_async() -> Result<(), String> {
         Ok(mut client) => match client.stop().await {
             Ok(response) if response.accepted => {
                 debug_log("stop_service: IPC stop request accepted");
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
             Ok(response) => {
                 debug_log(&format!(
@@ -145,9 +144,10 @@ async fn stop_service_async() -> Result<(), String> {
         }
     }
 
-    debug_log("stop_service: waiting before final running check");
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    if IpcClient::is_running(get_default_socket_path()).await {
+    debug_log("stop_service: waiting for the IPC endpoint to close");
+    if !IpcClient::wait_until_stopped(get_default_socket_path(), std::time::Duration::from_secs(5))
+        .await
+    {
         debug_log("stop_service: final running check says playitd is still reachable");
         Err("The playit service may still be running. Try again in a few seconds or stop it from Windows Services.".to_string())
     } else {
