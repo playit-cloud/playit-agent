@@ -1,7 +1,6 @@
 use crate::api::PlayitApiClient;
 use crate::http_client::HttpClient;
 
-// mod api is auto generated
 pub mod api;
 pub mod http_client;
 pub mod ip_resource;
