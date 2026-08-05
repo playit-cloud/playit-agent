@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 playitd = { path = "../playitd", version = "1.0.10" }
+playit-service-manager = { path = "../playit-service-manager", version = "1.0.10" }
 
 [target."cfg(windows)".dependencies]
 windows = { version = "0.62.2", features = [

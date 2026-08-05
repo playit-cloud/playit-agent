@@ -4,7 +4,7 @@ use std::os::windows::process::CommandExt;
 use std::process::{Command, Output};
 
 use crate::sid::normalize_sid;
-use playitd::manager::INSTALLED_SERVICE_LABEL;
+use playit_service_manager::INSTALLED_SERVICE_LABEL;
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 #[cfg(test)]

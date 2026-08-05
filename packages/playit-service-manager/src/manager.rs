@@ -75,7 +75,12 @@ impl ServiceController {
     pub fn new() -> Result<Self, ServiceManagerError> {
         let manager = <dyn ServiceManager>::native()
             .map_err(|e| ServiceManagerError::NotAvailable(e.to_string()))?;
-        let label = Self::SERVICE_LABEL.parse().unwrap();
+        let label = Self::SERVICE_LABEL.parse().map_err(|error| {
+            ServiceManagerError::NotAvailable(format!(
+                "invalid installed service label {}: {error}",
+                Self::SERVICE_LABEL
+            ))
+        })?;
         Ok(Self { manager, label })
     }
 

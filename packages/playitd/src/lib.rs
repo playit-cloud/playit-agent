@@ -5,13 +5,10 @@ mod ipc_server;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
 pub mod logging;
-pub mod manager;
 pub mod paths;
 mod publisher;
 mod secret;
 mod supervisor;
-#[cfg(unix)]
-pub mod unix_account;
 pub mod version;
 #[cfg(target_os = "windows")]
 pub mod windows;

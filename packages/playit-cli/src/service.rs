@@ -1,11 +1,11 @@
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 #[cfg(not(target_os = "linux"))]
-use playitd::manager::{
+use playit_service_manager::{
     InstalledServiceState as ManagerInstalledServiceState, ensure_installed_service_running,
     installed_service_state, stop_installed_service,
 };
 #[cfg(target_os = "linux")]
-use playitd::manager::{
+use playit_service_manager::{
     LinuxServiceManager, ensure_installed_service_running_with_linux_manager,
     stop_installed_service_with_linux_manager,
 };
@@ -15,23 +15,17 @@ use crate::CliError;
 use crate::linux;
 use crate::ui::ConsoleUi;
 
-#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceManagerMode {
+    #[cfg(target_os = "linux")]
     None,
+    #[cfg(target_os = "linux")]
     Systemd,
+    #[cfg(target_os = "linux")]
     OpenRc,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ServiceManagerMode {
+    #[cfg(target_os = "windows")]
     WindowsService,
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ServiceManagerMode {
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     Native,
 }
 
