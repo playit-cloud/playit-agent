@@ -1,3 +1,8 @@
+//! Typed playit HTTP API models plus the agent's authenticated HTTP transport.
+//!
+//! Generated endpoint definitions live in [`api`]. This crate must remain
+//! independent of the agent runtime and daemon orchestration layers.
+
 use crate::api::PlayitApiClient;
 use crate::http_client::HttpClient;
 

@@ -1,3 +1,8 @@
+//! Versioned IPC protocol shared by playit daemon clients and servers.
+//!
+//! This boundary owns wire models and transport helpers. It must not depend on
+//! the agent runtime, API client, daemon implementation, or UI crates.
+
 pub mod endpoint;
 pub mod ipc;
 pub mod model;

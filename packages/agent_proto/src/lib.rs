@@ -1,3 +1,8 @@
+//! Low-level codecs and wire types for the playit tunnel control protocol.
+//!
+//! Keep this crate independent of agent runtime, daemon, IPC, and UI policy so
+//! protocol encoding can be reused and tested in isolation.
+
 use std::io::{Error, Read, Write};
 use std::net::IpAddr;
 
