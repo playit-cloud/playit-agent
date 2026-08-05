@@ -250,7 +250,7 @@ async fn resolve_startup_secret(
             }
 
             let secret =
-                wait_for_startup_secret(runtime, secret_store, secret_provisioning).await?;
+                wait_for_provisioned_secret(runtime, secret_store, secret_provisioning).await?;
             if secret.is_none() {
                 tracing::info!("playitd shutdown before invalid secret was corrected");
             }
@@ -781,30 +781,39 @@ mod tests {
         }
     }
 
-    async fn wait_for_waiting_for_secret(socket_path: &str) -> IpcClient {
+    async fn wait_for_lifecycle_state(
+        socket_path: &str,
+        predicate: impl Fn(&AgentLifecycle) -> bool,
+    ) -> (IpcClient, AgentLifecycle) {
         let result = tokio::time::timeout(Duration::from_secs(5), async {
             let mut interval = tokio::time::interval(Duration::from_millis(50));
             loop {
                 interval.tick().await;
                 if let Ok(mut client) = IpcClient::connect_with_path(socket_path).await
-                    && let Ok(Some(_)) = client
-                        .wait_for_lifecycle(Duration::from_secs(5), |lifecycle| {
-                            matches!(lifecycle, AgentLifecycle::WaitingForSecret)
-                        })
+                    && let Ok(Some(lifecycle)) = client
+                        .wait_for_lifecycle(Duration::from_secs(5), &predicate)
                         .await
                 {
-                    return client;
+                    return (client, lifecycle);
                 }
             }
         })
         .await;
 
         match result {
-            Ok(client) => client,
+            Ok(client_and_lifecycle) => client_and_lifecycle,
             Err(_) => {
-                panic!("daemon did not report WaitingForSecret over IPC within five seconds")
+                panic!("daemon did not report the expected lifecycle over IPC within five seconds")
             }
         }
+    }
+
+    async fn wait_for_waiting_for_secret(socket_path: &str) -> IpcClient {
+        wait_for_lifecycle_state(socket_path, |lifecycle| {
+            matches!(lifecycle, AgentLifecycle::WaitingForSecret)
+        })
+        .await
+        .0
     }
 
     #[tokio::test]
@@ -844,6 +853,55 @@ mod tests {
             .expect("daemon did not stop after IPC stop request")
             .expect("daemon task panicked");
         assert!(daemon_result.is_ok());
+
+        let _ = std::fs::remove_file(&secret_path);
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[tokio::test]
+    async fn invalid_file_secret_can_be_reset_and_reprovisioned_after_restart() {
+        let secret_path = unique_test_path("invalid-secret", "toml");
+        let socket_path = unique_test_path("invalid-secret", "sock")
+            .display()
+            .to_string();
+        tokio::fs::write(&secret_path, "secret_key = 'not-hex'")
+            .await
+            .unwrap();
+
+        let options = DaemonOptions {
+            secret: None,
+            secret_path: Some(secret_path.clone()),
+            socket_path: Some(socket_path.clone()),
+            log_path: None,
+            platform_docker: false,
+            ..DaemonOptions::default()
+        };
+        let first_daemon = tokio::spawn(run_daemon(options.clone()));
+
+        let (mut client, lifecycle) = wait_for_lifecycle_state(&socket_path, |lifecycle| {
+            matches!(lifecycle, AgentLifecycle::HasInvalidSecret(_))
+        })
+        .await;
+        assert!(matches!(lifecycle, AgentLifecycle::HasInvalidSecret(_)));
+
+        let reset = client.reset_secret().await.unwrap();
+        assert!(reset.accepted, "{reset:?}");
+        let first_result = tokio::time::timeout(Duration::from_secs(5), first_daemon)
+            .await
+            .expect("daemon did not stop after secret reset")
+            .expect("daemon task panicked");
+        assert!(first_result.is_ok());
+        assert!(!secret_path.exists());
+
+        let second_daemon = tokio::spawn(run_daemon(options));
+        let mut client = wait_for_waiting_for_secret(&socket_path).await;
+        let stop = client.stop().await.unwrap();
+        assert!(stop.accepted, "{stop:?}");
+        let second_result = tokio::time::timeout(Duration::from_secs(5), second_daemon)
+            .await
+            .expect("restarted daemon did not stop")
+            .expect("restarted daemon task panicked");
+        assert!(second_result.is_ok());
 
         let _ = std::fs::remove_file(&secret_path);
         let _ = std::fs::remove_file(&socket_path);
