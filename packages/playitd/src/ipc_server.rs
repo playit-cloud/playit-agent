@@ -531,7 +531,7 @@ fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{GuestLoginCache, IpcServer, IpcServerConfig, try_connect};
     use crate::secret::SecretStore;
@@ -541,7 +541,7 @@ mod tests {
         IPC_VERSION, IpcClient, IpcError, RequestEnvelope, ServerEnvelope, ServiceRequest,
         ServiceResponse,
     };
-    use playit_ipc::model::{AgentLifecycle, ServiceErrorCode};
+    use playit_ipc::model::{AgentLifecycle, ServiceErrorCode, ServiceUpdate};
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
     use tokio::sync::broadcast;
     use tokio_util::sync::CancellationToken;
@@ -626,6 +626,32 @@ mod tests {
         assert!(!client.server_protocol().capabilities.is_empty());
         let lifecycle = client.lifecycle().await.unwrap();
         assert!(matches!(lifecycle, AgentLifecycle::Starting));
+        shutdown_server(cancel_token, handle).await;
+    }
+
+    #[tokio::test]
+    async fn lifecycle_wait_observes_streamed_transition() {
+        let (server, cancel_token, handle, socket_path) = spawn_test_server("lifecycle-wait").await;
+        let mut client = IpcClient::connect_with_path(&socket_path).await.unwrap();
+        let state_cache = server.state_cache();
+        let event_tx = server.event_sender();
+
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            state_cache
+                .set_lifecycle(AgentLifecycle::WaitingForSecret)
+                .await;
+            let _ = event_tx.send(ServiceUpdate::Lifecycle(AgentLifecycle::WaitingForSecret));
+        });
+
+        let lifecycle = client
+            .wait_for_lifecycle(Duration::from_secs(1), |lifecycle| {
+                matches!(lifecycle, AgentLifecycle::WaitingForSecret)
+            })
+            .await
+            .unwrap();
+
+        assert!(matches!(lifecycle, Some(AgentLifecycle::WaitingForSecret)));
         shutdown_server(cancel_token, handle).await;
     }
 

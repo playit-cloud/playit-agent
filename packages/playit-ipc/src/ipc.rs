@@ -1,6 +1,7 @@
 //! IPC protocol for communication between CLI and background service.
 
 use std::io;
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use interprocess::local_socket::{
@@ -441,6 +442,49 @@ impl IpcClient {
         }
     }
 
+    /// Subscribes to lifecycle updates and returns the first state accepted by
+    /// `predicate`, including the subscription snapshot.
+    pub async fn wait_for_lifecycle(
+        &mut self,
+        timeout: Duration,
+        mut predicate: impl FnMut(&AgentLifecycle) -> bool,
+    ) -> Result<Option<AgentLifecycle>, IpcError> {
+        let snapshot = self.subscribe().await?.snapshot.lifecycle;
+        if predicate(&snapshot) {
+            return Ok(Some(snapshot));
+        }
+
+        let wait = async {
+            loop {
+                if let ServiceUpdate::Lifecycle(lifecycle) = self.recv_update().await?
+                    && predicate(&lifecycle)
+                {
+                    return Ok(lifecycle);
+                }
+            }
+        };
+
+        match tokio::time::timeout(timeout, wait).await {
+            Ok(result) => result.map(Some),
+            Err(_) => Ok(None),
+        }
+    }
+
+    /// Waits until an IPC endpoint no longer accepts connections.
+    pub async fn wait_until_stopped(socket_path: &str, timeout: Duration) -> bool {
+        tokio::time::timeout(timeout, async {
+            let mut interval = tokio::time::interval(Duration::from_millis(50));
+            loop {
+                interval.tick().await;
+                if !Self::is_running(socket_path).await {
+                    return;
+                }
+            }
+        })
+        .await
+        .is_ok()
+    }
+
     pub async fn status(&mut self) -> Result<ServiceStatus, IpcError> {
         expect_response(
             self.request(ServiceRequest::GetStatus).await?,
@@ -564,15 +608,16 @@ impl IpcClient {
     }
 
     async fn recv_response(&mut self) -> Result<ResponseEnvelope, IpcError> {
-        match self.recv_server_envelope().await? {
-            ServerEnvelope::Response(response) => Ok(response),
-            ServerEnvelope::Event(event) => Err(IpcError::ProtocolError(format!(
-                "received stream event while waiting for RPC response: {:?}",
-                event.event
-            ))),
-            ServerEnvelope::Hello(_) => Err(IpcError::ProtocolError(
-                "received duplicate hello while waiting for RPC response".to_string(),
-            )),
+        loop {
+            match self.recv_server_envelope().await? {
+                ServerEnvelope::Response(response) => return Ok(response),
+                ServerEnvelope::Event(_) => {}
+                ServerEnvelope::Hello(_) => {
+                    return Err(IpcError::ProtocolError(
+                        "received duplicate hello while waiting for RPC response".to_string(),
+                    ));
+                }
+            }
         }
     }
 
