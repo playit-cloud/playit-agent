@@ -6,11 +6,11 @@ use std::{
 };
 
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
-use playitd::manager::{LinuxServiceManager, installed_service_is_active_with_linux_manager};
-use playitd::unix_account::{
+use playit_service_manager::unix_account::{
     current_process_has_group, current_user_account, current_user_is_root, effective_gid,
     effective_uid, group_info_by_gid,
 };
+use playit_service_manager::{LinuxServiceManager, installed_service_is_active_with_linux_manager};
 
 use crate::{CliError, ui::ConsoleUi};
 

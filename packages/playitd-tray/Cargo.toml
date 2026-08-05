@@ -12,7 +12,7 @@ workspace = true
 [dependencies]
 tokio = { workspace = true }
 kanal = "0.1.1"
-playitd = { path = "../playitd", version = "1.0.10" }
+playit-service-manager = { path = "../playit-service-manager", version = "1.0.10" }
 playit-ipc = { path = "../playit-ipc", version = "1.0.10" }
 
 [target."cfg(windows)".dependencies]

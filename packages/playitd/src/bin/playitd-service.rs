@@ -9,7 +9,7 @@ mod windows_service_host {
     use std::time::{Duration, Instant};
 
     use playit_ipc::ipc::{IpcClient, get_default_socket_path};
-    use playitd::manager::INSTALLED_SERVICE_LABEL;
+    use playit_service_manager::INSTALLED_SERVICE_LABEL;
     use playitd::{windows_service_log_path, windows_service_secret_path};
     use std::os::windows::process::CommandExt;
     use windows_service::define_windows_service;

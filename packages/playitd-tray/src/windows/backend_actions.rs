@@ -4,7 +4,7 @@ use std::process::Command;
 
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 use playit_ipc::model::AgentLifecycle;
-use playitd::manager::{
+use playit_service_manager::{
     ensure_installed_service_running, installed_service_is_running, stop_installed_service,
 };
 use tokio::task;
