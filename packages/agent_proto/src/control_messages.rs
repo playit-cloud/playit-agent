@@ -1283,5 +1283,4 @@ mod test {
         let err = ControlRequest::read_from(&mut &buffer[..]).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
     }
-
 }

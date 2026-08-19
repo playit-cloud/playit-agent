@@ -57,10 +57,23 @@ impl UdpFlow {
         self.extension().map(|v| v.client_server_id)
     }
 
+    pub fn update_client_server_id(&mut self, client_server_id: NonZeroU64) {
+        if let Some(extension) = self.extension_mut() {
+            extension.client_server_id = client_server_id;
+        }
+    }
+
     pub fn extension(&self) -> Option<&UdpFlowExtension> {
         match self {
             Self::V4 { extension, .. } => extension.as_ref(),
             Self::V6 { extension, .. } => extension.as_ref(),
+        }
+    }
+
+    pub fn extension_mut(&mut self) -> Option<&mut UdpFlowExtension> {
+        match self {
+            Self::V4 { extension, .. } => extension.as_mut(),
+            Self::V6 { extension, .. } => extension.as_mut(),
         }
     }
 

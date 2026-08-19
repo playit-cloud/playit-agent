@@ -120,6 +120,47 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
     assert_eq!(encap_flow_1, flow.flip());
     assert_eq!(encap_payload_1, tunnel_reply_1);
 
+    let flow_after_server_change = with_client_server_id(flow, 8);
+    let origin_payload_after_server_change = b"packet after tunnel server change";
+    send_tunneled_packet(
+        &tunnel_server,
+        channel_addr,
+        flow_after_server_change,
+        origin_payload_after_server_change,
+    )
+    .await;
+
+    let (changed_flow, changed_packet) = timeout(TEST_TIMEOUT, udp_channel.recv())
+        .await
+        .expect("recv packet after tunnel server change");
+    udp_clients
+        .handle_tunneled_packet(3_000, changed_flow, changed_packet)
+        .await;
+
+    let (changed_len, changed_virtual_addr, changed_bytes) = recv_from_socket(&origin_server).await;
+    assert_eq!(changed_virtual_addr, virtual_addr_1);
+    assert_eq!(
+        &changed_bytes[..changed_len],
+        origin_payload_after_server_change
+    );
+    assert_eq!(stats.active_udp(), 1);
+
+    let reply_after_server_change = b"reply after tunnel server change";
+    origin_server
+        .send_to(reply_after_server_change, changed_virtual_addr)
+        .await
+        .expect("origin send reply after tunnel server change");
+
+    let changed_reply = timeout(TEST_TIMEOUT, udp_clients.recv_origin_packet())
+        .await
+        .expect("recv origin reply after tunnel server change");
+    let (changed_reply_flow, changed_reply_packet) = udp_clients
+        .dispatch_origin_packet(4_000, changed_reply)
+        .await
+        .expect("dispatch origin reply after tunnel server change");
+    assert_eq!(changed_reply_flow, flow_after_server_change.flip());
+    assert_eq!(changed_reply_packet.as_ref(), reply_after_server_change);
+
     udp_clients.clear_old(100_000).await;
     assert_eq!(stats.active_udp(), 0);
 
@@ -488,6 +529,22 @@ fn flow_with_source(src_ip: Ipv4Addr, src_port: u16) -> UdpFlow {
             port_offset: 0,
         }),
     }
+}
+
+fn with_client_server_id(mut flow: UdpFlow, client_server_id: u64) -> UdpFlow {
+    let client_server_id = NonZeroU64::new(client_server_id).expect("nonzero client server id");
+    match &mut flow {
+        UdpFlow::V4 {
+            extension: Some(extension),
+            ..
+        }
+        | UdpFlow::V6 {
+            extension: Some(extension),
+            ..
+        } => extension.client_server_id = client_server_id,
+        _ => panic!("flow has no extension"),
+    }
+    flow
 }
 
 struct FlowCase {

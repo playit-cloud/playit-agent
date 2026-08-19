@@ -241,6 +241,9 @@ impl UdpClients {
                 let client = self.virtual_clients.get_mut(slot).unwrap();
 
                 client.from_tunnel_ts = now_ms;
+                client
+                    .flow
+                    .update_client_server_id(extension.client_server_id);
                 if client
                     .socket
                     .send_to(packet.as_ref(), client.target_addr)
