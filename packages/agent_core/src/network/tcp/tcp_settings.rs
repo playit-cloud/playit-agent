@@ -8,8 +8,8 @@ pub struct TcpSettings {
 impl Default for TcpSettings {
     fn default() -> Self {
         Self {
-            new_client_ratelimit: 5,
-            new_client_ratelimit_burst: 32,
+            new_client_ratelimit: 100,
+            new_client_ratelimit_burst: 300,
             tcp_no_delay: true,
         }
     }
