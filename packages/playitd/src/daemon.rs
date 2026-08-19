@@ -9,7 +9,7 @@ use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use playit_agent_core::network::origin_lookup::{OriginLookup, OriginResource, OriginTarget};
-use playit_agent_core::network::tcp::tcp_settings::TcpSettings;
+use playit_agent_core::network::tcp::tcp_settings::{DEFAULT_NEW_CLIENT_RATELIMIT, TcpSettings};
 use playit_agent_core::network::udp::udp_settings::UdpSettings;
 use playit_agent_core::playit_agent::{PlayitAgent, PlayitAgentSettings};
 use playit_agent_core::stats::AgentStats;
@@ -252,6 +252,16 @@ impl SecretSource {
         }
     }
 
+    async fn tcp_new_client_rate_limit(&self) -> u32 {
+        let Self::File { path } = self else {
+            return DEFAULT_NEW_CLIENT_RATELIMIT;
+        };
+        load_secret_config(path)
+            .await
+            .map(|config| config.tcp_new_client_rate_limit)
+            .unwrap_or(DEFAULT_NEW_CLIENT_RATELIMIT)
+    }
+
     fn secret_provision_error(&self) -> ServiceError {
         match self {
             Self::Inline { .. } => daemon_error(
@@ -301,9 +311,15 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
         return Ok(());
     };
 
-    let Some(agent) =
-        build_agent_with_reprovisioning(&mut runtime, &secret_source, &mut secret_rx, secret_code)
-            .await?
+    let tcp_new_client_rate_limit = secret_source.tcp_new_client_rate_limit().await;
+    let Some(agent) = build_agent_with_reprovisioning(
+        &mut runtime,
+        &secret_source,
+        &mut secret_rx,
+        secret_code,
+        tcp_new_client_rate_limit,
+    )
+    .await?
     else {
         return Ok(());
     };
@@ -529,6 +545,7 @@ async fn build_agent_with_reprovisioning(
     secret_source: &SecretSource,
     secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
     secret_code: String,
+    tcp_new_client_rate_limit: u32,
 ) -> Result<Option<AgentRuntime>, DaemonError> {
     let lookup = Arc::new(OriginLookup::default());
     let mut secret_code = secret_code;
@@ -543,7 +560,10 @@ async fn build_agent_with_reprovisioning(
 
         let settings = PlayitAgentSettings {
             udp_settings: UdpSettings::default(),
-            tcp_settings: TcpSettings::default(),
+            tcp_settings: TcpSettings {
+                new_client_ratelimit: tcp_new_client_rate_limit,
+                ..TcpSettings::default()
+            },
             api_url: api_base(),
             secret_key: secret_code.clone(),
         };
@@ -1002,6 +1022,7 @@ async fn persist_secret_file(path: &Path, secret: &str) -> Result<(), String> {
     let content = if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
         toml::to_string(&SecretConfig {
             secret_key: secret.clone(),
+            tcp_new_client_rate_limit: DEFAULT_NEW_CLIENT_RATELIMIT,
         })
         .map_err(|error| {
             format!(
@@ -1115,6 +1136,34 @@ fn parse_secret_file(content: &str) -> Result<String, ()> {
     validate_secret(config.secret_key.trim()).map_err(|_| ())
 }
 
+pub(crate) async fn load_secret_config(path: &Path) -> Result<SecretConfig, String> {
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .map_err(|error| format!("Failed to read secret file {}: {error}", path.display()))?;
+    let trimmed = content.trim();
+    if let Ok(secret_key) = validate_secret(trimmed) {
+        return Ok(SecretConfig {
+            secret_key,
+            tcp_new_client_rate_limit: DEFAULT_NEW_CLIENT_RATELIMIT,
+        });
+    }
+    toml::from_str(&content)
+        .map_err(|error| format!("Invalid secret file {}: {error}", path.display()))
+}
+
+pub(crate) async fn persist_secret_config(
+    path: &Path,
+    config: &SecretConfig,
+) -> Result<(), String> {
+    let content = toml::to_string(config).map_err(|error| {
+        format!(
+            "Failed to serialize secret file {}: {error}",
+            path.display()
+        )
+    })?;
+    secure_write_secret_file(path, content.as_bytes()).await
+}
+
 fn validate_secret(secret: &str) -> Result<String, String> {
     hex::decode(secret)
         .map(|_| secret.to_string())
@@ -1124,8 +1173,14 @@ fn validate_secret(secret: &str) -> Result<String, String> {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct SecretConfig {
-    secret_key: String,
+pub(crate) struct SecretConfig {
+    pub(crate) secret_key: String,
+    #[serde(default = "default_tcp_new_client_rate_limit")]
+    pub(crate) tcp_new_client_rate_limit: u32,
+}
+
+fn default_tcp_new_client_rate_limit() -> u32 {
+    DEFAULT_NEW_CLIENT_RATELIMIT
 }
 
 fn parse_version_part(part: &str) -> Result<u32, String> {

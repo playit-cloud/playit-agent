@@ -172,6 +172,11 @@ pub struct SecretPathResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TcpRateLimitResponse {
+    pub value: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AccountLoginUrlResponse {
     pub login_url: String,
 }

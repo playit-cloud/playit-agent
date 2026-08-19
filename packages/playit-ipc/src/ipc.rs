@@ -16,7 +16,7 @@ use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec, LinesCodecError};
 use crate::endpoint::IpcEndpoint;
 use crate::model::{
     AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ProtocolInfo, SecretPathResponse,
-    ServiceError, ServiceStatus, ServiceUpdate, SubscribeResponse,
+    ServiceError, ServiceStatus, ServiceUpdate, SubscribeResponse, TcpRateLimitResponse,
 };
 
 pub const IPC_VERSION: u32 = 2;
@@ -105,6 +105,8 @@ pub enum ServiceRequest {
     SetSecret { secret: String },
     ResetSecret,
     GetSecretPath,
+    GetTcpRateLimit,
+    SetTcpRateLimit { value: u32 },
     GetAccountLoginUrl,
 }
 
@@ -157,6 +159,8 @@ pub enum ServiceResponse {
     SetSecret(CommandResponse),
     ResetSecret(CommandResponse),
     SecretPath(SecretPathResponse),
+    TcpRateLimit(TcpRateLimitResponse),
+    SetTcpRateLimit(CommandResponse),
     AccountLoginUrl(AccountLoginUrlResponse),
     Error(ServiceError),
 }
@@ -201,6 +205,7 @@ pub fn protocol_info() -> ProtocolInfo {
             "lifecycle_state".to_string(),
             "rich_status".to_string(),
             "secret_provisioning".to_string(),
+            "tcp_rate_limit_configuration".to_string(),
         ],
     }
 }
@@ -507,6 +512,29 @@ impl IpcClient {
         )
     }
 
+    pub async fn get_tcp_rate_limit(&mut self) -> Result<TcpRateLimitResponse, IpcError> {
+        expect_response(
+            self.request(ServiceRequest::GetTcpRateLimit).await?,
+            "TCP rate limit response",
+            |response| match response {
+                ServiceResponse::TcpRateLimit(response) => Some(response),
+                _ => None,
+            },
+        )
+    }
+
+    pub async fn set_tcp_rate_limit(&mut self, value: u32) -> Result<CommandResponse, IpcError> {
+        expect_response(
+            self.request(ServiceRequest::SetTcpRateLimit { value })
+                .await?,
+            "set TCP rate limit response",
+            |response| match response {
+                ServiceResponse::SetTcpRateLimit(response) => Some(response),
+                _ => None,
+            },
+        )
+    }
+
     pub async fn get_account_login_url(&mut self) -> Result<AccountLoginUrlResponse, IpcError> {
         expect_response(
             self.request(ServiceRequest::GetAccountLoginUrl).await?,
@@ -646,6 +674,8 @@ pub fn is_known_request_type(type_name: &str) -> bool {
             | "set_secret"
             | "reset_secret"
             | "get_secret_path"
+            | "get_tcp_rate_limit"
+            | "set_tcp_rate_limit"
             | "get_account_login_url"
     )
 }

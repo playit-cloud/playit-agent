@@ -19,7 +19,7 @@ use playit_ipc::ipc::{
 use playit_ipc::model::{
     AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ConnectionStats, SecretPathResponse,
     ServiceError, ServiceErrorCode, ServiceStatus, ServiceUpdate, SubscribeResponse,
-    SubscriptionSnapshot,
+    SubscriptionSnapshot, TcpRateLimitResponse,
 };
 use serde_json::json;
 use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
@@ -327,6 +327,12 @@ impl IpcServer {
                         .map(|path| path.display().to_string()),
                 }))
             }
+            ServiceRequest::GetTcpRateLimit => {
+                RequestOutcome::respond(self.get_tcp_rate_limit_response().await)
+            }
+            ServiceRequest::SetTcpRateLimit { value } => {
+                RequestOutcome::respond(self.set_tcp_rate_limit_response(value).await)
+            }
             ServiceRequest::GetAccountLoginUrl => {
                 RequestOutcome::respond(self.account_login_url_response().await)
             }
@@ -405,6 +411,53 @@ impl IpcServer {
             }
             Err(error) => ServiceResponse::Error(error),
         }
+    }
+
+    async fn get_tcp_rate_limit_response(&self) -> ServiceResponse {
+        match self.load_secret_config().await {
+            Ok(config) => ServiceResponse::TcpRateLimit(TcpRateLimitResponse {
+                value: config.tcp_new_client_rate_limit,
+            }),
+            Err(error) => ServiceResponse::Error(error),
+        }
+    }
+
+    async fn set_tcp_rate_limit_response(&self, value: u32) -> ServiceResponse {
+        if value == 0 {
+            return ServiceResponse::Error(protocol_error(
+                ServiceErrorCode::InvalidRequest,
+                "TCP rate limit must be greater than zero".to_string(),
+                false,
+            ));
+        }
+        let Some(secret_path) = &self.secret_path else {
+            return ServiceResponse::Error(self.secret_provision_error.clone());
+        };
+        let mut config = match self.load_secret_config().await {
+            Ok(config) => config,
+            Err(error) => return ServiceResponse::Error(error),
+        };
+        config.tcp_new_client_rate_limit = value;
+        match crate::daemon::persist_secret_config(secret_path, &config).await {
+            Ok(()) => ServiceResponse::SetTcpRateLimit(CommandResponse {
+                accepted: true,
+                message: Some("TCP rate limit saved; restart playitd to apply it".to_string()),
+            }),
+            Err(message) => ServiceResponse::Error(protocol_error(
+                ServiceErrorCode::SecretWriteFailed,
+                message,
+                true,
+            )),
+        }
+    }
+
+    async fn load_secret_config(&self) -> Result<crate::daemon::SecretConfig, ServiceError> {
+        let Some(secret_path) = &self.secret_path else {
+            return Err(self.secret_provision_error.clone());
+        };
+        crate::daemon::load_secret_config(secret_path)
+            .await
+            .map_err(|message| protocol_error(ServiceErrorCode::InvalidRequest, message, false))
     }
 
     async fn send_response<W: tokio::io::AsyncWrite + Unpin>(

@@ -626,6 +626,35 @@ pub async fn run_secret_path_command(target: &CliTarget) -> Result<(), CliError>
     Ok(())
 }
 
+pub async fn run_tcp_rate_limit_command(
+    target: &CliTarget,
+    value: Option<u32>,
+) -> Result<(), CliError> {
+    let mut client = connect_target(target).await?;
+    if let Some(value) = value {
+        let response = client.set_tcp_rate_limit(value).await.map_err(|error| {
+            CliError::IpcError(format!("Failed to set TCP rate limit: {error}"))
+        })?;
+        if !response.accepted {
+            return Err(CliError::IpcError(response.message.unwrap_or_else(|| {
+                "playitd rejected the TCP rate limit".to_string()
+            })));
+        }
+        println!(
+            "{}",
+            response
+                .message
+                .unwrap_or_else(|| "TCP rate limit saved".to_string())
+        );
+    } else {
+        let response = client.get_tcp_rate_limit().await.map_err(|error| {
+            CliError::IpcError(format!("Failed to get TCP rate limit: {error}"))
+        })?;
+        println!("{}", response.value);
+    }
+    Ok(())
+}
+
 pub async fn run_account_login_url_command(target: &CliTarget) -> Result<(), CliError> {
     let mut client = connect_target(target).await?;
     let response = client.get_account_login_url().await.map_err(|error| {

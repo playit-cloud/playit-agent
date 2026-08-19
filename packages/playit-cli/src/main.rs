@@ -8,6 +8,7 @@ use client::{
     AttachMode, CliTarget, ensure_service_waiting_for_secret, provision_service_secret,
     run_account_login_url_command, run_attach_command, run_auto_command, run_reset_command,
     run_secret_path_command, run_start_command, run_status_command, run_stop_command,
+    run_tcp_rate_limit_command,
 };
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
@@ -85,6 +86,12 @@ enum Commands {
     /// Shows the file path where the playit secret can be found
     SecretPath,
 
+    /// Get or set the new TCP connection rate limit
+    TcpRateLimit {
+        #[command(subcommand)]
+        command: TcpRateLimitCommands,
+    },
+
     /// Setup playit by provisioning a new secret to playitd
     Setup,
 
@@ -109,6 +116,14 @@ enum Commands {
 enum AccountCommands {
     /// Generates a link to allow user to login
     LoginUrl,
+}
+
+#[derive(Subcommand)]
+enum TcpRateLimitCommands {
+    /// Print the configured rate limit
+    Get,
+    /// Set the rate limit in connections per second
+    Set { value: u32 },
 }
 
 #[derive(Subcommand)]
@@ -215,6 +230,13 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
         }
         Some(Commands::SecretPath) => {
             run_secret_path_command(&target).await?;
+        }
+        Some(Commands::TcpRateLimit { command }) => {
+            let value = match command {
+                TcpRateLimitCommands::Get => None,
+                TcpRateLimitCommands::Set { value } => Some(value),
+            };
+            run_tcp_rate_limit_command(&target, value).await?;
         }
         Some(Commands::Account { ref command }) => match command {
             AccountCommands::LoginUrl => {
