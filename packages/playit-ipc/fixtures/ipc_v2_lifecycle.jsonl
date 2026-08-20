@@ -1,0 +1,7 @@
+{"state":"waiting_for_secret"}
+{"state":"has_invalid_secret","data":{"code":"invalid_secret","message":"invalid fixture secret","retryable":true,"details":null}}
+{"state":"disabled_over_limit","data":{"code":"agent_disabled_over_limit","message":"fixture account is over limit","retryable":true,"details":{"agents":3,"limit":2}}}
+{"state":"starting"}
+{"state":"running","data":{"version":"1.0.10","tunnels":[{"display_address":"demo.playit.gg:25565","destination":"127.0.0.1:25565","is_disabled":false,"disabled_reason":null}],"pending_tunnels":[{"id":"pending-1","status_msg":"allocating"}],"notices":[{"priority":"info","message":"fixture notice","resolve_link":"https://playit.gg/account"}],"account_status":"verified","agent_id":"agent-1","login_link":"https://playit.gg/login/fixture","start_time":1700000000000}}
+{"state":"stopping"}
+{"state":"error","data":{"code":"internal","message":"fixture failure","retryable":false,"details":null}}

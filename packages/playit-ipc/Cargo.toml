@@ -12,8 +12,8 @@ tokio-util = { workspace = true }
 futures-util = { workspace = true, features = ["sink"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-dirs = { workspace = true }
 tracing = { workspace = true }
+playit-platform = { path = "../playit-platform", version = "1.0.10" }
 
 interprocess = { version = "2.2", features = ["tokio"] }
 

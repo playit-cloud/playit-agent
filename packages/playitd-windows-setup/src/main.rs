@@ -1,14 +1,5 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-#[cfg(target_os = "windows")]
-mod permissions;
-#[cfg(any(target_os = "windows", test))]
-mod secret_migration;
-#[cfg(any(target_os = "windows", test))]
-mod sid;
-#[cfg(target_os = "windows")]
-mod startup_shortcut;
-
 #[cfg(any(target_os = "windows", test))]
 mod setup_log;
 
@@ -47,24 +38,28 @@ fn run_and_log() -> Result<(), String> {
                 Err(unexpected_extra_arguments(&extra_args))
             } else {
                 let installed_user_sid = extra_args.first().map(|arg| arg.to_string_lossy());
-                permissions::apply_installer_permissions(installed_user_sid.as_deref())
+                playit_platform::windows::apply_installer_permissions(installed_user_sid.as_deref())
             }
         }
-        "ensure-startup-shortcut" => require_no_extra_arguments(&extra_args)
-            .and_then(|()| startup_shortcut::ensure_startup_shortcut()),
+        "ensure-startup-shortcut" => require_no_extra_arguments(&extra_args).and_then(|()| {
+            let setup_path = std::env::current_exe()
+                .map_err(|error| format!("Failed to resolve setup helper path: {error}"))?;
+            let tray_path = setup_path.with_file_name("playitd-tray.exe");
+            playit_platform::windows::ensure_tray_startup_shortcut(&tray_path).map(|_| ())
+        }),
         "migrate-v17-secret" => {
             if extra_args.len() > 1 {
                 Err(unexpected_extra_arguments(&extra_args))
             } else {
                 let installed_user_sid = extra_args.first().map(|arg| arg.to_string_lossy());
-                secret_migration::migrate_v17_secret(installed_user_sid.as_deref())
+                playit_platform::windows::migrate_v17_secret(installed_user_sid.as_deref())
             }
         }
         "remove-startup-shortcut" => require_no_extra_arguments(&extra_args)
-            .and_then(|()| startup_shortcut::remove_startup_shortcut()),
+            .and_then(|()| playit_platform::windows::remove_tray_startup_shortcut()),
         "write-installed-user-sid" => {
             require_no_extra_arguments(&extra_args)?;
-            playitd::windows::write_current_user_sid()
+            playit_platform::windows::write_current_user_sid()
                 .map_err(|error| format!("Failed to write installed user SID: {error}"))?;
             Ok(())
         }

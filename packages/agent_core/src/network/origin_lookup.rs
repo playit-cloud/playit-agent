@@ -2,11 +2,11 @@ use std::{
     collections::HashMap,
     fmt::Display,
     net::{IpAddr, SocketAddr},
-    str::FromStr,
 };
 
+use crate::gateway::{GatewayOrigin, GatewayOriginHost, GatewayOriginTarget};
 use playit_agent_proto::PortProto;
-use playit_api_client::api::{AgentRunDataV1, AgentTunnelV1, PortType, ProxyProtocol, TunnelType};
+use playit_model::{ProxyProtocol, TunnelProtocol};
 use tokio::net::lookup_host;
 use tokio::sync::RwLock;
 
@@ -16,14 +16,9 @@ pub struct OriginLookup {
 }
 
 impl OriginLookup {
-    pub async fn update_from_run_data(&self, run_data: &AgentRunDataV1) {
-        self.update(
-            run_data
-                .tunnels
-                .iter()
-                .filter_map(OriginResource::from_agent_tunnel),
-        )
-        .await;
+    pub async fn update_from_gateway(&self, origins: &[GatewayOrigin]) {
+        self.update(origins.iter().cloned().map(OriginResource::from_gateway))
+            .await;
     }
 
     pub async fn update<I: Iterator<Item = OriginResource>>(&self, resources: I) {
@@ -149,89 +144,35 @@ pub enum OriginTarget {
 }
 
 impl OriginResource {
-    fn parse_origin_ip(tunn: &AgentTunnelV1) -> OriginIp {
-        tunn.agent_config
-            .fields
-            .iter()
-            .find(|f| f.name.eq("local_ip"))
-            .map(|v| v.value.trim())
-            .filter(|v| !v.is_empty())
-            .map(|value| {
-                IpAddr::from_str(value)
-                    .map(OriginIp::IpAddress)
-                    .unwrap_or_else(|_| OriginIp::Hostname(value.to_owned()))
-            })
-            .unwrap_or_else(|| OriginIp::IpAddress("127.0.0.1".parse().unwrap()))
-    }
-
-    pub fn from_agent_tunnel(tunn: &AgentTunnelV1) -> Option<Self> {
-        let tunnel_type = tunn
-            .tunnel_type
-            .clone()
-            .and_then(|v| serde_json::from_value::<TunnelType>(serde_json::Value::String(v)).ok());
-
-        let proxy_protocol = tunn
-            .agent_config
-            .fields
-            .iter()
-            .find(|f| f.name.eq("proxy_protocol"))
-            .and_then(|v| {
-                serde_json::from_value::<ProxyProtocol>(serde_json::Value::String(v.value.clone()))
-                    .ok()
-            });
-
-        let target = match tunnel_type {
-            Some(TunnelType::Https) => OriginTarget::Https {
-                ip: Self::parse_origin_ip(tunn),
-                http_port: tunn
-                    .agent_config
-                    .fields
-                    .iter()
-                    .find(|f| f.name.eq("http_port"))
-                    .and_then(|v| u16::from_str(&v.value).ok())
-                    .unwrap_or(80),
-                https_port: tunn
-                    .agent_config
-                    .fields
-                    .iter()
-                    .find(|f| f.name.eq("https_port"))
-                    .and_then(|v| u16::from_str(&v.value).ok())
-                    .unwrap_or(443),
+    pub fn from_gateway(origin: GatewayOrigin) -> Self {
+        Self {
+            tunnel_id: origin.tunnel_id,
+            proto: match origin.protocol {
+                TunnelProtocol::Tcp => PortProto::Tcp,
+                TunnelProtocol::Udp => PortProto::Udp,
+                TunnelProtocol::Both => PortProto::Both,
             },
-            _ => {
-                // Get local_port from config, or fall back to public port from display_address
-                let local_port = tunn
-                    .agent_config
-                    .fields
-                    .iter()
-                    .find(|f| f.name.eq("local_port"))
-                    .and_then(|v| u16::from_str(&v.value).ok())
-                    .or_else(|| {
-                        // Extract port from display_address (format: "hostname:port" or "ip:port")
-                        tunn.display_address
-                            .rsplit(':')
-                            .next()
-                            .and_then(|p| u16::from_str(p).ok())
-                    })?;
-
-                OriginTarget::Port {
-                    ip: Self::parse_origin_ip(tunn),
-                    port: local_port,
-                }
-            }
-        };
-
-        Some(OriginResource {
-            tunnel_id: tunn.internal_id,
-            proto: match tunn.port_type {
-                PortType::Tcp => PortProto::Tcp,
-                PortType::Udp => PortProto::Udp,
-                PortType::Both => PortProto::Both,
+            target: match origin.target {
+                GatewayOriginTarget::Https {
+                    host,
+                    http_port,
+                    https_port,
+                } => OriginTarget::Https {
+                    ip: origin_ip(host),
+                    http_port,
+                    https_port,
+                },
+                GatewayOriginTarget::Port { host, port } => OriginTarget::Port {
+                    ip: origin_ip(host),
+                    port,
+                },
             },
-            target,
-            port_count: tunn.port_count,
-            proxy_protocol,
-        })
+            port_count: origin.port_count,
+            proxy_protocol: match origin.proxy_protocol {
+                ProxyProtocol::None => None,
+                configured => Some(configured),
+            },
+        }
     }
 
     pub async fn resolve_local(&self, port_offset: u16) -> Option<SocketAddr> {
@@ -265,50 +206,29 @@ impl OriginResource {
     }
 }
 
+fn origin_ip(host: GatewayOriginHost) -> OriginIp {
+    match host {
+        GatewayOriginHost::Ip(address) => OriginIp::IpAddress(address),
+        GatewayOriginHost::Hostname(hostname) => OriginIp::Hostname(hostname),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use playit_api_client::api::{AgentTunnelAttr, AgentTunnelConfig};
-    use uuid::Uuid;
-
-    fn build_tunnel(
-        tunnel_type: Option<&str>,
-        local_ip: &str,
-        local_port: Option<&str>,
-        port_type: PortType,
-        port_count: u16,
-    ) -> AgentTunnelV1 {
-        let mut fields = vec![AgentTunnelAttr {
-            name: "local_ip".to_owned(),
-            value: local_ip.to_owned(),
-        }];
-
-        if let Some(local_port) = local_port {
-            fields.push(AgentTunnelAttr {
-                name: "local_port".to_owned(),
-                value: local_port.to_owned(),
-            });
-        }
-
-        AgentTunnelV1 {
-            id: Uuid::nil(),
-            internal_id: 7,
-            name: "test".to_owned(),
-            display_address: "public.example:25565".to_owned(),
-            port_type,
-            port_count,
-            tunnel_type: tunnel_type.map(str::to_owned),
-            tunnel_type_display: "test".to_owned(),
-            agent_config: AgentTunnelConfig { fields },
-            disabled_reason: None,
-        }
-    }
 
     #[test]
-    fn from_agent_tunnel_preserves_hostname_target() {
-        let tunnel = build_tunnel(None, "origin.internal", Some("25565"), PortType::Tcp, 0);
-
-        let resource = OriginResource::from_agent_tunnel(&tunnel).expect("resource");
+    fn gateway_origin_preserves_hostname_target() {
+        let resource = OriginResource::from_gateway(GatewayOrigin {
+            tunnel_id: 7,
+            protocol: TunnelProtocol::Tcp,
+            target: GatewayOriginTarget::Port {
+                host: GatewayOriginHost::Hostname("origin.internal".to_owned()),
+                port: 25565,
+            },
+            port_count: 0,
+            proxy_protocol: ProxyProtocol::None,
+        });
 
         match resource.target {
             OriginTarget::Port {

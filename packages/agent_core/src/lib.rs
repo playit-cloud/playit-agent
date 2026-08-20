@@ -1,6 +1,7 @@
 extern crate core;
 
 pub mod agent_control;
+pub mod gateway;
 pub mod network;
 pub mod playit_agent;
 pub mod stats;

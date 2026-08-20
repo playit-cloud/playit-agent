@@ -6,10 +6,11 @@ use std::{
         Arc,
         atomic::{AtomicU32, Ordering},
     },
+    time::Duration,
 };
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
-use playit_api_client::api::ProxyProtocol;
+use playit_model::ProxyProtocol;
 use slab::Slab;
 use tokio::{
     net::UdpSocket,
@@ -101,12 +102,13 @@ impl UdpClients {
         packets: Packets,
         stats: AgentStats,
     ) -> Self {
-        let (origin_tx, origin_rx) = channel(2048);
+        let queue_capacity = settings.queue_capacity.max(1);
+        let (origin_tx, origin_rx) = channel(queue_capacity);
 
         UdpClients {
             lookup,
             virtual_client_lookup: HashMap::new(),
-            virtual_clients: Slab::with_capacity(2048),
+            virtual_clients: Slab::with_capacity(queue_capacity),
             next_client_generation: AtomicU32::new(1),
             setup: UdpReceiverSetup {
                 output: origin_tx,
@@ -118,7 +120,7 @@ impl UdpClients {
         }
     }
 
-    pub async fn clear_old(&mut self, now_ms: u64) {
+    pub async fn clear_old(&mut self, now_ms: u64) -> Result<(), crate::playit_agent::ServiceExit> {
         let mut to_remove = Vec::new();
 
         for (slot, client) in self.virtual_clients.iter_mut() {
@@ -146,20 +148,37 @@ impl UdpClients {
 
         for slot in to_remove {
             let client = self.virtual_clients.remove(slot);
-            let removed = self.virtual_client_lookup.remove(&client.key).unwrap();
-            assert_eq!(removed, slot);
-            client.receiver.shutdown().await;
+            let removed = self.virtual_client_lookup.remove(&client.key);
+            if removed != Some(slot) {
+                return Err(crate::playit_agent::ServiceExit::Failed(
+                    "UDP flow index disagrees with the flow table".to_owned(),
+                ));
+            }
+            let exit = client.receiver.shutdown(Duration::from_secs(2)).await;
+            if exit.is_fatal_child_failure() {
+                return Err(exit);
+            }
+            if !matches!(
+                exit,
+                crate::playit_agent::ServiceExit::Cancelled
+                    | crate::playit_agent::ServiceExit::Completed
+                    | crate::playit_agent::ServiceExit::CleanEof
+            ) {
+                tracing::warn!(flow_id = client.id, ?exit, "UDP flow task ended");
+            }
         }
 
         // Update active UDP count
         self.stats.set_udp(self.virtual_clients.len() as u32);
+        Ok(())
     }
 
-    pub async fn recv_origin_packet(&mut self) -> UdpReceivedPacket {
-        self.rx
-            .recv()
-            .await
-            .expect("should never close with local reference")
+    pub async fn recv_origin_packet(
+        &mut self,
+    ) -> Result<UdpReceivedPacket, crate::playit_agent::ServiceExit> {
+        self.rx.recv().await.ok_or_else(|| {
+            crate::playit_agent::ServiceExit::QueueClosed("udp origin receive".to_owned())
+        })
     }
 
     pub async fn dispatch_origin_packet(
@@ -269,6 +288,11 @@ impl UdpClients {
             return;
         }
 
+        if self.virtual_clients.len() >= 2048 {
+            udp_errors().new_client_ratelimit.inc();
+            return;
+        }
+
         let Some(target_addr) = origin.resolve_local(extension.port_offset).await else {
             return;
         };
@@ -292,11 +316,14 @@ impl UdpClients {
 
         let entry = self.virtual_clients.vacant_entry();
         let slot = entry.key();
-        let slot = u32::try_from(slot).expect("udp client slot overflow");
+        let Ok(slot) = u32::try_from(slot) else {
+            udp_errors().new_client_ratelimit.inc();
+            return;
+        };
         let generation = self.next_client_generation.fetch_add(1, Ordering::Relaxed);
         let id = pack_client_id(slot, generation);
 
-        let receiver = self.setup.create(id, socket.clone());
+        let receiver = self.setup.spawn(id, socket.clone());
 
         let mut client_flow = flow.flip();
         match &mut client_flow {
@@ -338,7 +365,7 @@ impl UdpClients {
         };
 
         if let Some(proto) = origin.proxy_protocol {
-            if proto != ProxyProtocol::ProxyProtocolV2 {
+            if proto != ProxyProtocol::V2 {
                 udp_errors().origin_v1_proxy_protocol.inc();
             } else {
                 let header = ProxyProtocolHeader::from_udp_flow(&flow);
@@ -363,13 +390,28 @@ impl UdpClients {
             udp_errors().origin_send_io_error.inc();
         }
 
-        self.virtual_client_lookup.insert(
-            key,
-            usize::try_from(slot).expect("udp client slot overflow"),
-        );
+        let slot = slot as usize;
+        self.virtual_client_lookup.insert(key, slot);
         entry.insert(client);
 
         // Update active UDP count for new client
         self.stats.set_udp(self.virtual_clients.len() as u32);
+    }
+
+    pub async fn shutdown(mut self, deadline: Duration) -> crate::playit_agent::ServiceExit {
+        let stop_at = tokio::time::Instant::now() + deadline;
+        for client in self.virtual_clients.drain() {
+            self.virtual_client_lookup.remove(&client.key);
+            let remaining = stop_at.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return crate::playit_agent::ServiceExit::DeadlineExceeded;
+            }
+            let exit = client.receiver.shutdown(remaining).await;
+            if matches!(exit, crate::playit_agent::ServiceExit::DeadlineExceeded) {
+                return exit;
+            }
+        }
+        self.stats.set_udp(0);
+        crate::playit_agent::ServiceExit::Cancelled
     }
 }

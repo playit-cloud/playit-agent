@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 
@@ -12,11 +13,11 @@ pub struct TcpClient {
 }
 
 impl TcpClient {
-    pub async fn create(tunn: TcpStream, origin: TcpStream) -> Self {
-        Self::create_with_stats(tunn, origin, None).await
+    pub async fn spawn(tunn: TcpStream, origin: TcpStream) -> Self {
+        Self::spawn_with_stats(tunn, origin, None).await
     }
 
-    pub async fn create_with_stats(
+    pub async fn spawn_with_stats(
         tunn: TcpStream,
         origin: TcpStream,
         stats: Option<AgentStats>,
@@ -27,14 +28,14 @@ impl TcpClient {
         let cancel = CancellationToken::new();
 
         TcpClient {
-            tunn_to_origin: TcpPipe::new_with_stats(
+            tunn_to_origin: TcpPipe::spawn_with_stats(
                 cancel.clone(),
                 tunn_read,
                 origin_write,
                 stats.clone(),
                 PipeDirection::TunnelToOrigin,
             ),
-            origin_to_tunn: TcpPipe::new_with_stats(
+            origin_to_tunn: TcpPipe::spawn_with_stats(
                 cancel,
                 origin_read,
                 tunn_write,
@@ -55,6 +56,42 @@ impl TcpClient {
         TcpClientStat {
             tunn_to_origin: self.tunn_to_origin.bytes_written(),
             origin_to_tunn: self.origin_to_tunn.bytes_written(),
+        }
+    }
+
+    pub fn failure(&self) -> Option<crate::playit_agent::ServiceExit> {
+        [self.tunn_to_origin.exit(), self.origin_to_tunn.exit()]
+            .into_iter()
+            .flatten()
+            .find(|exit| {
+                !matches!(
+                    exit,
+                    crate::playit_agent::ServiceExit::Cancelled
+                        | crate::playit_agent::ServiceExit::CleanEof
+                )
+            })
+    }
+
+    pub async fn shutdown(self, deadline: Duration) -> crate::playit_agent::ServiceExit {
+        let (left, right) = tokio::join!(
+            self.tunn_to_origin.join(deadline),
+            self.origin_to_tunn.join(deadline)
+        );
+        if matches!(left, crate::playit_agent::ServiceExit::DeadlineExceeded)
+            || matches!(right, crate::playit_agent::ServiceExit::DeadlineExceeded)
+        {
+            crate::playit_agent::ServiceExit::DeadlineExceeded
+        } else if let Some(exit) = [left, right].into_iter().find(|exit| {
+            !matches!(
+                exit,
+                crate::playit_agent::ServiceExit::Cancelled
+                    | crate::playit_agent::ServiceExit::Completed
+                    | crate::playit_agent::ServiceExit::CleanEof
+            )
+        }) {
+            exit
+        } else {
+            crate::playit_agent::ServiceExit::Cancelled
         }
     }
 }

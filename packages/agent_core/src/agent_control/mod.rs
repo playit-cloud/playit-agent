@@ -10,11 +10,7 @@ use playit_agent_proto::control_messages::Pong;
 use tokio::{io::ReadBuf, net::UdpSocket};
 use version::get_version;
 
-pub use playit_api_client::api::SignedAgentKey;
-use playit_api_client::{
-    PlayitApi,
-    api::{ReqAgentsRoutingGet, ReqProtoRegister},
-};
+use crate::gateway::{PlayitGateway, RegisterRequest, SignedAgentKey};
 
 use crate::{agent_control::platform::current_platform, utils::error_helper::ErrorHelper};
 
@@ -130,10 +126,10 @@ impl DualStackUdpSocket {
 
 impl PacketIO for DualStackUdpSocket {
     async fn send_to(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize> {
-        if target.is_ipv6() {
-            if let Some(ip6) = &self.ip6 {
-                return ip6.send_to(buf, target).await;
-            }
+        if target.is_ipv6()
+            && let Some(ip6) = &self.ip6
+        {
+            return ip6.send_to(buf, target).await;
         }
         self.ip4.send_to(buf, target).await
     }
@@ -141,7 +137,7 @@ impl PacketIO for DualStackUdpSocket {
     async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
         let sel = self.next.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
 
-        if sel % 2 == 0 {
+        if sel.is_multiple_of(2) {
             PoolBoth {
                 buffer: buf,
                 a: self.ip6.as_ref(),
@@ -176,22 +172,22 @@ impl Future for PoolBoth<'_> {
 
         let mut buf = ReadBuf::new(buffer);
 
-        if let Some(a) = a {
-            if let Poll::Ready(ready) = a.poll_recv_from(cx, &mut buf) {
-                return match ready {
-                    Ok(addr) => Poll::Ready(Ok((buf.filled().len(), addr))),
-                    Err(error) => Poll::Ready(Err(error)),
-                };
-            }
+        if let Some(a) = a
+            && let Poll::Ready(ready) = a.poll_recv_from(cx, &mut buf)
+        {
+            return match ready {
+                Ok(addr) => Poll::Ready(Ok((buf.filled().len(), addr))),
+                Err(error) => Poll::Ready(Err(error)),
+            };
         }
 
-        if let Some(b) = b {
-            if let Poll::Ready(ready) = b.poll_recv_from(cx, &mut buf) {
-                return match ready {
-                    Ok(addr) => Poll::Ready(Ok((buf.filled().len(), addr))),
-                    Err(error) => Poll::Ready(Err(error)),
-                };
-            }
+        if let Some(b) = b
+            && let Poll::Ready(ready) = b.poll_recv_from(cx, &mut buf)
+        {
+            return match ready {
+                Ok(addr) => Poll::Ready(Ok((buf.filled().len(), addr))),
+                Err(error) => Poll::Ready(Err(error)),
+            };
         }
 
         Poll::Pending
@@ -216,34 +212,28 @@ impl PacketIO for UdpSocket {
 }
 
 pub trait AuthResource: Clone {
-    fn authenticate(
-        &self,
-        pong: &Pong,
-    ) -> impl Future<Output = Result<SignedAgentKey, SetupError>> + Sync;
+    fn authenticate(&self, pong: &Pong)
+    -> impl Future<Output = Result<SignedAgentKey, SetupError>>;
 
-    fn get_control_addresses(
-        &self,
-    ) -> impl Future<Output = Result<Vec<SocketAddr>, SetupError>> + Sync;
+    fn get_control_addresses(&self) -> impl Future<Output = Result<Vec<SocketAddr>, SetupError>>;
 }
 
 #[derive(Clone)]
-pub struct AuthApi {
-    client: PlayitApi,
+pub struct GatewayAuth {
+    gateway: Arc<dyn PlayitGateway>,
 }
 
-impl AuthApi {
-    pub fn new(api_url: String, secret_key: String) -> Self {
-        let client = PlayitApi::create(api_url, Some(secret_key));
-        AuthApi { client }
+impl GatewayAuth {
+    pub fn new(gateway: Arc<dyn PlayitGateway>) -> Self {
+        Self { gateway }
     }
 }
 
-impl AuthResource for AuthApi {
+impl AuthResource for GatewayAuth {
     async fn authenticate(&self, pong: &Pong) -> Result<SignedAgentKey, SetupError> {
         let res = self
-            .client
-            .proto_register(ReqProtoRegister {
-                agent_version: None,
+            .gateway
+            .register(RegisterRequest {
                 client_addr: pong.client_addr,
                 tunnel_addr: pong.tunnel_addr,
                 proto_version: 2,
@@ -257,19 +247,6 @@ impl AuthResource for AuthApi {
     }
 
     async fn get_control_addresses(&self) -> Result<Vec<SocketAddr>, SetupError> {
-        let routing = self
-            .client
-            .agents_routing_get(ReqAgentsRoutingGet { agent_id: None })
-            .await?;
-
-        let mut addresses = vec![];
-        for ip6 in routing.targets6 {
-            addresses.push(SocketAddr::new(ip6.into(), 5525));
-        }
-        for ip4 in routing.targets4 {
-            addresses.push(SocketAddr::new(ip4.into(), 5525));
-        }
-
-        Ok(addresses)
+        self.gateway.control_addresses().await.map_err(Into::into)
     }
 }

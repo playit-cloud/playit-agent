@@ -2,6 +2,7 @@
 pub struct TcpSettings {
     pub new_client_ratelimit: u32,
     pub new_client_ratelimit_burst: u32,
+    pub queue_capacity: usize,
     pub tcp_no_delay: bool,
 }
 
@@ -10,6 +11,7 @@ impl Default for TcpSettings {
         Self {
             new_client_ratelimit: 100,
             new_client_ratelimit_burst: 300,
+            queue_capacity: 1024,
             tcp_no_delay: true,
         }
     }

@@ -1,13 +1,6 @@
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
-#[cfg(not(target_os = "linux"))]
-use playitd::manager::{
-    InstalledServiceState as ManagerInstalledServiceState, ensure_installed_service_running,
-    installed_service_state, stop_installed_service,
-};
-#[cfg(target_os = "linux")]
-use playitd::manager::{
-    LinuxServiceManager, ensure_installed_service_running_with_linux_manager,
-    stop_installed_service_with_linux_manager,
+use playit_platform::service::{
+    ReachabilityPolicy, ServiceManagerKind, start_and_wait_until_reachable,
 };
 
 use crate::CliError;
@@ -41,12 +34,6 @@ pub enum InstalledServiceStartState {
     Started,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InstalledServiceStopState {
-    AlreadyStopped,
-    StopRequested,
-}
-
 pub async fn ensure_installed_service_running_for_cli(
     console: Option<&mut ConsoleUi>,
     service_manager: ServiceManagerMode,
@@ -68,11 +55,11 @@ pub async fn ensure_installed_service_running_for_cli(
             return Ok(InstalledServiceStartState::AlreadyRunning);
         }
 
-        ensure_installed_service_running_with_linux_manager(linux_manager)
+        start_and_wait(linux_manager)
             .await
             .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
 
-        return Ok(InstalledServiceStartState::Started);
+        Ok(InstalledServiceStartState::Started)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -80,15 +67,19 @@ pub async fn ensure_installed_service_running_for_cli(
         match service_manager {
             #[cfg(target_os = "windows")]
             ServiceManagerMode::WindowsService => {
-                ensure_installed_service_running().await.map_err(|error| {
-                    CliError::ServiceError(format!("Failed to start service: {error}"))
-                })?;
+                start_and_wait(ServiceManagerKind::WindowsScm)
+                    .await
+                    .map_err(|error| {
+                        CliError::ServiceError(format!("Failed to start service: {error}"))
+                    })?;
             }
             #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             ServiceManagerMode::Native => {
-                ensure_installed_service_running().await.map_err(|error| {
-                    CliError::ServiceError(format!("Failed to start service: {error}"))
-                })?;
+                start_and_wait(ServiceManagerKind::MacOsLaunchd)
+                    .await
+                    .map_err(|error| {
+                        CliError::ServiceError(format!("Failed to start service: {error}"))
+                    })?;
             }
         }
     }
@@ -97,68 +88,24 @@ pub async fn ensure_installed_service_running_for_cli(
     Ok(InstalledServiceStartState::Started)
 }
 
-pub fn stop_installed_service_for_cli(
+pub(crate) fn installed_service_manager(
     service_manager: ServiceManagerMode,
-) -> Result<InstalledServiceStopState, CliError> {
+) -> Result<ServiceManagerKind, CliError> {
     #[cfg(target_os = "linux")]
     {
-        let Some(linux_manager) = linux_service_manager(service_manager) else {
-            return Err(no_service_manager_selected_error());
-        };
-
-        if !installed_service_is_active_for_cli(service_manager)? {
-            println!("The playit service is already stopped.");
-            return Ok(InstalledServiceStopState::AlreadyStopped);
-        }
-
-        if let Err(error) = stop_installed_service_with_linux_manager(linux_manager) {
-            tracing::warn!("Failed to stop installed service: {error}");
-        }
-
-        return Ok(InstalledServiceStopState::StopRequested);
+        linux_service_manager(service_manager).ok_or_else(no_service_manager_selected_error)
     }
 
-    #[cfg(not(target_os = "linux"))]
-    {
-        match service_manager {
-            #[cfg(target_os = "windows")]
-            ServiceManagerMode::WindowsService => {
-                if let Err(error) = stop_installed_service() {
-                    tracing::warn!("Failed to stop installed service: {error}");
-                }
-            }
-            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-            ServiceManagerMode::Native => {
-                if let Err(error) = stop_installed_service() {
-                    tracing::warn!("Failed to stop installed service: {error}");
-                }
-            }
-        }
-
-        Ok(InstalledServiceStopState::StopRequested)
-    }
-}
-
-pub fn installed_service_is_active_for_cli(
-    service_manager: ServiceManagerMode,
-) -> Result<bool, CliError> {
-    #[cfg(target_os = "linux")]
-    {
-        let Some(linux_manager) = linux_service_manager(service_manager) else {
-            return Err(no_service_manager_selected_error());
-        };
-
-        return linux::installed_service_is_active(linux_manager);
-    }
-
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "windows")]
     {
         let _ = service_manager;
-        installed_service_state()
-            .map(|state| state == ManagerInstalledServiceState::Running)
-            .map_err(|error| {
-                CliError::ServiceError(format!("Failed to check service status: {error}"))
-            })
+        Ok(ServiceManagerKind::WindowsScm)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        let _ = service_manager;
+        Ok(ServiceManagerKind::MacOsLaunchd)
     }
 }
 
@@ -176,12 +123,21 @@ fn no_service_manager_selected_message() -> String {
 #[cfg(target_os = "linux")]
 pub(crate) fn linux_service_manager(
     service_manager: ServiceManagerMode,
-) -> Option<LinuxServiceManager> {
+) -> Option<ServiceManagerKind> {
     match service_manager {
         ServiceManagerMode::None => None,
-        ServiceManagerMode::Systemd => Some(LinuxServiceManager::Systemd),
-        ServiceManagerMode::OpenRc => Some(LinuxServiceManager::OpenRc),
+        ServiceManagerMode::Systemd => Some(ServiceManagerKind::Systemd),
+        ServiceManagerMode::OpenRc => Some(ServiceManagerKind::OpenRc),
     }
+}
+
+async fn start_and_wait(
+    manager: ServiceManagerKind,
+) -> Result<(), playit_platform::service::ServiceError> {
+    start_and_wait_until_reachable(manager, ReachabilityPolicy::default(), || {
+        IpcClient::is_running(get_default_socket_path())
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -193,7 +149,7 @@ mod tests {
     fn linux_service_manager_mode_maps_to_systemd() {
         assert_eq!(
             linux_service_manager(ServiceManagerMode::Systemd),
-            Some(LinuxServiceManager::Systemd)
+            Some(ServiceManagerKind::Systemd)
         );
     }
 
@@ -202,7 +158,7 @@ mod tests {
     fn linux_service_manager_mode_maps_to_openrc() {
         assert_eq!(
             linux_service_manager(ServiceManagerMode::OpenRc),
-            Some(LinuxServiceManager::OpenRc)
+            Some(ServiceManagerKind::OpenRc)
         );
     }
 

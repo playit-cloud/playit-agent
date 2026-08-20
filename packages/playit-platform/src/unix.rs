@@ -26,7 +26,7 @@ pub fn current_user_is_root() -> bool {
 }
 
 pub fn group_gid_by_name(name: &str) -> Option<u32> {
-    uzers::get_group_by_name(name).map(|group| group.gid() as u32)
+    uzers::get_group_by_name(name).map(|group| group.gid())
 }
 
 pub fn group_info_by_gid(gid: u32) -> Option<UnixGroupInfo> {
@@ -54,8 +54,7 @@ pub fn current_process_has_group(gid: u32) -> bool {
     if effective_gid() == gid {
         return true;
     }
-
     uzers::group_access_list()
-        .map(|groups| groups.into_iter().any(|group| group.gid() as u32 == gid))
+        .map(|groups| groups.into_iter().any(|group| group.gid() == gid))
         .unwrap_or(false)
 }

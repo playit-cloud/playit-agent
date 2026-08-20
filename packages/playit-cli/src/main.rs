@@ -5,21 +5,20 @@ use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use client::{
-    AttachMode, CliTarget, ensure_service_waiting_for_secret, provision_service_secret,
+    AttachMode, CliTarget, begin_service_claim, complete_service_claim,
     run_account_login_url_command, run_attach_command, run_auto_command, run_reset_command,
     run_secret_path_command, run_start_command, run_status_command, run_stop_command,
 };
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
-use rand::Rng;
 use service::ServiceManagerMode;
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 use playit_agent_core::agent_control::errors::SetupError;
+use playit_agent_core::gateway::Platform as RuntimePlatform;
 use playit_agent_core::utils::now_milli;
-use playit_api_client::http_client::HttpClientError;
-use playit_api_client::{PlayitApi, api::*};
+use playit_runtime::{ClaimExchange, ClaimMode, ClaimProgress, ClaimService};
 
 use crate::signal_handle::get_signal_handle;
 use crate::ui::{ConsoleUi, UISettings};
@@ -30,6 +29,7 @@ pub static API_BASE: LazyLock<String> =
 mod client;
 #[cfg(target_os = "linux")]
 mod linux;
+mod problem;
 mod service;
 pub mod signal_handle;
 pub mod ui;
@@ -143,7 +143,12 @@ enum ClaimCommands {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    match run_cli().await {
+    let signal_task = tokio::spawn(get_signal_handle().watch());
+    let result = run_cli().await;
+    signal_task.abort();
+    let _ = signal_task.await;
+
+    match result {
         Ok(code) => code,
         Err(error) => {
             eprintln!("{error}");
@@ -232,8 +237,7 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
             }
             ClaimCommands::Exchange { claim_code, wait } => {
                 let secret_key =
-                    claim_exchange(&mut console, &claim_code, ClaimAgentType::SelfManaged, wait)
-                        .await?;
+                    claim_exchange(&mut console, &claim_code, ClaimMode::SelfManaged, wait).await?;
                 console.write_screen(secret_key).await;
             }
         },
@@ -267,7 +271,7 @@ fn init_stdout_tracing() -> tracing_appender::non_blocking::WorkerGuard {
         EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
     let (non_blocking, guard) = tracing_appender::non_blocking(std::io::stdout());
     tracing_subscriber::fmt()
-        .with_ansi(current_platform() == Platform::Linux)
+        .with_ansi(current_platform() == RuntimePlatform::Linux)
         .with_writer(non_blocking)
         .with_env_filter(log_filter)
         .init();
@@ -279,28 +283,19 @@ pub async fn run_setup_flow(
     target: &CliTarget,
     service_manager: ServiceManagerMode,
 ) -> Result<(), CliError> {
-    ensure_service_waiting_for_secret(console, target, service_manager).await?;
-
-    let claim_code = claim_generate();
+    let claim = begin_service_claim(console, target, service_manager).await?;
+    let claim_code = claim.claim_code;
     console
         .write_screen(format!(
             "Open this link to finish setting up playit:\n{}",
-            claim_url(&claim_code)?
+            claim.claim_url
         ))
         .await;
 
-    let key = claim_exchange(console, &claim_code, ClaimAgentType::Assignable, 0).await?;
-    provision_service_secret(console, target, &key, service_manager).await?;
+    complete_service_claim(console, target, &claim_code).await?;
 
-    let api = PlayitApi::create(API_BASE.to_string(), Some(key));
-    if let Ok(session) = api.login_guest().await {
-        console
-            .write_screen(format!(
-                "Guest login:\nhttps://playit.gg/login/guest-account/{}",
-                session.session_key
-            ))
-            .await;
-        tokio::time::sleep(Duration::from_secs(10)).await;
+    if let Err(error) = run_account_login_url_command(target).await {
+        tracing::debug!(?error, "account login URL is not ready after setup");
     }
 
     console
@@ -310,9 +305,7 @@ pub async fn run_setup_flow(
 }
 
 pub fn claim_generate() -> String {
-    let mut buffer = [0u8; 5];
-    rand::rng().fill(&mut buffer);
-    hex::encode(&buffer)
+    ClaimService::begin().code
 }
 
 pub fn claim_url(code: &str) -> Result<String, CliError> {
@@ -326,10 +319,13 @@ pub fn claim_url(code: &str) -> Result<String, CliError> {
 pub async fn claim_exchange(
     console: &mut ConsoleUi,
     claim_code: &str,
-    agent_type: ClaimAgentType,
+    claim_mode: ClaimMode,
     wait_sec: u32,
 ) -> Result<String, CliError> {
-    let api = PlayitApi::create(API_BASE.to_string(), None);
+    let claims = ClaimService::new(
+        API_BASE.to_string(),
+        format!("playit {}", env!("CARGO_PKG_VERSION")),
+    );
 
     let end_at = if wait_sec == 0 {
         u64::MAX
@@ -342,13 +338,7 @@ pub async fn claim_exchange(
         let mut last_message = "Preparing setup...".to_string();
 
         loop {
-            let setup_res = api
-                .claim_setup(ReqClaimSetup {
-                    code: claim_code.to_string(),
-                    agent_type,
-                    version: format!("playit {}", env!("CARGO_PKG_VERSION")),
-                })
-                .await;
+            let setup_res = claims.progress(claim_code, claim_mode).await;
 
             let setup = match setup_res {
                 Ok(v) => v,
@@ -363,25 +353,25 @@ pub async fn claim_exchange(
             };
 
             last_message = match setup {
-                ClaimSetupResponse::WaitingForUserVisit => {
+                ClaimProgress::WaitingForVisit => {
                     format!(
                         "Open this link to finish setting up playit:\n{}",
                         claim_url(claim_code)?
                     )
                 }
-                ClaimSetupResponse::WaitingForUser => {
+                ClaimProgress::WaitingForApproval => {
                     format!(
                         "Approve this program in your browser:\n{}",
                         claim_url(claim_code)?
                     )
                 }
-                ClaimSetupResponse::UserAccepted => {
+                ClaimProgress::Approved => {
                     console
                         .write_screen("Program approved. Finishing setup...")
                         .await;
                     break;
                 }
-                ClaimSetupResponse::UserRejected => {
+                ClaimProgress::Rejected => {
                     console
                         .write_screen("Setup was not approved in the browser.")
                         .await;
@@ -396,21 +386,16 @@ pub async fn claim_exchange(
     }
 
     let secret_key = loop {
-        match api
-            .claim_exchange(ReqClaimExchange {
-                code: claim_code.to_string(),
-            })
-            .await
-        {
-            Ok(res) => break res.secret_key,
-            Err(ApiError::Fail(status)) => {
+        match claims.exchange(claim_code).await {
+            Ok(ClaimExchange::Accepted(secret)) => break secret,
+            Ok(ClaimExchange::Pending(status)) => {
                 let msg = format!(
-                    "Waiting for claim code \"{}\" to be approved: {:?}",
+                    "Waiting for claim code \"{}\" to be approved: {}",
                     claim_code, status
                 );
                 console.write_screen(msg).await;
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => return Err(CliError::ServiceError(error.detail)),
         };
 
         if now_milli() > end_at {
@@ -448,9 +433,6 @@ pub enum CliError {
     AnswerNotProvided,
     TunnelOverwrittenAlready(Uuid),
     ResourceNotFoundAfterCreate(Uuid),
-    RequestError(HttpClientError),
-    ApiError(ApiResponseError),
-    ApiFail(String),
     TunnelSetupError(SetupError),
     ServiceError(String),
     IpcError(String),
@@ -461,29 +443,10 @@ impl Error for CliError {}
 impl Display for CliError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ServiceError(message) | Self::IpcError(message) | Self::ApiFail(message) => {
+            Self::ServiceError(message) | Self::IpcError(message) => {
                 write!(f, "{message}")
             }
             _ => write!(f, "{:?}", self),
-        }
-    }
-}
-
-impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for CliError {
-    fn from(e: ApiError<F, HttpClientError>) -> Self {
-        match e {
-            ApiError::ApiError(e) => CliError::ApiError(e),
-            ApiError::ClientError(e) => CliError::RequestError(e),
-            ApiError::Fail(fail) => CliError::ApiFail(serde_json::to_string(&fail).unwrap()),
-        }
-    }
-}
-
-impl From<ApiErrorNoFail<HttpClientError>> for CliError {
-    fn from(e: ApiErrorNoFail<HttpClientError>) -> Self {
-        match e {
-            ApiErrorNoFail::ApiError(e) => CliError::ApiError(e),
-            ApiErrorNoFail::ClientError(e) => CliError::RequestError(e),
         }
     }
 }
@@ -497,6 +460,25 @@ impl From<SetupError> for CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn top_level_help_output_is_stable() {
+        assert_eq!(
+            Cli::command().render_help().to_string(),
+            include_str!("../fixtures/help.txt")
+        );
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn top_level_help_output_is_stable() {
+        assert_eq!(
+            Cli::command().render_help().to_string(),
+            include_str!("../fixtures/help_non_linux.txt")
+        );
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

@@ -21,19 +21,33 @@ pub struct MaintainedControl<I: PacketIO, A: AuthResource> {
     last_pong: u64,
     last_udp_auth: u64,
     last_control_targets: Vec<SocketAddr>,
+    connect_timeout: Duration,
+    retry_delay: Duration,
 }
 
 impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
     pub async fn setup(io: I, auth: A) -> Result<Self, SetupError> {
-        let addresses = auth.get_control_addresses().await?;
+        Self::setup_with_policy(io, auth, Duration::from_secs(10), Duration::from_secs(2)).await
+    }
+
+    pub async fn setup_with_policy(
+        io: I,
+        auth: A,
+        connect_timeout: Duration,
+        retry_delay: Duration,
+    ) -> Result<Self, SetupError> {
+        let addresses = auth
+            .get_control_addresses()
+            .try_timeout(connect_timeout)
+            .await?;
         let setup = AddressSelector::new(addresses.clone(), io)
             .connect_to_first()
-            .try_timeout(Duration::from_secs(10))
+            .try_timeout(connect_timeout)
             .await?;
 
         let control_channel = setup
             .auth_into_established(auth)
-            .try_timeout(Duration::from_secs(10))
+            .try_timeout(connect_timeout)
             .await?;
 
         Ok(MaintainedControl {
@@ -43,6 +57,8 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             last_pong: 0,
             last_udp_auth: 0,
             last_control_targets: addresses,
+            connect_timeout,
+            retry_delay,
         })
     }
 
@@ -50,11 +66,12 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         &mut self,
         create_io: C,
     ) -> Result<bool, SetupError> {
+        let connect_timeout = self.connect_timeout;
         let addresses = self
             .control
             .auth
             .get_control_addresses()
-            .try_timeout(Duration::from_secs(5))
+            .try_timeout(connect_timeout)
             .await?;
 
         if self.last_control_targets == addresses {
@@ -62,17 +79,17 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         }
 
         let new_io = async { create_io.await.map_err(|e| e.into()) }
-            .try_timeout(Duration::from_secs(5))
+            .try_timeout(connect_timeout)
             .await?;
 
         let connected = AddressSelector::new(addresses.clone(), new_io)
             .connect_to_first()
-            .try_timeout(Duration::from_secs(10))
+            .try_timeout(connect_timeout)
             .await?;
 
         let updated = self
             .replace_connection(connected, false)
-            .try_timeout(Duration::from_secs(5))
+            .try_timeout(connect_timeout)
             .await?;
 
         self.last_control_targets = addresses;
@@ -94,7 +111,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
 
         let registered = connected
             .authenticate(&self.control.auth)
-            .try_timeout(Duration::from_secs(10))
+            .try_timeout(self.connect_timeout)
             .await?;
 
         tracing::info!(old = %self.control.conn.pong_latest.tunnel_addr, new = %connected.pong_latest.tunnel_addr, "update control address");
@@ -132,7 +149,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                 .await
             {
                 tracing::error!(?error, "failed to authenticate");
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(self.retry_delay).await;
                 return None;
             }
         }

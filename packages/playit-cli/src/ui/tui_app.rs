@@ -22,11 +22,10 @@ use ratatui::{
 
 use super::widgets::{render_header, render_help_bar, render_stats_bar};
 use crate::CliError;
+use crate::problem::{lifecycle_message, status_message};
 use crate::signal_handle::get_signal_handle;
 
 const SERVICE_LOG_CAPACITY: usize = 500;
-const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
-const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
 
 /// Data about the running agent
 #[derive(Clone, Default)]
@@ -103,6 +102,12 @@ pub struct TuiApp {
     terminal: Option<Terminal<CrosstermBackend<Stdout>>>,
 }
 
+impl Default for TuiApp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TuiApp {
     pub fn new() -> Self {
         Self {
@@ -143,29 +148,10 @@ impl TuiApp {
     pub fn apply_lifecycle(&mut self, lifecycle: AgentLifecycle) {
         match lifecycle {
             AgentLifecycle::Running(state) => self.set_agent_data(state.into()),
-            AgentLifecycle::WaitingForSecret => {
-                self.set_message("The playit service is waiting for setup to finish.");
-            }
-            AgentLifecycle::HasInvalidSecret(error) => self.set_message(format!(
-                "The playit service has an invalid secret: {}",
-                error.message
-            )),
-            AgentLifecycle::DisabledOverLimit(_) => self.set_message(format!(
-                "{}\n{}",
-                agent_over_limit_title(),
-                agent_over_limit_guidance()
-            )),
-            AgentLifecycle::Starting => {
-                self.set_message("The playit service is starting...");
-            }
-            AgentLifecycle::Stopping => {
-                self.set_message("The playit service is stopping...");
-            }
-            AgentLifecycle::Error(error) => {
-                self.set_message(format!(
-                    "The playit service reported an error: {}",
-                    error.message
-                ));
+            other => {
+                if let Some(message) = lifecycle_message(&other) {
+                    self.set_message(message);
+                }
             }
         }
     }
@@ -216,10 +202,10 @@ impl TuiApp {
 
         self.draw().map_err(CliError::RenderError)?;
 
-        if event::poll(Duration::from_millis(50)).map_err(CliError::RenderError)? {
-            if let Event::Key(key) = event::read().map_err(CliError::RenderError)? {
-                self.handle_key_event(key);
-            }
+        if event::poll(Duration::from_millis(50)).map_err(CliError::RenderError)?
+            && let Event::Key(key) = event::read().map_err(CliError::RenderError)?
+        {
+            self.handle_key_event(key);
         }
 
         let signal = get_signal_handle();
@@ -475,58 +461,6 @@ impl TuiApp {
         frame.render_widget(paragraph, chunks[1]);
         render_help_bar(frame, chunks[2], quit_confirm);
     }
-}
-
-fn status_message(status: &ServiceStatus) -> Option<String> {
-    if matches!(
-        status.phase,
-        playit_ipc::model::ServicePhase::DisabledOverLimit
-    ) {
-        return Some(format!(
-            "{}\n{}",
-            agent_over_limit_title(),
-            agent_over_limit_guidance()
-        ));
-    }
-
-    if let Some(error) = &status.last_error {
-        return Some(format!(
-            "playit service status: {} ({})",
-            service_phase_label(status),
-            error.message
-        ));
-    }
-
-    if matches!(status.phase, playit_ipc::model::ServicePhase::Running) {
-        None
-    } else {
-        Some(format!(
-            "playit service status: {}",
-            service_phase_label(status)
-        ))
-    }
-}
-
-fn service_phase_label(status: &ServiceStatus) -> &'static str {
-    match status.phase {
-        playit_ipc::model::ServicePhase::WaitingForSecret => "waiting for secret",
-        playit_ipc::model::ServicePhase::HasInvalidSecret => "invalid secret",
-        playit_ipc::model::ServicePhase::DisabledOverLimit => "disabled over limit",
-        playit_ipc::model::ServicePhase::Starting => "starting",
-        playit_ipc::model::ServicePhase::Running => "running",
-        playit_ipc::model::ServicePhase::Stopping => "stopping",
-        playit_ipc::model::ServicePhase::Error => "error",
-    }
-}
-
-fn agent_over_limit_guidance() -> String {
-    format!(
-        "Delete unused agents: {ACCOUNT_AGENTS_URL}\nIncrease your agent limit: {ACCOUNT_UPGRADE_URL}"
-    )
-}
-
-fn agent_over_limit_title() -> &'static str {
-    "The playit service cannot start because this account is over the agent limit."
 }
 
 fn level_label(level: &LogLevel) -> &'static str {

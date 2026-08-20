@@ -1,0 +1,35 @@
+[package]
+name = "playit-platform"
+version.workspace = true
+edition = "2024"
+description = "Operating-system integration mechanisms for playit"
+license = "BSD-2-Clause"
+repository = "https://github.com/playit-cloud/playit-agent"
+
+[dependencies]
+dirs = { workspace = true }
+service-manager = "0.10"
+tokio = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+uzers = { version = "0.12.2", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+interprocess = { version = "2.2", features = ["tokio"] }
+widestring = "1.2"
+windows = { version = "0.62.2", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Environment",
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
+] }
+windows-sys = { version = "0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+] }

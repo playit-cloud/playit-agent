@@ -193,8 +193,8 @@ impl<IO: PacketIO> ConnectedControl<IO> {
         }
 
         let mut reader = &self.buffer[..bytes];
-        let feed = ControlFeed::read_from(&mut reader)
-            .map_err(|e| ControlError::FailedToReadControlFeed(e))?;
+        let feed =
+            ControlFeed::read_from(&mut reader).map_err(ControlError::FailedToReadControlFeed)?;
 
         if let ControlFeed::Response(ControlRpcMessage {
             content: ControlResponse::Pong(pong),

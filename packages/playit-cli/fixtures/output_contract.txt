@@ -1,0 +1,15 @@
+waiting for secret
+invalid secret
+disabled over limit
+starting
+running
+stopping
+error
+The playit service cannot start because this account is over the agent limit.
+Delete unused agents: https://playit.gg/account/agents
+Increase your agent limit: https://playit.gg/account/upgrade
+Connection to the playit service was lost: connection reset. Run "playit attach" to reconnect.
+Connection to the playit daemon was lost: connection reset. Reattach with "playit attach --socket-path ./fixture.sock" once the daemon is reachable again.
+Could not connect to the playit service. playit tried to start it first, but it is still not reachable.
+Could not connect to the playit service. playit also tried to start it first, but startup failed: fixture startup failure
+2023-11-14T22:13:20.123000Z  WARN playitd::fixture: fixture log
