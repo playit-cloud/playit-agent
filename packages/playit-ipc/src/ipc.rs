@@ -15,8 +15,9 @@ use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec, LinesCodecError};
 
 use crate::endpoint::IpcEndpoint;
 use crate::model::{
-    AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ProtocolInfo, SecretPathResponse,
-    ServiceError, ServiceStatus, ServiceUpdate, SubscribeResponse,
+    AccountLoginUrlResponse, AgentLifecycle, ClaimExchangeResponse, ClaimProgressResponse,
+    ClaimSessionResponse, CommandResponse, ProtocolInfo, SecretPathResponse, ServiceError,
+    ServiceStatus, ServiceUpdate, SubscribeResponse,
 };
 
 pub const IPC_VERSION: u32 = 2;
@@ -35,6 +36,7 @@ pub enum IpcError {
     JsonError(serde_json::Error),
     NotRunning,
     ProtocolMismatch { expected: u32, actual: u32 },
+    Service(ServiceError),
     ProtocolError(String),
 }
 
@@ -53,6 +55,7 @@ impl std::fmt::Display for IpcError {
                     "IPC protocol mismatch: expected version {expected}, got {actual}"
                 )
             }
+            Self::Service(error) => write!(f, "{error}"),
             Self::ProtocolError(msg) => write!(f, "{msg}"),
         }
     }
@@ -95,17 +98,46 @@ pub struct IncomingRequestEnvelope {
     pub request: ServiceRequestOrUnknown,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServiceRequest {
     Subscribe,
     GetStatus,
     GetState,
     Stop,
+    BeginClaim,
+    PollClaim { claim_code: String },
+    ExchangeClaim { claim_code: String },
+    RefreshCatalog,
     SetSecret { secret: String },
     ResetSecret,
     GetSecretPath,
     GetAccountLoginUrl,
+}
+
+impl std::fmt::Debug for ServiceRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Subscribe => formatter.write_str("Subscribe"),
+            Self::GetStatus => formatter.write_str("GetStatus"),
+            Self::GetState => formatter.write_str("GetState"),
+            Self::Stop => formatter.write_str("Stop"),
+            Self::BeginClaim => formatter.write_str("BeginClaim"),
+            Self::PollClaim { claim_code } => formatter
+                .debug_struct("PollClaim")
+                .field("claim_code", claim_code)
+                .finish(),
+            Self::ExchangeClaim { claim_code } => formatter
+                .debug_struct("ExchangeClaim")
+                .field("claim_code", claim_code)
+                .finish(),
+            Self::RefreshCatalog => formatter.write_str("RefreshCatalog"),
+            Self::SetSecret { .. } => formatter.write_str("SetSecret { secret: [REDACTED] }"),
+            Self::ResetSecret => formatter.write_str("ResetSecret"),
+            Self::GetSecretPath => formatter.write_str("GetSecretPath"),
+            Self::GetAccountLoginUrl => formatter.write_str("GetAccountLoginUrl"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -149,11 +181,17 @@ pub struct IncomingEventEnvelope {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
+// Boxing a variant would break the public IPC version 2 Rust API.
+#[allow(clippy::large_enum_variant)]
 pub enum ServiceResponse {
     Subscribe(SubscribeResponse),
     Status(ServiceStatus),
     State(AgentLifecycle),
     Stop(CommandResponse),
+    ClaimSession(ClaimSessionResponse),
+    ClaimProgress(ClaimProgressResponse),
+    ClaimExchange(ClaimExchangeResponse),
+    RefreshCatalog(CommandResponse),
     SetSecret(CommandResponse),
     ResetSecret(CommandResponse),
     SecretPath(SecretPathResponse),
@@ -163,6 +201,8 @@ pub enum ServiceResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "message_kind", content = "data", rename_all = "snake_case")]
+// Boxing a variant would break the public IPC version 2 Rust API.
+#[allow(clippy::large_enum_variant)]
 pub enum ServerEnvelope {
     Hello(HelloEnvelope),
     Response(ResponseEnvelope),
@@ -171,6 +211,8 @@ pub enum ServerEnvelope {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "message_kind", content = "data", rename_all = "snake_case")]
+// Match ServerEnvelope's stable representation during decoding.
+#[allow(clippy::large_enum_variant)]
 enum IncomingServerEnvelope {
     Hello(HelloEnvelope),
     Response(ResponseEnvelope),
@@ -206,7 +248,7 @@ pub fn protocol_info() -> ProtocolInfo {
 }
 
 pub fn get_default_socket_path() -> &'static str {
-    crate::paths::default_socket_path_static()
+    playit_platform::paths::default_socket_path()
 }
 
 pub fn get_default_endpoint() -> IpcEndpoint {
@@ -471,6 +513,62 @@ impl IpcClient {
         )
     }
 
+    pub async fn begin_claim(&mut self) -> Result<ClaimSessionResponse, IpcError> {
+        expect_response(
+            self.request(ServiceRequest::BeginClaim).await?,
+            "begin claim response",
+            |response| match response {
+                ServiceResponse::ClaimSession(response) => Some(response),
+                _ => None,
+            },
+        )
+    }
+
+    pub async fn poll_claim(
+        &mut self,
+        claim_code: &str,
+    ) -> Result<ClaimProgressResponse, IpcError> {
+        expect_response(
+            self.request(ServiceRequest::PollClaim {
+                claim_code: claim_code.to_owned(),
+            })
+            .await?,
+            "claim progress response",
+            |response| match response {
+                ServiceResponse::ClaimProgress(response) => Some(response),
+                _ => None,
+            },
+        )
+    }
+
+    pub async fn exchange_claim(
+        &mut self,
+        claim_code: &str,
+    ) -> Result<ClaimExchangeResponse, IpcError> {
+        expect_response(
+            self.request(ServiceRequest::ExchangeClaim {
+                claim_code: claim_code.to_owned(),
+            })
+            .await?,
+            "claim exchange response",
+            |response| match response {
+                ServiceResponse::ClaimExchange(response) => Some(response),
+                _ => None,
+            },
+        )
+    }
+
+    pub async fn refresh_catalog(&mut self) -> Result<CommandResponse, IpcError> {
+        expect_response(
+            self.request(ServiceRequest::RefreshCatalog).await?,
+            "refresh catalog response",
+            |response| match response {
+                ServiceResponse::RefreshCatalog(response) => Some(response),
+                _ => None,
+            },
+        )
+    }
+
     pub async fn set_secret(&mut self, secret: &str) -> Result<CommandResponse, IpcError> {
         expect_response(
             self.request(ServiceRequest::SetSecret {
@@ -600,8 +698,8 @@ fn expect_response<T>(
     expected: &str,
     extract: impl FnOnce(ServiceResponse) -> Option<T>,
 ) -> Result<T, IpcError> {
-    if let ServiceResponse::Error(error) = &response {
-        return Err(IpcError::ProtocolError(error.to_string()));
+    if let ServiceResponse::Error(error) = response {
+        return Err(IpcError::Service(error));
     }
 
     let debug = format!("{response:?}");
@@ -623,13 +721,13 @@ fn validate_incoming_server_envelope(envelope: &IncomingServerEnvelope) -> Resul
         }
         IncomingServerEnvelope::Response(_) => {}
         IncomingServerEnvelope::Event(event) => {
-            if let ServiceUpdateOrUnknown::Unknown(unknown) = &event.event {
-                if is_known_update_type(&unknown.type_name) {
-                    return Err(IpcError::ProtocolError(format!(
-                        "invalid IPC event payload for {}",
-                        unknown.type_name
-                    )));
-                }
+            if let ServiceUpdateOrUnknown::Unknown(unknown) = &event.event
+                && is_known_update_type(&unknown.type_name)
+            {
+                return Err(IpcError::ProtocolError(format!(
+                    "invalid IPC event payload for {}",
+                    unknown.type_name
+                )));
             }
         }
     }
@@ -643,6 +741,10 @@ pub fn is_known_request_type(type_name: &str) -> bool {
             | "get_status"
             | "get_state"
             | "stop"
+            | "begin_claim"
+            | "poll_claim"
+            | "exchange_claim"
+            | "refresh_catalog"
             | "set_secret"
             | "reset_secret"
             | "get_secret_path"
@@ -878,8 +980,7 @@ mod tests {
         });
 
         let error = decode_incoming_server_envelope(&serde_json::to_string(&line).unwrap())
-            .err()
-            .expect("malformed known event should fail");
+            .expect_err("malformed known event should fail");
         assert!(matches!(error, IpcError::ProtocolError(_)));
     }
 

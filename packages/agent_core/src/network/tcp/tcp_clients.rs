@@ -2,12 +2,13 @@ use std::{net::SocketAddr, num::NonZeroU32, sync::Arc, time::Duration};
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use playit_agent_proto::control_feed::NewClient;
-use playit_api_client::api::ProxyProtocol;
+use playit_model::ProxyProtocol;
 use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::mpsc::{Receiver, Sender, channel},
+    task::JoinSet,
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
@@ -45,6 +46,16 @@ pub struct TcpClients {
     cancel: CancellationToken,
 }
 
+pub struct TcpService {
+    worker: Worker,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TcpQueueError {
+    Closed,
+    ResponseClosed,
+}
+
 struct Worker {
     lookup: Arc<OriginLookup>,
     events: Receiver<Event>,
@@ -54,6 +65,7 @@ struct Worker {
     stats: AgentStats,
 
     clients: Vec<Client>,
+    claims: JoinSet<()>,
     next_client_id: u64,
 }
 
@@ -110,50 +122,63 @@ impl TcpClients {
         lookup: Arc<OriginLookup>,
         stats: AgentStats,
         cancel: CancellationToken,
-    ) -> Self {
+    ) -> (Self, TcpService) {
         let quota = build_quota(&settings);
-        let (events_tx, events_rx) = channel(1024);
+        let queue_capacity = settings.queue_capacity.max(1);
+        let (events_tx, events_rx) = channel(queue_capacity);
 
-        tokio::spawn(
-            Worker {
-                next_client_id: 1,
-                lookup,
-                events: events_rx,
-                events_tx: events_tx.clone(),
-                cancel: cancel.child_token(),
-                settings,
-                stats,
-                clients: Vec::with_capacity(32),
-            }
-            .start(),
-        );
+        let worker = Worker {
+            next_client_id: 1,
+            lookup,
+            events: events_rx,
+            events_tx: events_tx.clone(),
+            cancel: cancel.child_token(),
+            settings,
+            stats,
+            clients: Vec::with_capacity(32),
+            claims: JoinSet::new(),
+        };
 
-        TcpClients {
-            new_client_limiter: RateLimiter::direct(quota),
-            events_tx,
-            cancel,
-        }
+        (
+            TcpClients {
+                new_client_limiter: RateLimiter::direct(quota),
+                events_tx,
+                cancel,
+            },
+            TcpService { worker },
+        )
     }
 
-    pub async fn get_details(&self) -> Vec<TcpClientDetails> {
+    pub async fn get_details(&self) -> Result<Vec<TcpClientDetails>, TcpQueueError> {
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.events_tx
             .send(Event::GetDetails(tx))
             .await
-            .expect("TcpClients worker closed");
-        rx.await.expect("TcpClients worker closed")
+            .map_err(|_| TcpQueueError::Closed)?;
+        rx.await.map_err(|_| TcpQueueError::ResponseClosed)
     }
 
-    pub async fn handle_new_client(&self, new_client: NewClient) {
+    pub async fn handle_new_client(&self, new_client: NewClient) -> Result<(), TcpQueueError> {
         if self.new_client_limiter.check().is_err() {
             tcp_errors().new_client_rate_limited.inc();
-            return;
+            return Ok(());
         }
 
         self.events_tx
             .send(Event::NewClient(new_client))
             .await
-            .expect("TcpClients worker closed");
+            .map_err(|_| TcpQueueError::Closed)
+    }
+}
+
+impl TcpService {
+    pub async fn run(
+        self,
+    ) -> (
+        crate::playit_agent::EngineService,
+        crate::playit_agent::ServiceExit,
+    ) {
+        self.worker.start().await
     }
 }
 
@@ -164,7 +189,12 @@ impl Drop for TcpClients {
 }
 
 impl Worker {
-    pub async fn start(mut self) {
+    pub async fn start(
+        mut self,
+    ) -> (
+        crate::playit_agent::EngineService,
+        crate::playit_agent::ServiceExit,
+    ) {
         let mut next_clear = Instant::now() + Duration::from_secs(15);
 
         loop {
@@ -172,7 +202,11 @@ impl Worker {
                 recv_opt = self.events.recv() => {
                     let Some(event) = recv_opt else {
                         tracing::debug!("TcpClients worker closed because event channel closed");
-                        break;
+                        let _ = self.shutdown_children(Duration::from_secs(4)).await;
+                        return (
+                            crate::playit_agent::EngineService::Tcp,
+                            crate::playit_agent::ServiceExit::QueueClosed("tcp events".to_owned()),
+                        );
                     };
                     event
                 },
@@ -182,12 +216,29 @@ impl Worker {
                 },
                 _ = self.cancel.cancelled() => {
                     tracing::debug!("TcpClients worker closed via cancel");
-                    break
+                    return (
+                        crate::playit_agent::EngineService::Tcp,
+                        self.shutdown_children(Duration::from_secs(4)).await,
+                    );
                 },
+                claim = wait_for_claim(&mut self.claims), if !self.claims.is_empty() => {
+                    if let Err(error) = claim {
+                        let _ = self.shutdown_children(Duration::from_secs(4)).await;
+                        return (
+                            crate::playit_agent::EngineService::TcpClaim,
+                            crate::playit_agent::ServiceExit::Panicked(error.to_string()),
+                        );
+                    }
+                    continue;
+                }
             };
 
             match event {
                 Event::NewClient(details) => {
+                    if self.claims.len() >= self.settings.queue_capacity.max(1) {
+                        tcp_errors().new_client_rate_limited.inc();
+                        continue;
+                    }
                     let client_id = self.next_client_id;
                     self.next_client_id = client_id + 1;
 
@@ -233,7 +284,7 @@ impl Worker {
                     let event_tx = self.events_tx.clone();
                     let stats = self.stats.clone();
                     let cancel = self.cancel.child_token();
-                    tokio::spawn(async move {
+                    self.claims.spawn(async move {
                         let Some(origin_addr) = found.resolve_local(details.port_offset).await
                         else {
                             tracing::error!(
@@ -369,7 +420,7 @@ impl Worker {
                         }
 
                         let proxy_write_res = match found.proxy_protocol {
-                            Some(ProxyProtocol::ProxyProtocolV1) => {
+                            Some(ProxyProtocol::V1) => {
                                 tokio::select! {
                                     _ = cancel.cancelled() => return,
                                     res = tokio::time::timeout(
@@ -378,7 +429,7 @@ impl Worker {
                                     ) => res,
                                 }
                             }
-                            Some(ProxyProtocol::ProxyProtocolV2) => {
+                            Some(ProxyProtocol::V2) => {
                                 tokio::select! {
                                     _ = cancel.cancelled() => return,
                                     res = tokio::time::timeout(
@@ -387,7 +438,7 @@ impl Worker {
                                     ) => res,
                                 }
                             }
-                            None => Ok(Ok(())),
+                            None | Some(ProxyProtocol::None) => Ok(Ok(())),
                         };
 
                         match proxy_write_res {
@@ -405,7 +456,7 @@ impl Worker {
                         }
 
                         let tcp_client =
-                            TcpClient::create_with_stats(tunn_stream, origin_stream, Some(stats))
+                            TcpClient::spawn_with_stats(tunn_stream, origin_stream, Some(stats))
                                 .await;
                         let event = Event::ConnectedClient(Client {
                             id: client_id,
@@ -432,34 +483,120 @@ impl Worker {
                 }
                 Event::ClearOld => {
                     let now = now_milli();
-                    self.clients.retain(|client| {
-                        let last_use = client.tcp.last_use();
-
-                        let since_tunn = now.max(last_use.tunn_to_origin) - last_use.tunn_to_origin;
-                        let since_orig = now.max(last_use.origin_to_tunn) - last_use.origin_to_tunn;
-
-                        if 90_000 < since_tunn && 30_000 < since_orig {
-                            tracing::debug!(id = client.id, "clear old: 90s since tunnel data");
-                            return false;
+                    let mut retained = Vec::with_capacity(self.clients.len());
+                    for client in std::mem::take(&mut self.clients) {
+                        let child_failure = client.tcp.failure();
+                        if child_failure.is_some() || client_expired(&client, now) {
+                            if let Some(exit) = &child_failure {
+                                tracing::warn!(
+                                    client_id = client.id,
+                                    ?exit,
+                                    "TCP connection task ended"
+                                );
+                            }
+                            let exit = client.tcp.shutdown(Duration::from_secs(2)).await;
+                            if exit.is_fatal_child_failure() {
+                                let _ = self.shutdown_children(Duration::from_secs(4)).await;
+                                return (crate::playit_agent::EngineService::TcpPipe, exit);
+                            }
+                        } else {
+                            retained.push(client);
                         }
-
-                        if 90_000 < since_orig && 30_000 < since_tunn {
-                            tracing::debug!(id = client.id, "clear old: 90s since origin data");
-                            return false;
-                        }
-
-                        if 60_000 < since_tunn && 60_000 < since_orig {
-                            tracing::debug!(id = client.id, "clear old: 60s since any data");
-                            return false;
-                        }
-
-                        true
-                    });
+                    }
+                    self.clients = retained;
 
                     // Update active TCP connection count
                     self.stats.set_tcp(self.clients.len() as u32);
                 }
             }
         }
+    }
+
+    async fn shutdown_children(&mut self, deadline: Duration) -> crate::playit_agent::ServiceExit {
+        let stop_at = Instant::now() + deadline;
+        self.claims.abort_all();
+        while self.claims.join_next().await.is_some() {}
+
+        for client in self.clients.drain(..) {
+            let remaining = stop_at.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return crate::playit_agent::ServiceExit::DeadlineExceeded;
+            }
+            if matches!(
+                client.tcp.shutdown(remaining).await,
+                crate::playit_agent::ServiceExit::DeadlineExceeded
+            ) {
+                return crate::playit_agent::ServiceExit::DeadlineExceeded;
+            }
+        }
+        self.stats.set_tcp(0);
+        crate::playit_agent::ServiceExit::Cancelled
+    }
+}
+
+fn client_expired(client: &Client, now: u64) -> bool {
+    let last_use = client.tcp.last_use();
+    let since_tunn = now.max(last_use.tunn_to_origin) - last_use.tunn_to_origin;
+    let since_orig = now.max(last_use.origin_to_tunn) - last_use.origin_to_tunn;
+
+    if 90_000 < since_tunn && 30_000 < since_orig {
+        tracing::debug!(id = client.id, "clear old: 90s since tunnel data");
+        return true;
+    }
+    if 90_000 < since_orig && 30_000 < since_tunn {
+        tracing::debug!(id = client.id, "clear old: 90s since origin data");
+        return true;
+    }
+    if 60_000 < since_tunn && 60_000 < since_orig {
+        tracing::debug!(id = client.id, "clear old: 60s since any data");
+        return true;
+    }
+    false
+}
+
+async fn wait_for_claim(claims: &mut JoinSet<()>) -> Result<(), tokio::task::JoinError> {
+    match claims.join_next().await {
+        Some(result) => result,
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn closed_tcp_service_queue_returns_an_error() {
+        let cancel = CancellationToken::new();
+        let (clients, service) = TcpClients::new(
+            TcpSettings::default(),
+            Arc::new(OriginLookup::default()),
+            AgentStats::new(),
+            cancel,
+        );
+        drop(service);
+        assert!(matches!(
+            clients.get_details().await,
+            Err(TcpQueueError::Closed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_joins_the_tcp_service() {
+        let cancel = CancellationToken::new();
+        let (_clients, service) = TcpClients::new(
+            TcpSettings::default(),
+            Arc::new(OriginLookup::default()),
+            AgentStats::new(),
+            cancel.clone(),
+        );
+        let task = tokio::spawn(service.run());
+        cancel.cancel();
+        let (service, exit) = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("TCP service stopped before its deadline")
+            .expect("TCP service did not panic");
+        assert_eq!(service, crate::playit_agent::EngineService::Tcp);
+        assert_eq!(exit, crate::playit_agent::ServiceExit::Cancelled);
     }
 }

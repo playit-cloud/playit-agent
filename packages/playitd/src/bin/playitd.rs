@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use clap::Parser;
-use playitd::{DaemonOptions, VersionDetails, default_secret_path, load_version_overrides};
+use playit_platform::default_secret_path;
+use playitd::{DaemonOptions, VersionDetails, load_version_overrides};
 
 #[derive(Parser)]
 #[command(name = "playitd")]

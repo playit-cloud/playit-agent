@@ -1,0 +1,21 @@
+Usage: playit-cli [OPTIONS] [COMMAND]
+
+Commands:
+  version      Print version information
+  attach       Attach to a running playitd service
+  start        Start the installed playitd service
+  stop         Stop the installed playitd service
+  status       Show the status of the installed playitd service
+  reset        Removes the secret key on your system so the playit agent can be re-claimed
+  secret-path  Shows the file path where the playit secret can be found
+  setup        Setup playit by provisioning a new secret to playitd
+  account      Account management commands
+  claim        Setting up a new playit agent
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+  -s, --stdout                     Prints logs to stdout
+      --socket-path <SOCKET_PATH>  Override the IPC socket or named pipe used to reach playitd
+      --systemd                    
+      --openrc                     
+  -h, --help                       Print help

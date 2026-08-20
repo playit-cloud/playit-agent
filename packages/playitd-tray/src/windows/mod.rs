@@ -2,7 +2,6 @@ mod backend;
 mod backend_actions;
 mod frontend;
 mod protocol;
-mod startup_shortcut;
 mod state;
 mod util;
 

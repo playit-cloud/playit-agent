@@ -1,0 +1,8 @@
+{"ipc_version":2,"request_id":1,"request":{"type":"subscribe"}}
+{"ipc_version":2,"request_id":2,"request":{"type":"get_status"}}
+{"ipc_version":2,"request_id":3,"request":{"type":"get_state"}}
+{"ipc_version":2,"request_id":4,"request":{"type":"stop"}}
+{"ipc_version":2,"request_id":5,"request":{"type":"set_secret","secret":"fixture-secret"}}
+{"ipc_version":2,"request_id":6,"request":{"type":"reset_secret"}}
+{"ipc_version":2,"request_id":7,"request":{"type":"get_secret_path"}}
+{"ipc_version":2,"request_id":8,"request":{"type":"get_account_login_url"}}

@@ -6,7 +6,9 @@ use std::{
     },
     time::Duration,
 };
+use tokio::task::JoinSet;
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 
 use playit_agent_proto::{
     control_messages::UdpChannelDetails,
@@ -29,6 +31,18 @@ pub struct UdpChannel {
     send: Sender<(UdpFlow, Packet)>,
     recv: Receiver<(UdpFlow, Packet)>,
     shared: Arc<Shared>,
+}
+
+pub struct UdpChannelTasks {
+    send: SendTask,
+    recv: RecvTask,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UdpChannelError {
+    SessionQueueClosed,
+    SendQueueClosed,
+    ReceiveQueueClosed,
 }
 
 #[derive(Default)]
@@ -54,7 +68,7 @@ struct RecvTask {
 }
 
 impl UdpChannel {
-    pub async fn new(packets: Packets) -> Result<Self, std::io::Error> {
+    pub async fn new(packets: Packets) -> Result<(Self, UdpChannelTasks), std::io::Error> {
         let socket = Arc::new(DualStackUdpSocket::new().await?);
 
         let (session_tx, session_rx) = channel(32);
@@ -64,32 +78,32 @@ impl UdpChannel {
 
         let shared = Arc::new(Shared::default());
 
-        tokio::spawn(
-            SendTask {
-                socket: socket.clone(),
-                session: None,
-                session_rx,
-                send_rx,
-                shared: shared.clone(),
-            }
-            .start(),
-        );
-        tokio::spawn(
-            RecvTask {
-                socket,
-                packets,
-                recv_tx,
-                shared: shared.clone(),
-            }
-            .start(),
-        );
+        let send_task = SendTask {
+            socket: socket.clone(),
+            session: None,
+            session_rx,
+            send_rx,
+            shared: shared.clone(),
+        };
+        let recv_task = RecvTask {
+            socket,
+            packets,
+            recv_tx,
+            shared: shared.clone(),
+        };
 
-        Ok(UdpChannel {
-            session_tx,
-            send: send_tx,
-            recv: recv_rx,
-            shared,
-        })
+        Ok((
+            UdpChannel {
+                session_tx,
+                send: send_tx,
+                recv: recv_rx,
+                shared,
+            },
+            UdpChannelTasks {
+                send: send_task,
+                recv: recv_task,
+            },
+        ))
     }
 
     pub fn time_since_established(&self) -> Option<Duration> {
@@ -110,23 +124,83 @@ impl UdpChannel {
         Some(Duration::from_millis(now.max(ts) - ts))
     }
 
-    pub async fn update_session(&self, details: UdpChannelDetails) {
-        self.session_tx.send(details).await.expect("task closed");
+    pub async fn update_session(&self, details: UdpChannelDetails) -> Result<(), UdpChannelError> {
+        self.session_tx
+            .send(details)
+            .await
+            .map_err(|_| UdpChannelError::SessionQueueClosed)
     }
 
-    pub async fn send(&self, flow: UdpFlow, packet: Packet) {
-        if self.send.send((flow, packet)).await.is_err() {
-            panic!("UdpChannel task closed");
+    pub async fn send(&self, flow: UdpFlow, packet: Packet) -> Result<(), UdpChannelError> {
+        self.send
+            .send((flow, packet))
+            .await
+            .map_err(|_| UdpChannelError::SendQueueClosed)
+    }
+
+    pub async fn recv(&mut self) -> Result<(UdpFlow, Packet), UdpChannelError> {
+        self.recv
+            .recv()
+            .await
+            .ok_or(UdpChannelError::ReceiveQueueClosed)
+    }
+}
+
+impl UdpChannelTasks {
+    pub async fn run(
+        self,
+        cancel: CancellationToken,
+    ) -> (
+        crate::playit_agent::EngineService,
+        crate::playit_agent::ServiceExit,
+    ) {
+        let mut tasks = JoinSet::new();
+        let send_cancel = cancel.child_token();
+        tasks.spawn(async move {
+            (
+                crate::playit_agent::EngineService::UdpChannelSend,
+                self.send.start(send_cancel).await,
+            )
+        });
+        let recv_cancel = cancel.child_token();
+        tasks.spawn(async move {
+            (
+                crate::playit_agent::EngineService::UdpChannelRecv,
+                self.recv.start(recv_cancel).await,
+            )
+        });
+
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                tasks.abort_all();
+                while tasks.join_next().await.is_some() {}
+                (
+                    crate::playit_agent::EngineService::UdpChannelRecv,
+                    crate::playit_agent::ServiceExit::Cancelled,
+                )
+            }
+            result = tasks.join_next() => {
+                cancel.cancel();
+                tasks.abort_all();
+                while tasks.join_next().await.is_some() {}
+                match result {
+                    Some(Ok(exit)) => exit,
+                    Some(Err(error)) => (
+                        crate::playit_agent::EngineService::UdpChannelRecv,
+                        crate::playit_agent::ServiceExit::Panicked(error.to_string()),
+                    ),
+                    None => (
+                        crate::playit_agent::EngineService::UdpChannelRecv,
+                        crate::playit_agent::ServiceExit::Completed,
+                    ),
+                }
+            }
         }
-    }
-
-    pub async fn recv(&mut self) -> (UdpFlow, Packet) {
-        self.recv.recv().await.expect("UdpChannel task closed")
     }
 }
 
 impl SendTask {
-    async fn start(mut self) {
+    async fn start(mut self, cancel: CancellationToken) -> crate::playit_agent::ServiceExit {
         let mut last_establish_send = Instant::now();
 
         loop {
@@ -151,18 +225,23 @@ impl SendTask {
             };
 
             tokio::select! {
+                _ = cancel.cancelled() => return crate::playit_agent::ServiceExit::Cancelled,
                 _ = tokio::time::sleep_until(next_send) => {
                     last_establish_send = Instant::now();
                     self.send_establish().await;
                     continue;
                 }
                 session_res = self.session_rx.recv() => {
-                    let Some(details) = session_res else { break };
+                    let Some(details) = session_res else {
+                        return crate::playit_agent::ServiceExit::QueueClosed("udp session".to_owned());
+                    };
                     self.handle_session(details).await;
                     continue;
                 }
                 to_send_res = self.send_rx.recv() => {
-                    let Some((flow, to_send)) = to_send_res else { break };
+                    let Some((flow, to_send)) = to_send_res else {
+                        return crate::playit_agent::ServiceExit::QueueClosed("udp send".to_owned());
+                    };
                     self.send(flow, to_send).await;
                     continue;
                 }
@@ -240,14 +319,26 @@ impl SendTask {
 }
 
 impl RecvTask {
-    async fn start(self) {
-        let mut packet = self.packets.allocate_wait().await;
+    async fn start(self, cancel: CancellationToken) -> crate::playit_agent::ServiceExit {
+        let mut packet = tokio::select! {
+            _ = cancel.cancelled() => return crate::playit_agent::ServiceExit::Cancelled,
+            packet = self.packets.allocate_wait() => packet,
+        };
 
         loop {
-            let Ok((bytes, source)) = self.socket.recv_from(packet.full_slice_mut()).await else {
-                udp_errors().recv_io_error.inc();
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                continue;
+            let recv = tokio::select! {
+                _ = cancel.cancelled() => return crate::playit_agent::ServiceExit::Cancelled,
+                recv = self.socket.recv_from(packet.full_slice_mut()) => recv,
+            };
+            let (bytes, source) = match recv {
+                Ok(received) => received,
+                Err(error) => {
+                    udp_errors().recv_io_error.inc();
+                    return crate::playit_agent::ServiceExit::Io {
+                        operation: "receive tunnel UDP packet".to_owned(),
+                        message: error.to_string(),
+                    };
+                }
             };
 
             let Some(session_addr) = *self.shared.session_tunnel_addr.read().unwrap() else {
@@ -284,9 +375,54 @@ impl RecvTask {
                 .expect("failed to remove udp footer");
 
             if self.recv_tx.send((flow, packet)).await.is_err() {
-                break;
+                return crate::playit_agent::ServiceExit::QueueClosed("udp receive".to_owned());
             }
-            packet = self.packets.allocate_wait().await;
+            packet = tokio::select! {
+                _ = cancel.cancelled() => return crate::playit_agent::ServiceExit::Cancelled,
+                packet = self.packets.allocate_wait() => packet,
+            };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn closed_service_queues_return_errors() {
+        let (mut channel, tasks) = UdpChannel::new(Packets::new(1))
+            .await
+            .expect("bind UDP channel");
+        drop(tasks);
+
+        let details = UdpChannelDetails {
+            tunnel_addr: "127.0.0.1:1".parse().expect("fixture address"),
+            token: Arc::new(vec![1]),
+        };
+        assert_eq!(
+            channel.update_session(details).await,
+            Err(UdpChannelError::SessionQueueClosed)
+        );
+        assert!(matches!(
+            channel.recv().await,
+            Err(UdpChannelError::ReceiveQueueClosed)
+        ));
+    }
+
+    #[tokio::test]
+    async fn cancellation_joins_both_channel_tasks() {
+        let (_channel, tasks) = UdpChannel::new(Packets::new(1))
+            .await
+            .expect("bind UDP channel");
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(tasks.run(task_cancel));
+        cancel.cancel();
+        let (_, exit) = tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("UDP channel stopped before its deadline")
+            .expect("UDP channel task did not panic");
+        assert_eq!(exit, crate::playit_agent::ServiceExit::Cancelled);
     }
 }

@@ -1,7 +1,5 @@
 use std::path::{Path, PathBuf};
 
-use crate::paths;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IpcEndpoint {
     Filesystem(PathBuf),
@@ -16,10 +14,6 @@ impl IpcEndpoint {
         }
 
         Self::Filesystem(PathBuf::from(value))
-    }
-
-    pub fn default() -> Self {
-        Self::parse(paths::default_socket_path_string())
     }
 
     pub fn as_display_path(&self) -> String {
@@ -42,6 +36,12 @@ impl IpcEndpoint {
             Self::Filesystem(path) => Some(path.as_path()),
             Self::Namespaced(_) => None,
         }
+    }
+}
+
+impl Default for IpcEndpoint {
+    fn default() -> Self {
+        Self::parse(playit_platform::paths::default_socket_path_string())
     }
 }
 

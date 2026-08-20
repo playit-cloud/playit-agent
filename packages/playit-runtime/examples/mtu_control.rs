@@ -1,16 +1,16 @@
-// Example:
 // PLAYIT_API_URL="https://api.playit.gg" \
 // PLAYIT_SECRET_KEY="..." \
 // PLAYIT_MTU_DC_IDS="1,2" \
-// cargo run -p playit-agent-core --example mtu_control
+// cargo run -p playit-runtime --example mtu_control
 //
-// The example connects to control, sends a few MTU probes, waits briefly for
-// responses, then prints both pending and committed MTU discovery state.
+// This example sends MTU probes through the generated API adapter.
 use std::env;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use playit_agent_core::agent_control::address_selector::AddressSelector;
-use playit_agent_core::agent_control::{AuthApi, AuthResource, DualStackUdpSocket};
+use playit_agent_core::agent_control::{AuthResource, DualStackUdpSocket, GatewayAuth};
+use playit_runtime::GeneratedClientGateway;
 
 const CHECK_MTU_SIZES: [u32; 5] = [1200, 1300, 1400, 1420, 1480];
 const MTU_TEST_SIZES: [u32; 5] = [1200, 1300, 1400, 1420, 1450];
@@ -30,13 +30,13 @@ async fn run() -> Result<(), String> {
     let secret_key = required_env("PLAYIT_SECRET_KEY")?;
     let data_center_ids = parse_data_center_ids()?;
 
-    println!("creating udp io");
+    println!("creating UDP IO");
     let io = DualStackUdpSocket::new()
         .await
         .map_err(|error| format!("failed to create UDP socket: {error}"))?;
 
     println!("fetching control addresses");
-    let auth = AuthApi::new(api_url, secret_key);
+    let auth = GatewayAuth::new(Arc::new(GeneratedClientGateway::new(api_url, secret_key)));
     let control_addresses = auth
         .get_control_addresses()
         .await
@@ -55,14 +55,12 @@ async fn run() -> Result<(), String> {
         .map_err(|error| format!("failed to authenticate control: {error:?}"))?;
 
     control.clear_pending_mtu_data();
-
     let mut next_request_id = time_id_seed();
 
     println!("sending CheckMtuReceived probes");
     for message_size in CHECK_MTU_SIZES {
         let request_id = take_next_id(&mut next_request_id);
         let test_id = take_next_id(&mut next_request_id);
-
         control
             .send_check_mtu_received(request_id, test_id, message_size)
             .await
@@ -76,7 +74,6 @@ async fn run() -> Result<(), String> {
         for udp_payload_length in MTU_TEST_SIZES {
             let request_id = take_next_id(&mut next_request_id);
             let test_id = take_next_id(&mut next_request_id);
-
             control
                 .send_mtu_test(request_id, test_id, *data_center_id, udp_payload_length)
                 .await
@@ -101,7 +98,6 @@ async fn run() -> Result<(), String> {
     println!("pending_mtu_data: {:#?}", control.pending_mtu_data());
     control.commit_pending_mtu_data();
     println!("known_mtu_data: {:#?}", control.known_mtu_data());
-
     Ok(())
 }
 
@@ -112,25 +108,22 @@ fn required_env(name: &str) -> Result<String, String> {
 fn parse_data_center_ids() -> Result<Vec<u32>, String> {
     let raw = required_env("PLAYIT_MTU_DC_IDS")?;
     let mut ids = Vec::new();
-
     for part in raw.split(',') {
         let trimmed = part.trim();
         if trimmed.is_empty() {
             continue;
         }
-
-        let parsed = trimmed
-            .parse::<u32>()
-            .map_err(|error| format!("invalid data center id `{trimmed}`: {error}"))?;
-        ids.push(parsed);
+        ids.push(
+            trimmed
+                .parse::<u32>()
+                .map_err(|error| format!("invalid data center id `{trimmed}`: {error}"))?,
+        );
     }
-
     if ids.is_empty() {
         return Err(
             "`PLAYIT_MTU_DC_IDS` must contain at least one comma-separated data center id".into(),
         );
     }
-
     Ok(ids)
 }
 

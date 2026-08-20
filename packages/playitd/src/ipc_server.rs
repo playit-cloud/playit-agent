@@ -8,8 +8,6 @@ use interprocess::local_socket::{
 };
 #[cfg(target_os = "windows")]
 use interprocess::os::windows::local_socket::ListenerOptionsExt;
-use playit_agent_core::utils::now_milli;
-use playit_api_client::PlayitApi;
 use playit_ipc::endpoint::IpcEndpoint;
 use playit_ipc::ipc::{
     EventEnvelope, HelloEnvelope, IPC_VERSION, IncomingRequestEnvelope, IpcError, IpcFrameWriter,
@@ -17,88 +15,239 @@ use playit_ipc::ipc::{
     framed_parts, get_default_socket_path, is_known_request_type, protocol_info, try_connect,
 };
 use playit_ipc::model::{
-    AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ConnectionStats, SecretPathResponse,
-    ServiceError, ServiceErrorCode, ServiceStatus, ServiceUpdate, SubscribeResponse,
-    SubscriptionSnapshot,
+    AccountLoginUrlResponse, AccountStatus, AgentLifecycle, AgentState, ClaimExchangeResponse,
+    ClaimProgressResponse, ClaimSessionResponse, CommandResponse, ConnectionStats, NoticeState,
+    PendingTunnelState, SecretPathResponse, ServiceError, ServiceErrorCode, ServicePhase,
+    ServiceStatus, ServiceUpdate, SubscribeResponse, SubscriptionSnapshot, TunnelState,
+};
+use playit_model::{
+    AppSnapshot, Command, Deadline, NoticePriority, OriginHost, OriginTarget, Phase, Problem,
+    ProblemCode, ProblemReport, RetryPolicy, SecretInput, SecretNeed,
+};
+use playit_runtime::{
+    ClaimProgress, CommandFailure, CommandOutput, SecretReset, SnapshotStore, SupervisorHandle,
 };
 use serde_json::json;
-use tokio::sync::{RwLock, broadcast, mpsc, oneshot};
+use tokio::sync::broadcast;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
-const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
-
-#[derive(Default)]
-pub struct StateCache {
-    lifecycle: RwLock<AgentLifecycle>,
-    status: RwLock<ServiceStatus>,
-    stats: RwLock<ConnectionStats>,
+fn project_snapshot(snapshot: &AppSnapshot) -> SubscriptionSnapshot {
+    SubscriptionSnapshot {
+        status: project_status(snapshot),
+        lifecycle: project_lifecycle(snapshot),
+        stats: ConnectionStats {
+            bytes_in: snapshot.traffic.bytes_in,
+            bytes_out: snapshot.traffic.bytes_out,
+            active_tcp: snapshot.traffic.active_tcp,
+            active_udp: snapshot.traffic.active_udp,
+        },
+    }
 }
 
-impl StateCache {
-    pub async fn set_lifecycle(&self, lifecycle: AgentLifecycle) {
-        *self.lifecycle.write().await = lifecycle;
-    }
-
-    pub async fn lifecycle(&self) -> AgentLifecycle {
-        self.lifecycle.read().await.clone()
-    }
-
-    pub async fn set_status(&self, status: ServiceStatus) {
-        *self.status.write().await = status;
-    }
-
-    pub async fn status(&self) -> ServiceStatus {
-        self.status.read().await.clone()
-    }
-
-    pub async fn set_stats(&self, stats: ConnectionStats) {
-        *self.stats.write().await = stats;
-    }
-
-    pub async fn stats(&self) -> ConnectionStats {
-        self.stats.read().await.clone()
-    }
-
-    pub async fn subscription_snapshot(&self) -> SubscriptionSnapshot {
-        SubscriptionSnapshot {
-            status: self.status().await,
-            lifecycle: self.lifecycle().await,
-            stats: self.stats().await,
+fn project_status(snapshot: &AppSnapshot) -> ServiceStatus {
+    let phase = match &snapshot.phase {
+        Phase::Booting | Phase::Starting { .. } => ServicePhase::Starting,
+        Phase::NeedsSecret {
+            reason: SecretNeed::Invalid,
+        } => ServicePhase::HasInvalidSecret,
+        Phase::NeedsSecret { .. } => ServicePhase::WaitingForSecret,
+        Phase::Blocked { problem, .. } if problem.code == ProblemCode::AgentDisabledOverLimit => {
+            ServicePhase::DisabledOverLimit
         }
+        Phase::Blocked { .. } => ServicePhase::Error,
+        Phase::Online { .. } => ServicePhase::Running,
+        Phase::Stopping | Phase::Stopped => ServicePhase::Stopping,
+    };
+    ServiceStatus {
+        phase,
+        pid: snapshot.service.process_id.unwrap_or_default(),
+        uptime_secs: snapshot.service.uptime_secs,
+        version: snapshot.service.version.clone().unwrap_or_default(),
+        socket_path: snapshot.service.ipc_endpoint.clone().unwrap_or_default(),
+        secret_path: snapshot.service.secret_location.clone(),
+        has_secret: snapshot.service.has_secret,
+        protocol: protocol_info(),
+        last_error: project_snapshot_problem(snapshot),
     }
 }
 
-pub struct SecretProvisionRequest {
-    pub secret: String,
-    pub response_tx: oneshot::Sender<Result<(), String>>,
+fn project_lifecycle(snapshot: &AppSnapshot) -> AgentLifecycle {
+    match &snapshot.phase {
+        Phase::Booting | Phase::Starting { .. } => AgentLifecycle::Starting,
+        Phase::NeedsSecret {
+            reason: SecretNeed::Invalid,
+        } => AgentLifecycle::HasInvalidSecret(project_last_problem(snapshot)),
+        Phase::NeedsSecret { .. } => AgentLifecycle::WaitingForSecret,
+        Phase::Blocked { problem, .. } if problem.code == ProblemCode::AgentDisabledOverLimit => {
+            AgentLifecycle::DisabledOverLimit(project_last_problem(snapshot))
+        }
+        Phase::Blocked { .. } => AgentLifecycle::Error(project_last_problem(snapshot)),
+        Phase::Online { agent } => AgentLifecycle::Running(AgentState {
+            version: snapshot.service.version.clone().unwrap_or_default(),
+            tunnels: snapshot
+                .catalog
+                .accepted
+                .tunnels()
+                .iter()
+                .map(|tunnel| TunnelState {
+                    display_address: tunnel.public_address.clone(),
+                    destination: project_origin_target(&tunnel.spec.target),
+                    is_disabled: tunnel.disabled_reason.is_some(),
+                    disabled_reason: tunnel.disabled_reason.clone(),
+                })
+                .collect(),
+            pending_tunnels: snapshot
+                .catalog
+                .pending
+                .iter()
+                .map(|tunnel| PendingTunnelState {
+                    id: tunnel.id.clone(),
+                    status_msg: tunnel.status.clone(),
+                })
+                .collect(),
+            notices: snapshot
+                .notices
+                .iter()
+                .filter_map(|notice| notice.content.as_ref())
+                .map(|notice| NoticeState {
+                    priority: match notice.priority {
+                        NoticePriority::Info => "info",
+                        NoticePriority::Critical => "Critical",
+                        NoticePriority::High => "High",
+                        NoticePriority::Low => "Low",
+                    }
+                    .to_owned(),
+                    message: notice.message.clone(),
+                    resolve_link: notice.resolve_url.clone(),
+                })
+                .collect(),
+            account_status: match snapshot.catalog.account_status {
+                playit_model::AccountStatus::Unknown => AccountStatus::Unknown,
+                playit_model::AccountStatus::Guest => AccountStatus::Guest,
+                playit_model::AccountStatus::EmailNotVerified => AccountStatus::EmailNotVerified,
+                playit_model::AccountStatus::Verified => AccountStatus::Verified,
+            },
+            agent_id: agent.as_str().to_owned(),
+            login_link: snapshot.catalog.login_url.clone(),
+            start_time: snapshot.service.started_at_millis,
+        }),
+        Phase::Stopping | Phase::Stopped => AgentLifecycle::Stopping,
+    }
+}
+
+fn project_origin_target(target: &OriginTarget) -> String {
+    let host = |host: &OriginHost| match host {
+        OriginHost::Ip(address) => address.to_string(),
+        OriginHost::Hostname(hostname) => hostname.as_str().to_owned(),
+    };
+    match target {
+        OriginTarget::Port {
+            host: origin,
+            first_port,
+        } => {
+            format!("{}:{}", host(origin), first_port.get())
+        }
+        OriginTarget::Https {
+            host: origin,
+            http_port,
+            https_port,
+        } => format!(
+            "{} (http: {}, https: {})",
+            host(origin),
+            http_port.get(),
+            https_port.get()
+        ),
+    }
+}
+
+fn project_last_problem(snapshot: &AppSnapshot) -> ServiceError {
+    project_snapshot_problem(snapshot)
+        .unwrap_or_else(|| protocol_error(ServiceErrorCode::Internal, String::new(), false))
+}
+
+fn project_snapshot_problem(snapshot: &AppSnapshot) -> Option<ServiceError> {
+    match &snapshot.phase {
+        Phase::Blocked { problem, retry_at } => {
+            let retry_at_millis = match retry_at {
+                Deadline::AtMillis(value) => Some(*value),
+                Deadline::Unscheduled => None,
+            };
+            Some(ServiceError {
+                code: service_error_code(problem.code),
+                message: snapshot
+                    .last_problem
+                    .as_ref()
+                    .map(|report| report.detail.clone())
+                    .unwrap_or_else(|| problem.code.as_str().to_owned()),
+                retryable: problem.metadata.retry != RetryPolicy::Never,
+                details: Some(problem_details(problem, retry_at_millis)),
+            })
+        }
+        _ => snapshot.last_problem.as_ref().map(project_problem),
+    }
+}
+
+fn project_problem(report: &ProblemReport) -> ServiceError {
+    let code = service_error_code(report.problem.code);
+    ServiceError {
+        code,
+        message: report.detail.clone(),
+        retryable: report.problem.metadata.retry != RetryPolicy::Never,
+        details: Some(problem_details(&report.problem, None)),
+    }
+}
+
+fn service_error_code(code: ProblemCode) -> ServiceErrorCode {
+    match code {
+        ProblemCode::UnsupportedProtocol => ServiceErrorCode::UnsupportedProtocol,
+        ProblemCode::InvalidRequest | ProblemCode::CommandNotAllowed => {
+            ServiceErrorCode::InvalidRequest
+        }
+        ProblemCode::AgentDisabledOverLimit => ServiceErrorCode::AgentDisabledOverLimit,
+        ProblemCode::InvalidSecret => ServiceErrorCode::InvalidSecret,
+        ProblemCode::SecretPinned => ServiceErrorCode::SecretPinned,
+        ProblemCode::ProvisioningUnavailable => ServiceErrorCode::ProvisioningUnavailable,
+        ProblemCode::SecretWriteFailed => ServiceErrorCode::SecretWriteFailed,
+        _ => ServiceErrorCode::Internal,
+    }
+}
+
+fn problem_details(problem: &Problem, retry_at_millis: Option<u64>) -> serde_json::Value {
+    json!({
+        "problem_code": problem.code.as_str(),
+        "severity": problem.metadata.severity.as_str(),
+        "retry": problem.metadata.retry.as_str(),
+        "action": problem.metadata.action.as_str(),
+        "retry_at_millis": retry_at_millis,
+    })
+}
+
+pub struct IpcServerConfig {
+    pub socket_path: Option<String>,
+    pub snapshots: Arc<SnapshotStore>,
+    pub secret_path: Option<PathBuf>,
+    pub commands: Option<SupervisorHandle>,
 }
 
 pub struct IpcServer {
-    event_tx: broadcast::Sender<ServiceUpdate>,
+    log_tx: broadcast::Sender<ServiceUpdate>,
     socket_path: String,
-    start_time: u64,
     cancel_token: CancellationToken,
-    state_cache: Arc<StateCache>,
+    snapshots: Arc<SnapshotStore>,
     secret_path: Option<PathBuf>,
-    secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
-    secret_provision_error: ServiceError,
-    secret_reset_error: ServiceError,
-    api: RwLock<Option<PlayitApi>>,
-    guest_login_cache: RwLock<Option<(String, u64)>>,
+    commands: Option<SupervisorHandle>,
 }
 
 impl IpcServer {
     pub async fn new_with_sender(
-        socket_path: Option<String>,
+        config: IpcServerConfig,
         cancel_token: CancellationToken,
-        event_tx: broadcast::Sender<ServiceUpdate>,
-        secret_path: Option<PathBuf>,
-        secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
-        secret_provision_error: ServiceError,
-        secret_reset_error: ServiceError,
+        log_tx: broadcast::Sender<ServiceUpdate>,
     ) -> Result<Self, IpcError> {
-        let socket_path = socket_path.unwrap_or_else(|| get_default_socket_path().to_string());
+        let socket_path = config
+            .socket_path
+            .unwrap_or_else(|| get_default_socket_path().to_string());
         let endpoint = IpcEndpoint::parse(socket_path.clone());
 
         if try_connect(&endpoint).await.is_ok() {
@@ -119,62 +268,54 @@ impl IpcServer {
         }
 
         Ok(Self {
-            event_tx,
+            log_tx,
             socket_path,
-            start_time: now_milli(),
             cancel_token,
-            state_cache: Arc::new(StateCache::default()),
-            secret_path,
-            secret_provision_tx,
-            secret_provision_error,
-            secret_reset_error,
-            api: RwLock::new(None),
-            guest_login_cache: RwLock::new(None),
+            snapshots: config.snapshots,
+            secret_path: config.secret_path,
+            commands: config.commands,
         })
-    }
-
-    pub fn event_sender(&self) -> broadcast::Sender<ServiceUpdate> {
-        self.event_tx.clone()
-    }
-
-    pub fn state_cache(&self) -> Arc<StateCache> {
-        self.state_cache.clone()
-    }
-
-    pub async fn set_api(&self, api: PlayitApi) {
-        *self.api.write().await = Some(api);
     }
 
     pub async fn bind_listener(&self) -> Result<Listener, IpcError> {
         let listener = self.create_listener()?;
 
         #[cfg(target_os = "linux")]
-        crate::linux::configure_socket_permissions(&self.socket_path)?;
+        playit_platform::linux::configure_socket_permissions(&self.socket_path)
+            .map_err(IpcError::BindFailed)?;
 
         Ok(listener)
     }
 
     pub async fn run(self: Arc<Self>, listener: Listener) -> Result<(), IpcError> {
+        let mut clients = JoinSet::new();
+
         loop {
             tokio::select! {
                 accept_result = listener.accept() => {
                     match accept_result {
                         Ok(stream) => {
                             let server = self.clone();
-                            tokio::spawn(async move {
-                                if let Err(e) = server.handle_client(stream).await {
-                                    if e.is_connection_closed() {
-                                        tracing::debug!("Client disconnected: {e}");
-                                    } else {
-                                        tracing::warn!("Client connection error: {e}");
-                                    }
-                                }
-                            });
+                            clients.spawn(async move { server.handle_client(stream).await });
                         }
                         Err(e) => {
                             tracing::error!("Accept error: {e}");
                             // Avoid tight-loop logging if the listener enters a persistent failure state.
                             tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }
+                }
+                joined = clients.join_next(), if !clients.is_empty() => {
+                    match joined {
+                        Some(Ok(Ok(()))) | None => {}
+                        Some(Ok(Err(error))) if error.is_connection_closed() => {
+                            tracing::debug!("Client disconnected: {error}");
+                        }
+                        Some(Ok(Err(error))) => {
+                            tracing::warn!("Client connection error: {error}");
+                        }
+                        Some(Err(error)) => {
+                            tracing::warn!("IPC client task failed: {error}");
                         }
                     }
                 }
@@ -184,6 +325,9 @@ impl IpcServer {
                 }
             }
         }
+
+        clients.abort_all();
+        while clients.join_next().await.is_some() {}
 
         Ok(())
     }
@@ -203,8 +347,10 @@ impl IpcServer {
                     })?;
                 let listener = ListenerOptions::new().name(name);
                 #[cfg(target_os = "windows")]
-                let listener = listener
-                    .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
+                let listener = listener.security_descriptor(
+                    playit_platform::windows::restricted_pipe_security_descriptor()
+                        .map_err(IpcError::BindFailed)?,
+                );
                 listener.create_tokio().map_err(IpcError::BindFailed)
             }
             IpcEndpoint::Filesystem(path) => {
@@ -213,8 +359,10 @@ impl IpcServer {
                 })?;
                 let listener = ListenerOptions::new().name(name);
                 #[cfg(target_os = "windows")]
-                let listener = listener
-                    .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
+                let listener = listener.security_descriptor(
+                    playit_platform::windows::restricted_pipe_security_descriptor()
+                        .map_err(IpcError::BindFailed)?,
+                );
                 listener.create_tokio().map_err(IpcError::BindFailed)
             }
         }
@@ -223,8 +371,10 @@ impl IpcServer {
     async fn handle_client(&self, stream: Stream) -> Result<(), IpcError> {
         let (reader, writer) = stream.split();
         let (mut reader, mut writer) = framed_parts(reader, writer);
-        let mut event_rx = self.event_tx.subscribe();
+        let mut log_rx = self.log_tx.subscribe();
+        let mut snapshot_rx = self.snapshots.subscribe();
         let mut subscribed = false;
+        let mut last_projection: Option<SubscriptionSnapshot> = None;
 
         self.send_hello(&mut writer).await?;
 
@@ -237,15 +387,30 @@ impl IpcServer {
 
                     if outcome.subscribed {
                         subscribed = true;
+                        last_projection = outcome.subscription.clone();
                     }
 
                     self.send_response(&mut writer, request_id, outcome.response).await?;
                 }
-                event_result = event_rx.recv(), if subscribed => {
-                    match event_result {
-                        Ok(event) => self.send_event(&mut writer, event).await?,
+                snapshot_result = snapshot_rx.changed(), if subscribed => {
+                    match snapshot_result {
+                        Ok(()) => {
+                            let snapshot = snapshot_rx.borrow_and_update().clone();
+                            let projection = project_snapshot(&snapshot);
+                            self.send_snapshot_changes(&mut writer, last_projection.as_ref(), &projection).await?;
+                            last_projection = Some(projection);
+                        }
+                        Err(_) => break,
+                    }
+                }
+                log_result = log_rx.recv(), if subscribed => {
+                    match log_result {
+                        Ok(ServiceUpdate::Log(log)) => {
+                            self.send_event(&mut writer, ServiceUpdate::Log(log)).await?
+                        }
+                        Ok(_) => {}
                         Err(broadcast::error::RecvError::Lagged(_)) => {
-                            tracing::debug!("Client lagged behind, some events dropped");
+                            tracing::debug!("Client lagged behind, some log events were dropped");
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
@@ -259,23 +424,23 @@ impl IpcServer {
     async fn handle_request_envelope(&self, envelope: IncomingRequestEnvelope) -> RequestOutcome {
         match self.validate_request_envelope(envelope) {
             Ok(request) => self.handle_service_request(request).await,
-            Err(response) => RequestOutcome::respond(response),
+            Err(response) => RequestOutcome::respond(*response),
         }
     }
 
     fn validate_request_envelope(
         &self,
         envelope: IncomingRequestEnvelope,
-    ) -> Result<ServiceRequest, ServiceResponse> {
+    ) -> Result<ServiceRequest, Box<ServiceResponse>> {
         if envelope.ipc_version != IPC_VERSION {
-            return Err(ServiceResponse::Error(protocol_error(
+            return Err(Box::new(ServiceResponse::Error(protocol_error(
                 ServiceErrorCode::UnsupportedProtocol,
                 format!(
                     "unsupported IPC version {} (expected {})",
                     envelope.ipc_version, IPC_VERSION
                 ),
                 false,
-            )));
+            ))));
         }
 
         match envelope.request {
@@ -283,35 +448,104 @@ impl IpcServer {
             ServiceRequestOrUnknown::Unknown(unknown)
                 if is_known_request_type(&unknown.type_name) =>
             {
-                Err(ServiceResponse::Error(protocol_error(
+                Err(Box::new(ServiceResponse::Error(protocol_error(
                     ServiceErrorCode::InvalidRequest,
                     format!("invalid IPC request payload for {}", unknown.type_name),
                     false,
-                )))
+                ))))
             }
-            ServiceRequestOrUnknown::Unknown(unknown) => Err(ServiceResponse::Error(
+            ServiceRequestOrUnknown::Unknown(unknown) => Err(Box::new(ServiceResponse::Error(
                 invalid_request_type_error(&unknown.type_name),
-            )),
+            ))),
         }
     }
 
     async fn handle_service_request(&self, request: ServiceRequest) -> RequestOutcome {
         match request {
-            ServiceRequest::Subscribe => RequestOutcome {
-                response: self.subscribe_response().await,
-                subscribed: true,
-            },
-            ServiceRequest::GetStatus => RequestOutcome::respond(self.status_response().await),
-            ServiceRequest::GetState => {
-                RequestOutcome::respond(ServiceResponse::State(self.state_cache.lifecycle().await))
+            ServiceRequest::Subscribe => {
+                let snapshot = project_snapshot(&self.snapshots.snapshot());
+                RequestOutcome {
+                    response: self.subscribe_response(snapshot.clone()),
+                    subscribed: true,
+                    subscription: Some(snapshot),
+                }
             }
+            ServiceRequest::GetStatus => RequestOutcome::respond(self.status_response().await),
+            ServiceRequest::GetState => RequestOutcome::respond(ServiceResponse::State(
+                project_lifecycle(&self.snapshots.snapshot()),
+            )),
             ServiceRequest::Stop => {
                 tracing::info!("Stop request received, initiating shutdown");
-                self.cancel_token.cancel();
-                RequestOutcome::respond(ServiceResponse::Stop(CommandResponse {
-                    accepted: true,
-                    message: Some("shutdown requested".to_string()),
-                }))
+                let response = match self.command(Command::Stop).await {
+                    Ok(CommandOutput::Accepted) => ServiceResponse::Stop(CommandResponse {
+                        accepted: true,
+                        message: Some("shutdown requested".to_string()),
+                    }),
+                    Ok(_) => ServiceResponse::Error(provisioning_unavailable_error()),
+                    Err(error) => ServiceResponse::Error(command_error(error)),
+                };
+                RequestOutcome::respond(response)
+            }
+            ServiceRequest::BeginClaim => {
+                let response = match self.command(Command::BeginClaim).await {
+                    Ok(CommandOutput::ClaimStarted(session)) => {
+                        ServiceResponse::ClaimSession(ClaimSessionResponse {
+                            claim_code: session.code,
+                            claim_url: session.url,
+                        })
+                    }
+                    Ok(_) => ServiceResponse::Error(provisioning_unavailable_error()),
+                    Err(error) => ServiceResponse::Error(command_error(error)),
+                };
+                RequestOutcome::respond(response)
+            }
+            ServiceRequest::PollClaim { claim_code } => {
+                let response = match self.command(Command::PollClaim { code: claim_code }).await {
+                    Ok(CommandOutput::ClaimProgress(progress)) => {
+                        ServiceResponse::ClaimProgress(match progress {
+                            ClaimProgress::WaitingForVisit => {
+                                ClaimProgressResponse::WaitingForVisit
+                            }
+                            ClaimProgress::WaitingForApproval => {
+                                ClaimProgressResponse::WaitingForApproval
+                            }
+                            ClaimProgress::Approved => ClaimProgressResponse::Approved,
+                            ClaimProgress::Rejected => ClaimProgressResponse::Rejected,
+                        })
+                    }
+                    Ok(_) => ServiceResponse::Error(provisioning_unavailable_error()),
+                    Err(error) => ServiceResponse::Error(command_error(error)),
+                };
+                RequestOutcome::respond(response)
+            }
+            ServiceRequest::ExchangeClaim { claim_code } => {
+                let response = match self
+                    .command(Command::ExchangeClaim { code: claim_code })
+                    .await
+                {
+                    Ok(CommandOutput::ClaimPending(status)) => {
+                        ServiceResponse::ClaimExchange(ClaimExchangeResponse::Pending(status))
+                    }
+                    Ok(CommandOutput::ClaimProvisioned) => {
+                        ServiceResponse::ClaimExchange(ClaimExchangeResponse::Accepted)
+                    }
+                    Ok(_) => ServiceResponse::Error(provisioning_unavailable_error()),
+                    Err(error) => ServiceResponse::Error(command_error(error)),
+                };
+                RequestOutcome::respond(response)
+            }
+            ServiceRequest::RefreshCatalog => {
+                let response = match self.command(Command::RefreshCatalog).await {
+                    Ok(CommandOutput::Accepted) => {
+                        ServiceResponse::RefreshCatalog(CommandResponse {
+                            accepted: true,
+                            message: Some("catalog refresh requested".to_owned()),
+                        })
+                    }
+                    Ok(_) => ServiceResponse::Error(provisioning_unavailable_error()),
+                    Err(error) => ServiceResponse::Error(command_error(error)),
+                };
+                RequestOutcome::respond(response)
             }
             ServiceRequest::SetSecret { secret } => {
                 RequestOutcome::respond(self.set_secret_response(secret).await)
@@ -333,8 +567,7 @@ impl IpcServer {
         }
     }
 
-    async fn subscribe_response(&self) -> ServiceResponse {
-        let snapshot = self.state_cache.subscription_snapshot().await;
+    fn subscribe_response(&self, snapshot: SubscriptionSnapshot) -> ServiceResponse {
         ServiceResponse::Subscribe(SubscribeResponse {
             protocol: protocol_info(),
             snapshot,
@@ -342,69 +575,57 @@ impl IpcServer {
     }
 
     async fn status_response(&self) -> ServiceResponse {
-        let mut status = self.state_cache.status().await;
-        let uptime_ms = now_milli().saturating_sub(self.start_time);
-        status.uptime_secs = uptime_ms / 1000;
-        ServiceResponse::Status(status)
+        ServiceResponse::Status(project_status(&self.snapshots.snapshot()))
     }
 
     async fn set_secret_response(&self, secret: String) -> ServiceResponse {
-        let lifecycle = self.state_cache.lifecycle().await;
-        if !matches!(lifecycle, AgentLifecycle::WaitingForSecret) {
-            return ServiceResponse::Error(secret_provisioning_state_error(&lifecycle));
-        }
-
-        let Some(secret_provision_tx) = &self.secret_provision_tx else {
-            return ServiceResponse::Error(self.secret_provision_error.clone());
+        let secret = match SecretInput::new(secret) {
+            Ok(secret) => secret,
+            Err(_) => {
+                return ServiceResponse::Error(command_error(
+                    CommandFailure::new(ProblemCode::InvalidSecret).with_detail("secret is empty"),
+                ));
+            }
         };
-
-        let (response_tx, response_rx) = oneshot::channel();
-        if secret_provision_tx
-            .send(SecretProvisionRequest {
-                secret,
-                response_tx,
-            })
-            .await
-            .is_err()
-        {
-            return ServiceResponse::Error(provisioning_unavailable_error());
-        }
-
-        match response_rx.await {
-            Ok(Ok(())) => ServiceResponse::SetSecret(CommandResponse {
+        match self.command(Command::ProvisionSecret { secret }).await {
+            Ok(CommandOutput::Accepted) => ServiceResponse::SetSecret(CommandResponse {
                 accepted: true,
                 message: Some("secret provisioned".to_string()),
             }),
-            Ok(Err(message)) => ServiceResponse::Error(protocol_error(
-                ServiceErrorCode::SecretWriteFailed,
-                message,
-                true,
-            )),
-            Err(_) => ServiceResponse::Error(provisioning_unavailable_error()),
+            Ok(_) => ServiceResponse::Error(provisioning_unavailable_error()),
+            Err(error) => ServiceResponse::Error(command_error(error)),
         }
     }
 
     async fn reset_secret_response(&self) -> ServiceResponse {
-        match self.reset_secret().await {
-            Ok(message) => {
+        match self.command(Command::ResetSecret).await {
+            Ok(CommandOutput::SecretReset(reset)) => {
                 tracing::info!("Secret reset, initiating shutdown");
-                self.cancel_token.cancel();
                 ServiceResponse::ResetSecret(CommandResponse {
                     accepted: true,
-                    message: Some(message),
+                    message: Some(reset_message(reset)),
                 })
             }
-            Err(error) => ServiceResponse::Error(error),
+            Ok(_) => ServiceResponse::Error(provisioning_unavailable_error()),
+            Err(error) => ServiceResponse::Error(command_error(error)),
         }
     }
 
     async fn account_login_url_response(&self) -> ServiceResponse {
-        match self.get_account_login_url().await {
-            Ok(login_url) => {
+        match self.command(Command::CreateLoginUrl).await {
+            Ok(CommandOutput::LoginUrl(login_url)) => {
                 ServiceResponse::AccountLoginUrl(AccountLoginUrlResponse { login_url })
             }
-            Err(error) => ServiceResponse::Error(error),
+            Ok(_) => ServiceResponse::Error(provisioning_unavailable_error()),
+            Err(error) => ServiceResponse::Error(command_error(error)),
         }
+    }
+
+    async fn command(&self, command: Command) -> Result<CommandOutput, CommandFailure> {
+        let Some(commands) = &self.commands else {
+            return Err(CommandFailure::new(ProblemCode::EngineUnavailable));
+        };
+        commands.command(command).await
     }
 
     async fn send_response<W: tokio::io::AsyncWrite + Unpin>(
@@ -446,69 +667,55 @@ impl IpcServer {
             .await
     }
 
-    async fn reset_secret(&self) -> Result<String, ServiceError> {
-        let Some(secret_path) = &self.secret_path else {
-            return Err(self.secret_reset_error.clone());
-        };
+    async fn send_snapshot_changes<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        writer: &mut IpcFrameWriter<W>,
+        previous: Option<&SubscriptionSnapshot>,
+        current: &SubscriptionSnapshot,
+    ) -> Result<(), IpcError> {
+        if previous.is_none_or(|value| !same_wire_value(&value.status, &current.status)) {
+            self.send_event(writer, ServiceUpdate::Status(current.status.clone()))
+                .await?;
+        }
+        if previous.is_none_or(|value| !same_wire_value(&value.lifecycle, &current.lifecycle)) {
+            self.send_event(writer, ServiceUpdate::Lifecycle(current.lifecycle.clone()))
+                .await?;
+        }
+        if previous.is_none_or(|value| !same_wire_value(&value.stats, &current.stats)) {
+            self.send_event(writer, ServiceUpdate::Stats(current.stats.clone()))
+                .await?;
+        }
+        Ok(())
+    }
+}
 
-        match tokio::fs::remove_file(secret_path).await {
-            Ok(()) => Ok(format!(
-                "Deleted secret file at {}. Restart playitd to reprovision a new secret.",
-                secret_path.display()
-            )),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(format!(
-                "Secret file was already absent at {}.",
-                secret_path.display()
-            )),
-            Err(error) => Err(protocol_error(
-                ServiceErrorCode::SecretWriteFailed,
-                format!(
-                    "Failed to delete secret file {}: {error}",
-                    secret_path.display()
-                ),
-                true,
-            )),
+fn reset_message(reset: SecretReset) -> String {
+    match reset {
+        SecretReset::Deleted(path) => format!(
+            "Deleted secret file at {}. Restart playitd to reprovision a new secret.",
+            path.display()
+        ),
+        SecretReset::AlreadyAbsent(path) => {
+            format!("Secret file was already absent at {}.", path.display())
         }
     }
+}
 
-    async fn get_account_login_url(&self) -> Result<String, ServiceError> {
-        {
-            let cache = self.guest_login_cache.read().await;
-            if let Some((link, ts)) = &*cache {
-                if now_milli().saturating_sub(*ts) < 15_000 {
-                    return Ok(link.clone());
-                }
-            }
-        }
-
-        let api = self.api.read().await.clone().ok_or_else(|| {
-            protocol_error(
-                ServiceErrorCode::InvalidRequest,
-                "playitd is not ready to generate a login URL yet".to_string(),
-                true,
-            )
-        })?;
-
-        let session = api.login_guest().await.map_err(|error| {
-            protocol_error(
-                ServiceErrorCode::Internal,
-                format!("Failed to create login URL: {error:?}"),
-                true,
-            )
-        })?;
-
-        let link = format!(
-            "https://playit.gg/login/guest-account/{}",
-            session.session_key
-        );
-        *self.guest_login_cache.write().await = Some((link.clone(), now_milli()));
-        Ok(link)
+fn command_error(error: CommandFailure) -> ServiceError {
+    ServiceError {
+        code: service_error_code(error.problem.code),
+        message: error
+            .detail
+            .unwrap_or_else(|| error.problem.code.as_str().to_owned()),
+        retryable: error.problem.metadata.retry != RetryPolicy::Never,
+        details: Some(problem_details(&error.problem, error.retry_at_millis)),
     }
 }
 
 struct RequestOutcome {
     response: ServiceResponse,
     subscribed: bool,
+    subscription: Option<SubscriptionSnapshot>,
 }
 
 impl RequestOutcome {
@@ -516,8 +723,14 @@ impl RequestOutcome {
         Self {
             response,
             subscribed: false,
+            subscription: None,
         }
     }
+}
+
+fn same_wire_value<T: serde::Serialize>(left: &T, right: &T) -> bool {
+    serde_json::to_vec(left).expect("IPC model serializes")
+        == serde_json::to_vec(right).expect("IPC model serializes")
 }
 
 fn protocol_error(code: ServiceErrorCode, message: String, retryable: bool) -> ServiceError {
@@ -530,11 +743,7 @@ fn protocol_error(code: ServiceErrorCode, message: String, retryable: bool) -> S
 }
 
 fn provisioning_unavailable_error() -> ServiceError {
-    protocol_error(
-        ServiceErrorCode::ProvisioningUnavailable,
-        "playitd is no longer waiting for secret provisioning".to_string(),
-        true,
-    )
+    command_error(CommandFailure::new(ProblemCode::ProvisioningUnavailable))
 }
 
 fn invalid_request_type_error(request_type: &str) -> ServiceError {
@@ -546,77 +755,26 @@ fn invalid_request_type_error(request_type: &str) -> ServiceError {
     }
 }
 
-fn over_limit_guidance() -> String {
-    format!(
-        "Delete unused agents: {ACCOUNT_AGENTS_URL}\nIncrease your agent limit: {ACCOUNT_UPGRADE_URL}"
-    )
-}
-
-fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
-    match lifecycle {
-        AgentLifecycle::WaitingForSecret => protocol_error(
-            ServiceErrorCode::ProvisioningUnavailable,
-            "The playit service is not ready to save a secret yet. Try setup again in a few seconds."
-                .to_string(),
-            true,
-        ),
-        AgentLifecycle::HasInvalidSecret(error) => protocol_error(
-            ServiceErrorCode::ProvisioningUnavailable,
-            format!(
-                "The playit service is not waiting for a new secret because its current secret is invalid: {}",
-                error.message
-            ),
-            false,
-        ),
-        AgentLifecycle::DisabledOverLimit(error) => protocol_error(
-            ServiceErrorCode::ProvisioningUnavailable,
-            format!(
-                "Setup is unavailable because this account is over the agent limit.\n{}\nReason: {}",
-                over_limit_guidance(),
-                error.message
-            ),
-            false,
-        ),
-        AgentLifecycle::Starting => protocol_error(
-            ServiceErrorCode::ProvisioningUnavailable,
-            "The playit service is still starting. Try setup again in a few seconds.".to_string(),
-            true,
-        ),
-        AgentLifecycle::Running(_) => protocol_error(
-            ServiceErrorCode::ProvisioningUnavailable,
-            "The playit service already has a configured secret. Run `playit reset` before provisioning a new one."
-                .to_string(),
-            false,
-        ),
-        AgentLifecycle::Stopping => protocol_error(
-            ServiceErrorCode::ProvisioningUnavailable,
-            "The playit service is stopping and cannot accept setup right now.".to_string(),
-            true,
-        ),
-        AgentLifecycle::Error(error) => protocol_error(
-            ServiceErrorCode::ProvisioningUnavailable,
-            format!(
-                "The playit service reported an error and cannot accept setup right now: {}",
-                error.message
-            ),
-            true,
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::num::{NonZeroU16, NonZeroU64};
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::{IpcServer, protocol_error, try_connect};
+    use super::{IpcServer, IpcServerConfig, SnapshotStore, project_snapshot, try_connect};
     use interprocess::local_socket::tokio::prelude::*;
     use playit_ipc::endpoint::IpcEndpoint;
     use playit_ipc::ipc::{
-        IPC_VERSION, IpcClient, IpcError, RequestEnvelope, ServerEnvelope, ServiceRequest,
-        ServiceResponse,
+        IPC_VERSION, IpcClient, IpcError, RequestEnvelope, ResponseEnvelope, ServerEnvelope,
+        ServiceRequest, ServiceResponse, protocol_info,
     };
-    use playit_ipc::model::{AgentLifecycle, ServiceErrorCode};
+    use playit_ipc::model::{AgentLifecycle, ServiceErrorCode, SubscribeResponse};
+    use playit_model::{
+        AgentIdentity, AppSnapshot, CatalogTunnel, Notice, NoticeContent, NoticePriority,
+        OriginHost, OriginTarget, PendingTunnel, Phase, Problem, ProblemCode, ProxyProtocol,
+        ServiceInfo, TrafficSnapshot, TunnelAvailability, TunnelCatalog, TunnelId, TunnelProtocol,
+        TunnelSpec,
+    };
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
     use tokio::sync::broadcast;
     use tokio_util::sync::CancellationToken;
@@ -635,6 +793,150 @@ mod tests {
             .to_string()
     }
 
+    #[tokio::test]
+    async fn snapshot_revision_increments_once_per_visible_publication() {
+        let store = SnapshotStore::new(AppSnapshot::booting());
+        let published = store.publish(|snapshot| {
+            snapshot.phase = Phase::Starting { attempt: 1 };
+            snapshot.traffic.bytes_in = 10;
+            snapshot.service.has_secret = true;
+        });
+        assert_eq!(published.unwrap().revision, 1);
+
+        let unchanged = store.publish(|snapshot| {
+            snapshot.phase = Phase::Starting { attempt: 1 };
+            snapshot.traffic.bytes_in = 10;
+            snapshot.service.has_secret = true;
+        });
+        assert!(unchanged.is_none());
+        assert_eq!(store.snapshot().revision, 1);
+    }
+
+    #[tokio::test]
+    async fn slow_snapshot_subscriber_receives_latest_complete_revision() {
+        let store = SnapshotStore::new(AppSnapshot::booting());
+        let mut receiver = store.subscribe();
+
+        for value in 1..=100 {
+            store.publish(|snapshot| {
+                snapshot.traffic.bytes_in = value;
+                snapshot.traffic.bytes_out = value * 2;
+            });
+        }
+
+        receiver.changed().await.unwrap();
+        let snapshot = receiver.borrow_and_update().clone();
+        assert_eq!(snapshot.revision, 100);
+        assert_eq!(snapshot.traffic.bytes_in, 100);
+        assert_eq!(snapshot.traffic.bytes_out, 200);
+    }
+
+    #[tokio::test]
+    async fn concurrent_snapshot_publishers_do_not_lose_changes() {
+        let store = Arc::new(SnapshotStore::new(AppSnapshot::booting()));
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let store = store.clone();
+            tasks.push(tokio::spawn(async move {
+                for _ in 0..250 {
+                    store.publish(|snapshot| snapshot.traffic.bytes_in += 1);
+                    tokio::task::yield_now().await;
+                }
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.revision, 1_000);
+        assert_eq!(snapshot.traffic.bytes_in, 1_000);
+    }
+
+    #[test]
+    fn ipc_v2_subscription_projection_matches_golden_json() {
+        let mut snapshot = AppSnapshot::booting();
+        snapshot.phase = Phase::Online {
+            agent: AgentIdentity::new("agent-1"),
+        };
+        snapshot.service = ServiceInfo {
+            process_id: Some(4242),
+            uptime_secs: 17,
+            started_at_millis: 1_700_000_000_000,
+            version: Some("1.0.10".to_owned()),
+            ipc_protocol: IPC_VERSION,
+            ipc_endpoint: Some("/run/playit/playitd.sock".to_owned()),
+            secret_location: Some("/etc/playit/playit.toml".to_owned()),
+            has_secret: true,
+        };
+        snapshot.catalog.accepted = TunnelCatalog::try_new(
+            1,
+            1_700_000_000_000,
+            vec![CatalogTunnel {
+                spec: TunnelSpec {
+                    id: TunnelId::new(NonZeroU64::MIN),
+                    protocol: TunnelProtocol::Tcp,
+                    target: OriginTarget::Port {
+                        host: OriginHost::Ip("127.0.0.1".parse().unwrap()),
+                        first_port: NonZeroU16::new(25565).unwrap(),
+                    },
+                    port_count: NonZeroU16::MIN,
+                    proxy_protocol: ProxyProtocol::None,
+                },
+                availability: TunnelAvailability::Active,
+                public_address: "demo.playit.gg:25565".to_owned(),
+                disabled_reason: None,
+            }],
+        )
+        .unwrap();
+        snapshot.catalog.pending = vec![PendingTunnel {
+            id: "pending-1".to_owned(),
+            status: "allocating".to_owned(),
+        }];
+        snapshot.catalog.account_status = playit_model::AccountStatus::Verified;
+        snapshot.catalog.login_url = Some("https://playit.gg/login/fixture".to_owned());
+        snapshot.traffic = TrafficSnapshot {
+            bytes_in: 10,
+            bytes_out: 20,
+            active_tcp: 1,
+            active_udp: 2,
+        };
+        snapshot.notices = vec![Notice {
+            problem: Problem::new(ProblemCode::RemoteNotice),
+            content: Some(NoticeContent {
+                priority: NoticePriority::Info,
+                message: "fixture notice".to_owned(),
+                resolve_url: Some("https://playit.gg/account".to_owned()),
+            }),
+        }];
+
+        let envelope = ServerEnvelope::Response(ResponseEnvelope {
+            ipc_version: IPC_VERSION,
+            request_id: 1,
+            response: ServiceResponse::Subscribe(SubscribeResponse {
+                protocol: protocol_info(),
+                snapshot: project_snapshot(&snapshot),
+            }),
+        });
+        let expected = include_str!("../../playit-ipc/fixtures/ipc_v2_server_transcript.jsonl")
+            .lines()
+            .nth(1)
+            .unwrap();
+        assert_eq!(serde_json::to_string(&envelope).unwrap(), expected);
+    }
+
+    #[test]
+    fn every_application_problem_projects_stable_action_and_retry_metadata() {
+        for code in ProblemCode::ALL {
+            let problem = Problem::new(code);
+            let wire = super::command_error(playit_runtime::CommandFailure::new(code));
+            let meaning = wire.meaning();
+            assert_eq!(meaning.code, code.as_str());
+            assert_eq!(meaning.action, problem.metadata.action.as_str());
+            assert_eq!(meaning.retry, problem.metadata.retry.as_str());
+        }
+    }
+
     async fn spawn_test_server(
         name: &str,
     ) -> (
@@ -648,21 +950,14 @@ mod tests {
         let (event_tx, _) = broadcast::channel(8);
         let server = Arc::new(
             IpcServer::new_with_sender(
-                Some(socket_path.clone()),
+                IpcServerConfig {
+                    socket_path: Some(socket_path.clone()),
+                    snapshots: Arc::new(SnapshotStore::new(AppSnapshot::booting())),
+                    secret_path: None,
+                    commands: None,
+                },
                 cancel_token.clone(),
                 event_tx,
-                None,
-                None,
-                protocol_error(
-                    ServiceErrorCode::ProvisioningUnavailable,
-                    "provisioning unavailable".to_string(),
-                    false,
-                ),
-                protocol_error(
-                    ServiceErrorCode::SecretWriteFailed,
-                    "secret reset unavailable".to_string(),
-                    false,
-                ),
             )
             .await
             .unwrap(),
@@ -710,6 +1005,26 @@ mod tests {
         let lifecycle = client.lifecycle().await.unwrap();
         assert!(matches!(lifecycle, AgentLifecycle::Starting));
         shutdown_server(cancel_token, handle).await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_closes_active_client_tasks() {
+        let (_server, cancel_token, handle, socket_path) =
+            spawn_test_server("shutdown-client").await;
+        let (mut reader, _writer) = connect_raw(&socket_path).await;
+        assert!(matches!(
+            read_server_envelope(&mut reader).await,
+            ServerEnvelope::Hello(_)
+        ));
+
+        shutdown_server(cancel_token, handle).await;
+
+        let mut line = String::new();
+        let bytes_read = tokio::time::timeout(Duration::from_secs(1), reader.read_line(&mut line))
+            .await
+            .expect("server shutdown closes the client promptly")
+            .unwrap();
+        assert_eq!(bytes_read, 0);
     }
 
     #[tokio::test]

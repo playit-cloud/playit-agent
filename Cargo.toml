@@ -2,6 +2,9 @@
 members = [
     "packages/playit-cli",
     "packages/playit-ipc",
+    "packages/playit-model",
+    "packages/playit-platform",
+    "packages/playit-runtime",
     "packages/playitd",
     "packages/playitd-tray",
     "packages/playitd-windows-setup",

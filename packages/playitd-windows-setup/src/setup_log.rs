@@ -1,6 +1,4 @@
 #[cfg(target_os = "windows")]
-use std::env;
-#[cfg(target_os = "windows")]
 use std::fs::{self, OpenOptions};
 #[cfg(target_os = "windows")]
 use std::io::{self, Write};
@@ -10,10 +8,12 @@ use std::path::PathBuf;
 #[cfg(target_os = "windows")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const LOG_RELATIVE_PATH: &[&str] = &["playit_gg", "logs", "playit-installer.log"];
-#[cfg(target_os = "windows")]
-const PROGRAMDATA_FALLBACK: &str = r"C:\ProgramData";
-
+#[cfg(test)]
+const LOG_RELATIVE_PATH: &[&str] = &[
+    playit_platform::paths::WINDOWS_DATA_DIR_NAME,
+    "logs",
+    "playit-installer.log",
+];
 #[cfg(target_os = "windows")]
 pub(crate) fn log_command_result(command: &str, result: Result<(), String>) -> Result<(), String> {
     let status = if result.is_ok() { "success" } else { "failure" };
@@ -37,10 +37,7 @@ pub(crate) fn log_command_result(command: &str, result: Result<(), String>) -> R
 
 #[cfg(target_os = "windows")]
 fn default_log_path() -> PathBuf {
-    let base = env::var_os("PROGRAMDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(PROGRAMDATA_FALLBACK));
-    log_path_from_base(base)
+    playit_platform::paths::windows_installer_log_path()
 }
 
 #[cfg(target_os = "windows")]
@@ -48,6 +45,7 @@ fn temp_log_path() -> PathBuf {
     std::env::temp_dir().join("playit-installer.log")
 }
 
+#[cfg(test)]
 fn log_path_from_base(base: impl Into<PathBuf>) -> PathBuf {
     let mut path = base.into();
     for segment in LOG_RELATIVE_PATH {

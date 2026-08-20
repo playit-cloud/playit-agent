@@ -1,0 +1,9 @@
+[package]
+name = "playit-model"
+version.workspace = true
+edition = "2024"
+description = "Pure domain model for the playit agent application"
+license = "BSD-2-Clause"
+repository = "https://github.com/playit-cloud/playit-agent"
+
+[dependencies]

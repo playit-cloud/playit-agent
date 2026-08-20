@@ -10,8 +10,6 @@ repository = "https://github.com/playit-cloud/playit-agent"
 
 [dependencies]
 tokio = { workspace = true }
-tokio-util = { workspace = true }
-rand = { workspace = true }
 hex = { workspace = true }
 toml = { workspace = true }
 serde = { workspace = true }
@@ -21,11 +19,8 @@ tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
 
 uuid = { workspace = true }
-dirs = { workspace = true }
-
 chrono = "0.4"
 clap = { version = "4.5", features = ["derive"] }
-urlencoding = "2.1"
 serde_yml = "0.0.12"
 crossterm = "0.28"
 ratatui = "0.29"
@@ -33,10 +28,9 @@ dotenv = "0.15.0"
 
 playit-agent-core = { path = "../agent_core", version = "1.0.10" }
 playit-ipc = { path = "../playit-ipc", version = "1.0.10" }
-playitd = { path = "../playitd", version = "1.0.10" }
-playit-agent-proto = { path = "../agent_proto", version = "1.3.0" }
-playit-api-client = { path = "../api_client", version = "0.2.0" }
-# playit-ping-monitor = { path = "../ping_monitor" }
+playit-model = { path = "../playit-model", version = "1.0.10" }
+playit-platform = { path = "../playit-platform", version = "1.0.10" }
+playit-runtime = { path = "../playit-runtime", version = "1.0.10" }
 
 [target.'cfg(windows)'.dependencies]
 whoami = "1.5"

@@ -1,0 +1,35 @@
+name: Compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  frozen-api-client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Reject api_client changes in pull requests
+        if: github.event_name == 'pull_request'
+        run: git diff --exit-code ${{ github.event.pull_request.base.sha }} ${{ github.sha }} -- packages/api_client
+      - name: Reject api_client drift
+        run: bash .github/scripts/check-api-client-frozen.sh
+      - name: Reject forbidden runtime dependencies
+        run: bash .github/scripts/check-dependency-boundaries.sh
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+      - name: Test workspace
+        run: cargo test --workspace --all-targets

@@ -7,13 +7,4 @@ description = "Windows installer provisioning helper for playit"
 repository = "https://github.com/playit-cloud/playit-agent"
 
 [dependencies]
-playitd = { path = "../playitd", version = "1.0.10" }
-
-[target."cfg(windows)".dependencies]
-windows = { version = "0.62.2", features = [
-    "Win32_Foundation",
-    "Win32_System_Com",
-    "Win32_System_Environment",
-    "Win32_System_Registry",
-    "Win32_UI_Shell",
-] }
+playit-platform = { path = "../playit-platform", version = "1.0.10" }

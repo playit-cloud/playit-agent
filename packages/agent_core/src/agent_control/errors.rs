@@ -7,19 +7,14 @@ use std::{
     time::Duration,
 };
 
+use crate::gateway::GatewayError;
 use futures_util::TryFutureExt;
-use playit_api_client::{
-    api::{ApiError, ApiErrorNoFail, ApiResponseError},
-    http_client::HttpClientError,
-};
 
 #[derive(Debug)]
 pub enum SetupError {
     IoError(std::io::Error),
     FailedToConnect,
-    ApiFail(String),
-    ApiError(ApiResponseError),
-    RequestError(HttpClientError),
+    Gateway(GatewayError),
     AttemptingToAuthWithOldFlow,
     FailedToDecodeSignedAgentRegisterHex,
     NoResponseFromAuthenticate,
@@ -94,22 +89,9 @@ impl<R, E: From<TimeoutSource>, F: Future<Output = Result<R, E>>> TryTimeoutHelp
     }
 }
 
-impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for SetupError {
-    fn from(value: ApiError<F, HttpClientError>) -> Self {
-        match value {
-            ApiError::ApiError(api) => SetupError::ApiError(api),
-            ApiError::ClientError(error) => SetupError::RequestError(error),
-            ApiError::Fail(fail) => SetupError::ApiFail(serde_json::to_string(&fail).unwrap()),
-        }
-    }
-}
-
-impl From<ApiErrorNoFail<HttpClientError>> for SetupError {
-    fn from(value: ApiErrorNoFail<HttpClientError>) -> Self {
-        match value {
-            ApiErrorNoFail::ApiError(api) => SetupError::ApiError(api),
-            ApiErrorNoFail::ClientError(error) => SetupError::RequestError(error),
-        }
+impl From<GatewayError> for SetupError {
+    fn from(value: GatewayError) -> Self {
+        Self::Gateway(value)
     }
 }
 

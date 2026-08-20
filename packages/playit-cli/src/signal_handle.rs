@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
 use tokio::signal::ctrl_c;
 
-static SIGNAL: LazyLock<SignalHandle> = LazyLock::new(SignalHandle::setup);
+static SIGNAL: LazyLock<SignalHandle> = LazyLock::new(SignalHandle::new);
 
 pub fn get_signal_handle() -> SignalHandle {
     SIGNAL.clone()
@@ -46,36 +46,33 @@ impl SignalHandle {
 }
 
 impl SignalHandle {
-    fn setup() -> Self {
-        let signal = SignalHandle {
+    fn new() -> Self {
+        Self {
             inner: Arc::new(Inner {
                 confirm_close: AtomicU32::new(0),
                 close_requested: AtomicBool::new(false),
             }),
-        };
+        }
+    }
 
-        let inner = signal.inner.clone();
-        tokio::spawn(async move {
-            loop {
-                if let Err(error) = ctrl_c().await {
-                    tracing::error!(?error, "cannot listen for ctrl_c");
-                    break;
-                }
-
-                tracing::info!("received Ctrl+C signal");
-
-                if inner.confirm_close.load(Ordering::SeqCst) == 0 {
-                    tracing::info!("no Ctrl+C handler set, closing program");
-                    std::process::exit(0);
-                }
-
-                if inner.close_requested.swap(true, Ordering::SeqCst) {
-                    tracing::info!("Close requested twice, exiting program");
-                    std::process::exit(0);
-                }
+    pub(crate) async fn watch(self) {
+        loop {
+            if let Err(error) = ctrl_c().await {
+                tracing::error!(?error, "cannot listen for ctrl_c");
+                break;
             }
-        });
 
-        signal
+            tracing::info!("received Ctrl+C signal");
+
+            if self.inner.confirm_close.load(Ordering::SeqCst) == 0 {
+                tracing::info!("no Ctrl+C handler set, closing program");
+                std::process::exit(0);
+            }
+
+            if self.inner.close_requested.swap(true, Ordering::SeqCst) {
+                tracing::info!("Close requested twice, exiting program");
+                std::process::exit(0);
+            }
+        }
     }
 }
