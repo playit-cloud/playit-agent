@@ -482,6 +482,9 @@ impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for CliError {
 impl From<ApiErrorNoFail<HttpClientError>> for CliError {
     fn from(e: ApiErrorNoFail<HttpClientError>) -> Self {
         match e {
+            ApiErrorNoFail::UnexpectedFail => {
+                CliError::ApiFail("unexpected API fail response".to_string())
+            }
             ApiErrorNoFail::ApiError(e) => CliError::ApiError(e),
             ApiErrorNoFail::ClientError(e) => CliError::RequestError(e),
         }
