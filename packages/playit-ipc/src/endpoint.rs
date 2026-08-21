@@ -18,10 +18,6 @@ impl IpcEndpoint {
         Self::Filesystem(PathBuf::from(value))
     }
 
-    pub fn default() -> Self {
-        Self::parse(paths::default_socket_path_string())
-    }
-
     pub fn as_display_path(&self) -> String {
         match self {
             Self::Filesystem(path) => path.display().to_string(),
@@ -42,6 +38,12 @@ impl IpcEndpoint {
             Self::Filesystem(path) => Some(path.as_path()),
             Self::Namespaced(_) => None,
         }
+    }
+}
+
+impl Default for IpcEndpoint {
+    fn default() -> Self {
+        Self::parse(paths::default_socket_path_string())
     }
 }
 

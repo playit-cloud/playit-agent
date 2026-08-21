@@ -11,7 +11,7 @@ impl IpResource {
     pub fn from_ip(ip: IpAddr) -> Self {
         let (region, ip_num) = PlayitRegion::from_ip(ip);
 
-        let is_region_ip = ip_num >= 64 && ip_num < 128;
+        let is_region_ip = (64..128).contains(&ip_num);
         let region = match (is_region_ip, region) {
             (true, Some(region)) => region,
             _ => PlayitRegion::Anycast,

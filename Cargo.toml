@@ -2,6 +2,7 @@
 members = [
     "packages/playit-cli",
     "packages/playit-ipc",
+    "packages/playit-service-manager",
     "packages/playitd",
     "packages/playitd-tray",
     "packages/playitd-windows-setup",
@@ -33,6 +34,14 @@ chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 message-encoding = "0.2.2"
 dirs = "6.0"
+dotenv = "0.15.0"
+thiserror = "2"
+
+[workspace.lints.rust]
+warnings = "deny"
+
+[workspace.lints.clippy]
+all = "deny"
 
 [profile.release]
 strip = "debuginfo"

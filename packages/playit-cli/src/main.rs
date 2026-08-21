@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::sync::LazyLock;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
@@ -10,22 +9,17 @@ use client::{
     run_secret_path_command, run_start_command, run_status_command, run_stop_command,
 };
 use playit_agent_core::agent_control::platform::current_platform;
-use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use rand::Rng;
 use service::ServiceManagerMode;
 use tracing_subscriber::EnvFilter;
-use uuid::Uuid;
 
 use playit_agent_core::agent_control::errors::SetupError;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::http_client::HttpClientError;
-use playit_api_client::{PlayitApi, api::*};
+use playit_api_client::{PlayitApi, api::*, default_api_base};
 
 use crate::signal_handle::get_signal_handle;
 use crate::ui::{ConsoleUi, UISettings};
-
-pub static API_BASE: LazyLock<String> =
-    LazyLock::new(|| dotenv::var("API_BASE").unwrap_or("https://api.playit.gg".to_string()));
 
 mod client;
 #[cfg(target_os = "linux")]
@@ -155,18 +149,6 @@ async fn main() -> std::process::ExitCode {
 async fn run_cli() -> Result<std::process::ExitCode, CliError> {
     let cli = Cli::parse();
 
-    /* register docker */
-    {
-        let platform = current_platform();
-
-        register_platform(platform);
-
-        help_register_version(
-            env!("CARGO_PKG_VERSION"),
-            "308943e8-faef-4835-a2ba-270351f72aa3",
-        );
-    }
-
     let target = CliTarget::from_socket_path(cli.socket_path.clone());
     let service_manager = service_manager_mode(&cli);
     let attach_stdout = matches!(&cli.command, Some(Commands::Attach { stdout: true, .. }));
@@ -292,7 +274,7 @@ pub async fn run_setup_flow(
     let key = claim_exchange(console, &claim_code, ClaimAgentType::Assignable, 0).await?;
     provision_service_secret(console, target, &key, service_manager).await?;
 
-    let api = PlayitApi::create(API_BASE.to_string(), Some(key));
+    let api = PlayitApi::create(default_api_base(), Some(key));
     if let Ok(session) = api.login_guest().await {
         console
             .write_screen(format!(
@@ -300,7 +282,6 @@ pub async fn run_setup_flow(
                 session.session_key
             ))
             .await;
-        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 
     console
@@ -312,7 +293,7 @@ pub async fn run_setup_flow(
 pub fn claim_generate() -> String {
     let mut buffer = [0u8; 5];
     rand::rng().fill(&mut buffer);
-    hex::encode(&buffer)
+    hex::encode(buffer)
 }
 
 pub fn claim_url(code: &str) -> Result<String, CliError> {
@@ -329,7 +310,7 @@ pub async fn claim_exchange(
     agent_type: ClaimAgentType,
     wait_sec: u32,
 ) -> Result<String, CliError> {
-    let api = PlayitApi::create(API_BASE.to_string(), None);
+    let api = PlayitApi::create(default_api_base(), None);
 
     let end_at = if wait_sec == 0 {
         u64::MAX
@@ -430,24 +411,10 @@ pub async fn claim_exchange(
 #[derive(Debug)]
 pub enum CliError {
     InvalidClaimCode,
-    NotImplemented,
-    MissingSecret,
-    MalformedSecret,
-    InvalidSecret,
     RenderError(std::io::Error),
-    SecretFileLoadError,
-    SecretFileWriteError(std::io::Error),
-    SecretFilePathMissing,
-    InvalidPortType,
-    InvalidPortCount,
-    InvalidMappingOverride,
     AgentClaimRejected,
-    InvalidConfigFile,
-    TunnelNotFound(Uuid),
     TimedOut,
     AnswerNotProvided,
-    TunnelOverwrittenAlready(Uuid),
-    ResourceNotFoundAfterCreate(Uuid),
     RequestError(HttpClientError),
     ApiError(ApiResponseError),
     ApiFail(String),
@@ -461,10 +428,19 @@ impl Error for CliError {}
 impl Display for CliError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::InvalidClaimCode => write!(f, "The claim code is invalid."),
+            Self::RenderError(error) => write!(f, "Terminal interface error: {error}"),
+            Self::AgentClaimRejected => {
+                write!(f, "The playit API rejected the agent claim request.")
+            }
+            Self::TimedOut => write!(f, "The operation timed out."),
+            Self::AnswerNotProvided => write!(f, "No answer was provided."),
+            Self::RequestError(error) => write!(f, "Could not reach the playit API: {error}"),
+            Self::ApiError(error) => write!(f, "The playit API returned an error: {error}"),
+            Self::TunnelSetupError(error) => write!(f, "Failed to start the playit agent: {error}"),
             Self::ServiceError(message) | Self::IpcError(message) | Self::ApiFail(message) => {
                 write!(f, "{message}")
             }
-            _ => write!(f, "{:?}", self),
         }
     }
 }
@@ -474,7 +450,10 @@ impl<F: serde::Serialize> From<ApiError<F, HttpClientError>> for CliError {
         match e {
             ApiError::ApiError(e) => CliError::ApiError(e),
             ApiError::ClientError(e) => CliError::RequestError(e),
-            ApiError::Fail(fail) => CliError::ApiFail(serde_json::to_string(&fail).unwrap()),
+            ApiError::Fail(fail) => CliError::ApiFail(
+                serde_json::to_string(&fail)
+                    .unwrap_or_else(|_| "The API rejected the request.".to_string()),
+            ),
         }
     }
 }
@@ -497,6 +476,22 @@ impl From<SetupError> for CliError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cli_errors_have_human_readable_messages() {
+        let cases = [
+            (CliError::InvalidClaimCode, "claim code"),
+            (CliError::AgentClaimRejected, "rejected"),
+            (CliError::TimedOut, "timed out"),
+            (CliError::AnswerNotProvided, "No answer"),
+        ];
+
+        for (error, expected) in cases {
+            let rendered = error.to_string();
+            assert!(rendered.contains(expected), "{rendered}");
+            assert!(!rendered.contains("CliError"));
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

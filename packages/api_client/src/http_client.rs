@@ -1,4 +1,5 @@
 use std::panic::Location;
+use std::sync::Arc;
 
 use reqwest::StatusCode;
 use serde::Serialize;
@@ -7,30 +8,18 @@ use tokio::sync::RwLock;
 
 use crate::api::{ApiResult, PlayitHttpClient};
 
+#[derive(Clone)]
 pub struct HttpClient {
     api_base: String,
-    auth_header: RwLock<Option<String>>,
+    auth_header: Arc<RwLock<Option<String>>>,
     client: reqwest::Client,
-}
-
-impl Clone for HttpClient {
-    fn clone(&self) -> Self {
-        Self {
-            api_base: self.api_base.clone(),
-            auth_header: match self.auth_header.try_read() {
-                Ok(v) => RwLock::new(v.clone()),
-                _ => RwLock::new(None),
-            },
-            client: self.client.clone(),
-        }
-    }
 }
 
 impl HttpClient {
     pub fn new(api_base: String, auth_header: Option<String>) -> Self {
         HttpClient {
             api_base,
-            auth_header: RwLock::new(auth_header),
+            auth_header: Arc::new(RwLock::new(auth_header)),
             client: reqwest::Client::new(),
         }
     }
@@ -45,12 +34,39 @@ impl HttpClient {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::HttpClient;
+
+    #[tokio::test]
+    async fn clone_while_auth_is_write_locked_shares_auth_state() {
+        let client = HttpClient::new(
+            "https://example.invalid".to_string(),
+            Some("initial".to_string()),
+        );
+
+        let mut auth = client.auth_header.write().await;
+        let cloned = client.clone();
+        *auth = Some("updated".to_string());
+        drop(auth);
+
+        assert_eq!(
+            cloned.auth_header.read().await.as_deref(),
+            Some("updated"),
+            "cloning must never silently drop authentication"
+        );
+
+        cloned.remove_auth().await;
+        assert_eq!(*client.auth_header.read().await, None);
+    }
+}
+
 impl PlayitHttpClient for HttpClient {
     type Error = HttpClientError;
 
     async fn call<Req: Serialize + Send, Res: DeserializeOwned, Err: DeserializeOwned>(
         &self,
-        _caller: &'static Location<'static>,
+        caller: &'static Location<'static>,
         path: &str,
         req: Req,
     ) -> Result<ApiResult<Res, Err>, Self::Error> {
@@ -86,18 +102,29 @@ impl PlayitHttpClient for HttpClient {
         .await;
 
         if let Err(error) = &res {
-            tracing::error!(?error, request = %std::any::type_name::<Req>(), "API call failed");
+            tracing::error!(
+                ?error,
+                request = %std::any::type_name::<Req>(),
+                caller_file = caller.file(),
+                caller_line = caller.line(),
+                caller_column = caller.column(),
+                "API call failed"
+            );
         }
 
         res
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum HttpClientError {
+    #[error("failed to serialize API request: {0}")]
     SerializeError(serde_json::Error),
+    #[error("failed to parse API response with status {1}: {0}")]
     ParseError(serde_json::Error, StatusCode, String),
+    #[error("HTTP request failed: {0}")]
     RequestError(reqwest::Error),
+    #[error("the API rate limit was exceeded")]
     TooManyRequests,
 }
 

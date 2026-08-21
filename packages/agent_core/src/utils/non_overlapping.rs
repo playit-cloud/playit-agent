@@ -2,6 +2,12 @@ pub struct NonOverlapping<T> {
     elements: Vec<T>,
 }
 
+impl<T> Default for NonOverlapping<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<T> NonOverlapping<T> {
     pub fn new() -> Self {
         NonOverlapping { elements: vec![] }

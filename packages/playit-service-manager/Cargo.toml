@@ -1,0 +1,24 @@
+[package]
+name = "playit-service-manager"
+version.workspace = true
+edition = "2024"
+authors = ["Patrick Lorio <patrick@playit.gg>"]
+description = "Platform service control and account discovery for playit"
+repository = "https://github.com/playit-cloud/playit-agent"
+
+[lints]
+workspace = true
+
+[dependencies]
+playit-ipc = { path = "../playit-ipc", version = "1.0.10" }
+service-manager = "0.10"
+tokio = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+uzers = { version = "0.12.2", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_System_Services",
+] }

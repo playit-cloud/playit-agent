@@ -1,4 +1,9 @@
-use std::io::{Error, ErrorKind, Read, Write};
+//! Low-level codecs and wire types for the playit tunnel control protocol.
+//!
+//! Keep this crate independent of agent runtime, daemon, IPC, and UI policy so
+//! protocol encoding can be reused and tested in isolation.
+
+use std::io::{Error, Read, Write};
 use std::net::IpAddr;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -106,7 +111,7 @@ impl MessageEncoding for PortProto {
             1 => Ok(PortProto::Tcp),
             2 => Ok(PortProto::Udp),
             3 => Ok(PortProto::Both),
-            _ => Err(Error::new(ErrorKind::Other, "invalid port proto")),
+            _ => Err(Error::other("invalid port proto")),
         }
     }
 }

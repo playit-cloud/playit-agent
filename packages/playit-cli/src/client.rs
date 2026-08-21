@@ -5,6 +5,7 @@ use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 use playit_ipc::model::{
     AgentLifecycle, LogLevel as ServiceLogLevel, ServicePhase, ServiceUpdate, SubscribeResponse,
 };
+use playit_ipc::{AGENT_OVER_LIMIT_TITLE, agent_over_limit_guidance};
 
 #[cfg(target_os = "linux")]
 use crate::linux;
@@ -14,9 +15,6 @@ use crate::service::{
 };
 use crate::ui::{ConnectionStats, ConsoleUi, TuiApp};
 use crate::{CliError, run_setup_flow};
-
-const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
-const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttachMode {
@@ -146,19 +144,13 @@ pub async fn run_auto_command(
 }
 
 async fn wait_for_auto_lifecycle(client: &mut IpcClient) -> Result<AgentLifecycle, CliError> {
-    for _ in 0..50 {
-        let lifecycle = client.lifecycle().await.map_err(|error| {
-            CliError::IpcError(format!("Failed to read playitd lifecycle: {error}"))
-        })?;
-
-        if !matches!(lifecycle, AgentLifecycle::Starting) {
-            return Ok(lifecycle);
-        }
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-
-    Ok(AgentLifecycle::Starting)
+    client
+        .wait_for_lifecycle(Duration::from_secs(5), |lifecycle| {
+            !matches!(lifecycle, AgentLifecycle::Starting)
+        })
+        .await
+        .map_err(|error| CliError::IpcError(format!("Failed to read playitd lifecycle: {error}")))
+        .map(|lifecycle| lifecycle.unwrap_or(AgentLifecycle::Starting))
 }
 
 async fn reset_service_secret_for_setup(target: &CliTarget) -> Result<(), CliError> {
@@ -178,39 +170,53 @@ async fn reset_service_secret_for_setup(target: &CliTarget) -> Result<(), CliErr
 }
 
 async fn wait_for_service_waiting_for_secret(target: &CliTarget) -> Result<(), CliError> {
-    for _ in 0..50 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+
+    loop {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+
         let mut client = match connect_target(target).await {
             Ok(client) => client,
             Err(_) => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(50).min(remaining)).await;
                 continue;
             }
         };
 
-        let lifecycle = client.lifecycle().await.map_err(|error| {
-            CliError::IpcError(format!("Failed to read playitd lifecycle: {error}"))
-        })?;
+        let lifecycle = match client
+            .wait_for_lifecycle(remaining, |lifecycle| {
+                matches!(
+                    lifecycle,
+                    AgentLifecycle::WaitingForSecret
+                        | AgentLifecycle::Stopping
+                        | AgentLifecycle::Error(_)
+                )
+            })
+            .await
+        {
+            Ok(Some(lifecycle)) => lifecycle,
+            Ok(None) => break,
+            Err(error) if error.is_connection_closed() => continue,
+            Err(error) => {
+                return Err(CliError::IpcError(format!(
+                    "Failed to read playitd lifecycle: {error}"
+                )));
+            }
+        };
 
         match lifecycle {
             AgentLifecycle::WaitingForSecret => return Ok(()),
-            AgentLifecycle::HasInvalidSecret(_)
-            | AgentLifecycle::DisabledOverLimit(_)
-            | AgentLifecycle::Running(_)
-            | AgentLifecycle::Starting => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            AgentLifecycle::Stopping => {
-                return Err(CliError::ServiceError(
-                    "The playit service is stopping and did not become ready for setup after the reset."
-                        .to_string(),
-                ));
-            }
+            AgentLifecycle::Stopping => continue,
             AgentLifecycle::Error(error) => {
                 return Err(CliError::ServiceError(format!(
                     "The playit service reported an error after the reset: {}",
                     error.message
                 )));
             }
+            _ => {}
         }
     }
 
@@ -378,7 +384,6 @@ pub async fn run_stop_command(
                     Ok(response) if response.accepted => {
                         direct_stop_fallback = false;
                         println!("Asked the playit service to stop.");
-                        tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                     Ok(response) => {
                         tracing::warn!(
@@ -403,17 +408,18 @@ pub async fn run_stop_command(
                 }
             }
 
-            if direct_stop_fallback {
-                if matches!(
+            if direct_stop_fallback
+                && matches!(
                     stop_installed_service_for_cli(service_manager)?,
                     InstalledServiceStopState::AlreadyStopped
-                ) {
-                    return Ok(());
-                }
+                )
+            {
+                return Ok(());
             }
 
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            if !IpcClient::is_running(get_default_socket_path()).await {
+            if IpcClient::wait_until_stopped(get_default_socket_path(), Duration::from_secs(5))
+                .await
+            {
                 println!("The playit service stopped.");
             } else {
                 println!("The playit service may still be running. Run `playit status` to check.");
@@ -434,9 +440,8 @@ pub async fn run_stop_command(
             }
 
             println!("playitd stop requested for socket {path}");
-            tokio::time::sleep(Duration::from_secs(1)).await;
 
-            if !IpcClient::is_running(path.as_str()).await {
+            if IpcClient::wait_until_stopped(path, Duration::from_secs(5)).await {
                 println!("playitd daemon stopped");
             } else {
                 println!(
@@ -569,7 +574,38 @@ pub async fn provision_service_secret(
         ));
     }
 
-    Ok(())
+    let lifecycle = client
+        .wait_for_lifecycle(Duration::from_secs(30), |lifecycle| {
+            !matches!(
+                lifecycle,
+                AgentLifecycle::Starting | AgentLifecycle::WaitingForSecret
+            )
+        })
+        .await
+        .map_err(|error| {
+            CliError::IpcError(format!(
+                "Secret was saved, but the service status could not be read: {error}"
+            ))
+        })?
+        .ok_or_else(|| {
+            CliError::ServiceError(
+                "Secret was saved, but the playit service did not become ready within 30 seconds."
+                    .to_string(),
+            )
+        })?;
+
+    match lifecycle {
+        AgentLifecycle::Running(_) => Ok(()),
+        AgentLifecycle::DisabledOverLimit(error)
+        | AgentLifecycle::HasInvalidSecret(error)
+        | AgentLifecycle::Error(error) => Err(CliError::ServiceError(error.message)),
+        AgentLifecycle::Stopping => Err(CliError::ServiceError(
+            "Secret was saved, but the playit service stopped before becoming ready.".to_string(),
+        )),
+        AgentLifecycle::Starting | AgentLifecycle::WaitingForSecret => Err(CliError::ServiceError(
+            "Secret was saved, but the playit service did not become ready.".to_string(),
+        )),
+    }
 }
 
 pub async fn run_reset_command(target: &CliTarget) -> Result<(), CliError> {
@@ -718,14 +754,8 @@ fn format_service_phase(phase: &ServicePhase) -> &'static str {
     }
 }
 
-fn agent_over_limit_guidance() -> String {
-    format!(
-        "Delete unused agents: {ACCOUNT_AGENTS_URL}\nIncrease your agent limit: {ACCOUNT_UPGRADE_URL}"
-    )
-}
-
 fn agent_over_limit_title() -> &'static str {
-    "The playit service cannot start because this account is over the agent limit."
+    AGENT_OVER_LIMIT_TITLE
 }
 
 fn format_log_level(level: &ServiceLogLevel) -> &'static str {
@@ -738,11 +768,10 @@ fn format_log_level(level: &ServiceLogLevel) -> &'static str {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn linux_start_command_requires_service_manager() {
         let mut console = ConsoleUi::new(crate::ui::UISettings { auto_answer: None });

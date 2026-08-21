@@ -3,8 +3,11 @@ name = "playitd"
 version.workspace = true
 edition = "2024"
 authors = ["Patrick Lorio <patrick@playit.gg>"]
-description = "Shared daemon, IPC, and service management for playit"
+description = "Shared daemon and IPC runtime for playit"
 repository = "https://github.com/playit-cloud/playit-agent"
+
+[lints]
+workspace = true
 
 [dependencies]
 tokio = { workspace = true }
@@ -19,15 +22,14 @@ hex = { workspace = true }
 toml = { workspace = true }
 governor = "0.10.0"
 
-dotenv = "0.15.0"
 interprocess = { version = "2.2", features = ["tokio"] }
-service-manager = "0.10"
-
 playit-agent-core = { path = "../agent_core", version = "1.0.10" }
 playit-ipc = { path = "../playit-ipc", version = "1.0.10" }
+playit-service-manager = { path = "../playit-service-manager", version = "1.0.10" }
 playit-api-client = { path = "../api_client", version = "0.2.0" }
 clap = { version = "4.6.0", features = ["derive"] }
 serde_yml = "0.0.12"
+thiserror = { workspace = true }
 
 [[bin]]
 name = "playitd"
@@ -39,7 +41,6 @@ path = "src/bin/playitd-service.rs"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-uzers = { version = "0.12.2", default-features = false }
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.59.0", features = [

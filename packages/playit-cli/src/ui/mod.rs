@@ -51,10 +51,11 @@ impl ConsoleUi {
     }
 
     fn write_screen_inner(&mut self, content: String) {
-        if let Some((ts, last_render)) = &self.last_display {
-            if now_milli() - *ts < 10_000 && content == *last_render {
-                return;
-            }
+        if let Some((ts, last_render)) = &self.last_display
+            && now_milli() - *ts < 10_000
+            && content == *last_render
+        {
+            return;
         }
 
         println!("{content}");
@@ -88,10 +89,10 @@ impl ConsoleUi {
                     .map_err(CliError::RenderError)?;
                 let input = line.trim().to_lowercase();
 
-                if input.is_empty() {
-                    if let Some(default) = default_yes {
-                        return Ok(default);
-                    }
+                if input.is_empty()
+                    && let Some(default) = default_yes
+                {
+                    return Ok(default);
                 }
 
                 match input.as_str() {

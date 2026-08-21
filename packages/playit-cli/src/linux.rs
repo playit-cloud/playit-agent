@@ -6,11 +6,11 @@ use std::{
 };
 
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
-use playitd::manager::{LinuxServiceManager, installed_service_is_active_with_linux_manager};
-use playitd::unix_account::{
+use playit_service_manager::unix_account::{
     current_process_has_group, current_user_account, current_user_is_root, effective_gid,
     effective_uid, group_info_by_gid,
 };
+use playit_service_manager::{LinuxServiceManager, installed_service_is_active_with_linux_manager};
 
 use crate::{CliError, ui::ConsoleUi};
 
@@ -150,10 +150,10 @@ fn socket_access_issue(socket_path: &str) -> Option<LinuxSocketAccessIssue> {
         return None;
     }
 
-    if socket_group_name == Some(PLAYIT_GROUP_NAME) {
-        if let Some(issue) = playit_group_access_issue(socket_gid, socket_group.as_ref()) {
-            return Some(issue);
-        }
+    if socket_group_name == Some(PLAYIT_GROUP_NAME)
+        && let Some(issue) = playit_group_access_issue(socket_gid, socket_group.as_ref())
+    {
+        return Some(issue);
     }
 
     Some(LinuxSocketAccessIssue::GenericPermissionDenied {

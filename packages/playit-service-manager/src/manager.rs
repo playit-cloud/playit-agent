@@ -75,7 +75,12 @@ impl ServiceController {
     pub fn new() -> Result<Self, ServiceManagerError> {
         let manager = <dyn ServiceManager>::native()
             .map_err(|e| ServiceManagerError::NotAvailable(e.to_string()))?;
-        let label = Self::SERVICE_LABEL.parse().unwrap();
+        let label = Self::SERVICE_LABEL.parse().map_err(|error| {
+            ServiceManagerError::NotAvailable(format!(
+                "invalid installed service label {}: {error}",
+                Self::SERVICE_LABEL
+            ))
+        })?;
         Ok(Self { manager, label })
     }
 
@@ -114,16 +119,16 @@ pub fn installed_service_is_active_with_linux_manager(
 pub fn installed_service_state() -> Result<InstalledServiceState, ServiceManagerError> {
     #[cfg(target_os = "linux")]
     {
-        return Ok(if linux::is_systemd_service_active()? {
+        Ok(if linux::is_systemd_service_active()? {
             InstalledServiceState::Running
         } else {
             InstalledServiceState::Stopped
-        });
+        })
     }
 
     #[cfg(target_os = "windows")]
     {
-        return windows_installed_service_state();
+        windows_installed_service_state()
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -150,7 +155,7 @@ pub async fn ensure_installed_service_running() -> Result<(), ServiceManagerErro
         }
 
         linux::start_systemd_service()?;
-        return wait_for_installed_service().await;
+        wait_for_installed_service().await
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -191,7 +196,7 @@ pub async fn ensure_installed_service_running_with_linux_manager(
 pub fn stop_installed_service() -> Result<(), ServiceManagerError> {
     #[cfg(target_os = "linux")]
     {
-        return linux::stop_systemd_service();
+        linux::stop_systemd_service()
     }
 
     #[cfg(not(target_os = "linux"))]

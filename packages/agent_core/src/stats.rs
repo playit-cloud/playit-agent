@@ -1,6 +1,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use crate::network::tcp::tcp_errors::TcpErrors;
+use crate::network::udp::udp_errors::UdpErrors;
+
 /// Shared statistics for the agent
 #[derive(Debug, Default, Clone)]
 pub struct AgentStats {
@@ -17,6 +20,8 @@ struct StatsInner {
     pub active_tcp: AtomicU32,
     /// Active UDP flows
     pub active_udp: AtomicU32,
+    pub tcp_errors: TcpErrors,
+    pub udp_errors: UdpErrors,
 }
 
 impl AgentStats {
@@ -86,6 +91,14 @@ impl AgentStats {
         self.inner.active_udp.load(Ordering::Relaxed)
     }
 
+    pub fn tcp_errors(&self) -> &TcpErrors {
+        &self.inner.tcp_errors
+    }
+
+    pub fn udp_errors(&self) -> &UdpErrors {
+        &self.inner.udp_errors
+    }
+
     /// Get a snapshot of all stats
     pub fn snapshot(&self) -> StatsSnapshot {
         StatsSnapshot {
@@ -93,6 +106,10 @@ impl AgentStats {
             bytes_out: self.bytes_out(),
             active_tcp: self.active_tcp(),
             active_udp: self.active_udp(),
+            tcp_errors: serde_json::to_value(self.tcp_errors())
+                .expect("network error counters must serialize"),
+            udp_errors: serde_json::to_value(self.udp_errors())
+                .expect("network error counters must serialize"),
         }
     }
 }
@@ -104,4 +121,25 @@ pub struct StatsSnapshot {
     pub bytes_out: u64,
     pub active_tcp: u32,
     pub active_udp: u32,
+    pub tcp_errors: serde_json::Value,
+    pub udp_errors: serde_json::Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentStats;
+
+    #[test]
+    fn network_error_counters_are_instance_scoped_and_snapshotted() {
+        let first = AgentStats::new();
+        let second = AgentStats::new();
+
+        first.udp_errors().recv_io_error.inc();
+        first.tcp_errors().new_client_rate_limited.inc();
+
+        assert_eq!(first.snapshot().udp_errors["recv_io_error"], 1);
+        assert_eq!(first.snapshot().tcp_errors["new_client_rate_limited"], 1);
+        assert_eq!(second.snapshot().udp_errors["recv_io_error"], 0);
+        assert_eq!(second.snapshot().tcp_errors["new_client_rate_limited"], 0);
+    }
 }

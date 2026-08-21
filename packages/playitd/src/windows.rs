@@ -182,16 +182,17 @@ impl LocalString {
     fn new(ptr: *mut u16) -> Option<Self> {
         NonNull::new(ptr).map(Self)
     }
+}
 
-    fn to_string(&self) -> String {
+impl std::fmt::Display for LocalString {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut len = 0;
         unsafe {
             while *self.0.as_ptr().add(len) != 0 {
                 len += 1;
             }
-            OsString::from_wide(std::slice::from_raw_parts(self.0.as_ptr(), len))
-                .to_string_lossy()
-                .into_owned()
+            let value = OsString::from_wide(std::slice::from_raw_parts(self.0.as_ptr(), len));
+            formatter.write_str(&value.to_string_lossy())
         }
     }
 }

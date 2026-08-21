@@ -31,6 +31,10 @@ impl<T> IdSlab<T> {
         self.entries.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     pub fn available(&self) -> usize {
         self.capacity.saturating_sub(self.entries.len())
     }

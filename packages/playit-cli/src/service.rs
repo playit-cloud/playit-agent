@@ -1,11 +1,11 @@
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 #[cfg(not(target_os = "linux"))]
-use playitd::manager::{
+use playit_service_manager::{
     InstalledServiceState as ManagerInstalledServiceState, ensure_installed_service_running,
     installed_service_state, stop_installed_service,
 };
 #[cfg(target_os = "linux")]
-use playitd::manager::{
+use playit_service_manager::{
     LinuxServiceManager, ensure_installed_service_running_with_linux_manager,
     stop_installed_service_with_linux_manager,
 };
@@ -15,23 +15,17 @@ use crate::CliError;
 use crate::linux;
 use crate::ui::ConsoleUi;
 
-#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServiceManagerMode {
+    #[cfg(target_os = "linux")]
     None,
+    #[cfg(target_os = "linux")]
     Systemd,
+    #[cfg(target_os = "linux")]
     OpenRc,
-}
-
-#[cfg(target_os = "windows")]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ServiceManagerMode {
+    #[cfg(target_os = "windows")]
     WindowsService,
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ServiceManagerMode {
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
     Native,
 }
 
@@ -51,6 +45,9 @@ pub async fn ensure_installed_service_running_for_cli(
     console: Option<&mut ConsoleUi>,
     service_manager: ServiceManagerMode,
 ) -> Result<InstalledServiceStartState, CliError> {
+    #[cfg(not(target_os = "linux"))]
+    let _ = console;
+
     if IpcClient::is_running(get_default_socket_path()).await {
         return Ok(InstalledServiceStartState::AlreadyRunning);
     }
@@ -72,7 +69,7 @@ pub async fn ensure_installed_service_running_for_cli(
             .await
             .map_err(|error| CliError::ServiceError(format!("Failed to start service: {error}")))?;
 
-        return Ok(InstalledServiceStartState::Started);
+        Ok(InstalledServiceStartState::Started)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -115,11 +112,15 @@ pub fn stop_installed_service_for_cli(
             tracing::warn!("Failed to stop installed service: {error}");
         }
 
-        return Ok(InstalledServiceStopState::StopRequested);
+        Ok(InstalledServiceStopState::StopRequested)
     }
 
     #[cfg(not(target_os = "linux"))]
     {
+        if !installed_service_is_active_for_cli(service_manager)? {
+            return Ok(InstalledServiceStopState::AlreadyStopped);
+        }
+
         match service_manager {
             #[cfg(target_os = "windows")]
             ServiceManagerMode::WindowsService => {
@@ -148,7 +149,7 @@ pub fn installed_service_is_active_for_cli(
             return Err(no_service_manager_selected_error());
         };
 
-        return linux::installed_service_is_active(linux_manager);
+        linux::installed_service_is_active(linux_manager)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -162,10 +163,12 @@ pub fn installed_service_is_active_for_cli(
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn no_service_manager_selected_error() -> CliError {
     CliError::ServiceError(no_service_manager_selected_message())
 }
 
+#[cfg(target_os = "linux")]
 fn no_service_manager_selected_message() -> String {
     let socket_path = get_default_socket_path();
     format!(
@@ -184,11 +187,10 @@ pub(crate) fn linux_service_manager(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn linux_service_manager_mode_maps_to_systemd() {
         assert_eq!(

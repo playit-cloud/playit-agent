@@ -1912,6 +1912,7 @@ dependencies = [
  "serde_json",
  "slab",
  "slotmap",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "toml 0.9.12+spec-1.1.0",
@@ -1939,10 +1940,12 @@ version = "0.2.0"
 dependencies = [
  "byteorder",
  "chrono",
+ "dotenv",
  "reqwest",
  "rustls",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1957,13 +1960,12 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs 6.0.0",
- "dotenv",
  "hex",
  "playit-agent-core",
  "playit-agent-proto",
  "playit-api-client",
  "playit-ipc",
- "playitd",
+ "playit-service-manager",
  "rand",
  "ratatui",
  "serde",
@@ -1997,12 +1999,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "playit-service-manager"
+version = "1.0.10"
+dependencies = [
+ "playit-ipc",
+ "service-manager",
+ "tokio",
+ "uzers",
+ "windows-sys 0.59.0",
+]
+
+[[package]]
 name = "playitd"
 version = "1.0.10"
 dependencies = [
  "clap",
  "dirs 6.0.0",
- "dotenv",
  "governor",
  "hex",
  "interprocess",
@@ -2010,10 +2022,11 @@ dependencies = [
  "playit-agent-core",
  "playit-api-client",
  "playit-ipc",
+ "playit-service-manager",
  "serde",
  "serde_json",
  "serde_yml",
- "service-manager",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-util",
  "toml 0.9.12+spec-1.1.0",
@@ -2021,7 +2034,6 @@ dependencies = [
  "tracing-appender",
  "tracing-rolling-file",
  "tracing-subscriber",
- "uzers",
  "widestring",
  "windows-service",
  "windows-sys 0.59.0",
@@ -2034,7 +2046,7 @@ dependencies = [
  "image",
  "kanal",
  "playit-ipc",
- "playitd",
+ "playit-service-manager",
  "tokio",
  "tray-icon",
  "windows",
@@ -2045,6 +2057,7 @@ dependencies = [
 name = "playitd-windows-setup"
 version = "1.0.10"
 dependencies = [
+ "playit-service-manager",
  "playitd",
  "windows",
 ]

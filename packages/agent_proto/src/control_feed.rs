@@ -1,5 +1,5 @@
 use std::fmt::{Debug, Formatter};
-use std::io::{Error, ErrorKind, Read, Write};
+use std::io::{Error, Read, Write};
 use std::net::SocketAddr;
 
 use byteorder::{BigEndian, ReadBytesExt};
@@ -80,7 +80,7 @@ impl MessageEncoding for ControlFeed {
                 NewClientOld::read_from(read)?.into(),
             )),
             3 => Ok(ControlFeed::NewClient(NewClient::read_from(read)?)),
-            _ => Err(Error::new(ErrorKind::Other, "invalid ControlFeed id")),
+            _ => Err(Error::other("invalid ControlFeed id")),
         }
     }
 }

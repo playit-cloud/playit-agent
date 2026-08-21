@@ -63,7 +63,7 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
         Packets::new(64),
         stats.clone(),
     );
-    let mut udp_channel = UdpChannel::new(Packets::new(64))
+    let mut udp_channel = UdpChannel::new(Packets::new(64), stats.clone())
         .await
         .expect("create udp channel");
 
@@ -235,7 +235,7 @@ async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
         Packets::new(64),
         stats.clone(),
     );
-    let mut udp_channel = UdpChannel::new(Packets::new(64))
+    let mut udp_channel = UdpChannel::new(Packets::new(64), stats.clone())
         .await
         .expect("create udp channel");
 
@@ -325,7 +325,7 @@ async fn encapsulated_udp_tunnel_isolates_multiple_parallel_flows_and_recovers_t
         Packets::new(128),
         stats.clone(),
     );
-    let mut udp_channel = UdpChannel::new(Packets::new(128))
+    let mut udp_channel = UdpChannel::new(Packets::new(128), stats.clone())
         .await
         .expect("create udp channel");
 
@@ -435,7 +435,7 @@ async fn udp_tunnel_stress_reports_bitrate_by_packet_size() {
         Packets::new(4096),
         stats.clone(),
     );
-    let mut udp_channel = UdpChannel::new(Packets::new(4096))
+    let mut udp_channel = UdpChannel::new(Packets::new(4096), stats.clone())
         .await
         .expect("create udp channel");
 
@@ -565,6 +565,7 @@ impl FlowCase {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn drive_parallel_flows(
     tunnel_server: &UdpSocket,
     origin_server: &UdpSocket,
@@ -692,6 +693,7 @@ async fn establish_virtual_client(
     virtual_addr
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn measure_tunnel_to_origin_bitrate(
     tunnel_server: &UdpSocket,
     origin_server: &UdpSocket,
@@ -744,6 +746,7 @@ async fn measure_tunnel_to_origin_bitrate(
     ThroughputResult::new(elapsed, expected_bytes, expected_tunnel_bytes)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn measure_origin_to_tunnel_bitrate(
     origin_server: &UdpSocket,
     tunnel_server: &UdpSocket,
