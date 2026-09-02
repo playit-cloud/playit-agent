@@ -9,6 +9,8 @@ use tokio_util::sync::CancellationToken;
 use crate::stats::AgentStats;
 use crate::utils::now_milli;
 
+use crate::network::upload_qos::{UPLOAD_QOS_SLICE_SIZE, UploadFlow};
+
 const TCP_PIPE_BUFFER_SIZE: usize = 16 * 1024;
 
 /// Direction of data flow for stats tracking
@@ -59,6 +61,20 @@ impl TcpPipe {
         stats: Option<AgentStats>,
         direction: PipeDirection,
     ) -> Self {
+        Self::new_with_stats_and_upload_flow(cancel, from, to, stats, direction, None)
+    }
+
+    pub(super) fn new_with_stats_and_upload_flow<
+        R: AsyncRead + Unpin + Send + 'static,
+        W: AsyncWrite + Unpin + Send + 'static,
+    >(
+        cancel: CancellationToken,
+        from: R,
+        to: W,
+        stats: Option<AgentStats>,
+        direction: PipeDirection,
+        upload_flow: Option<UploadFlow>,
+    ) -> Self {
         let shared = Arc::new(Shared {
             last_activity: AtomicU64::new(now_milli()),
             bytes_written: AtomicU64::new(0),
@@ -74,6 +90,7 @@ impl TcpPipe {
                 to,
                 stats,
                 direction,
+                upload_flow,
             }
             .start(),
         );
@@ -113,11 +130,17 @@ struct Worker<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> {
     to: W,
     stats: Option<AgentStats>,
     direction: PipeDirection,
+    upload_flow: Option<UploadFlow>,
 }
 
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
     pub async fn start(mut self) {
-        let mut buffer = vec![0u8; TCP_PIPE_BUFFER_SIZE];
+        let buffer_size = if self.upload_flow.is_some() {
+            UPLOAD_QOS_SLICE_SIZE
+        } else {
+            TCP_PIPE_BUFFER_SIZE
+        };
+        let mut buffer = vec![0u8; buffer_size];
 
         loop {
             // Keep the pipe cooperative when both sockets stay continuously ready.
@@ -151,7 +174,23 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
                 break;
             }
 
-            if let Err(error) = self.to.write_all(&buffer[..byte_count]).await {
+            if let Some(upload_flow) = &self.upload_flow
+                && !upload_flow.acquire(byte_count, &self.cancel).await
+            {
+                tracing::info!("TcpPipe upload QoS acquire failed");
+                break;
+            }
+
+            let Some(write_res) = self
+                .cancel
+                .run_until_cancelled(self.to.write_all(&buffer[..byte_count]))
+                .await
+            else {
+                tracing::info!("TcpPipe cancelled");
+                break;
+            };
+
+            if let Err(error) = write_res {
                 tracing::error!(?error, "failed to write data");
                 break;
             }
@@ -174,5 +213,65 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
         }
 
         self.shared.last_activity.store(u64::MAX, Ordering::Release);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        time::{Duration, timeout},
+    };
+
+    use super::*;
+    use crate::network::upload_qos::{UPLOAD_QOS_SLICE_SIZE, UploadFairness};
+
+    async fn wait_for_bytes(pipe: &TcpPipe, expected: u64) {
+        timeout(Duration::from_secs(1), async {
+            while pipe.bytes_written() != expected {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("pipe did not reach expected byte count");
+    }
+
+    #[tokio::test]
+    async fn upload_qos_pipe_reads_in_qos_sized_slices() {
+        let cancel = CancellationToken::new();
+        let fairness = UploadFairness::new(cancel.child_token());
+        let upload_flow = fairness.register();
+        let (mut source_write, source_read) = tokio::io::duplex(UPLOAD_QOS_SLICE_SIZE * 4);
+        let (sink_write, mut sink_read) = tokio::io::duplex(UPLOAD_QOS_SLICE_SIZE);
+
+        let pipe = TcpPipe::new_with_stats_and_upload_flow(
+            cancel.clone(),
+            source_read,
+            sink_write,
+            None,
+            PipeDirection::OriginToTunnel,
+            Some(upload_flow),
+        );
+
+        let payload = vec![7u8; UPLOAD_QOS_SLICE_SIZE * 2];
+        let write_task = tokio::spawn(async move {
+            source_write
+                .write_all(&payload)
+                .await
+                .expect("source write should succeed");
+        });
+
+        wait_for_bytes(&pipe, UPLOAD_QOS_SLICE_SIZE as u64).await;
+
+        let mut read_buffer = vec![0u8; UPLOAD_QOS_SLICE_SIZE];
+        sink_read
+            .read_exact(&mut read_buffer)
+            .await
+            .expect("sink read should succeed");
+
+        wait_for_bytes(&pipe, (UPLOAD_QOS_SLICE_SIZE * 2) as u64).await;
+        write_task.await.expect("source writer should finish");
+
+        cancel.cancel();
     }
 }

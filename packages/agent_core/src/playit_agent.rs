@@ -19,6 +19,7 @@ use crate::network::udp::packets::Packets;
 use crate::network::udp::udp_channel::UdpChannel;
 use crate::network::udp::udp_clients::UdpClients;
 use crate::network::udp::udp_settings::UdpSettings;
+use crate::network::upload_qos::UploadFairness;
 use crate::stats::AgentStats;
 use crate::utils::now_milli;
 
@@ -57,18 +58,22 @@ impl PlayitAgent {
             .map_err(SetupError::IoError)?;
 
         let stats = AgentStats::new();
+        let cancel_token = CancellationToken::new();
+        let upload_fairness = UploadFairness::new(cancel_token.child_token());
         let udp_clients = UdpClients::new(
             settings.udp_settings,
             lookup.clone(),
             origin_packets,
             stats.clone(),
+            cancel_token.child_token(),
+            upload_fairness.clone(),
         );
-        let cancel_token = CancellationToken::new();
         let tcp_clients = TcpClients::new(
             settings.tcp_settings,
             lookup.clone(),
             stats.clone(),
             cancel_token.child_token(),
+            upload_fairness,
         );
 
         Ok(PlayitAgent {
