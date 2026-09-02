@@ -77,7 +77,11 @@ impl PlayitHttpClient for HttpClient {
 
             let response_txt = response.text().await?;
             let result: ApiResult<Res, Err> = serde_json::from_str(&response_txt).map_err(|e| {
-                tracing::error!("failed to parse json:\n{}", response_txt);
+                tracing::error!(
+                    status = %response_status,
+                    body = %response_txt,
+                    "failed to parse playit api response as json"
+                );
                 HttpClientError::ParseError(e, response_status, response_txt.to_string())
             })?;
 
@@ -86,7 +90,11 @@ impl PlayitHttpClient for HttpClient {
         .await;
 
         if let Err(error) = &res {
-            tracing::error!(?error, request = %std::any::type_name::<Req>(), "API call failed");
+            tracing::warn!(
+                ?error,
+                request = %std::any::type_name::<Req>(),
+                "playit api call failed"
+            );
         }
 
         res

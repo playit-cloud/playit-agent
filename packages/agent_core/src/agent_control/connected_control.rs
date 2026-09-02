@@ -110,11 +110,18 @@ impl<IO: PacketIO> ConnectedControl<IO> {
                     match tokio::time::timeout(Duration::from_millis(500), self.recv()).await {
                         Ok(Ok(msg)) => msg,
                         Ok(Err(error)) => {
-                            tracing::error!(?error, "got error reading from socket");
+                            tracing::debug!(
+                                ?error,
+                                control_addr = %self.control_addr,
+                                "control socket recv failed during register; retrying"
+                            );
                             break;
                         }
                         Err(_) => {
-                            tracing::error!("timeout waiting for register response");
+                            tracing::debug!(
+                                control_addr = %self.control_addr,
+                                "no register response from tunnel within 500ms; retrying"
+                            );
                             continue;
                         }
                     };
@@ -124,7 +131,10 @@ impl<IO: PacketIO> ConnectedControl<IO> {
                         response
                     }
                     other => {
-                        tracing::error!(?other, "got unexpected response from register request");
+                        tracing::debug!(
+                            ?other,
+                            "ignoring control feed message that does not match register request_id"
+                        );
                         continue;
                     }
                 };
@@ -157,12 +167,15 @@ impl<IO: PacketIO> ConnectedControl<IO> {
                         }
                     }
                     ControlResponse::RequestQueued => {
-                        tracing::debug!("register queued, waiting 1s");
+                        tracing::debug!("tunnel server queued register request; waiting 1s");
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         break;
                     }
                     other => {
-                        tracing::error!(?other, "expected AgentRegistered but got something else");
+                        tracing::debug!(
+                            ?other,
+                            "expected AgentRegistered response but got a different control response"
+                        );
                         continue;
                     }
                 };

@@ -162,24 +162,24 @@ impl IpcServer {
                         Ok(stream) => {
                             let server = self.clone();
                             tokio::spawn(async move {
-                                if let Err(e) = server.handle_client(stream).await {
-                                    if e.is_connection_closed() {
-                                        tracing::debug!("Client disconnected: {e}");
+                                if let Err(error) = server.handle_client(stream).await {
+                                    if error.is_connection_closed() {
+                                        tracing::debug!(?error, "ipc client disconnected");
                                     } else {
-                                        tracing::warn!("Client connection error: {e}");
+                                        tracing::warn!(?error, "ipc client connection error");
                                     }
                                 }
                             });
                         }
-                        Err(e) => {
-                            tracing::error!("Accept error: {e}");
+                        Err(error) => {
+                            tracing::error!(?error, "ipc listener accept failed");
                             // Avoid tight-loop logging if the listener enters a persistent failure state.
                             tokio::time::sleep(Duration::from_millis(100)).await;
                         }
                     }
                 }
                 _ = self.cancel_token.cancelled() => {
-                    tracing::info!("IPC server shutting down");
+                    tracing::info!("ipc server shutting down: cancellation requested");
                     break;
                 }
             }
