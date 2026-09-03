@@ -191,6 +191,13 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 		}
 	}
 	#[track_caller]
+	pub fn claim_download_exchange(&self, req: ReqClaimDownloadExchange) -> impl std::future::Future<Output = Result<AgentSecretKey, ApiError<ClaimDownloadExchangeError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/claim/download/exchange", req).await)
+		}
+	}
+	#[track_caller]
 	pub fn agents_rename(&self, req: ReqAgentsRename) -> impl std::future::Future<Output = Result<(), ApiError<AgentRenameError, C::Error>>> + '_ {
 		let caller = std::panic::Location::caller();
 		async {
@@ -1686,6 +1693,25 @@ impl std::fmt::Display for ClaimExchangeError {
 impl std::error::Error for ClaimExchangeError {
 }
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqClaimDownloadExchange {
+	pub token: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum ClaimDownloadExchangeError {
+	InvalidOrExpiredToken,
+	AgentCountOverLimit,
+}
+
+impl std::fmt::Display for ClaimDownloadExchangeError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for ClaimDownloadExchangeError {
+}
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqAgentsRename {
 	pub agent_id: uuid::Uuid,
 	pub name: String,
@@ -2154,4 +2180,3 @@ pub struct QueryRegion {
 pub enum QueryRegionError {
 	FailedToDetermineLocation,
 }
-

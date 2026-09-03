@@ -1,4 +1,5 @@
 pub mod daemon;
+pub mod download_claim;
 mod ipc_server;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
@@ -23,4 +24,7 @@ pub use paths::{
 };
 
 #[cfg(target_os = "windows")]
-pub use paths::{windows_service_data_dir, windows_service_log_path, windows_service_secret_path};
+pub use paths::{
+    windows_download_claim_path, windows_service_data_dir, windows_service_log_path,
+    windows_service_secret_path,
+};

@@ -2045,6 +2045,7 @@ dependencies = [
 name = "playitd-windows-setup"
 version = "1.0.10"
 dependencies = [
+ "hex",
  "playitd",
  "windows",
 ]

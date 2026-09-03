@@ -15,6 +15,8 @@ use playit_agent_core::playit_agent::{PlayitAgent, PlayitAgentSettings};
 use playit_agent_core::stats::AgentStats;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
+#[cfg(target_os = "windows")]
+use playit_api_client::api::ReqClaimDownloadExchange;
 use playit_api_client::api::{
     AccountStatus, ApiResponseError, AuthError, Platform, ProtoRegisterError,
 };
@@ -438,6 +440,12 @@ async fn resolve_startup_secret(
             Ok(Some(secret))
         }
         LoadedSecret::Missing => {
+            #[cfg(target_os = "windows")]
+            if let Some(secret) = exchange_download_claim(secret_source).await {
+                publish_starting(runtime).await;
+                return Ok(Some(secret));
+            }
+
             let secret = wait_for_startup_secret(runtime, secret_source, secret_rx).await?;
             if secret.is_none() {
                 tracing::info!("playitd shutdown before provisioning completed");
@@ -473,6 +481,75 @@ async fn resolve_startup_secret(
             Ok(secret)
         }
     }
+}
+
+/// Claims the agent with a token the website issued at download time. The token
+/// comes from one of:
+/// - the certificate table of the running executable (portable download)
+/// - the token file the installer wrote from its own file name (MSI download)
+#[cfg(target_os = "windows")]
+async fn exchange_download_claim(secret_source: &SecretSource) -> Option<String> {
+    use crate::download_claim::{DownloadClaimFile, EmbeddedDownloadClaim};
+
+    match EmbeddedDownloadClaim::read_from_current_executable() {
+        Ok(Some(claim)) => {
+            return exchange_download_claim_token(
+                secret_source,
+                claim.encoded_token(),
+                "downloaded executable",
+            )
+            .await;
+        }
+        Ok(None) => {}
+        Err(error) => tracing::warn!(%error, "failed to inspect embedded download claim"),
+    }
+
+    let claim_path = crate::paths::windows_download_claim_path();
+    let token = match DownloadClaimFile::read(&claim_path) {
+        Ok(Some(token)) => token,
+        Ok(None) => return None,
+        Err(error) => {
+            tracing::warn!(%error, "failed to read installer download claim");
+            let _ = DownloadClaimFile::remove(&claim_path);
+            return None;
+        }
+    };
+
+    // The token is single use and short lived, so it is removed whatever the outcome.
+    if let Err(error) = DownloadClaimFile::remove(&claim_path) {
+        tracing::warn!(%error, "failed to remove installer download claim");
+    }
+    exchange_download_claim_token(secret_source, hex::encode(token), "downloaded installer").await
+}
+
+#[cfg(target_os = "windows")]
+async fn exchange_download_claim_token(
+    secret_source: &SecretSource,
+    token: String,
+    source: &'static str,
+) -> Option<String> {
+    let api = PlayitApi::create(api_base(), None);
+    let response = match api
+        .claim_download_exchange(ReqClaimDownloadExchange { token })
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => {
+            tracing::warn!(?error, source, "failed to exchange download claim");
+            return None;
+        }
+    };
+
+    let secret_path = secret_source
+        .secret_path()
+        .expect("download claims require a file-backed secret");
+    if let Err(error) = persist_secret_file(secret_path, &response.secret_key).await {
+        tracing::error!(%error, source, "failed to save secret from download claim");
+        return None;
+    }
+
+    tracing::info!(source, "claimed agent with download claim");
+    Some(response.secret_key)
 }
 
 async fn wait_for_startup_secret(
