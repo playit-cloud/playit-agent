@@ -61,6 +61,12 @@ pub fn windows_service_secret_path() -> PathBuf {
     windows_service_data_dir().join("playit.toml")
 }
 
+/// Download claim token left by the installer for playitd to exchange on first start.
+#[cfg(target_os = "windows")]
+pub fn windows_download_claim_path() -> PathBuf {
+    windows_service_data_dir().join("download_claim.token")
+}
+
 #[cfg(target_os = "windows")]
 pub fn windows_service_log_path() -> PathBuf {
     windows_service_data_dir().join("logs").join("playitd.log")
