@@ -33,10 +33,12 @@ impl<IO: PacketIO> AddressSelector<IO> {
             for _ in 0..attempts {
                 buffer.clear();
 
+                let request_id = super::next_request_id();
+                let now = now_milli();
                 ControlRpcMessage {
-                    request_id: 1,
+                    request_id,
                     content: ControlRequest::Ping(Ping {
-                        now: now_milli(),
+                        now,
                         current_ping: None,
                         session_id: None,
                     }),
@@ -48,7 +50,7 @@ impl<IO: PacketIO> AddressSelector<IO> {
                     break;
                 }
 
-                buffer.resize(2048, 0);
+                buffer.resize(65_536, 0);
 
                 let waits = if is_ip6 { 3 } else { 5 };
                 for i in 0..waits {
@@ -68,7 +70,7 @@ impl<IO: PacketIO> AddressSelector<IO> {
                             let mut reader = &buffer[..bytes];
                             match ControlFeed::read_from(&mut reader) {
                                 Ok(ControlFeed::Response(msg)) => {
-                                    if msg.request_id != 1 {
+                                    if msg.request_id != request_id {
                                         tracing::error!(
                                             ?msg,
                                             "got response with unexpected request_id"
@@ -77,7 +79,7 @@ impl<IO: PacketIO> AddressSelector<IO> {
                                     }
 
                                     match msg.content {
-                                        ControlResponse::Pong(pong) => {
+                                        ControlResponse::Pong(pong) if pong.request_now == now => {
                                             tracing::debug!(
                                                 ?pong,
                                                 "got initial pong from tunnel server"

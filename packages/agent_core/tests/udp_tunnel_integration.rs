@@ -72,7 +72,8 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
             tunnel_addr,
             token: Arc::new(b"test-session-token".to_vec()),
         })
-        .await;
+        .await
+        .unwrap();
 
     let (token_len, channel_addr, token_bytes) = recv_from_socket(&tunnel_server).await;
     assert_eq!(&token_bytes[..token_len], b"test-session-token");
@@ -89,10 +90,11 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
 
     let (recv_flow_1, recv_packet_1) = timeout(TEST_TIMEOUT, udp_channel.recv())
         .await
-        .expect("recv tunneled packet");
+        .expect("recv tunneled packet")
+        .expect("UDP channel closed");
     assert_eq!(recv_flow_1, flow);
     udp_clients
-        .handle_tunneled_packet(1_000, recv_flow_1, recv_packet_1)
+        .handle_tunneled_packet(recv_flow_1, recv_packet_1)
         .await;
 
     let (origin_len_1, virtual_addr_1, origin_bytes_1) = recv_from_socket(&origin_server).await;
@@ -109,10 +111,13 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
         .await
         .expect("recv origin reply");
     let (reply_flow_1, reply_packet_1) = udp_clients
-        .dispatch_origin_packet(2_000, reply_1)
+        .dispatch_origin_packet(reply_1)
         .await
         .expect("dispatch origin reply");
-    udp_channel.send(reply_flow_1, reply_packet_1).await;
+    udp_channel
+        .send(reply_flow_1, reply_packet_1)
+        .await
+        .unwrap();
 
     let (encap_flow_1, encap_payload_1, encap_source_1) =
         recv_tunneled_packet(&tunnel_server).await;
@@ -132,9 +137,10 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
 
     let (changed_flow, changed_packet) = timeout(TEST_TIMEOUT, udp_channel.recv())
         .await
-        .expect("recv packet after tunnel server change");
+        .expect("recv packet after tunnel server change")
+        .expect("UDP channel closed");
     udp_clients
-        .handle_tunneled_packet(3_000, changed_flow, changed_packet)
+        .handle_tunneled_packet(changed_flow, changed_packet)
         .await;
 
     let (changed_len, changed_virtual_addr, changed_bytes) = recv_from_socket(&origin_server).await;
@@ -155,13 +161,16 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
         .await
         .expect("recv origin reply after tunnel server change");
     let (changed_reply_flow, changed_reply_packet) = udp_clients
-        .dispatch_origin_packet(4_000, changed_reply)
+        .dispatch_origin_packet(changed_reply)
         .await
         .expect("dispatch origin reply after tunnel server change");
     assert_eq!(changed_reply_flow, flow_after_server_change.flip());
     assert_eq!(changed_reply_packet.as_ref(), reply_after_server_change);
 
-    udp_clients.clear_old(100_000).await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(100)).await;
+    udp_clients.clear_old().await;
+    tokio::time::resume();
     assert_eq!(stats.active_udp(), 0);
 
     let origin_payload_2 = b"packet after clear";
@@ -169,10 +178,11 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
 
     let (recv_flow_2, recv_packet_2) = timeout(TEST_TIMEOUT, udp_channel.recv())
         .await
-        .expect("recv tunneled packet after clear");
+        .expect("recv tunneled packet after clear")
+        .expect("UDP channel closed");
     assert_eq!(recv_flow_2, flow);
     udp_clients
-        .handle_tunneled_packet(101_000, recv_flow_2, recv_packet_2)
+        .handle_tunneled_packet(recv_flow_2, recv_packet_2)
         .await;
 
     let (origin_len_2, virtual_addr_2, origin_bytes_2) = recv_from_socket(&origin_server).await;
@@ -190,10 +200,13 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
         .await
         .expect("recv origin reply after clear");
     let (reply_flow_2, reply_packet_2) = udp_clients
-        .dispatch_origin_packet(102_000, reply_2)
+        .dispatch_origin_packet(reply_2)
         .await
         .expect("dispatch origin reply after clear");
-    udp_channel.send(reply_flow_2, reply_packet_2).await;
+    udp_channel
+        .send(reply_flow_2, reply_packet_2)
+        .await
+        .unwrap();
 
     let (encap_flow_2, encap_payload_2, encap_source_2) =
         recv_tunneled_packet(&tunnel_server).await;
@@ -244,7 +257,8 @@ async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
             tunnel_addr,
             token: Arc::new(b"test-session-token".to_vec()),
         })
-        .await;
+        .await
+        .unwrap();
 
     let (token_len, channel_addr, token_bytes) = recv_from_socket(&tunnel_server).await;
     assert_eq!(&token_bytes[..token_len], b"test-session-token");
@@ -260,10 +274,11 @@ async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
 
     let (recv_flow, recv_packet) = timeout(TEST_TIMEOUT, udp_channel.recv())
         .await
-        .expect("recv tunneled packet");
+        .expect("recv tunneled packet")
+        .expect("UDP channel closed");
     assert_eq!(recv_flow, flow);
     udp_clients
-        .handle_tunneled_packet(1_000, recv_flow, recv_packet)
+        .handle_tunneled_packet(recv_flow, recv_packet)
         .await;
 
     let (origin_len, virtual_addr, origin_bytes) = recv_from_socket(&origin_server).await;
@@ -281,10 +296,10 @@ async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
         .await
         .expect("recv origin reply");
     let (reply_flow, reply_packet) = udp_clients
-        .dispatch_origin_packet(2_000, reply)
+        .dispatch_origin_packet(reply)
         .await
         .expect("dispatch origin reply");
-    udp_channel.send(reply_flow, reply_packet).await;
+    udp_channel.send(reply_flow, reply_packet).await.unwrap();
 
     let (encap_flow, encap_payload, encap_source) = recv_tunneled_packet(&tunnel_server).await;
     assert_eq!(encap_source, channel_addr);
@@ -334,7 +349,8 @@ async fn encapsulated_udp_tunnel_isolates_multiple_parallel_flows_and_recovers_t
             tunnel_addr,
             token: Arc::new(b"test-session-token".to_vec()),
         })
-        .await;
+        .await
+        .unwrap();
 
     let (token_len, channel_addr, token_bytes) = recv_from_socket(&tunnel_server).await;
     assert_eq!(&token_bytes[..token_len], b"test-session-token");
@@ -372,8 +388,6 @@ async fn encapsulated_udp_tunnel_isolates_multiple_parallel_flows_and_recovers_t
         &mut udp_channel,
         &mut udp_clients,
         &cases,
-        1_000,
-        2_000,
     )
     .await;
 
@@ -381,7 +395,10 @@ async fn encapsulated_udp_tunnel_isolates_multiple_parallel_flows_and_recovers_t
     assert_eq!(stats.active_udp(), cases.len() as u32);
     assert_unique_virtual_addrs(&first_virtual_addrs);
 
-    udp_clients.clear_old(100_000).await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(100)).await;
+    udp_clients.clear_old().await;
+    tokio::time::resume();
     assert_eq!(stats.active_udp(), 0);
 
     let second_virtual_addrs = drive_parallel_flows(
@@ -391,8 +408,6 @@ async fn encapsulated_udp_tunnel_isolates_multiple_parallel_flows_and_recovers_t
         &mut udp_channel,
         &mut udp_clients,
         &cases,
-        101_000,
-        102_000,
     )
     .await;
 
@@ -444,7 +459,8 @@ async fn udp_tunnel_stress_reports_bitrate_by_packet_size() {
             tunnel_addr,
             token: Arc::new(b"test-session-token".to_vec()),
         })
-        .await;
+        .await
+        .unwrap();
 
     let (token_len, channel_addr, token_bytes) = recv_from_socket(&tunnel_server).await;
     assert_eq!(&token_bytes[..token_len], b"test-session-token");
@@ -572,8 +588,6 @@ async fn drive_parallel_flows(
     udp_channel: &mut UdpChannel,
     udp_clients: &mut UdpClients,
     cases: &[FlowCase],
-    tunnel_ts: u64,
-    origin_ts: u64,
 ) -> HashMap<usize, std::net::SocketAddr> {
     join_all(cases.iter().map(|case| {
         send_tunneled_packet(
@@ -588,9 +602,10 @@ async fn drive_parallel_flows(
     for _ in 0..cases.len() {
         let (recv_flow, recv_packet) = timeout(TEST_TIMEOUT, udp_channel.recv())
             .await
-            .expect("recv tunneled packet");
+            .expect("recv tunneled packet")
+            .expect("UDP channel closed");
         udp_clients
-            .handle_tunneled_packet(tunnel_ts, recv_flow, recv_packet)
+            .handle_tunneled_packet(recv_flow, recv_packet)
             .await;
     }
 
@@ -625,10 +640,10 @@ async fn drive_parallel_flows(
             .await
             .expect("recv origin reply");
         let (reply_flow, reply_packet) = udp_clients
-            .dispatch_origin_packet(origin_ts, reply)
+            .dispatch_origin_packet(reply)
             .await
             .expect("dispatch origin reply");
-        udp_channel.send(reply_flow, reply_packet).await;
+        udp_channel.send(reply_flow, reply_packet).await.unwrap();
     }
 
     let cases_by_outbound: HashMap<Vec<u8>, &FlowCase> = cases
@@ -681,10 +696,11 @@ async fn establish_virtual_client(
 
     let (recv_flow, recv_packet) = timeout(TEST_TIMEOUT, udp_channel.recv())
         .await
-        .expect("recv warmup tunneled packet");
+        .expect("recv warmup tunneled packet")
+        .expect("UDP channel closed");
     assert_eq!(recv_flow, flow);
     udp_clients
-        .handle_tunneled_packet(1_000, recv_flow, recv_packet)
+        .handle_tunneled_packet(recv_flow, recv_packet)
         .await;
 
     let (len, virtual_addr, bytes) = recv_from_socket(origin_server).await;
@@ -717,11 +733,12 @@ async fn measure_tunnel_to_origin_bitrate(
                 send_tunneled_packet(tunnel_server, channel_addr, flow, payload).await;
             }
 
-            for i in 0..batch {
-                let (recv_flow, recv_packet) = udp_channel.recv().await;
+            for _ in 0..batch {
+                let (recv_flow, recv_packet) =
+                    udp_channel.recv().await.expect("UDP channel closed");
                 assert_eq!(recv_flow, flow);
                 udp_clients
-                    .handle_tunneled_packet(10_000 + (processed + i) as u64, recv_flow, recv_packet)
+                    .handle_tunneled_packet(recv_flow, recv_packet)
                     .await;
             }
 
@@ -772,14 +789,14 @@ async fn measure_origin_to_tunnel_bitrate(
                     .expect("origin send stress packet");
             }
 
-            for i in 0..batch {
+            for _ in 0..batch {
                 let recv = udp_clients.recv_origin_packet().await;
                 let (reply_flow, reply_packet) = udp_clients
-                    .dispatch_origin_packet(20_000 + (processed + i) as u64, recv)
+                    .dispatch_origin_packet(recv)
                     .await
                     .expect("dispatch origin stress packet");
                 assert_eq!(reply_flow, flow.flip());
-                udp_channel.send(reply_flow, reply_packet).await;
+                udp_channel.send(reply_flow, reply_packet).await.unwrap();
             }
 
             for _ in 0..batch {
@@ -839,10 +856,19 @@ async fn send_tunneled_packet(
 }
 
 async fn recv_tunneled_packet(socket: &UdpSocket) -> (UdpFlow, Vec<u8>, std::net::SocketAddr) {
-    let (len, source, buf) = recv_from_socket(socket).await;
-    let flow = UdpFlow::from_tail(&buf[..len]).expect("parse flow footer");
-    let payload = buf[..len - flow.footer_len()].to_vec();
-    (flow, payload, source)
+    loop {
+        let (len, source, buf) = recv_from_socket(socket).await;
+        if &buf[..len] == b"test-session-token" {
+            socket
+                .send_to(&UDP_CHANNEL_ESTABLISH_ID.to_be_bytes(), source)
+                .await
+                .unwrap();
+            continue;
+        }
+        let flow = UdpFlow::from_tail(&buf[..len]).expect("parse flow footer");
+        let payload = buf[..len - flow.footer_len()].to_vec();
+        return (flow, payload, source);
+    }
 }
 
 async fn recv_from_socket(socket: &UdpSocket) -> (usize, std::net::SocketAddr, [u8; 2048]) {

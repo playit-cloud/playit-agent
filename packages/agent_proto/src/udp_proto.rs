@@ -52,6 +52,32 @@ pub struct FragmentInfo {
     pub has_more: bool,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum UdpDatagram<'a> {
+    Established,
+    Data { flow: UdpFlow, payload: &'a [u8] },
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum DatagramError {
+    InvalidFooter(Option<u64>),
+    InvalidEstablishmentLength,
+}
+
+impl<'a> UdpDatagram<'a> {
+    pub fn decode(bytes: &'a [u8]) -> Result<Self, DatagramError> {
+        match UdpFlow::from_tail(bytes) {
+            Ok(flow) => Ok(Self::Data {
+                flow,
+                payload: &bytes[..bytes.len() - flow.footer_len()],
+            }),
+            Err(Some(UDP_CHANNEL_ESTABLISH_ID)) if bytes.len() == 8 => Ok(Self::Established),
+            Err(Some(UDP_CHANNEL_ESTABLISH_ID)) => Err(DatagramError::InvalidEstablishmentLength),
+            Err(id) => Err(DatagramError::InvalidFooter(id)),
+        }
+    }
+}
+
 impl UdpFlow {
     pub fn client_server_id(&self) -> Option<NonZeroU64> {
         self.extension().map(|v| v.client_server_id)
@@ -395,5 +421,41 @@ mod test {
 
         let parsed = UdpFlow::from_tail(&data[..100 + flow.footer_len()]).unwrap();
         assert_eq!(flow, parsed);
+    }
+}
+
+#[cfg(test)]
+mod datagram_tests {
+    use super::*;
+    #[test]
+    fn establishment_requires_exact_frame() {
+        let mut bytes = vec![0];
+        bytes.extend_from_slice(&UDP_CHANNEL_ESTABLISH_ID.to_be_bytes());
+        assert_eq!(
+            UdpDatagram::decode(&bytes),
+            Err(DatagramError::InvalidEstablishmentLength)
+        );
+        assert_eq!(
+            UdpDatagram::decode(&bytes[1..]),
+            Ok(UdpDatagram::Established)
+        );
+    }
+    #[test]
+    fn truncated_footers_are_rejected() {
+        let flow = UdpFlow::V4 {
+            src: "127.0.0.1:1".parse().unwrap(),
+            dst: "127.0.0.1:2".parse().unwrap(),
+            frag: None,
+            extension: None,
+        };
+        let mut bytes = vec![0; flow.footer_len()];
+        assert!(flow.write_to(&mut bytes));
+        for start in 1..bytes.len() {
+            assert!(UdpDatagram::decode(&bytes[start..]).is_err());
+        }
+        assert_eq!(
+            UdpDatagram::decode(&bytes),
+            Ok(UdpDatagram::Data { flow, payload: &[] })
+        );
     }
 }

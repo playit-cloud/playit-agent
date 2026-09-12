@@ -44,6 +44,16 @@ impl TcpClient {
         }
     }
 
+    pub fn is_closed(&self) -> bool {
+        self.tunn_to_origin.is_closed() && self.origin_to_tunn.is_closed()
+    }
+
+    pub fn idle_for(&self) -> std::time::Duration {
+        self.tunn_to_origin
+            .idle_for()
+            .min(self.origin_to_tunn.idle_for())
+    }
+
     pub fn last_use(&self) -> TcpClientStat {
         TcpClientStat {
             tunn_to_origin: self.tunn_to_origin.last_activity(),

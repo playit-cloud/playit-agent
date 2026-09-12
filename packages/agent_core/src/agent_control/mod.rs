@@ -1,13 +1,8 @@
-use std::{
-    future::Future,
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6},
-    sync::{Arc, atomic::AtomicUsize},
-    task::Poll,
-};
+use std::{future::Future, net::SocketAddr};
 
+pub use crate::network::packet_io::{DualStackUdpSocket, PacketIO, PacketRx, PacketTx};
 use errors::SetupError;
 use playit_agent_proto::control_messages::Pong;
-use tokio::{io::ReadBuf, net::UdpSocket};
 use version::get_version;
 
 pub use playit_api_client::api::SignedAgentKey;
@@ -27,203 +22,15 @@ pub mod maintained_control;
 pub mod platform;
 pub mod version;
 
-pub trait PacketIO: Send + Sync + 'static {
-    fn send_to(
-        &self,
-        buf: &[u8],
-        target: SocketAddr,
-    ) -> impl Future<Output = std::io::Result<usize>> + Sync + Send;
-
-    fn recv_from(
-        &self,
-        buf: &mut [u8],
-    ) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send;
-}
-
-pub trait PacketRx: Send + Sync + 'static {
-    fn recv_from(
-        &self,
-        buf: &mut [u8],
-    ) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send;
-}
-
-impl<T: PacketIO> PacketRx for T {
-    fn recv_from(
-        &self,
-        buf: &mut [u8],
-    ) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send {
-        T::recv_from(self, buf)
-    }
-}
-
-impl<T: PacketIO> PacketRx for Arc<T> {
-    fn recv_from(
-        &self,
-        buf: &mut [u8],
-    ) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync + Send {
-        T::recv_from(self, buf)
-    }
-}
-
-pub trait PacketTx {
-    fn send_to(
-        &self,
-        buf: &[u8],
-        target: SocketAddr,
-    ) -> impl Future<Output = std::io::Result<usize>> + Sync + Send;
-}
-
-impl<T: PacketIO> PacketTx for T {
-    fn send_to(
-        &self,
-        buf: &[u8],
-        target: SocketAddr,
-    ) -> impl Future<Output = std::io::Result<usize>> + Sync + Send {
-        T::send_to(self, buf, target)
-    }
-}
-
-impl<T: PacketIO> PacketTx for Arc<T> {
-    fn send_to(
-        &self,
-        buf: &[u8],
-        target: SocketAddr,
-    ) -> impl Future<Output = std::io::Result<usize>> + Sync + Send {
-        T::send_to(self, buf, target)
-    }
-}
-
-pub struct DualStackUdpSocket {
-    ip4: UdpSocket,
-    ip6: Option<UdpSocket>,
-    next: AtomicUsize,
-}
-
-impl DualStackUdpSocket {
-    pub async fn new() -> std::io::Result<Self> {
-        let ip4 =
-            UdpSocket::bind(SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))).await?;
-        let ip6 = UdpSocket::bind(SocketAddr::V6(SocketAddrV6::new(
-            Ipv6Addr::UNSPECIFIED,
-            0,
-            0,
-            0,
-        )))
-        .await
-        .ok();
-
-        Ok(DualStackUdpSocket {
-            ip4,
-            ip6,
-            next: AtomicUsize::new(0),
-        })
-    }
-
-    pub fn local_ip4_port(&self) -> Option<u16> {
-        Some(self.ip4.local_addr().ok()?.port())
-    }
-
-    pub fn local_ip6_port(&self) -> Option<u16> {
-        Some(self.ip6.as_ref()?.local_addr().ok()?.port())
-    }
-}
-
-impl PacketIO for DualStackUdpSocket {
-    async fn send_to(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize> {
-        if target.is_ipv6() {
-            if let Some(ip6) = &self.ip6 {
-                return ip6.send_to(buf, target).await;
-            }
-        }
-        self.ip4.send_to(buf, target).await
-    }
-
-    async fn recv_from(&self, buf: &mut [u8]) -> std::io::Result<(usize, SocketAddr)> {
-        let sel = self.next.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-
-        if sel % 2 == 0 {
-            PoolBoth {
-                buffer: buf,
-                a: self.ip6.as_ref(),
-                b: Some(&self.ip4),
-            }
-            .await
-        } else {
-            PoolBoth {
-                buffer: buf,
-                a: Some(&self.ip4),
-                b: self.ip6.as_ref(),
-            }
-            .await
-        }
-    }
-}
-
-struct PoolBoth<'a> {
-    buffer: &'a mut [u8],
-    a: Option<&'a UdpSocket>,
-    b: Option<&'a UdpSocket>,
-}
-
-impl Future for PoolBoth<'_> {
-    type Output = std::io::Result<(usize, SocketAddr)>;
-
-    fn poll(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        let PoolBoth { buffer, a, b } = &mut *self;
-
-        let mut buf = ReadBuf::new(buffer);
-
-        if let Some(a) = a {
-            if let Poll::Ready(ready) = a.poll_recv_from(cx, &mut buf) {
-                return match ready {
-                    Ok(addr) => Poll::Ready(Ok((buf.filled().len(), addr))),
-                    Err(error) => Poll::Ready(Err(error)),
-                };
-            }
-        }
-
-        if let Some(b) = b {
-            if let Poll::Ready(ready) = b.poll_recv_from(cx, &mut buf) {
-                return match ready {
-                    Ok(addr) => Poll::Ready(Ok((buf.filled().len(), addr))),
-                    Err(error) => Poll::Ready(Err(error)),
-                };
-            }
-        }
-
-        Poll::Pending
-    }
-}
-
-impl PacketIO for UdpSocket {
-    fn send_to(
-        &self,
-        buf: &[u8],
-        target: SocketAddr,
-    ) -> impl Future<Output = std::io::Result<usize>> + Sync {
-        UdpSocket::send_to(self, buf, target)
-    }
-
-    fn recv_from(
-        &self,
-        buf: &mut [u8],
-    ) -> impl Future<Output = std::io::Result<(usize, SocketAddr)>> + Sync {
-        UdpSocket::recv_from(self, buf)
-    }
-}
-
-pub trait AuthResource: Clone {
+pub trait AuthResource: Clone + Send + Sync + 'static {
     fn authenticate(
         &self,
         pong: &Pong,
-    ) -> impl Future<Output = Result<SignedAgentKey, SetupError>> + Sync;
+    ) -> impl Future<Output = Result<SignedAgentKey, SetupError>> + Send;
 
     fn get_control_addresses(
         &self,
-    ) -> impl Future<Output = Result<Vec<SocketAddr>, SetupError>> + Sync;
+    ) -> impl Future<Output = Result<Vec<SocketAddr>, SetupError>> + Send;
 }
 
 #[derive(Clone)]
@@ -272,4 +79,16 @@ impl AuthResource for AuthApi {
 
         Ok(addresses)
     }
+}
+
+#[cfg(test)]
+mod tests;
+
+fn next_request_id() -> u64 {
+    use std::sync::{
+        LazyLock,
+        atomic::{AtomicU64, Ordering},
+    };
+    static NEXT: LazyLock<AtomicU64> = LazyLock::new(|| AtomicU64::new(crate::utils::now_milli()));
+    NEXT.fetch_add(1, Ordering::Relaxed)
 }

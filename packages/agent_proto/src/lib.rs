@@ -5,6 +5,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use message_encoding::MessageEncoding;
 use serde::{Deserialize, Serialize};
 
+mod bytes;
 pub mod control_feed;
 pub mod control_messages;
 pub mod hmac;

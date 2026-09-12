@@ -34,7 +34,7 @@ pub struct NewClientOld {
     pub data_center_id: u32,
 }
 
-#[derive(Eq, PartialEq, Clone)]
+#[derive(Eq, PartialEq, Clone, Hash)]
 pub struct ClaimInstructions {
     pub address: SocketAddr,
     pub token: Vec<u8>,
@@ -42,12 +42,10 @@ pub struct ClaimInstructions {
 
 impl Debug for ClaimInstructions {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "ClaimInstructions {{ address: {}, token: {} }}",
-            self.address,
-            hex::encode(&self.token)
-        )
+        f.debug_struct("ClaimInstructions")
+            .field("address", &self.address)
+            .field("token", &"[redacted]")
+            .finish()
     }
 }
 
@@ -148,14 +146,14 @@ impl MessageEncoding for ClaimInstructions {
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
         sum += self.address.write_to(out)?;
-        sum += self.token.write_to(out)?;
+        sum += crate::bytes::write_token(&self.token, out)?;
         Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         Ok(ClaimInstructions {
             address: SocketAddr::read_from(read)?,
-            token: Vec::read_from(read)?,
+            token: crate::bytes::read_token(read)?,
         })
     }
 }

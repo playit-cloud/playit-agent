@@ -1,24 +1,21 @@
-use std::{net::SocketAddr, num::NonZeroU32, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    net::SocketAddr,
+    num::NonZeroU32,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
-use playit_agent_proto::control_feed::NewClient;
-use playit_api_client::api::ProxyProtocol;
+use playit_agent_proto::control_feed::{ClaimInstructions, NewClient};
 use serde::Serialize;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
     sync::mpsc::{Receiver, Sender, channel},
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    network::{
-        lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
-    },
-    stats::AgentStats,
-    utils::now_milli,
-};
+use crate::{network::origin_lookup::OriginLookup, stats::AgentStats, utils::now_milli};
 
 use super::{
     tcp_client::{TcpClient, TcpClientStat},
@@ -43,21 +40,35 @@ pub struct TcpClients {
     events_tx: Sender<Event>,
     new_client_limiter: DefaultDirectRateLimiter,
     cancel: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
 }
 
 struct Worker {
     lookup: Arc<OriginLookup>,
     events: Receiver<Event>,
-    events_tx: Sender<Event>,
     cancel: CancellationToken,
     settings: TcpSettings,
     stats: AgentStats,
 
     clients: Vec<Client>,
+    claims: Arc<Mutex<HashSet<ClaimInstructions>>>,
     next_client_id: u64,
+    pending: tokio::task::JoinSet<Option<Client>>,
+}
+
+struct ClaimReservation {
+    claim: ClaimInstructions,
+    claims: Arc<Mutex<HashSet<ClaimInstructions>>>,
+}
+
+impl Drop for ClaimReservation {
+    fn drop(&mut self) {
+        self.claims.lock().unwrap().remove(&self.claim);
+    }
 }
 
 struct Client {
+    _claim: ClaimReservation,
     id: u64,
     added_at: u64,
     tunnel_id: u64,
@@ -100,7 +111,7 @@ pub struct TcpClientDetails {
 enum Event {
     ClearOld,
     NewClient(NewClient),
-    ConnectedClient(Client),
+
     GetDetails(tokio::sync::oneshot::Sender<Vec<TcpClientDetails>>),
 }
 
@@ -111,19 +122,21 @@ impl TcpClients {
         stats: AgentStats,
         cancel: CancellationToken,
     ) -> Self {
+        let cancel = cancel.child_token();
         let quota = build_quota(&settings);
         let (events_tx, events_rx) = channel(1024);
 
-        tokio::spawn(
+        let task = tokio::spawn(
             Worker {
                 next_client_id: 1,
                 lookup,
                 events: events_rx,
-                events_tx: events_tx.clone(),
+                pending: tokio::task::JoinSet::new(),
                 cancel: cancel.child_token(),
                 settings,
                 stats,
                 clients: Vec::with_capacity(32),
+                claims: Arc::new(Mutex::new(HashSet::new())),
             }
             .start(),
         );
@@ -132,16 +145,19 @@ impl TcpClients {
             new_client_limiter: RateLimiter::direct(quota),
             events_tx,
             cancel,
+            task,
         }
+    }
+
+    pub async fn shutdown(mut self) {
+        self.cancel.cancel();
+        let _ = (&mut self.task).await;
     }
 
     pub async fn get_details(&self) -> Vec<TcpClientDetails> {
         let (tx, rx) = tokio::sync::oneshot::channel();
-        self.events_tx
-            .send(Event::GetDetails(tx))
-            .await
-            .expect("TcpClients worker closed");
-        rx.await.expect("TcpClients worker closed")
+        let _ = self.events_tx.send(Event::GetDetails(tx)).await;
+        rx.await.unwrap_or_default()
     }
 
     pub async fn handle_new_client(&self, new_client: NewClient) {
@@ -150,16 +166,20 @@ impl TcpClients {
             return;
         }
 
-        self.events_tx
-            .send(Event::NewClient(new_client))
-            .await
-            .expect("TcpClients worker closed");
+        let _ = self.events_tx.send(Event::NewClient(new_client)).await;
     }
 }
 
 impl Drop for TcpClients {
     fn drop(&mut self) {
         self.cancel.cancel();
+        self.task.abort();
+    }
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.stats.set_tcp(0);
     }
 }
 
@@ -169,6 +189,15 @@ impl Worker {
 
         loop {
             let event = tokio::select! {
+                result = self.pending.join_next(), if !self.pending.is_empty() => {
+                    match result {
+                        Some(Ok(Some(client))) => self.clients.push(client),
+                        Some(Err(error)) => tracing::error!(?error, "TCP setup task failed"),
+                        _ => {}
+                    }
+                    self.stats.set_tcp(self.clients.len() as u32);
+                    continue;
+                }
                 recv_opt = self.events.recv() => {
                     let Some(event) = recv_opt else {
                         tracing::debug!("TcpClients worker closed because event channel closed");
@@ -188,272 +217,76 @@ impl Worker {
 
             match event {
                 Event::NewClient(details) => {
+                    if self.pending.len() >= self.settings.max_pending_clients
+                        || self.pending.len() + self.clients.len() >= self.settings.max_clients
+                    {
+                        tcp_errors().new_client_rate_limited.inc();
+                        continue;
+                    }
+                    if !self
+                        .claims
+                        .lock()
+                        .unwrap()
+                        .insert(details.claim_instructions.clone())
+                    {
+                        continue;
+                    }
+                    let claim = ClaimReservation {
+                        claim: details.claim_instructions.clone(),
+                        claims: self.claims.clone(),
+                    };
                     let client_id = self.next_client_id;
                     self.next_client_id = client_id + 1;
 
                     tracing::info!(?details, id = client_id, "New TCP Client");
 
-                    let Some(found) = self.lookup.lookup(details.tunnel_id, true).await else {
-                        tracing::debug!(
-                            tunnel_id = details.tunnel_id,
-                            "Could not find tunnel for new client"
-                        );
-                        tcp_errors().new_client_origin_not_found.inc();
-                        continue;
-                    };
-
-                    let proxy_header = match (details.peer_addr, details.connect_addr) {
-                        (SocketAddr::V4(peer), SocketAddr::V4(tunn)) => {
-                            ProxyProtocolHeader::AfInet {
-                                client_ip: *peer.ip(),
-                                proxy_ip: *tunn.ip(),
-                                client_port: peer.port(),
-                                proxy_port: tunn.port(),
-                            }
-                        }
-                        (SocketAddr::V6(peer), SocketAddr::V6(tunn)) => {
-                            ProxyProtocolHeader::AfInet6 {
-                                client_ip: *peer.ip(),
-                                proxy_ip: *tunn.ip(),
-                                client_port: peer.port(),
-                                proxy_port: tunn.port(),
-                            }
-                        }
-                        _ => {
-                            tracing::error!(
-                                "Tunnel server provide miss match protol versions for peer and connect addr"
-                            );
-                            tcp_errors().invalid_proto_match.inc();
-                            continue;
-                        }
-                    };
-
                     let setting_tcp_no_delay = self.settings.tcp_no_delay;
 
-                    let event_tx = self.events_tx.clone();
+                    let lookup = self.lookup.clone();
                     let stats = self.stats.clone();
-                    let cancel = self.cancel.child_token();
-                    tokio::spawn(async move {
-                        let Some(origin_addr) = found.resolve_local(details.port_offset).await
-                        else {
-                            tracing::error!(
-                                port_offset = details.port_offset,
-                                tunnel_id = details.tunnel_id,
-                                "port offset not valid for tunnel"
-                            );
-                            tcp_errors().new_client_invalid_port_offset.inc();
-                            return;
-                        };
-
-                        /* connect to tunnel server */
-
-                        let conn_res = tokio::select! {
-                            _ = cancel.cancelled() => return,
-                            res = tokio::time::timeout(
-                                Duration::from_secs(8),
-                                TcpStream::connect(details.claim_instructions.address),
-                            ) => res,
-                        };
-
-                        let mut tunn_stream = match conn_res {
-                            Ok(Ok(stream)) => stream,
-                            Err(_) => {
-                                tracing::error!("timeout connecting to claim address");
-                                tcp_errors().new_client_claim_connect_timeout.inc();
-                                return;
-                            }
+                    self.pending.spawn(async move {
+                        let connection = tokio::time::timeout(
+                            Duration::from_secs(30),
+                            super::tcp_setup::connect(&details, &lookup, setting_tcp_no_delay),
+                        )
+                        .await;
+                        let connection = match connection {
+                            Ok(Ok(connection)) => connection,
                             Ok(Err(error)) => {
-                                tracing::error!(?error, "io error connecting to claim address");
-                                tcp_errors().new_client_claim_connect_error.inc();
-                                return;
-                            }
-                        };
-
-                        if let Err(error) = tunn_stream.set_nodelay(setting_tcp_no_delay) {
-                            tracing::error!(
-                                ?error,
-                                "failed to set tunn tcp no delay, value: {}",
-                                setting_tcp_no_delay
-                            );
-                            tcp_errors().new_client_set_tunnel_no_delay_error.inc();
-                        }
-
-                        /* send token to tunnel server to claim client */
-
-                        let send_res = tokio::select! {
-                            _ = cancel.cancelled() => return,
-                            res = tokio::time::timeout(
-                                Duration::from_secs(8),
-                                tunn_stream.write_all(&details.claim_instructions.token),
-                            ) => res,
-                        };
-                        match send_res {
-                            Ok(Ok(_)) => {}
-                            Err(_) => {
-                                tracing::error!("timeout sending claim token");
-                                tcp_errors().new_client_send_claim_timeout.inc();
-                                return;
-                            }
-                            Ok(Err(error)) => {
-                                tracing::error!(
-                                    ?error,
-                                    "io error sending claim instruction to claim address"
-                                );
-                                tcp_errors().new_client_send_claim_error.inc();
-                                return;
-                            }
-                        }
-
-                        let mut expect_buffer = [0u8; 8];
-                        let confirm_res = tokio::select! {
-                            _ = cancel.cancelled() => return,
-                            res = tokio::time::timeout(
-                                Duration::from_secs(4),
-                                tunn_stream.read_exact(&mut expect_buffer[..]),
-                            ) => res,
-                        };
-                        match confirm_res {
-                            Ok(Ok(_)) => {}
-                            Err(_) => {
-                                tracing::error!("timeout reading claim token response");
-                                tcp_errors().new_client_claim_expect_timeout.inc();
-                                return;
-                            }
-                            Ok(Err(error)) => {
-                                tracing::error!(?error, "io error reading claim response");
-                                tcp_errors().new_client_claim_expect_error.inc();
-                                return;
-                            }
-                        }
-
-                        /* connect to origin */
-
-                        let connect_res = tokio::select! {
-                            _ = cancel.cancelled() => return,
-                            res = tokio::time::timeout(
-                                Duration::from_secs(2),
-                                LanAddress::tcp_socket(true, details.peer_addr, origin_addr),
-                            ) => res,
-                        };
-
-                        let mut origin_stream = match connect_res {
-                            Ok(Ok(stream)) => stream,
-                            Ok(Err(error)) => {
-                                tracing::error!(
-                                    ?error,
-                                    %origin_addr,
-                                    tunnel_id = details.tunnel_id,
-                                    port_offset = details.port_offset,
-                                    source_addr = %details.peer_addr,
-                                    "failed to connect to local TCP server; check that your server is running and listening on the configured local address"
-                                );
-                                tcp_errors().new_client_origin_connect_error.inc();
-                                return;
+                                tracing::debug!(id = client_id, ?error, "TCP setup failed");
+                                return None;
                             }
                             Err(_) => {
-                                tracing::error!(
-                                    %origin_addr,
-                                    tunnel_id = details.tunnel_id,
-                                    port_offset = details.port_offset,
-                                    source_addr = %details.peer_addr,
-                                    "timed out connecting to local TCP server; check firewall rules and that the server is listening on the configured local address"
-                                );
-                                tcp_errors().new_client_origin_connect_timeout.inc();
-                                return;
+                                tracing::debug!(id = client_id, "TCP setup deadline exceeded");
+                                return None;
                             }
                         };
-
-                        if let Err(error) = origin_stream.set_nodelay(true) {
-                            tracing::error!(?error, "failed to set origin tcp no delay");
-                            tcp_errors().new_client_set_origin_no_delay_error.inc();
-                        }
-
-                        let proxy_write_res = match found.proxy_protocol {
-                            Some(ProxyProtocol::ProxyProtocolV1) => {
-                                tokio::select! {
-                                    _ = cancel.cancelled() => return,
-                                    res = tokio::time::timeout(
-                                        Duration::from_secs(2),
-                                        proxy_header.write_v1_tcp(&mut origin_stream),
-                                    ) => res,
-                                }
-                            }
-                            Some(ProxyProtocol::ProxyProtocolV2) => {
-                                tokio::select! {
-                                    _ = cancel.cancelled() => return,
-                                    res = tokio::time::timeout(
-                                        Duration::from_secs(2),
-                                        proxy_header.write_v2_tcp(&mut origin_stream),
-                                    ) => res,
-                                }
-                            }
-                            None => Ok(Ok(())),
-                        };
-
-                        match proxy_write_res {
-                            Ok(Ok(_)) => {}
-                            Err(_) => {
-                                tracing::error!("timeout sending proxy protocol header");
-                                tcp_errors().new_client_write_proxy_proto_timeout.inc();
-                                return;
-                            }
-                            Ok(Err(error)) => {
-                                tracing::error!(?error, "failed to write proxy protocol header");
-                                tcp_errors().new_client_write_proxy_proto_error.inc();
-                                return;
-                            }
-                        }
-
-                        let tcp_client =
-                            TcpClient::create_with_stats(tunn_stream, origin_stream, Some(stats))
-                                .await;
-                        let event = Event::ConnectedClient(Client {
+                        let tcp = TcpClient::create_with_stats(
+                            connection.tunnel,
+                            connection.origin,
+                            Some(stats),
+                        )
+                        .await;
+                        Some(Client {
+                            _claim: claim,
                             id: client_id,
                             added_at: now_milli(),
                             tunnel_id: details.tunnel_id,
                             port_offset: details.port_offset,
                             source_addr: details.peer_addr,
                             tunnel_addr: details.connect_addr,
-                            origin_addr,
-                            tcp: tcp_client,
-                        });
-                        let _ = tokio::select! {
-                            _ = cancel.cancelled() => return,
-                            res = event_tx.send(event) => res,
-                        };
+                            origin_addr: connection.origin_addr,
+                            tcp,
+                        })
                     });
                 }
                 Event::GetDetails(resp) => {
                     let _ = resp.send(self.clients.iter().map(Client::details).collect());
                 }
-                Event::ConnectedClient(client) => {
-                    self.clients.push(client);
-                    self.stats.set_tcp(self.clients.len() as u32);
-                }
                 Event::ClearOld => {
-                    let now = now_milli();
                     self.clients.retain(|client| {
-                        let last_use = client.tcp.last_use();
-
-                        let since_tunn = now.max(last_use.tunn_to_origin) - last_use.tunn_to_origin;
-                        let since_orig = now.max(last_use.origin_to_tunn) - last_use.origin_to_tunn;
-
-                        if 90_000 < since_tunn && 30_000 < since_orig {
-                            tracing::debug!(id = client.id, "clear old: 90s since tunnel data");
-                            return false;
-                        }
-
-                        if 90_000 < since_orig && 30_000 < since_tunn {
-                            tracing::debug!(id = client.id, "clear old: 90s since origin data");
-                            return false;
-                        }
-
-                        if 60_000 < since_tunn && 60_000 < since_orig {
-                            tracing::debug!(id = client.id, "clear old: 60s since any data");
-                            return false;
-                        }
-
-                        true
+                        !client.tcp.is_closed()
+                            && client.tcp.idle_for() < self.settings.idle_timeout
                     });
 
                     // Update active TCP connection count
@@ -461,5 +294,143 @@ impl Worker {
                 }
             }
         }
+        self.pending.shutdown().await;
+        self.clients.clear();
+        self.stats.set_tcp(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::origin_lookup::{OriginIp, OriginResource, OriginTarget};
+    use playit_agent_proto::PortProto;
+    use playit_api_client::api::ProxyProtocol;
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    async fn fixture(
+        max_pending: usize,
+    ) -> (
+        TcpClients,
+        NewClient,
+        TcpListener,
+        TcpListener,
+        CancellationToken,
+    ) {
+        let claims = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let lookup = Arc::new(OriginLookup::default());
+        lookup
+            .update(std::iter::once(OriginResource {
+                tunnel_id: 42,
+                proto: PortProto::Tcp,
+                port_count: 1,
+                target: OriginTarget::Port {
+                    ip: OriginIp::IpAddress("127.0.0.1".parse().unwrap()),
+                    port: origin.local_addr().unwrap().port(),
+                },
+                proxy_protocol: Some(ProxyProtocol::ProxyProtocolV1),
+            }))
+            .await;
+        let parent = CancellationToken::new();
+        let clients = TcpClients::new(
+            TcpSettings {
+                max_pending_clients: max_pending,
+                ..Default::default()
+            },
+            lookup,
+            AgentStats::new(),
+            parent.clone(),
+        );
+        let details = NewClient {
+            connect_addr: "203.0.113.1:4000".parse().unwrap(),
+            peer_addr: "198.51.100.1:5000".parse().unwrap(),
+            tunnel_id: 42,
+            port_offset: 0,
+            data_center_id: 1,
+            claim_instructions: ClaimInstructions {
+                address: claims.local_addr().unwrap(),
+                token: b"token".to_vec(),
+            },
+        };
+        (clients, details, claims, origin, parent)
+    }
+
+    #[tokio::test]
+    async fn setup_relays_proxy_header_and_preserves_half_close() {
+        let (clients, details, claims, origin, _) = fixture(8).await;
+        clients.handle_new_client(details.clone()).await;
+        let (mut tunnel, _) = tokio::time::timeout(Duration::from_secs(1), claims.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut token = [0; 5];
+        tunnel.read_exact(&mut token).await.unwrap();
+        assert_eq!(&token, b"token");
+        clients.handle_new_client(details).await;
+        tunnel.write_all(&[0; 8]).await.unwrap();
+        let (mut server, _) = tokio::time::timeout(Duration::from_secs(1), origin.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        tunnel.write_all(b"request").await.unwrap();
+        tunnel.shutdown().await.unwrap();
+        let mut request = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), server.read_to_end(&mut request))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            request,
+            b"PROXY TCP4 198.51.100.1 203.0.113.1 5000 4000\r\nrequest"
+        );
+        server.write_all(b"reply").await.unwrap();
+        server.shutdown().await.unwrap();
+        let mut reply = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), tunnel.read_to_end(&mut reply))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reply, b"reply");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), claims.accept())
+                .await
+                .is_err()
+        );
+        clients.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn pending_limit_and_shutdown_cover_claim_handshake() {
+        let (clients, mut details, claims, _origin, parent) = fixture(1).await;
+        clients.handle_new_client(details.clone()).await;
+        let (mut tunnel, _) = tokio::time::timeout(Duration::from_secs(1), claims.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut token = [0; 5];
+        tunnel.read_exact(&mut token).await.unwrap();
+        details.claim_instructions.token.push(1);
+        clients.handle_new_client(details).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), claims.accept())
+                .await
+                .is_err()
+        );
+        tokio::time::timeout(Duration::from_secs(1), clients.shutdown())
+            .await
+            .unwrap();
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), tunnel.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        assert!(!parent.is_cancelled());
     }
 }

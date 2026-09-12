@@ -1,233 +1,202 @@
-use std::{
-    net::SocketAddr,
-    sync::{
-        Arc, RwLock,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
-};
-use tokio::time::Instant;
+use std::{io, time::Duration};
 
 use playit_agent_proto::{
     control_messages::UdpChannelDetails,
-    udp_proto::{UDP_CHANNEL_ESTABLISH_ID, UdpFlow},
+    udp_proto::{UdpDatagram, UdpFlow},
 };
-use tokio::sync::mpsc::{Receiver, Sender, channel};
-
-use crate::{
-    agent_control::{DualStackUdpSocket, PacketIO},
-    utils::now_milli,
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+    time::Instant,
 };
 
 use super::{
     packets::{Packet, Packets},
     udp_errors::udp_errors,
 };
+use crate::agent_control::{DualStackUdpSocket, PacketIO};
 
 pub struct UdpChannel {
-    session_tx: Sender<UdpChannelDetails>,
-    send: Sender<(UdpFlow, Packet)>,
-    recv: Receiver<(UdpFlow, Packet)>,
-    shared: Arc<Shared>,
+    commands: mpsc::Sender<Command>,
+    recv: mpsc::Receiver<(UdpFlow, Packet)>,
+    status: watch::Receiver<Status>,
+    task: JoinHandle<()>,
 }
 
-#[derive(Default)]
-struct Shared {
-    establish_rx_epoch: AtomicU64,
-    establish_tx_epoch: AtomicU64,
-    session_tunnel_addr: RwLock<Option<SocketAddr>>,
+enum Command {
+    Session(UdpChannelDetails),
+    Send(UdpFlow, Packet),
 }
 
-struct SendTask {
-    socket: Arc<DualStackUdpSocket>,
-    session: Option<UdpChannelDetails>,
-    session_rx: Receiver<UdpChannelDetails>,
-    send_rx: Receiver<(UdpFlow, Packet)>,
-    shared: Arc<Shared>,
+#[derive(Clone, Default)]
+struct Status {
+    established: Option<Instant>,
+    establish_sent: Option<Instant>,
 }
 
-struct RecvTask {
-    socket: Arc<DualStackUdpSocket>,
+// One task owns the socket and session. Session replacement and packet validation are ordered.
+struct Worker {
+    socket: DualStackUdpSocket,
     packets: Packets,
-    recv_tx: Sender<(UdpFlow, Packet)>,
-    shared: Arc<Shared>,
+    commands: mpsc::Receiver<Command>,
+    output: mpsc::Sender<(UdpFlow, Packet)>,
+    status: watch::Sender<Status>,
+    session: Option<UdpChannelDetails>,
+    next_establish: Instant,
 }
 
 impl UdpChannel {
-    pub async fn new(packets: Packets) -> Result<Self, std::io::Error> {
-        let socket = Arc::new(DualStackUdpSocket::new().await?);
-
-        let (session_tx, session_rx) = channel(32);
-
-        let (send_tx, send_rx) = channel(1024);
-        let (recv_tx, recv_rx) = channel(4096);
-
-        let shared = Arc::new(Shared::default());
-
-        tokio::spawn(
-            SendTask {
-                socket: socket.clone(),
-                session: None,
-                session_rx,
-                send_rx,
-                shared: shared.clone(),
-            }
-            .start(),
-        );
-        tokio::spawn(
-            RecvTask {
+    pub async fn new(packets: Packets) -> io::Result<Self> {
+        let socket = DualStackUdpSocket::new().await?;
+        let (commands, command_rx) = mpsc::channel(1024);
+        let (output, recv) = mpsc::channel(4096);
+        let (status_tx, status) = watch::channel(Status::default());
+        let task = tokio::spawn(
+            Worker {
                 socket,
                 packets,
-                recv_tx,
-                shared: shared.clone(),
+                commands: command_rx,
+                output,
+                status: status_tx,
+                session: None,
+                next_establish: Instant::now(),
             }
-            .start(),
+            .run(),
         );
-
-        Ok(UdpChannel {
-            session_tx,
-            send: send_tx,
-            recv: recv_rx,
-            shared,
+        Ok(Self {
+            commands,
+            recv,
+            status,
+            task,
         })
     }
 
     pub fn time_since_established(&self) -> Option<Duration> {
-        let ts = self.shared.establish_rx_epoch.load(Ordering::Acquire);
-        if ts == 0 {
-            return None;
-        }
-        let now = now_milli();
-        Some(Duration::from_millis(now.max(ts) - ts))
+        self.status.borrow().established.map(|at| at.elapsed())
     }
 
     pub fn time_since_establish_send(&self) -> Option<Duration> {
-        let ts = self.shared.establish_tx_epoch.load(Ordering::Acquire);
-        if ts == 0 {
-            return None;
-        }
-        let now = now_milli();
-        Some(Duration::from_millis(now.max(ts) - ts))
+        self.status.borrow().establish_sent.map(|at| at.elapsed())
     }
 
-    pub async fn update_session(&self, details: UdpChannelDetails) {
-        self.session_tx.send(details).await.expect("task closed");
+    pub async fn update_session(&self, details: UdpChannelDetails) -> io::Result<()> {
+        self.commands
+            .send(Command::Session(details))
+            .await
+            .map_err(|_| io::ErrorKind::BrokenPipe.into())
     }
 
-    pub async fn send(&self, flow: UdpFlow, packet: Packet) {
-        if self.send.send((flow, packet)).await.is_err() {
-            panic!("UdpChannel task closed");
-        }
+    pub async fn send(&self, flow: UdpFlow, packet: Packet) -> io::Result<()> {
+        self.commands
+            .send(Command::Send(flow, packet))
+            .await
+            .map_err(|_| io::ErrorKind::BrokenPipe.into())
     }
 
-    pub async fn recv(&mut self) -> (UdpFlow, Packet) {
-        self.recv.recv().await.expect("UdpChannel task closed")
+    pub async fn recv(&mut self) -> Option<(UdpFlow, Packet)> {
+        self.recv.recv().await
     }
 }
 
-impl SendTask {
-    async fn start(mut self) {
-        let mut last_establish_send = Instant::now();
+impl Drop for UdpChannel {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
 
+impl Worker {
+    async fn run(mut self) {
+        // Receive complete datagrams before applying the pool's payload limit.
+        let mut buffer = vec![0; 65_536];
         loop {
-            let next_send = if self.session.is_none() {
-                Instant::now() + Duration::from_secs(5)
-            } else {
-                let since_establish = Duration::from_millis({
-                    let now = now_milli();
-                    let last_rx = self.shared.establish_rx_epoch.load(Ordering::Relaxed);
-                    now.max(last_rx) - last_rx
-                });
-
-                const MIN_INTERVAL: Duration = Duration::from_secs(3);
-                const MAX_ESTABLISH_WAIT: Duration = Duration::from_secs(15);
-                const SEND_INTERVAL: Duration = Duration::from_secs(10);
-
-                if MAX_ESTABLISH_WAIT <= since_establish {
-                    last_establish_send + MIN_INTERVAL
-                } else {
-                    last_establish_send + SEND_INTERVAL
-                }
-            };
-
             tokio::select! {
-                _ = tokio::time::sleep_until(next_send) => {
-                    last_establish_send = Instant::now();
-                    self.send_establish().await;
-                    continue;
+                command = self.commands.recv() => match command {
+                    None => break,
+                    Some(Command::Session(details)) => {
+                        if self.session.as_ref() != Some(&details) {
+                            self.status.send_replace(Status::default());
+                        }
+                        self.session = Some(details);
+                        self.establish().await;
+                    }
+                    Some(Command::Send(flow, packet)) => self.send(flow, packet).await,
+                },
+                _ = tokio::time::sleep_until(self.next_establish), if self.session.is_some() => {
+                    self.establish().await;
                 }
-                session_res = self.session_rx.recv() => {
-                    let Some(details) = session_res else { break };
-                    self.handle_session(details).await;
-                    continue;
-                }
-                to_send_res = self.send_rx.recv() => {
-                    let Some((flow, to_send)) = to_send_res else { break };
-                    self.send(flow, to_send).await;
-                    continue;
-                }
-            };
-        }
-    }
-
-    async fn handle_session(&mut self, details: UdpChannelDetails) {
-        let should_send = match self.session.take() {
-            None => true,
-            Some(old) => {
-                if old != details {
-                    true
-                } else {
-                    5_000
-                        < now_milli()
-                            .saturating_sub(self.shared.establish_rx_epoch.load(Ordering::Relaxed))
-                }
+                result = self.socket.recv_from(&mut buffer) => match result {
+                    Ok((len, source)) => {
+                        if self.session.as_ref().map(|s| s.tunnel_addr) != Some(source) {
+                            udp_errors().recv_source_no_match.inc();
+                            continue;
+                        }
+                        let data = &buffer[..len];
+                        let (flow, payload) = match UdpDatagram::decode(data) {
+                            Ok(UdpDatagram::Established) => {
+                                self.status.send_modify(|status| status.established = Some(Instant::now()));
+                                continue;
+                            }
+                            Ok(UdpDatagram::Data { flow, payload }) => (flow, payload),
+                            Err(_) => {
+                                udp_errors().recv_invalid_footer_id.inc();
+                                continue;
+                            }
+                        };
+                        let Some(mut packet) = self.packets.allocate() else {
+                            udp_errors().packet_pool_exhausted.inc();
+                            continue;
+                        };
+                        if packet.set_len(payload.len()).is_err() {
+                            udp_errors().packet_too_large.inc();
+                            continue;
+                        }
+                        packet.as_mut().copy_from_slice(payload);
+                        // Saturation drops datagrams without blocking session maintenance.
+                        if self.output.try_send((flow, packet)).is_err() {
+                            udp_errors().packet_queue_full.inc();
+                        }
+                    }
+                    Err(_) => {
+                        udp_errors().recv_io_error.inc();
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                },
             }
-        };
-
-        *self.shared.session_tunnel_addr.write().unwrap() = Some(details.tunnel_addr);
-        self.session = Some(details);
-        if should_send {
-            self.send_establish().await;
         }
     }
 
-    async fn send_establish(&self) {
-        let Some(session) = self.session.as_ref() else {
-            udp_errors().establish_no_session.inc();
-            return;
-        };
-
-        self.shared
-            .establish_tx_epoch
-            .store(now_milli(), Ordering::Release);
-
+    async fn establish(&mut self) {
+        let Some(session) = &self.session else { return };
         if self
             .socket
-            .send_to(&session.token[..], session.tunnel_addr)
+            .send_to(&session.token, session.tunnel_addr)
             .await
             .is_err()
         {
             udp_errors().establish_send_io_error.inc();
+        } else {
+            self.status
+                .send_modify(|status| status.establish_sent = Some(Instant::now()));
         }
+        let healthy = self
+            .status
+            .borrow()
+            .established
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(15));
+        self.next_establish = Instant::now() + Duration::from_secs(if healthy { 10 } else { 3 });
     }
 
     async fn send(&self, flow: UdpFlow, mut packet: Packet) {
-        let Some(session) = self.session.as_ref() else {
+        let Some(session) = &self.session else {
             udp_errors().no_session_send_fail.inc();
             return;
         };
-
-        let og_len = packet.len();
-        let remaining = &mut packet.full_slice_mut()[og_len..];
-        if !flow.write_to(remaining) {
+        let len = packet.len();
+        if !flow.write_to(&mut packet.full_slice_mut()[len..]) {
             udp_errors().tail_append_fail.inc();
             return;
         }
-
-        packet
-            .set_len(og_len + flow.footer_len())
-            .expect("should be able to update packet len");
-
+        packet.set_len(len + flow.footer_len()).unwrap();
         if self
             .socket
             .send_to(packet.as_ref(), session.tunnel_addr)
@@ -239,54 +208,54 @@ impl SendTask {
     }
 }
 
-impl RecvTask {
-    async fn start(self) {
-        let mut packet = self.packets.allocate_wait().await;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use playit_agent_proto::udp_proto::UDP_CHANNEL_ESTABLISH_ID;
+    use std::sync::Arc;
+    use tokio::net::UdpSocket;
 
-        loop {
-            let Ok((bytes, source)) = self.socket.recv_from(packet.full_slice_mut()).await else {
-                udp_errors().recv_io_error.inc();
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                continue;
-            };
-
-            let Some(session_addr) = *self.shared.session_tunnel_addr.read().unwrap() else {
-                udp_errors().recv_with_no_session.inc();
-                continue;
-            };
-
-            if session_addr != source {
-                udp_errors().recv_source_no_match.inc();
-                continue;
+    #[tokio::test]
+    async fn session_reset_and_ack_work_when_packet_pool_is_exhausted() {
+        let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let pool = Packets::new(1);
+        let _held_packet = pool.allocate().unwrap();
+        let channel = UdpChannel::new(pool).await.unwrap();
+        let mut buffer = [0; 128];
+        let details = |token| UdpChannelDetails {
+            tunnel_addr: server.local_addr().unwrap(),
+            token: Arc::new(vec![token]),
+        };
+        channel.update_session(details(1)).await.unwrap();
+        let (_, addr) = tokio::time::timeout(Duration::from_secs(1), server.recv_from(&mut buffer))
+            .await
+            .unwrap()
+            .unwrap();
+        server
+            .send_to(&UDP_CHANNEL_ESTABLISH_ID.to_be_bytes(), addr)
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while channel.time_since_established().is_none() {
+                tokio::task::yield_now().await;
             }
-
-            packet.set_len(bytes).expect("failed to update packet len");
-            let flow = match UdpFlow::from_tail(packet.as_ref()) {
-                Ok(flow) => flow,
-                Err(Some(footer)) if footer == UDP_CHANNEL_ESTABLISH_ID => {
-                    self.shared
-                        .establish_rx_epoch
-                        .store(now_milli(), Ordering::Release);
-                    continue;
-                }
-                Err(id) => {
-                    if id.is_none() {
-                        udp_errors().recv_too_small.inc();
-                    } else {
-                        udp_errors().recv_invalid_footer_id.inc();
-                    }
-                    continue;
-                }
-            };
-
-            packet
-                .set_len(bytes - flow.footer_len())
-                .expect("failed to remove udp footer");
-
-            if self.recv_tx.send((flow, packet)).await.is_err() {
-                break;
+        })
+        .await
+        .unwrap();
+        channel.update_session(details(2)).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), server.recv_from(&mut buffer))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(channel.time_since_established().is_none());
+        let handle = channel.task.abort_handle();
+        drop(channel);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !handle.is_finished() {
+                tokio::task::yield_now().await;
             }
-            packet = self.packets.allocate_wait().await;
-        }
+        })
+        .await
+        .unwrap();
     }
 }
