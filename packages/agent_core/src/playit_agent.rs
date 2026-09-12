@@ -1,13 +1,7 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-use std::time::Duration;
-
-use tokio::sync::mpsc::channel;
+use std::{sync::Arc, time::Duration};
+use tokio::sync::watch;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::Instrument;
 
 use crate::agent_control::errors::SetupError;
 use crate::agent_control::maintained_control::{MaintainedControl, TunnelControlEvent};
@@ -20,7 +14,6 @@ use crate::network::udp::udp_channel::UdpChannel;
 use crate::network::udp::udp_clients::UdpClients;
 use crate::network::udp::udp_settings::UdpSettings;
 use crate::stats::AgentStats;
-use crate::utils::now_milli;
 
 pub struct PlayitAgent {
     control: MaintainedControl<DualStackUdpSocket, AuthApi>,
@@ -91,158 +84,75 @@ impl PlayitAgent {
     }
 
     pub async fn run(self) {
-        let PlayitAgent {
+        let Self {
             mut control,
-            udp_clients,
-            udp_channel,
+            mut udp_clients,
+            mut udp_channel,
             tcp_clients,
             cancel_token,
             ..
         } = self;
+        let (session_tx, mut session_rx) = watch::channel(None);
+        let (renew_tx, renew_rx) = watch::channel(true);
 
-        let (udp_session_tx, mut udp_session_rx) = channel(8);
-        let udp_session_should_renew = Arc::new(AtomicBool::new(false));
-
-        let tunnel_cancel = cancel_token.child_token();
-        let should_renew_udp = udp_session_should_renew.clone();
-        let mut tunnel_task = tokio::spawn(async move {
-            let mut last_control_addr_check = now_milli();
-
+        let control_loop = async move {
+            let mut next_address_check = Instant::now() + Duration::from_secs(30);
             loop {
-                // Keep the control loop cooperative when updates are continuously ready.
-                tokio::select! {
-                    _ = tunnel_cancel.cancelled() => break,
-                    _ = tokio::task::yield_now() => {}
+                if *renew_rx.borrow() {
+                    control.send_udp_session_auth(Duration::from_secs(5)).await;
                 }
-
-                if should_renew_udp.load(Ordering::Acquire) {
-                    let Some(sent) = tunnel_cancel
-                        .run_until_cancelled(control.send_udp_session_auth(now_milli(), 5_000))
-                        .await
-                    else {
-                        break;
-                    };
-                    if sent {
-                        tracing::debug!("udp channel requires auth, sent auth request");
+                if Instant::now() >= next_address_check {
+                    next_address_check = Instant::now() + Duration::from_secs(30);
+                    if let Err(error) = control.reload_control_addr(DualStackUdpSocket::new()).await
+                    {
+                        tracing::debug!(?error, "Control address refresh failed");
                     }
                 }
-
-                let now = now_milli();
-                if 30_000 < now.saturating_sub(last_control_addr_check) {
-                    last_control_addr_check = now;
-
-                    let reload =
-                        control.reload_control_addr(async { DualStackUdpSocket::new().await });
-                    if let Some(Err(error)) = tunnel_cancel.run_until_cancelled(reload).await {
-                        tracing::error!(?error, "failed to reload_control_addr");
+                match control.update().await {
+                    Some(TunnelControlEvent::NewClient(client)) => {
+                        tcp_clients.handle_new_client(client).await
                     }
-                }
-
-                let update = tokio::select! {
-                    _ = tunnel_cancel.cancelled() => break,
-                    update = control.update() => update,
-                };
-
-                match update {
-                    Some(TunnelControlEvent::NewClient(new_client)) => {
-                        tokio::select! {
-                            _ = tunnel_cancel.cancelled() => break,
-                            _ = tcp_clients.handle_new_client(new_client) => {}
-                        }
-                    }
-                    Some(TunnelControlEvent::UdpChannelDetails(udp_details)) => {
-                        tracing::debug!("udp session details received");
-                        let _ = udp_session_tx.try_send(udp_details);
+                    Some(TunnelControlEvent::UdpChannelDetails(details)) => {
+                        session_tx.send_replace(Some(details));
                     }
                     None => {}
                 }
             }
-        });
-
-        let udp_cancel = cancel_token.child_token();
-        let mut udp_channel = udp_channel;
-        let mut udp_clients = udp_clients;
-
-        let mut udp_task = tokio::spawn(async move {
-            let mut next_clear = Instant::now() + Duration::from_secs(16);
-
+        };
+        let udp_loop = async move {
+            let mut maintenance = tokio::time::interval(Duration::from_secs(3));
+            maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
-                // Keep the UDP packet loop cooperative under sustained bidirectional traffic.
                 tokio::select! {
-                    _ = udp_cancel.cancelled() => break,
-                    _ = tokio::task::yield_now() => {}
-                }
-
-                tokio::select! {
-                    _ = udp_cancel.cancelled() => break,
-                    recv = udp_clients.recv_origin_packet() => {
-                        let Some((flow, packet)) = udp_clients.dispatch_origin_packet(now_milli(), recv).await else { continue };
-                        udp_channel.send(flow, packet).await;
+                    packet = udp_clients.recv_origin_packet() => {
+                        if let Some((flow, packet)) = udp_clients.dispatch_origin_packet(packet).await
+                            && udp_channel.send(flow, packet).await.is_err() { break; }
                     }
-                    (flow, packet) = udp_channel.recv() => {
-                        udp_clients.handle_tunneled_packet(now_milli(), flow, packet).await;
+                    packet = udp_channel.recv() => {
+                        let Some((flow, packet)) = packet else { break };
+                        udp_clients.handle_tunneled_packet(flow, packet).await;
                     }
-                    session_opt = udp_session_rx.recv() => {
-                        let Some(session) = session_opt else {
-                            tracing::debug!("udp session channel closed");
-                            break;
-                        };
-                        udp_channel.update_session(session).await;
+                    result = session_rx.changed() => {
+                        if result.is_err() { break; }
+                        let session = session_rx.borrow_and_update().clone();
+                        if let Some(session) = session
+                            && udp_channel.update_session(session).await.is_err() { break; }
                     }
-                    _ = tokio::time::sleep_until(next_clear) => {
-                        next_clear = Instant::now() + Duration::from_secs(16);
-                        udp_clients.clear_old(now_milli()).await;
+                    _ = maintenance.tick() => {
+                        udp_clients.clear_old().await;
+                        let renew = udp_channel.time_since_established()
+                            .is_none_or(|age| age >= Duration::from_secs(6));
+                        renew_tx.send_replace(renew);
                     }
-                    _ = tokio::time::sleep(Duration::from_secs(3)) => {}
-                }
-
-                {
-                    let udp_needs_renew = match udp_channel.time_since_established() {
-                        Some(since) => Duration::from_secs(6) <= since,
-                        None => true,
-                    };
-                    udp_session_should_renew.store(udp_needs_renew, Ordering::Release);
                 }
             }
-        }.instrument(tracing::info_span!("udp_session")));
-
-        let mut tunnel_done = false;
-        let mut udp_done = false;
+        };
+        // Dropping either loop also drops its transports and their owned workers.
         tokio::select! {
-            result = &mut tunnel_task => {
-                tunnel_done = true;
-                if let Err(error) = result {
-                    tracing::error!(?error, "tunnel task failed");
-                }
-            }
-            result = &mut udp_task => {
-                udp_done = true;
-                if let Err(error) = result {
-                    tracing::error!(?error, "udp task failed");
-                }
-            }
             _ = cancel_token.cancelled() => {}
+            _ = control_loop => {}
+            _ = udp_loop => {}
         }
-
         cancel_token.cancel();
-
-        if !tunnel_done {
-            if tokio::time::timeout(Duration::from_secs(5), &mut tunnel_task)
-                .await
-                .is_err()
-            {
-                tunnel_task.abort();
-                let _ = tunnel_task.await;
-            }
-        }
-        if !udp_done {
-            if tokio::time::timeout(Duration::from_secs(5), &mut udp_task)
-                .await
-                .is_err()
-            {
-                udp_task.abort();
-                let _ = udp_task.await;
-            }
-        }
     }
 }

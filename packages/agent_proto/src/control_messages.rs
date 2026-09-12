@@ -278,23 +278,30 @@ pub struct AgentRegister {
 }
 
 impl AgentRegister {
-    pub fn update_signature(&mut self, temp_buffer: &mut Vec<u8>, hmac: &HmacSha256) {
-        self.write_plain(temp_buffer);
+    pub fn update_signature(
+        &mut self,
+        temp_buffer: &mut Vec<u8>,
+        hmac: &HmacSha256,
+    ) -> std::io::Result<()> {
+        self.write_plain(temp_buffer)?;
         self.signature = hmac.sign(temp_buffer);
+        Ok(())
     }
 
     pub fn verify_signature(&self, temp_buffer: &mut Vec<u8>, hmac: &HmacSha256) -> bool {
-        self.write_plain(temp_buffer);
+        if self.write_plain(temp_buffer).is_err() {
+            return false;
+        }
         hmac.verify(temp_buffer, &self.signature).is_ok()
     }
 
-    fn write_plain(&self, temp_buffer: &mut Vec<u8>) {
+    fn write_plain(&self, temp_buffer: &mut Vec<u8>) -> std::io::Result<()> {
         temp_buffer.clear();
-        self.write_to(temp_buffer).unwrap();
-        assert!(self.signature.len() <= temp_buffer.len());
+        self.write_to(temp_buffer)?;
 
         let adjusted_len = temp_buffer.len() - self.signature.len();
         temp_buffer.truncate(adjusted_len);
+        Ok(())
     }
 }
 
@@ -632,12 +639,23 @@ impl MessageEncoding for MtuTestFail {
 }
 
 pub fn write_mtu_pattern<T: Write>(out: &mut T, len: usize) -> std::io::Result<usize> {
-    assert!(len <= 2048);
+    if len > MTU_TEST_PATTERN.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "MTU pattern exceeds limit",
+        ));
+    }
     out.write_all(&MTU_TEST_PATTERN[..len])?;
     Ok(len)
 }
 
 fn read_and_verify_mtu_pattern<T: Read>(read: &mut T, len: usize) -> std::io::Result<()> {
+    if len > MTU_TEST_PATTERN.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "MTU pattern exceeds limit",
+        ));
+    }
     let mut buffer = [0u8; 128];
 
     let mut i = 0;
@@ -740,7 +758,7 @@ impl Debug for UdpChannelDetails {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UdpChannelDetails")
             .field("tunnel_addr", &self.tunnel_addr)
-            .field("token", &hex::encode(&self.token[..]))
+            .field("token", &"[redacted]")
             .finish()
     }
 }
@@ -749,14 +767,14 @@ impl MessageEncoding for UdpChannelDetails {
     fn write_to<T: Write>(&self, out: &mut T) -> std::io::Result<usize> {
         let mut sum = 0;
         sum += self.tunnel_addr.write_to(out)?;
-        sum += self.token.write_to(out)?;
+        sum += crate::bytes::write_token(&self.token, out)?;
         Ok(sum)
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
         Ok(UdpChannelDetails {
             tunnel_addr: SocketAddr::read_from(read)?,
-            token: Arc::new(Vec::read_from(read)?),
+            token: Arc::new(crate::bytes::read_token(read)?),
         })
     }
 }
@@ -857,11 +875,11 @@ mod test {
         let hmac = HmacSha256::create("this is a super secret secret".as_bytes());
 
         let mut buffer = Vec::new();
-        reg.update_signature(&mut buffer, &hmac);
+        reg.update_signature(&mut buffer, &hmac).unwrap();
         assert!(reg.verify_signature(&mut buffer, &hmac));
 
         reg.proto_version = 1;
-        reg.update_signature(&mut buffer, &hmac);
+        reg.update_signature(&mut buffer, &hmac).unwrap();
         assert!(reg.verify_signature(&mut buffer, &hmac));
     }
 
@@ -1163,7 +1181,7 @@ mod test {
 
         let sig = HmacSha256::create("test-secret-hehehe".as_bytes());
         let mut buffer = Vec::new();
-        msg.update_signature(&mut buffer, &sig);
+        msg.update_signature(&mut buffer, &sig).unwrap();
         assert!(msg.verify_signature(&mut buffer, &sig));
 
         buffer.clear();
@@ -1191,7 +1209,7 @@ mod test {
 
         let sig = HmacSha256::create("test-secret-hehehe".as_bytes());
         let mut buffer = Vec::new();
-        msg.update_signature(&mut buffer, &sig);
+        msg.update_signature(&mut buffer, &sig).unwrap();
         assert!(msg.verify_signature(&mut buffer, &sig));
 
         buffer.clear();
@@ -1282,5 +1300,38 @@ mod test {
 
         let err = ControlRequest::read_from(&mut &buffer[..]).unwrap_err();
         assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+}
+
+#[cfg(test)]
+mod limit_tests {
+    use super::*;
+    #[test]
+    fn invalid_registration_fields_do_not_panic_during_signature_checks() {
+        let mut message = AgentRegister {
+            proto_version: 1,
+            account_id: u64::MAX,
+            agent_id: 1,
+            agent_version: 1,
+            timestamp: 0,
+            client_addr: "127.0.0.1:1".parse().unwrap(),
+            tunnel_addr: "127.0.0.1:2".parse().unwrap(),
+            signature: [0; 32],
+        };
+        let hmac = HmacSha256::create(b"test");
+        assert!(!message.verify_signature(&mut Vec::new(), &hmac));
+        assert!(message.update_signature(&mut Vec::new(), &hmac).is_err());
+    }
+    #[test]
+    fn excessive_mtu_pattern_returns_error() {
+        let message = CheckMtuReceived {
+            id: 1,
+            message_size: u32::MAX,
+        };
+        assert!(message.write_to(&mut Vec::new()).is_err());
+        let mut bytes = Vec::new();
+        1u64.write_to(&mut bytes).unwrap();
+        u32::MAX.write_to(&mut bytes).unwrap();
+        assert!(CheckMtuReceived::read_from(&mut &bytes[..]).is_err());
     }
 }

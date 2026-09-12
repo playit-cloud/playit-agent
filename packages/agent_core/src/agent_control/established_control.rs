@@ -1,4 +1,5 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, time::Duration};
+use tokio::time::Instant;
 
 use playit_agent_proto::control_feed::ControlFeed;
 use playit_agent_proto::control_messages::{
@@ -20,9 +21,29 @@ pub struct EstablishedControl<A: AuthResource, IO: PacketIO> {
     pub(super) registered: AgentRegistered,
     pub(super) current_ping: Option<u32>,
     pub(super) clock_offset: i64,
-    pub(super) force_expired: bool,
+    pub(super) lease: SessionLease,
+    pub(super) pending_keep_alive: Option<u64>,
+    pub(super) pending_ping: Option<(u64, u64, Instant)>,
     pub(super) pending_mtu_data: MtuData,
     pub(super) known_mtu_data: MtuData,
+}
+
+pub(super) struct SessionLease {
+    deadline: Instant,
+    forced: bool,
+}
+
+impl SessionLease {
+    pub(super) fn new(registered: &AgentRegistered, pong: &Pong, received_at: Instant) -> Self {
+        Self {
+            deadline: received_at
+                .checked_add(Duration::from_millis(
+                    registered.expires_at.saturating_sub(pong.server_now),
+                ))
+                .unwrap_or(received_at),
+            forced: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -57,7 +78,33 @@ impl MtuData {
 }
 
 impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
+    pub(super) fn new(auth: A, conn: ConnectedControl<IO>, registered: AgentRegistered) -> Self {
+        let lease = SessionLease::new(&registered, &conn.pong_latest, conn.pong_received_at);
+        Self {
+            auth,
+            pong_at_auth: conn.pong_latest.clone(),
+            conn,
+            lease,
+            registered,
+            current_ping: None,
+            clock_offset: 0,
+            pending_ping: None,
+            pending_keep_alive: None,
+            pending_mtu_data: MtuData::default(),
+            known_mtu_data: MtuData::default(),
+        }
+    }
+
+    pub(super) fn replace_connection(
+        &mut self,
+        conn: ConnectedControl<IO>,
+        registered: AgentRegistered,
+    ) {
+        *self = Self::new(self.auth.clone(), conn, registered);
+    }
+
     pub async fn send_keep_alive(&mut self, request_id: u64) -> Result<(), ControlError> {
+        self.pending_keep_alive = Some(request_id);
         self.send(ControlRpcMessage {
             request_id,
             content: ControlRequest::AgentKeepAlive(self.registered.id.clone()),
@@ -74,6 +121,13 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
     }
 
     pub async fn send_ping(&mut self, request_id: u64, now: u64) -> Result<(), ControlError> {
+        if self
+            .pending_ping
+            .is_some_and(|(_, _, sent)| sent.elapsed() < Duration::from_secs(3))
+        {
+            return Ok(());
+        }
+        self.pending_ping = Some((request_id, now, Instant::now()));
         self.send(ControlRpcMessage {
             request_id,
             content: ControlRequest::Ping(Ping {
@@ -117,15 +171,20 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
     }
 
     pub fn get_expire_at(&self) -> u64 {
-        self.registered.expires_at
+        now_milli().saturating_add(
+            self.lease
+                .deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis() as u64,
+        )
     }
 
     pub fn is_expired(&self) -> Option<ExpiredReason> {
-        if self.force_expired {
+        if self.lease.forced {
             return Some(ExpiredReason::Forced);
         }
-        if self.pong_at_auth.session_expire_at.is_none() {
-            return Some(ExpiredReason::SessionNotSetup);
+        if self.lease.deadline <= Instant::now() {
+            return Some(ExpiredReason::Deadline);
         }
         if self.flow_changed() {
             return Some(ExpiredReason::FlowChanged);
@@ -134,7 +193,7 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
     }
 
     pub fn set_expired(&mut self) {
-        self.force_expired = true;
+        self.lease.forced = true;
     }
 
     pub fn pending_mtu_data(&self) -> &MtuData {
@@ -168,9 +227,16 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
     }
 
     pub async fn authenticate(&mut self) -> Result<(), SetupError> {
+        self.conn.refresh_pong().await?;
         let registered = self.conn.authenticate(&self.auth).await?;
 
-        self.force_expired = false;
+        self.lease = SessionLease::new(
+            &registered,
+            &self.conn.pong_latest,
+            self.conn.pong_received_at,
+        );
+        self.pending_ping = None;
+        self.pending_keep_alive = None;
         self.registered = registered;
         self.pong_at_auth = self.conn.pong_latest.clone();
 
@@ -191,32 +257,42 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
 
         if let ControlFeed::Response(res) = &feed {
             match &res.content {
-                ControlResponse::AgentRegistered(registered) => {
-                    tracing::debug!(details = ?registered, "agent registered");
+                ControlResponse::AgentRegistered(registered)
+                    if self.pending_keep_alive == Some(res.request_id) =>
+                {
+                    self.pending_keep_alive = None;
+                    self.lease = SessionLease::new(
+                        registered,
+                        &self.conn.pong_latest,
+                        self.conn.pong_received_at,
+                    );
                     self.registered = registered.clone();
                 }
                 ControlResponse::Pong(pong) => {
-                    let now = now_milli();
-                    let rtt = (now.max(pong.request_now) - pong.request_now) as u32;
-
-                    let server_ts = pong.server_now - (rtt / 2) as u64;
-                    let local_ts = pong.request_now;
-                    self.clock_offset = local_ts as i64 - server_ts as i64;
-
-                    if 10_000 < self.clock_offset.abs() {
-                        tracing::warn!(
-                            offset = self.clock_offset,
-                            "local timestamp if over 10 seconds off"
-                        );
+                    let Some((id, sent_now, sent_at)) = self.pending_ping else {
+                        return Err(ControlError::UnmatchedResponse);
+                    };
+                    if res.request_id != id || pong.request_now != sent_now {
+                        return Err(ControlError::UnmatchedResponse);
                     }
-
+                    self.pending_ping = None;
+                    let rtt = sent_at.elapsed().as_millis().min(u32::MAX as u128) as u32;
                     self.current_ping = Some(rtt);
-
-                    if let Some(expires_at) = pong.session_expire_at {
-                        /* normalize to local timestamp to handle when host clock is wrong */
-                        self.registered.expires_at = pong.request_now
-                            + (expires_at - pong.server_now).max(rtt as u64)
-                            - rtt as u64;
+                    self.conn.pong_latest = pong.clone();
+                    self.conn.pong_received_at = Instant::now();
+                    let offset = i128::from(pong.request_now) - i128::from(pong.server_now)
+                        + i128::from(rtt / 2);
+                    self.clock_offset = offset.clamp(i64::MIN as i128, i64::MAX as i128) as i64;
+                    match pong.session_expire_at {
+                        Some(expires_at) => {
+                            let remaining = expires_at
+                                .saturating_sub(pong.server_now)
+                                .saturating_sub(u64::from(rtt / 2));
+                            self.lease.deadline = Instant::now()
+                                .checked_add(Duration::from_millis(remaining))
+                                .unwrap_or_else(Instant::now);
+                        }
+                        None => self.lease.forced = true,
                     }
                 }
                 ControlResponse::CheckMtuReceivedAck(ack) => {
@@ -240,7 +316,7 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum ExpiredReason {
     Forced,
-    SessionNotSetup,
+    Deadline,
     FlowChanged,
 }
 

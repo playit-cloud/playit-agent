@@ -8,6 +8,10 @@ static _ERRORS: LazyLock<Arc<UdpErrors>> = LazyLock::new(|| Arc::new(UdpErrors::
 
 #[derive(Default, Debug, Serialize)]
 pub struct UdpErrors {
+    pub packet_pool_exhausted: IntCounter,
+    pub packet_too_large: IntCounter,
+    pub packet_queue_full: IntCounter,
+    pub unsupported_fragment: IntCounter,
     pub no_session_send_fail: IntCounter,
     pub tail_append_fail: IntCounter,
     pub send_io_error: IntCounter,

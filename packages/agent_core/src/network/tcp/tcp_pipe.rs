@@ -1,6 +1,6 @@
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -23,9 +23,12 @@ pub enum PipeDirection {
 pub struct TcpPipe {
     cancel: CancellationToken,
     shared: Arc<Shared>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 struct Shared {
+    closed: AtomicBool,
+    activity: std::sync::Mutex<tokio::time::Instant>,
     last_activity: AtomicU64,
     bytes_written: AtomicU64,
 }
@@ -60,25 +63,26 @@ impl TcpPipe {
         direction: PipeDirection,
     ) -> Self {
         let shared = Arc::new(Shared {
+            closed: AtomicBool::new(false),
+            activity: std::sync::Mutex::new(tokio::time::Instant::now()),
             last_activity: AtomicU64::new(now_milli()),
             bytes_written: AtomicU64::new(0),
         });
 
-        let this = TcpPipe { cancel, shared };
-
-        tokio::spawn(
-            Worker {
-                cancel: this.cancel.clone(),
-                shared: this.shared.clone(),
-                from,
-                to,
-                stats,
-                direction,
-            }
-            .start(),
-        );
-
-        this
+        let worker = Worker {
+            cancel: cancel.clone(),
+            shared: shared.clone(),
+            from,
+            to,
+            stats,
+            direction,
+        };
+        let task = tokio::spawn(worker.start());
+        Self {
+            cancel,
+            shared,
+            task,
+        }
     }
 
     pub fn bytes_written(&self) -> u64 {
@@ -86,13 +90,15 @@ impl TcpPipe {
     }
 
     pub fn last_activity(&self) -> u64 {
-        let value = self.shared.last_activity.load(Ordering::Acquire);
+        self.shared.last_activity.load(Ordering::Acquire)
+    }
 
-        if value == u64::MAX { 0 } else { value }
+    pub fn idle_for(&self) -> std::time::Duration {
+        self.shared.activity.lock().unwrap().elapsed()
     }
 
     pub fn is_closed(&self) -> bool {
-        self.shared.last_activity.load(Ordering::Acquire) == u64::MAX
+        self.task.is_finished() || self.shared.closed.load(Ordering::Acquire)
     }
 
     pub fn shutdown(&self) {
@@ -103,6 +109,7 @@ impl TcpPipe {
 impl Drop for TcpPipe {
     fn drop(&mut self) {
         self.cancel.cancel();
+        self.task.abort();
     }
 }
 
@@ -117,62 +124,96 @@ struct Worker<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> {
 
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
     pub async fn start(mut self) {
-        let mut buffer = vec![0u8; TCP_PIPE_BUFFER_SIZE];
+        let cancel = self.cancel.clone();
+        if let Some(Err(error)) = cancel.run_until_cancelled(self.copy()).await {
+            tracing::debug!(?error, "TCP forwarding failed");
+            cancel.cancel();
+        }
+        self.shared.closed.store(true, Ordering::Release);
+    }
 
+    async fn copy(&mut self) -> std::io::Result<()> {
+        let mut buffer = vec![0; TCP_PIPE_BUFFER_SIZE];
         loop {
-            // Keep the pipe cooperative when both sockets stay continuously ready.
-            tokio::select! {
-                _ = self.cancel.cancelled() => {
-                    tracing::debug!("TcpPipe cancelled");
-                    break;
+            let count = self.from.read(&mut buffer).await?;
+            if count == 0 {
+                // Preserve the reverse direction after a clean half-close.
+                return self.to.shutdown().await;
+            }
+            let mut written = 0;
+            while written < count {
+                let count = self.to.write(&buffer[written..count]).await?;
+                if count == 0 {
+                    return Err(std::io::ErrorKind::WriteZero.into());
                 }
-                _ = tokio::task::yield_now() => {}
-            }
-
-            let Some(read_res) = self
-                .cancel
-                .run_until_cancelled(self.from.read(&mut buffer[..]))
-                .await
-            else {
-                tracing::debug!("TcpPipe cancelled");
-                break;
-            };
-
-            let byte_count = match read_res {
-                Ok(count) => count,
-                Err(error) => {
-                    tracing::error!(?error, "failed to read data");
-                    break;
-                }
-            };
-
-            if byte_count == 0 {
-                tracing::debug!("pipe ended due to EOF");
-                break;
-            }
-
-            if let Err(error) = self.to.write_all(&buffer[..byte_count]).await {
-                tracing::error!(?error, "failed to write data");
-                break;
-            }
-
-            self.shared
-                .last_activity
-                .store(now_milli(), Ordering::Release);
-            self.shared
-                .bytes_written
-                .fetch_add(byte_count as u64, Ordering::AcqRel);
-
-            // Update global stats if provided
-            if let Some(ref stats) = self.stats {
-                let bytes = byte_count as u64;
-                match self.direction {
-                    PipeDirection::TunnelToOrigin => stats.add_bytes_in(bytes),
-                    PipeDirection::OriginToTunnel => stats.add_bytes_out(bytes),
+                written += count;
+                self.shared
+                    .last_activity
+                    .store(now_milli(), Ordering::Release);
+                *self.shared.activity.lock().unwrap() = tokio::time::Instant::now();
+                self.shared
+                    .bytes_written
+                    .fetch_add(count as u64, Ordering::AcqRel);
+                if let Some(stats) = &self.stats {
+                    match self.direction {
+                        PipeDirection::TunnelToOrigin => stats.add_bytes_in(count as u64),
+                        PipeDirection::OriginToTunnel => stats.add_bytes_out(count as u64),
+                    }
                 }
             }
         }
+    }
+}
 
-        self.shared.last_activity.store(u64::MAX, Ordering::Release);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn shutdown_interrupts_a_blocked_write() {
+        let (mut input, reader) = tokio::io::duplex(64);
+        let (writer, _unread_output) = tokio::io::duplex(1);
+        let pipe = TcpPipe::new(reader, writer);
+        input.write_all(b"blocked output").await.unwrap();
+        tokio::task::yield_now().await;
+        pipe.shutdown();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !pipe.is_closed() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn eof_shuts_down_destination_without_cancelling_reverse_pipe() {
+        let (mut peer, tunnel) = tokio::io::duplex(128);
+        let (origin, mut server) = tokio::io::duplex(128);
+        let (tunnel_read, tunnel_write) = tokio::io::split(tunnel);
+        let (origin_read, origin_write) = tokio::io::split(origin);
+        let cancel = CancellationToken::new();
+        let incoming = TcpPipe::new_with_cancel(cancel.clone(), tunnel_read, origin_write);
+        let outgoing = TcpPipe::new_with_cancel(cancel.clone(), origin_read, tunnel_write);
+        peer.write_all(b"request").await.unwrap();
+        peer.shutdown().await.unwrap();
+        let mut request = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), server.read_to_end(&mut request))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(request, b"request");
+        assert!(!cancel.is_cancelled());
+        server.write_all(b"response").await.unwrap();
+        server.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(Duration::from_secs(1), peer.read_to_end(&mut response))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response, b"response");
+        assert_eq!(incoming.bytes_written(), 7);
+        assert_eq!(outgoing.bytes_written(), 8);
     }
 }

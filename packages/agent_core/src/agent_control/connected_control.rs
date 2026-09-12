@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, time::Duration};
+use std::{collections::VecDeque, net::SocketAddr, time::Duration};
 
 use message_encoding::MessageEncoding;
 use playit_agent_proto::{
@@ -13,7 +13,7 @@ use crate::utils::now_milli;
 use super::{
     AuthResource, PacketIO,
     errors::{ControlError, SetupError},
-    established_control::{EstablishedControl, MtuData},
+    established_control::EstablishedControl,
 };
 
 #[derive(Debug)]
@@ -21,7 +21,9 @@ pub struct ConnectedControl<IO: PacketIO> {
     pub(super) control_addr: SocketAddr,
     pub(super) packet_io: IO,
     pub(super) pong_latest: Pong,
+    pub(super) pong_received_at: tokio::time::Instant,
     pub(super) buffer: Vec<u8>,
+    pending: VecDeque<ControlFeed>,
 }
 
 impl<IO: PacketIO> ConnectedControl<IO> {
@@ -30,7 +32,9 @@ impl<IO: PacketIO> ConnectedControl<IO> {
             control_addr,
             packet_io: udp,
             pong_latest: pong,
-            buffer: Vec::with_capacity(1024),
+            pong_received_at: tokio::time::Instant::now(),
+            buffer: Vec::with_capacity(65_536),
+            pending: VecDeque::new(),
         }
     }
 
@@ -55,33 +59,50 @@ impl<IO: PacketIO> ConnectedControl<IO> {
         auth: A,
         registered: AgentRegistered,
     ) -> EstablishedControl<A, IO> {
-        let pong = self.pong_latest.clone();
+        EstablishedControl::new(auth, self, registered)
+    }
 
-        EstablishedControl {
-            auth,
-            conn: self,
-            pong_at_auth: pong,
-            registered,
-            current_ping: None,
-            clock_offset: 0,
-            force_expired: false,
-            pending_mtu_data: MtuData::default(),
-            known_mtu_data: MtuData::default(),
+    pub async fn refresh_pong(&mut self) -> Result<(), SetupError> {
+        let now = now_milli();
+        let request_id = super::next_request_id();
+        self.send(&ControlRpcMessage {
+            request_id,
+            content: ControlRequest::Ping(Ping {
+                now,
+                current_ping: None,
+                session_id: None,
+            }),
+        })
+        .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let feed = match tokio::time::timeout_at(deadline, self.recv_wire()).await {
+                Ok(Ok(feed)) => feed,
+                Ok(Err(_)) => continue,
+                Err(_) => return Err(SetupError::NoResponseFromAuthenticate),
+            };
+            match feed {
+                ControlFeed::Response(response) if response.request_id == request_id => {
+                    if let ControlResponse::Pong(pong) = response.content
+                        && pong.request_now == now
+                    {
+                        self.pong_latest = pong;
+                        self.pong_received_at = tokio::time::Instant::now();
+                        return Ok(());
+                    }
+                }
+                event @ (ControlFeed::NewClient(_) | ControlFeed::NewClientOld(_)) => {
+                    self.queue_event(event)
+                }
+                _ => {}
+            }
         }
     }
 
-    pub fn reset_established<A: AuthResource>(
-        self,
-        established: &mut EstablishedControl<A, IO>,
-        registered: AgentRegistered,
-    ) {
-        established.registered = registered;
-        established.pong_at_auth = self.pong_latest.clone();
-        established.conn = self;
-        established.current_ping = None;
-        established.force_expired = false;
-        established.pending_mtu_data = MtuData::default();
-        established.known_mtu_data = MtuData::default();
+    fn queue_event(&mut self, event: ControlFeed) {
+        if self.pending.len() < 256 {
+            self.pending.push_back(event);
+        }
     }
 
     pub async fn authenticate<A: AuthResource>(
@@ -96,7 +117,7 @@ impl<IO: PacketIO> ConnectedControl<IO> {
             Err(_) => return Err(SetupError::FailedToDecodeSignedAgentRegisterHex),
         };
 
-        let request_id = now_milli();
+        let request_id = super::next_request_id();
 
         for _ in 0..5 {
             self.send(&ControlRpcMessage {
@@ -104,68 +125,39 @@ impl<IO: PacketIO> ConnectedControl<IO> {
                 content: RawSlice(&bytes),
             })
             .await?;
-
-            for _ in 0..5 {
-                let mesage =
-                    match tokio::time::timeout(Duration::from_millis(500), self.recv()).await {
-                        Ok(Ok(msg)) => msg,
-                        Ok(Err(error)) => {
-                            tracing::error!(?error, "got error reading from socket");
-                            break;
-                        }
-                        Err(_) => {
-                            tracing::error!("timeout waiting for register response");
-                            continue;
-                        }
-                    };
-
-                let response = match mesage {
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(2500);
+            loop {
+                let feed = match tokio::time::timeout_at(deadline, self.recv_wire()).await {
+                    Ok(Ok(feed)) => feed,
+                    Ok(Err(ControlError::IoError(error))) => return Err(error.into()),
+                    Ok(Err(_)) => continue,
+                    Err(_) => break,
+                };
+                let response = match feed {
                     ControlFeed::Response(response) if response.request_id == request_id => {
                         response
                     }
-                    other => {
-                        tracing::error!(?other, "got unexpected response from register request");
+                    event @ (ControlFeed::NewClient(_) | ControlFeed::NewClientOld(_)) => {
+                        self.queue_event(event);
                         continue;
                     }
+                    _ => continue,
                 };
-
-                return match response.content {
-                    ControlResponse::AgentRegistered(registered) => Ok(registered),
-                    ControlResponse::InvalidSignature => Err(SetupError::RegisterInvalidSignature),
-                    ControlResponse::Unauthorized => {
-                        /* most likely due to a changed client addr, send pong to refresh value */
-                        let _ = self
-                            .send(&ControlRpcMessage {
-                                request_id,
-                                content: ControlRequest::Ping(Ping {
-                                    now: now_milli(),
-                                    current_ping: None,
-                                    session_id: None,
-                                }),
-                            })
-                            .await;
-
-                        Err(SetupError::RegisterUnauthorized)
+                match response.content {
+                    ControlResponse::AgentRegistered(registered) => return Ok(registered),
+                    ControlResponse::InvalidSignature => {
+                        return Err(SetupError::RegisterInvalidSignature);
                     }
-                    ControlResponse::Pong(pong) => {
+                    ControlResponse::Unauthorized => return Err(SetupError::RegisterUnauthorized),
+                    ControlResponse::Pong(pong)
                         if pong.client_addr != auth_pong.client_addr
-                            || pong.tunnel_addr != auth_pong.tunnel_addr
-                        {
-                            Err(SetupError::AttemptingToAuthWithOldFlow)
-                        } else {
-                            continue;
-                        }
+                            || pong.tunnel_addr != auth_pong.tunnel_addr =>
+                    {
+                        return Err(SetupError::AttemptingToAuthWithOldFlow);
                     }
-                    ControlResponse::RequestQueued => {
-                        tracing::debug!("register queued, waiting 1s");
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        break;
-                    }
-                    other => {
-                        tracing::error!(?other, "expected AgentRegistered but got something else");
-                        continue;
-                    }
-                };
+                    // Queued requests retain the same deadline and continue receiving events.
+                    _ => {}
+                }
             }
         }
 
@@ -175,14 +167,25 @@ impl<IO: PacketIO> ConnectedControl<IO> {
     pub async fn send<M: MessageEncoding>(&mut self, msg: &M) -> std::io::Result<()> {
         self.buffer.clear();
         msg.write_to(&mut self.buffer)?;
-        self.packet_io
+        let sent = self
+            .packet_io
             .send_to(&self.buffer, self.control_addr)
             .await?;
+        if sent != self.buffer.len() {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
         Ok(())
     }
 
     pub async fn recv(&mut self) -> Result<ControlFeed, ControlError> {
-        self.buffer.resize(1024, 0);
+        if let Some(feed) = self.pending.pop_front() {
+            return Ok(feed);
+        }
+        self.recv_wire().await
+    }
+
+    async fn recv_wire(&mut self) -> Result<ControlFeed, ControlError> {
+        self.buffer.resize(65_536, 0);
 
         let (bytes, remote) = self.packet_io.recv_from(&mut self.buffer).await?;
         if remote != self.control_addr {
@@ -193,16 +196,8 @@ impl<IO: PacketIO> ConnectedControl<IO> {
         }
 
         let mut reader = &self.buffer[..bytes];
-        let feed = ControlFeed::read_from(&mut reader)
-            .map_err(|e| ControlError::FailedToReadControlFeed(e))?;
-
-        if let ControlFeed::Response(ControlRpcMessage {
-            content: ControlResponse::Pong(pong),
-            ..
-        }) = &feed
-        {
-            self.pong_latest = pong.clone();
-        }
+        let feed =
+            ControlFeed::read_from(&mut reader).map_err(ControlError::FailedToReadControlFeed)?;
 
         Ok(feed)
     }

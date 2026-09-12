@@ -129,6 +129,7 @@ impl From<std::io::Error> for SetupError {
 
 #[derive(Debug)]
 pub enum ControlError {
+    UnmatchedResponse,
     IoError(std::io::Error),
     InvalidRemote {
         expected: SocketAddr,
