@@ -51,15 +51,22 @@ pub enum ControlRequestId {
     AgentRegisterV2,
     CheckMtuReceivedV1,
     SendMtuTestV1,
-    END,
 }
 
 impl ControlRequestId {
     pub fn from_num(num: u32) -> Option<Self> {
-        if (Self::END as u32) <= num || num == 0 {
-            return None;
-        }
-        Some(unsafe { std::mem::transmute::<u32, Self>(num) })
+        Some(match num {
+            1 => Self::_PingV1,
+            2 => Self::AgentRegisterV1,
+            3 => Self::AgentKeepAliveV1,
+            4 => Self::SetupUdpChannelV1,
+            5 => Self::AgentCheckPortMappingV1,
+            6 => Self::PingV2,
+            7 => Self::AgentRegisterV2,
+            8 => Self::CheckMtuReceivedV1,
+            9 => Self::SendMtuTestV1,
+            _ => return None,
+        })
     }
 }
 
@@ -153,9 +160,6 @@ impl MessageEncoding for ControlRequest {
                 session_id: None,
                 current_ping: None,
             })),
-            _ => Err(std::io::Error::other(
-                "old control request no longer supported",
-            )),
         }
     }
 }
@@ -285,7 +289,7 @@ impl AgentRegister {
 
     pub fn verify_signature(&self, temp_buffer: &mut Vec<u8>, hmac: &HmacSha256) -> bool {
         self.write_plain(temp_buffer);
-        hmac.verify(temp_buffer, &self.signature).is_ok()
+        hmac.verify(temp_buffer, &self.signature)
     }
 
     fn write_plain(&self, temp_buffer: &mut Vec<u8>) {
@@ -603,12 +607,11 @@ impl MessageEncoding for MtuTestFailCode {
     }
 
     fn read_from<T: Read>(read: &mut T) -> std::io::Result<Self> {
-        let num = u32::read_from(read)?;
-        if (Self::_Unknown as u32) <= num {
-            return Ok(Self::_Unknown);
-        }
-
-        unsafe { Ok(std::mem::transmute::<u32, MtuTestFailCode>(num)) }
+        Ok(match u32::read_from(read)? {
+            0 => Self::InvalidUdpPayloadLength,
+            1 => Self::InvalidDcId,
+            _ => Self::_Unknown,
+        })
     }
 }
 
@@ -710,10 +713,7 @@ impl MessageEncoding for AgentPortMappingFound {
             1 => Ok(AgentPortMappingFound::ToAgent(AgentSessionId::read_from(
                 read,
             )?)),
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "unknown AgentPortMappingFound id",
-            )),
+            _ => Err(std::io::Error::other("unknown AgentPortMappingFound id")),
         }
     }
 }
@@ -969,12 +969,12 @@ mod test {
         match rng.next_u32() % 7 {
             0 => ControlRequest::Ping(Ping {
                 now: rng.next_u64(),
-                current_ping: if rng.next_u32() % 2 == 0 {
+                current_ping: if rng.next_u32().is_multiple_of(2) {
                     Some(rng.next_u32())
                 } else {
                     None
                 },
-                session_id: if rng.next_u32() % 2 == 0 {
+                session_id: if rng.next_u32().is_multiple_of(2) {
                     Some(AgentSessionId {
                         session_id: rng.next_u64(),
                         account_id: rng.next_u64() % (i64::MAX as u64),

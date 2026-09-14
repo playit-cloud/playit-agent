@@ -1,92 +1,122 @@
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, AtomicU64, Ordering},
+};
 
-/// Shared statistics for the agent
+use serde::Serialize;
+
+/// Shared, lock-free counters for one agent. Cheap to clone; all clones share state.
 #[derive(Debug, Default, Clone)]
 pub struct AgentStats {
-    inner: Arc<StatsInner>,
+    inner: Arc<Inner>,
 }
 
 #[derive(Debug, Default)]
-struct StatsInner {
-    /// Bytes received from tunnel (incoming to local)
-    pub bytes_in: AtomicU64,
-    /// Bytes sent to tunnel (outgoing from local)
-    pub bytes_out: AtomicU64,
-    /// Active TCP connections
-    pub active_tcp: AtomicU32,
-    /// Active UDP flows
-    pub active_udp: AtomicU32,
+struct Inner {
+    bytes_in: AtomicU64,
+    bytes_out: AtomicU64,
+    active_tcp: AtomicU32,
+    active_udp: AtomicU32,
+    tcp: TcpCounters,
+    udp: UdpCounters,
+}
+
+/// Monotonic event counter.
+#[derive(Debug, Default)]
+pub struct Counter(AtomicU64);
+
+impl Counter {
+    pub fn inc(&self) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn get(&self) -> u64 {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+impl Serialize for Counter {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u64(self.get())
+    }
+}
+
+/// Why TCP clients were dropped before a connection was established.
+#[derive(Debug, Default, Serialize)]
+pub struct TcpCounters {
+    pub rate_limited: Counter,
+    pub origin_not_found: Counter,
+    pub invalid_port_offset: Counter,
+    pub address_family_mismatch: Counter,
+    pub claim_failed: Counter,
+    pub origin_connect_failed: Counter,
+    pub proxy_header_failed: Counter,
+}
+
+/// Why UDP datagrams were dropped.
+#[derive(Debug, Default, Serialize)]
+pub struct UdpCounters {
+    pub rate_limited: Counter,
+    pub origin_not_found: Counter,
+    pub invalid_port_offset: Counter,
+    pub no_session: Counter,
+    pub unexpected_source: Counter,
+    pub invalid_packet: Counter,
+    pub bind_failed: Counter,
+    pub origin_send_failed: Counter,
+    pub tunnel_send_failed: Counter,
+    pub stale_flow: Counter,
+    pub unsupported_proxy_protocol: Counter,
+    pub recv_failed: Counter,
 }
 
 impl AgentStats {
     pub fn new() -> Self {
-        AgentStats {
-            inner: Arc::new(StatsInner::default()),
-        }
+        Self::default()
     }
 
-    /// Add bytes received from tunnel
+    /// Bytes delivered from the tunnel to local origins.
     pub fn add_bytes_in(&self, bytes: u64) {
         self.inner.bytes_in.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// Add bytes sent to tunnel
+    /// Bytes delivered from local origins to the tunnel.
     pub fn add_bytes_out(&self, bytes: u64) {
         self.inner.bytes_out.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// Increment active TCP connections
-    pub fn inc_tcp(&self) {
-        self.inner.active_tcp.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Decrement active TCP connections
-    pub fn dec_tcp(&self) {
-        self.inner.active_tcp.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    /// Set active TCP connection count
-    pub fn set_tcp(&self, count: u32) {
+    pub fn set_active_tcp(&self, count: u32) {
         self.inner.active_tcp.store(count, Ordering::Relaxed);
     }
 
-    /// Increment active UDP flows
-    pub fn inc_udp(&self) {
-        self.inner.active_udp.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Decrement active UDP flows
-    pub fn dec_udp(&self) {
-        self.inner.active_udp.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    /// Set active UDP flow count
-    pub fn set_udp(&self, count: u32) {
+    pub fn set_active_udp(&self, count: u32) {
         self.inner.active_udp.store(count, Ordering::Relaxed);
     }
 
-    /// Get current bytes received from tunnel
+    pub fn tcp(&self) -> &TcpCounters {
+        &self.inner.tcp
+    }
+
+    pub fn udp(&self) -> &UdpCounters {
+        &self.inner.udp
+    }
+
     pub fn bytes_in(&self) -> u64 {
         self.inner.bytes_in.load(Ordering::Relaxed)
     }
 
-    /// Get current bytes sent to tunnel
     pub fn bytes_out(&self) -> u64 {
         self.inner.bytes_out.load(Ordering::Relaxed)
     }
 
-    /// Get active TCP connection count
     pub fn active_tcp(&self) -> u32 {
         self.inner.active_tcp.load(Ordering::Relaxed)
     }
 
-    /// Get active UDP flow count
     pub fn active_udp(&self) -> u32 {
         self.inner.active_udp.load(Ordering::Relaxed)
     }
 
-    /// Get a snapshot of all stats
     pub fn snapshot(&self) -> StatsSnapshot {
         StatsSnapshot {
             bytes_in: self.bytes_in(),
@@ -97,8 +127,7 @@ impl AgentStats {
     }
 }
 
-/// A snapshot of stats at a point in time
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct StatsSnapshot {
     pub bytes_in: u64,
     pub bytes_out: u64,
