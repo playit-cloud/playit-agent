@@ -1,5 +1,5 @@
 use std::fmt::{Debug, Formatter};
-use std::io::{Error, ErrorKind, Read, Write};
+use std::io::{Error, Read, Write};
 use std::net::SocketAddr;
 
 use byteorder::{BigEndian, ReadBytesExt};
@@ -12,7 +12,6 @@ use crate::rpc::ControlRpcMessage;
 pub enum ControlFeed {
     Response(ControlRpcMessage<ControlResponse>),
     NewClient(NewClient),
-    NewClientOld(NewClientOld),
 }
 
 #[derive(Debug, Eq, PartialEq, Clone)]
@@ -25,6 +24,8 @@ pub struct NewClient {
     pub claim_instructions: ClaimInstructions,
 }
 
+/// Wire format used by older tunnel servers (feed id 2). Decoded into [`NewClient`]
+/// with `tunnel_id` and `port_offset` of zero.
 #[derive(Debug, Eq, PartialEq, Clone)]
 pub struct NewClientOld {
     pub connect_addr: SocketAddr,
@@ -60,10 +61,6 @@ impl MessageEncoding for ControlFeed {
                 sum += 1u32.write_to(out)?;
                 sum += res.write_to(out)?;
             }
-            ControlFeed::NewClientOld(client) => {
-                sum += 2u32.write_to(out)?;
-                sum += client.write_to(out)?;
-            }
             ControlFeed::NewClient(client) => {
                 sum += 3u32.write_to(out)?;
                 sum += client.write_to(out)?;
@@ -80,7 +77,7 @@ impl MessageEncoding for ControlFeed {
                 NewClientOld::read_from(read)?.into(),
             )),
             3 => Ok(ControlFeed::NewClient(NewClient::read_from(read)?)),
-            _ => Err(Error::new(ErrorKind::Other, "invalid ControlFeed id")),
+            _ => Err(Error::other("invalid ControlFeed id")),
         }
     }
 }
