@@ -48,6 +48,7 @@ struct Client {
     socket: Arc<UdpSocket>,
     target_addr: SocketAddr,
     port_offset: u16,
+    target_port: u16,
     flow: UdpFlow,
 
     /* when dropped, rx task get killed */
@@ -183,6 +184,7 @@ impl UdpClients {
         }
 
         let port_offset = client.port_offset;
+        let target_port = client.target_port;
 
         client.from_origin_ts = now_ms;
 
@@ -199,6 +201,7 @@ impl UdpClients {
             } => {
                 *src = SocketAddrV4::new(*src.ip(), src.port() + port_offset);
                 ext.port_offset = port_offset;
+                ext.target_port = target_port;
             }
             UdpFlow::V6 {
                 src,
@@ -207,6 +210,7 @@ impl UdpClients {
             } => {
                 src.1 += port_offset;
                 ext.port_offset = port_offset;
+                ext.target_port = target_port;
             }
             _ => unreachable!(),
         }
@@ -269,7 +273,12 @@ impl UdpClients {
             return;
         }
 
-        let Some(target_addr) = origin.resolve_local(extension.port_offset).await else {
+        let resolved = if extension.target_port != 0 {
+            origin.resolve_local_target(extension.target_port).await
+        } else {
+            origin.resolve_local(extension.port_offset).await
+        };
+        let Some(target_addr) = resolved else {
             return;
         };
 
@@ -331,6 +340,7 @@ impl UdpClients {
             socket,
             target_addr,
             port_offset: extension.port_offset,
+            target_port: extension.target_port,
             receiver,
             flow: client_flow,
             from_tunnel_ts: now_ms,

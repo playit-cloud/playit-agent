@@ -278,6 +278,8 @@ pub struct AgentRegister {
 }
 
 impl AgentRegister {
+    pub const CURRENT_AGENT_PROTO_VERSION: u64 = 3;
+
     pub fn update_signature(&mut self, temp_buffer: &mut Vec<u8>, hmac: &HmacSha256) {
         self.write_plain(temp_buffer);
         self.signature = hmac.sign(temp_buffer);

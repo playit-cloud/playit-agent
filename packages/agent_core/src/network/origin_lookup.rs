@@ -234,6 +234,15 @@ impl OriginResource {
         })
     }
 
+    /// The tunnel picked the local port for this flow itself (NetherNet: one
+    /// server socket per player). Only port-style origins can honor it.
+    pub async fn resolve_local_target(&self, target_port: u16) -> Option<SocketAddr> {
+        match &self.target {
+            OriginTarget::Https { .. } => None,
+            OriginTarget::Port { ip, .. } => ip.resolve(target_port).await,
+        }
+    }
+
     pub async fn resolve_local(&self, port_offset: u16) -> Option<SocketAddr> {
         match &self.target {
             OriginTarget::Https {

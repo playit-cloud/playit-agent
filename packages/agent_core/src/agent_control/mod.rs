@@ -6,7 +6,7 @@ use std::{
 };
 
 use errors::SetupError;
-use playit_agent_proto::control_messages::Pong;
+use playit_agent_proto::control_messages::{AgentRegister, Pong};
 use tokio::{io::ReadBuf, net::UdpSocket};
 use version::get_version;
 
@@ -246,7 +246,7 @@ impl AuthResource for AuthApi {
                 agent_version: None,
                 client_addr: pong.client_addr,
                 tunnel_addr: pong.tunnel_addr,
-                proto_version: 2,
+                proto_version: AgentRegister::CURRENT_AGENT_PROTO_VERSION,
                 version: get_version(),
                 platform: current_platform(),
             })

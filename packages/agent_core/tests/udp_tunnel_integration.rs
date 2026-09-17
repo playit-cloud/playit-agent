@@ -527,6 +527,7 @@ fn flow_with_source(src_ip: Ipv4Addr, src_port: u16) -> UdpFlow {
             client_server_id: NonZeroU64::new(7).expect("nonzero client server id"),
             tunnel_id: NonZeroU64::new(42).expect("nonzero tunnel id"),
             port_offset: 0,
+            target_port: 0,
         }),
     }
 }
