@@ -247,7 +247,7 @@ impl UdpClients {
             let sessions = self.nethernet_sessions.clone();
             let current = self
                 .live_client(&key)
-                .and_then(|client| Some((client.nethernet.as_ref()?, client.target_addr)));
+                .map(|client| (client.nethernet.as_ref(), client.target_addr));
             NetherNetUdpState::route(
                 packet.as_ref(),
                 key.tunnel_id,

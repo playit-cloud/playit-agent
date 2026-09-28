@@ -48,29 +48,33 @@ impl NetherNetUdpState {
         }
     }
 
-    /// `current` is the state already kept for this client address, paired
-    /// with the Bedrock server UDP address its packets are sent to. It is None
-    /// when the agent's own UDP socket for that client has closed.
+    /// `current` is the client already at this address, as its NetherNet state
+    /// (None for a RakNet client) and the Bedrock server UDP address its packets
+    /// are sent to. The whole thing is None when the agent's own UDP socket for
+    /// that client has closed.
     pub fn route(
         packet: &[u8],
         tunnel_id: u64,
         client_ip: IpAddr,
         now_ms: u64,
         sessions: &NetherNetSessions,
-        current: Option<(&NetherNetUdpState, SocketAddr)>,
+        current: Option<(Option<&NetherNetUdpState>, SocketAddr)>,
     ) -> Route {
         let Some(ufrag) = Stun::bedrock_ufrag(packet) else {
-            /* Gameplay may only follow a flow the Bedrock server has accepted. */
+            /* Not STUN, so RakNet or gameplay. A RakNet client shares the port
+            and gets an ordinary flow to the configured port. */
             return match current {
-                Some((flow, _)) if flow.is_established => Route::Forward,
-                _ => Route::Drop,
+                None => Route::Open { join: None },
+                Some((None, _)) => Route::Forward,
+                Some((Some(state), _)) if state.is_established => Route::Forward,
+                Some((Some(_), _)) => Route::Drop,
             };
         };
         let join = sessions.bedrock_addr(now_ms, tunnel_id, ufrag, client_ip);
 
         /* A retransmit, or the same client's other interface. An established
         flow keeps taking these after its join has left the session table. */
-        if let Some((flow, target_addr)) = current
+        if let Some((Some(flow), target_addr)) = current
             && flow.ufrag == ufrag
             && !flow.is_expired(now_ms)
             && join.is_none_or(|addr| addr == target_addr)
@@ -127,7 +131,7 @@ mod test {
         client_ip: IpAddr,
         now_ms: u64,
         sessions: &NetherNetSessions,
-        current: Option<(&NetherNetUdpState, SocketAddr)>,
+        current: Option<(Option<&NetherNetUdpState>, SocketAddr)>,
     ) -> Route {
         NetherNetUdpState::route(packet, TUNNEL, client_ip, now_ms, sessions, current)
     }
@@ -152,13 +156,18 @@ mod test {
         assert!(sessions.insert(1_000, TUNNEL, b"rJb7", CLIENT, BEDROCK));
         let request = binding_request(b"rJb7:SWk/");
 
-        /* nothing goes anywhere before a Binding request opens the flow */
+        /* a non-STUN packet with no flow is a RakNet client sharing the port,
+        and its later packets keep using that flow */
         assert!(matches!(
             route(&GAMEPLAY, CLIENT, 1_000, &sessions, None),
-            Route::Drop
+            Route::Open { join: None }
+        ));
+        assert!(matches!(
+            route(&GAMEPLAY, CLIENT, 1_000, &sessions, Some((None, BEDROCK))),
+            Route::Forward
         ));
         let mut flow = opens_toward(route(&request, CLIENT, 1_000, &sessions, None), BEDROCK);
-        let current = Some((&flow, BEDROCK));
+        let current = Some((Some(&flow), BEDROCK));
 
         /* pending: repeats of the request pass, gameplay does not */
         assert!(matches!(
@@ -185,12 +194,24 @@ mod test {
         /* the Bedrock server echoing a request back is not acceptance, a success is */
         flow.establish(&request);
         assert!(matches!(
-            route(&GAMEPLAY, CLIENT, 1_000, &sessions, Some((&flow, BEDROCK))),
+            route(
+                &GAMEPLAY,
+                CLIENT,
+                1_000,
+                &sessions,
+                Some((Some(&flow), BEDROCK))
+            ),
             Route::Drop
         ));
         flow.establish(&BINDING_SUCCESS);
         assert!(matches!(
-            route(&GAMEPLAY, CLIENT, 1_000, &sessions, Some((&flow, BEDROCK))),
+            route(
+                &GAMEPLAY,
+                CLIENT,
+                1_000,
+                &sessions,
+                Some((Some(&flow), BEDROCK))
+            ),
             Route::Forward
         ));
 
@@ -198,7 +219,13 @@ mod test {
         let later = 1_000 + NetherNetSessions::LIFETIME_MS + 1;
         assert!(!flow.is_expired(later));
         assert!(matches!(
-            route(&request, CLIENT, later, &sessions, Some((&flow, BEDROCK))),
+            route(
+                &request,
+                CLIENT,
+                later,
+                &sessions,
+                Some((Some(&flow), BEDROCK))
+            ),
             Route::Forward
         ));
         assert!(matches!(
@@ -210,7 +237,13 @@ mod test {
         let other_socket = SocketAddr::new(BEDROCK.ip(), 19141);
         assert!(sessions.insert(later, TUNNEL, b"rJb7", CLIENT, other_socket));
         opens_toward(
-            route(&request, CLIENT, later, &sessions, Some((&flow, BEDROCK))),
+            route(
+                &request,
+                CLIENT,
+                later,
+                &sessions,
+                Some((Some(&flow), BEDROCK)),
+            ),
             other_socket,
         );
     }
@@ -234,7 +267,7 @@ mod test {
                 CLIENT,
                 expired_at,
                 &sessions,
-                Some((&flow, BEDROCK)),
+                Some((Some(&flow), BEDROCK)),
             ),
             BEDROCK,
         );
