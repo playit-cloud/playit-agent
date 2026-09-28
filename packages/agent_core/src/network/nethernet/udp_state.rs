@@ -13,19 +13,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use super::sessions::NetherNetSessions;
 use super::stun::Stun;
-
-/// What to do with a packet from the tunnel.
-pub enum Route {
-    /// Hand it to the client already at this address.
-    Forward,
-    /// Replace whatever is at this client address. A NetherNet join names the
-    /// flow and the Bedrock server socket it forwards to. Ordinary origins carry no
-    /// join and resolve their target once the new client is allowed.
-    Open {
-        join: Option<(NetherNetUdpState, SocketAddr)>,
-    },
-    Drop,
-}
+use crate::network::udp::udp_clients::PacketAction;
 
 pub struct NetherNetUdpState {
     ufrag: Vec<u8>,
@@ -59,15 +47,15 @@ impl NetherNetUdpState {
         now_ms: u64,
         sessions: &NetherNetSessions,
         current: Option<(Option<&NetherNetUdpState>, SocketAddr)>,
-    ) -> Route {
+    ) -> PacketAction {
         let Some(ufrag) = Stun::bedrock_ufrag(packet) else {
             /* Not STUN, so RakNet or gameplay. A RakNet client shares the port
             and gets an ordinary flow to the configured port. */
             return match current {
-                None => Route::Open { join: None },
-                Some((None, _)) => Route::Forward,
-                Some((Some(state), _)) if state.is_established => Route::Forward,
-                Some((Some(_), _)) => Route::Drop,
+                None => PacketAction::Open { join: None },
+                Some((None, _)) => PacketAction::Forward,
+                Some((Some(state), _)) if state.is_established => PacketAction::Forward,
+                Some((Some(_), _)) => PacketAction::Drop,
             };
         };
         let join = sessions.bedrock_addr(now_ms, tunnel_id, ufrag, client_ip);
@@ -79,11 +67,11 @@ impl NetherNetUdpState {
             && !flow.is_expired(now_ms)
             && join.is_none_or(|addr| addr == target_addr)
         {
-            return Route::Forward;
+            return PacketAction::Forward;
         }
 
         match join {
-            Some(target_addr) => Route::Open {
+            Some(target_addr) => PacketAction::Open {
                 join: Some((
                     NetherNetUdpState {
                         ufrag: ufrag.to_vec(),
@@ -93,7 +81,7 @@ impl NetherNetUdpState {
                     target_addr,
                 )),
             },
-            None => Route::Drop,
+            None => PacketAction::Drop,
         }
     }
 }
@@ -132,21 +120,21 @@ mod test {
         now_ms: u64,
         sessions: &NetherNetSessions,
         current: Option<(Option<&NetherNetUdpState>, SocketAddr)>,
-    ) -> Route {
+    ) -> PacketAction {
         NetherNetUdpState::route(packet, TUNNEL, client_ip, now_ms, sessions, current)
     }
 
-    fn opens_toward(route: Route, target_addr: SocketAddr) -> NetherNetUdpState {
+    fn opens_toward(route: PacketAction, target_addr: SocketAddr) -> NetherNetUdpState {
         match route {
-            Route::Open {
+            PacketAction::Open {
                 join: Some((flow, opened)),
             } if opened == target_addr => flow,
-            Route::Open {
+            PacketAction::Open {
                 join: Some((_, opened)),
             } => panic!("opened toward {opened}"),
-            Route::Open { join: None } => panic!("opened without a join"),
-            Route::Forward => panic!("forwarded instead of opening"),
-            Route::Drop => panic!("dropped instead of opening"),
+            PacketAction::Open { join: None } => panic!("opened without a join"),
+            PacketAction::Forward => panic!("forwarded instead of opening"),
+            PacketAction::Drop => panic!("dropped instead of opening"),
         }
     }
 
@@ -160,11 +148,11 @@ mod test {
         and its later packets keep using that flow */
         assert!(matches!(
             route(&GAMEPLAY, CLIENT, 1_000, &sessions, None),
-            Route::Open { join: None }
+            PacketAction::Open { join: None }
         ));
         assert!(matches!(
             route(&GAMEPLAY, CLIENT, 1_000, &sessions, Some((None, BEDROCK))),
-            Route::Forward
+            PacketAction::Forward
         ));
         let mut flow = opens_toward(route(&request, CLIENT, 1_000, &sessions, None), BEDROCK);
         let current = Some((Some(&flow), BEDROCK));
@@ -172,23 +160,23 @@ mod test {
         /* pending: repeats of the request pass, gameplay does not */
         assert!(matches!(
             route(&request, CLIENT, 1_000, &sessions, current),
-            Route::Forward
+            PacketAction::Forward
         ));
         assert!(matches!(
             route(&GAMEPLAY, CLIENT, 1_000, &sessions, current),
-            Route::Drop
+            PacketAction::Drop
         ));
 
         /* an unknown ufrag, or the right ufrag from another client, is dropped */
         let stranger = binding_request(b"Qs0z:SWk/");
         assert!(matches!(
             route(&stranger, CLIENT, 1_000, &sessions, current),
-            Route::Drop
+            PacketAction::Drop
         ));
         let other_ip = IpAddr::V4(Ipv4Addr::new(198, 51, 100, 2));
         assert!(matches!(
             route(&request, other_ip, 1_000, &sessions, None),
-            Route::Drop
+            PacketAction::Drop
         ));
 
         /* the Bedrock server echoing a request back is not acceptance, a success is */
@@ -201,7 +189,7 @@ mod test {
                 &sessions,
                 Some((Some(&flow), BEDROCK))
             ),
-            Route::Drop
+            PacketAction::Drop
         ));
         flow.establish(&BINDING_SUCCESS);
         assert!(matches!(
@@ -212,7 +200,7 @@ mod test {
                 &sessions,
                 Some((Some(&flow), BEDROCK))
             ),
-            Route::Forward
+            PacketAction::Forward
         ));
 
         /* established: the join is gone, but the client's other interface still gets in */
@@ -226,11 +214,11 @@ mod test {
                 &sessions,
                 Some((Some(&flow), BEDROCK))
             ),
-            Route::Forward
+            PacketAction::Forward
         ));
         assert!(matches!(
             route(&request, CLIENT, later, &sessions, None),
-            Route::Drop
+            PacketAction::Drop
         ));
 
         /* a fresh join toward another Bedrock server socket replaces the flow */

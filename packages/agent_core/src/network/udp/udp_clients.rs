@@ -18,10 +18,7 @@ use tokio::{
 
 use crate::network::{
     lan_address::LanAddress,
-    nethernet::{
-        sessions::NetherNetSessions,
-        udp_state::{NetherNetUdpState, Route},
-    },
+    nethernet::{sessions::NetherNetSessions, udp_state::NetherNetUdpState},
     origin_lookup::{OriginLookup, OriginResource},
     proxy_protocol::ProxyProtocolHeader,
 };
@@ -47,6 +44,17 @@ pub struct UdpClients {
     new_client_limiter: DefaultDirectRateLimiter,
     stats: AgentStats,
     nethernet_sessions: Arc<NetherNetSessions>,
+}
+
+pub enum PacketAction {
+    Forward,
+    /// Replace whatever is at this client address. A NetherNet join names the
+    /// state and the Bedrock server socket it forwards to. Ordinary origins
+    /// carry no join and resolve their target once the new client is allowed.
+    Open {
+        join: Option<(NetherNetUdpState, SocketAddr)>,
+    },
+    Drop,
 }
 
 struct Client {
@@ -257,20 +265,20 @@ impl UdpClients {
                 current,
             )
         } else if self.live_client(&key).is_some() {
-            Route::Forward
+            PacketAction::Forward
         } else {
-            Route::Open { join: None }
+            PacketAction::Open { join: None }
         };
 
         match route {
-            Route::Drop => udp_errors().nethernet_rejected.inc(),
-            Route::Forward => {
+            PacketAction::Drop => udp_errors().nethernet_rejected.inc(),
+            PacketAction::Forward => {
                 if let Some(&slot) = self.virtual_client_lookup.get(&key) {
                     self.forward_to_client(now_ms, slot, extension, &packet)
                         .await;
                 }
             }
-            Route::Open { join } => {
+            PacketAction::Open { join } => {
                 if let Some(&slot) = self.virtual_client_lookup.get(&key) {
                     self.remove_client(&key, slot);
                 }
@@ -310,6 +318,8 @@ impl UdpClients {
         Some(client)
     }
 
+    /// Sends a packet from the tunnel to the local server through the client's
+    /// own UDP socket, so the server's reply comes back to that same client.
     async fn forward_to_client(
         &mut self,
         now_ms: u64,
