@@ -1907,6 +1907,7 @@ dependencies = [
  "message-encoding",
  "playit-agent-proto",
  "playit-api-client",
+ "playit-common",
  "rand",
  "serde",
  "serde_json",
@@ -1980,6 +1981,10 @@ dependencies = [
  "whoami",
  "winres",
 ]
+
+[[package]]
+name = "playit-common"
+version = "1.0.10"
 
 [[package]]
 name = "playit-ipc"

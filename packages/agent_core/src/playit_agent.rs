@@ -12,6 +12,7 @@ use tracing::Instrument;
 use crate::agent_control::errors::SetupError;
 use crate::agent_control::maintained_control::{MaintainedControl, TunnelControlEvent};
 use crate::agent_control::{AuthApi, DualStackUdpSocket};
+use crate::network::nethernet::sessions::NetherNetSessions;
 use crate::network::origin_lookup::OriginLookup;
 use crate::network::tcp::tcp_clients::TcpClients;
 use crate::network::tcp::tcp_settings::TcpSettings;
@@ -57,11 +58,13 @@ impl PlayitAgent {
             .map_err(SetupError::IoError)?;
 
         let stats = AgentStats::new();
+        let nethernet_sessions = Arc::new(NetherNetSessions::new());
         let udp_clients = UdpClients::new(
             settings.udp_settings,
             lookup.clone(),
             origin_packets,
             stats.clone(),
+            nethernet_sessions.clone(),
         );
         let cancel_token = CancellationToken::new();
         let tcp_clients = TcpClients::new(
@@ -69,6 +72,7 @@ impl PlayitAgent {
             lookup.clone(),
             stats.clone(),
             cancel_token.child_token(),
+            nethernet_sessions,
         );
 
         Ok(PlayitAgent {

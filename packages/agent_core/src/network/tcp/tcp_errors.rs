@@ -24,6 +24,10 @@ pub struct TcpErrors {
     pub new_client_set_origin_no_delay_error: IntCounter,
     pub new_client_write_proxy_proto_timeout: IntCounter,
     pub new_client_write_proxy_proto_error: IntCounter,
+    pub nethernet_join_request_error: IntCounter,
+    pub nethernet_join_origin_error: IntCounter,
+    pub nethernet_join_answer_error: IntCounter,
+    pub nethernet_join_timeout: IntCounter,
 }
 
 pub fn tcp_errors() -> &'static TcpErrors {

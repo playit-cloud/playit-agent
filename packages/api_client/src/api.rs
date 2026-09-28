@@ -428,6 +428,8 @@ pub enum TunnelType {
 	MinecraftJava,
 	#[serde(rename = "minecraft-bedrock")]
 	MinecraftBedrock,
+	#[serde(rename = "nethernet")]
+	NetherNet,
 	#[serde(rename = "valheim")]
 	Valheim,
 	#[serde(rename = "terraria")]

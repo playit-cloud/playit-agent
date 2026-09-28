@@ -53,6 +53,7 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
             },
             port_count: 0,
             proxy_protocol: None,
+            nethernet: false,
         }))
         .await;
 
@@ -62,6 +63,7 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
         lookup,
         Packets::new(64),
         stats.clone(),
+        Arc::new(playit_agent_core::network::nethernet::sessions::NetherNetSessions::new()),
     );
     let mut udp_channel = UdpChannel::new(Packets::new(64))
         .await
@@ -225,6 +227,7 @@ async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
             },
             port_count: 0,
             proxy_protocol: None,
+            nethernet: false,
         }))
         .await;
 
@@ -234,6 +237,7 @@ async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
         lookup,
         Packets::new(64),
         stats.clone(),
+        Arc::new(playit_agent_core::network::nethernet::sessions::NetherNetSessions::new()),
     );
     let mut udp_channel = UdpChannel::new(Packets::new(64))
         .await
@@ -315,6 +319,7 @@ async fn encapsulated_udp_tunnel_isolates_multiple_parallel_flows_and_recovers_t
             },
             port_count: 0,
             proxy_protocol: None,
+            nethernet: false,
         }))
         .await;
 
@@ -324,6 +329,7 @@ async fn encapsulated_udp_tunnel_isolates_multiple_parallel_flows_and_recovers_t
         lookup,
         Packets::new(128),
         stats.clone(),
+        Arc::new(playit_agent_core::network::nethernet::sessions::NetherNetSessions::new()),
     );
     let mut udp_channel = UdpChannel::new(Packets::new(128))
         .await
@@ -425,6 +431,7 @@ async fn udp_tunnel_stress_reports_bitrate_by_packet_size() {
             },
             port_count: 0,
             proxy_protocol: None,
+            nethernet: false,
         }))
         .await;
 
@@ -434,6 +441,7 @@ async fn udp_tunnel_stress_reports_bitrate_by_packet_size() {
         lookup,
         Packets::new(4096),
         stats.clone(),
+        Arc::new(playit_agent_core::network::nethernet::sessions::NetherNetSessions::new()),
     );
     let mut udp_channel = UdpChannel::new(Packets::new(4096))
         .await

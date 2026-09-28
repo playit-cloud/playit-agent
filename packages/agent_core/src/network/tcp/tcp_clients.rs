@@ -14,7 +14,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     network::{
-        lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
+        lan_address::LanAddress,
+        nethernet::{sessions::NetherNetSessions, tcp::NetherNetTcp},
+        origin_lookup::OriginLookup,
+        proxy_protocol::ProxyProtocolHeader,
     },
     stats::AgentStats,
     utils::now_milli,
@@ -52,6 +55,7 @@ struct Worker {
     cancel: CancellationToken,
     settings: TcpSettings,
     stats: AgentStats,
+    nethernet_sessions: Arc<NetherNetSessions>,
 
     clients: Vec<Client>,
     next_client_id: u64,
@@ -110,6 +114,7 @@ impl TcpClients {
         lookup: Arc<OriginLookup>,
         stats: AgentStats,
         cancel: CancellationToken,
+        nethernet_sessions: Arc<NetherNetSessions>,
     ) -> Self {
         let quota = build_quota(&settings);
         let (events_tx, events_rx) = channel(1024);
@@ -123,6 +128,7 @@ impl TcpClients {
                 cancel: cancel.child_token(),
                 settings,
                 stats,
+                nethernet_sessions,
                 clients: Vec::with_capacity(32),
             }
             .start(),
@@ -232,6 +238,7 @@ impl Worker {
 
                     let event_tx = self.events_tx.clone();
                     let stats = self.stats.clone();
+                    let nethernet_sessions = self.nethernet_sessions.clone();
                     let cancel = self.cancel.child_token();
                     tokio::spawn(async move {
                         let Some(origin_addr) = found.resolve_local(details.port_offset).await
@@ -402,6 +409,20 @@ impl Worker {
                                 tcp_errors().new_client_write_proxy_proto_error.inc();
                                 return;
                             }
+                        }
+
+                        if found.nethernet {
+                            NetherNetTcp::handle(
+                                tunn_stream,
+                                origin_stream,
+                                &details,
+                                client_id,
+                                &nethernet_sessions,
+                                &stats,
+                                &cancel,
+                            )
+                            .await;
+                            return;
                         }
 
                         let tcp_client =

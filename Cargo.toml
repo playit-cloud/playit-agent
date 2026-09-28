@@ -8,6 +8,7 @@ members = [
     "packages/agent_core",
     "packages/agent_proto",
     "packages/api_client",
+    "packages/common",
 ]
 resolver = "3"
 
