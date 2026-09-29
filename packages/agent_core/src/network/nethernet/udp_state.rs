@@ -18,7 +18,7 @@ use crate::network::udp::udp_clients::PacketAction;
 pub struct NetherNetUdpState {
     ufrag: Vec<u8>,
     opened_at_ms: u64,
-    /// The Bedrock server's Binding success stun/udp has arrived, allow nethernet/udp through.
+    /// The Bedrock server's Binding success stun/udp has arrived, allow webrtc/udp through.
     is_established: bool,
 }
 
