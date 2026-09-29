@@ -13,7 +13,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
-version = "1.0.10"
+version = "1.0.12"
 
 [workspace.dependencies]
 tokio = { version = "1.48", features = ["full"] }

@@ -1896,7 +1896,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "playit-agent-core"
-version = "1.0.10"
+version = "1.0.12"
 dependencies = [
  "byteorder",
  "chrono",
@@ -1952,7 +1952,7 @@ dependencies = [
 
 [[package]]
 name = "playit-cli"
-version = "1.0.10"
+version = "1.0.12"
 dependencies = [
  "chrono",
  "clap",
@@ -1984,11 +1984,11 @@ dependencies = [
 
 [[package]]
 name = "playit-common"
-version = "1.0.10"
+version = "1.0.12"
 
 [[package]]
 name = "playit-ipc"
-version = "1.0.10"
+version = "1.0.12"
 dependencies = [
  "dirs 6.0.0",
  "futures-util",
@@ -2003,7 +2003,7 @@ dependencies = [
 
 [[package]]
 name = "playitd"
-version = "1.0.10"
+version = "1.0.12"
 dependencies = [
  "clap",
  "dirs 6.0.0",
@@ -2034,7 +2034,7 @@ dependencies = [
 
 [[package]]
 name = "playitd-tray"
-version = "1.0.10"
+version = "1.0.12"
 dependencies = [
  "image",
  "kanal",
@@ -2048,7 +2048,7 @@ dependencies = [
 
 [[package]]
 name = "playitd-windows-setup"
-version = "1.0.10"
+version = "1.0.12"
 dependencies = [
  "playitd",
  "windows",
