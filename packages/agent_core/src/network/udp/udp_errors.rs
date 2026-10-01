@@ -19,6 +19,7 @@ pub struct UdpErrors {
     pub establish_send_io_error: IntCounter,
     pub establish_no_session: IntCounter,
 
+    pub nethernet_rejected: IntCounter,
     pub new_client_ratelimit: IntCounter,
     pub origin_client_missing: IntCounter,
     pub origin_reject_bad_id: IntCounter,

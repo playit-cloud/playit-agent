@@ -1,0 +1,5 @@
+[package]
+name = "playit-common"
+version.workspace = true
+edition = "2024"
+publish = false

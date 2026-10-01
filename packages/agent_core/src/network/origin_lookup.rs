@@ -94,6 +94,9 @@ pub struct OriginResource {
     pub target: OriginTarget,
     pub port_count: u16,
     pub proxy_protocol: Option<ProxyProtocol>,
+    /// The target is the Bedrock server's NetherNet signaling port. TCP joins are proxied
+    /// and UDP goes to the socket each join names, not to the target.
+    pub nethernet: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -180,7 +183,7 @@ impl OriginResource {
                     .ok()
             });
 
-        let target = match tunnel_type {
+        let target = match &tunnel_type {
             Some(TunnelType::Https) => OriginTarget::Https {
                 ip: Self::parse_origin_ip(tunn),
                 http_port: tunn
@@ -231,6 +234,7 @@ impl OriginResource {
             target,
             port_count: tunn.port_count,
             proxy_protocol,
+            nethernet: tunnel_type == Some(TunnelType::NetherNet),
         })
     }
 
@@ -333,11 +337,58 @@ mod tests {
             },
             port_count: 0,
             proxy_protocol: None,
+            nethernet: false,
         };
 
         let resolved = resource.resolve_local(0).await.expect("resolved");
 
         assert_eq!(resolved.port(), 8080);
         assert!(resolved.ip().is_loopback());
+    }
+
+    #[tokio::test]
+    async fn nethernet_run_data_selects_both_transports_without_changing_generic_tunnels() {
+        let lookup = OriginLookup::default();
+        let tunnel = build_tunnel(
+            Some("nethernet"),
+            "127.0.0.1",
+            Some("19132"),
+            PortType::Both,
+            1,
+        );
+        lookup
+            .update(std::iter::once(
+                OriginResource::from_agent_tunnel(&tunnel).unwrap(),
+            ))
+            .await;
+        for tcp in [true, false] {
+            let resource = lookup.lookup(tunnel.internal_id, tcp).await.unwrap();
+            assert!(resource.nethernet);
+            assert_eq!(
+                resource.resolve_local(0).await.unwrap(),
+                "127.0.0.1:19132".parse().unwrap()
+            );
+            assert!(resource.resolve_local(1).await.is_none());
+        }
+        let generic = build_tunnel(None, "127.0.0.1", Some("8080"), PortType::Both, 1);
+        lookup
+            .update(std::iter::once(
+                OriginResource::from_agent_tunnel(&generic).unwrap(),
+            ))
+            .await;
+        assert!(
+            !lookup
+                .lookup(generic.internal_id, true)
+                .await
+                .unwrap()
+                .nethernet
+        );
+        assert!(
+            !lookup
+                .lookup(generic.internal_id, false)
+                .await
+                .unwrap()
+                .nethernet
+        );
     }
 }
