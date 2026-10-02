@@ -15,8 +15,9 @@ use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec, LinesCodecError};
 
 use crate::endpoint::IpcEndpoint;
 use crate::model::{
-    AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ProtocolInfo, SecretPathResponse,
-    ServiceError, ServiceStatus, ServiceUpdate, SubscribeResponse,
+    AccountLoginUrlResponse, AccountResponse, AgentLifecycle, ClaimResponse, CommandResponse,
+    ProtocolInfo, SecretPathResponse, ServiceError, ServiceStatus, ServiceUpdate,
+    SubscribeResponse, TunnelCreateResponse, TunnelListResponse, TunnelProtocol,
 };
 
 pub const IPC_VERSION: u32 = 2;
@@ -101,8 +102,25 @@ pub enum ServiceRequest {
     Subscribe,
     GetStatus,
     GetState,
+    GetTunnels,
+    CreateTunnel {
+        local_port: u16,
+        #[serde(default)]
+        protocol: TunnelProtocol,
+        #[serde(default)]
+        local_address: Option<String>,
+        #[serde(default)]
+        name: Option<String>,
+    },
+    DeleteTunnel {
+        tunnel_id: String,
+    },
+    GetAccount,
+    StartClaim,
     Stop,
-    SetSecret { secret: String },
+    SetSecret {
+        secret: String,
+    },
     ResetSecret,
     GetSecretPath,
     GetAccountLoginUrl,
@@ -153,6 +171,11 @@ pub enum ServiceResponse {
     Subscribe(SubscribeResponse),
     Status(ServiceStatus),
     State(AgentLifecycle),
+    Tunnels(TunnelListResponse),
+    CreateTunnel(TunnelCreateResponse),
+    DeleteTunnel(CommandResponse),
+    Account(AccountResponse),
+    Claim(ClaimResponse),
     Stop(CommandResponse),
     SetSecret(CommandResponse),
     ResetSecret(CommandResponse),
@@ -201,6 +224,9 @@ pub fn protocol_info() -> ProtocolInfo {
             "lifecycle_state".to_string(),
             "rich_status".to_string(),
             "secret_provisioning".to_string(),
+            "tunnel_management".to_string(),
+            "account_state".to_string(),
+            "claim_provisioning".to_string(),
         ],
     }
 }
@@ -460,6 +486,76 @@ impl IpcClient {
         )
     }
 
+    pub async fn list_tunnels(&mut self) -> Result<TunnelListResponse, IpcError> {
+        expect_response(
+            self.request(ServiceRequest::GetTunnels).await?,
+            "tunnel list response",
+            |response| match response {
+                ServiceResponse::Tunnels(response) => Some(response),
+                _ => None,
+            },
+        )
+    }
+
+    pub async fn create_tunnel(
+        &mut self,
+        local_port: u16,
+        protocol: TunnelProtocol,
+        local_address: Option<String>,
+        name: Option<String>,
+    ) -> Result<TunnelCreateResponse, IpcError> {
+        expect_response(
+            self.request(ServiceRequest::CreateTunnel {
+                local_port,
+                protocol,
+                local_address,
+                name,
+            })
+            .await?,
+            "tunnel create response",
+            |response| match response {
+                ServiceResponse::CreateTunnel(response) => Some(response),
+                _ => None,
+            },
+        )
+    }
+
+    pub async fn delete_tunnel(&mut self, tunnel_id: &str) -> Result<CommandResponse, IpcError> {
+        expect_response(
+            self.request(ServiceRequest::DeleteTunnel {
+                tunnel_id: tunnel_id.to_string(),
+            })
+            .await?,
+            "tunnel delete response",
+            |response| match response {
+                ServiceResponse::DeleteTunnel(response) => Some(response),
+                _ => None,
+            },
+        )
+    }
+
+    pub async fn account(&mut self) -> Result<AccountResponse, IpcError> {
+        expect_response(
+            self.request(ServiceRequest::GetAccount).await?,
+            "account response",
+            |response| match response {
+                ServiceResponse::Account(response) => Some(response),
+                _ => None,
+            },
+        )
+    }
+
+    pub async fn start_claim(&mut self) -> Result<ClaimResponse, IpcError> {
+        expect_response(
+            self.request(ServiceRequest::StartClaim).await?,
+            "claim response",
+            |response| match response {
+                ServiceResponse::Claim(response) => Some(response),
+                _ => None,
+            },
+        )
+    }
+
     pub async fn stop(&mut self) -> Result<CommandResponse, IpcError> {
         expect_response(
             self.request(ServiceRequest::Stop).await?,
@@ -642,6 +738,11 @@ pub fn is_known_request_type(type_name: &str) -> bool {
         "subscribe"
             | "get_status"
             | "get_state"
+            | "get_tunnels"
+            | "create_tunnel"
+            | "delete_tunnel"
+            | "get_account"
+            | "start_claim"
             | "stop"
             | "set_secret"
             | "reset_secret"
@@ -664,17 +765,28 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     fn test_socket_path(name: &str) -> String {
-        std::env::temp_dir()
-            .join(format!(
-                "playit-ipc-{name}-{}-{}.sock",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos()
-            ))
-            .display()
-            .to_string()
+        let unique = format!(
+            "playit-ipc-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        #[cfg(target_os = "windows")]
+        {
+            // Windows local sockets are named pipes, not filesystem sockets.
+            format!(r"\\.\pipe\{unique}")
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::env::temp_dir()
+                .join(format!("{unique}.sock"))
+                .display()
+                .to_string()
+        }
     }
 
     async fn spawn_server<F, Fut>(name: &str, handler: F) -> String
@@ -881,6 +993,26 @@ mod tests {
             .err()
             .expect("malformed known event should fail");
         assert!(matches!(error, IpcError::ProtocolError(_)));
+    }
+
+    #[test]
+    fn tunnel_management_requests_use_stable_json_names() {
+        let request = RequestEnvelope {
+            ipc_version: IPC_VERSION,
+            request_id: 7,
+            request: ServiceRequest::CreateTunnel {
+                local_port: 25565,
+                protocol: TunnelProtocol::Udp,
+                local_address: Some("127.0.0.1".to_string()),
+                name: Some("minecraft".to_string()),
+            },
+        };
+
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["request"]["type"], "create_tunnel");
+        assert_eq!(json["request"]["protocol"], "udp");
+        assert_eq!(json["request"]["local_port"], 25565);
+        assert!(is_known_request_type("create_tunnel"));
     }
 
     #[tokio::test]

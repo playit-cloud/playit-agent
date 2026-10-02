@@ -53,6 +53,9 @@ pub enum ServiceErrorCode {
     SecretPinned,
     ProvisioningUnavailable,
     SecretWriteFailed,
+    ApiUnavailable,
+    InvalidTunnelRequest,
+    TunnelNotFound,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -71,10 +74,29 @@ impl std::fmt::Display for ServiceError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TunnelState {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
     pub display_address: String,
     pub destination: String,
+    #[serde(default)]
+    pub protocol: TunnelProtocol,
+    #[serde(default)]
+    pub port_count: u16,
+    #[serde(default)]
+    pub local_address: Option<String>,
     pub is_disabled: bool,
     pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TunnelProtocol {
+    #[default]
+    Tcp,
+    Udp,
+    Both,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -180,4 +202,29 @@ pub struct AccountLoginUrlResponse {
 pub struct SubscribeResponse {
     pub protocol: ProtocolInfo,
     pub snapshot: SubscriptionSnapshot,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TunnelListResponse {
+    pub tunnels: Vec<TunnelState>,
+    pub pending_tunnels: Vec<PendingTunnelState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TunnelCreateResponse {
+    pub tunnel_id: String,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AccountResponse {
+    pub status: AccountStatus,
+    pub agent_id: Option<String>,
+    pub login_link: Option<String>,
+    pub claim_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClaimResponse {
+    pub claim_url: String,
 }

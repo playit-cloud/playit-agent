@@ -16,9 +16,10 @@ use playit_agent_core::stats::AgentStats;
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
 use playit_api_client::api::{
-    AccountStatus, ApiResponseError, AuthError, Platform, ProtoRegisterError,
+    AccountStatus, ApiResponseError, AuthError, Platform, PortType, ProtoRegisterError,
 };
 use playit_ipc::ipc::{IpcError, get_default_socket_path, protocol_info};
+use playit_ipc::model::TunnelProtocol;
 use playit_ipc::model::{
     AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ConnectionStats,
     NoticeState, PendingTunnelState, ServiceError, ServiceErrorCode, ServicePhase, ServiceStatus,
@@ -820,7 +821,7 @@ async fn broadcast_agent_state(
                                 .iter()
                                 .filter_map(|tunnel| {
                                     let origin = OriginResource::from_agent_tunnel(tunnel)?;
-                                    let destination = match origin.target {
+                                    let destination = match &origin.target {
                                         OriginTarget::Https {
                                             ip,
                                             http_port,
@@ -830,8 +831,22 @@ async fn broadcast_agent_state(
                                     };
 
                                     Some(TunnelState {
+                                        id: tunnel.id.to_string(),
+                                        name: Some(tunnel.name.clone()),
                                         display_address: tunnel.display_address.clone(),
                                         destination,
+                                        protocol: match tunnel.port_type {
+                                            PortType::Tcp => TunnelProtocol::Tcp,
+                                            PortType::Udp => TunnelProtocol::Udp,
+                                            PortType::Both => TunnelProtocol::Both,
+                                        },
+                                        port_count: tunnel.port_count,
+                                        local_address: Some(match &origin.target {
+                                            OriginTarget::Https { ip, .. } => ip.to_string(),
+                                            OriginTarget::Port { ip, port } => {
+                                                format!("{ip}:{port}")
+                                            }
+                                        }),
                                         is_disabled: tunnel.disabled_reason.is_some(),
                                         disabled_reason: tunnel.disabled_reason.as_ref().map(|s| s.to_string()),
                                     })
@@ -1382,6 +1397,30 @@ mod tests {
         ))
     }
 
+    fn unique_socket_path(name: &str) -> String {
+        let unique = format!(
+            "playitd-{name}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+
+        #[cfg(target_os = "windows")]
+        {
+            format!(r"\\.\pipe\{unique}")
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::env::temp_dir()
+                .join(format!("{unique}.sock"))
+                .display()
+                .to_string()
+        }
+    }
+
     #[test]
     fn setup_error_message_handles_connection_failure() {
         let message = setup_error_user_message(&SetupError::FailedToConnect);
@@ -1523,9 +1562,7 @@ mod tests {
     #[tokio::test]
     async fn missing_file_secret_reports_waiting_for_secret() {
         let secret_path = unique_test_path("missing-secret", "toml");
-        let socket_path = unique_test_path("missing-secret", "sock")
-            .display()
-            .to_string();
+        let socket_path = unique_socket_path("missing-secret");
         let _ = std::fs::remove_file(&secret_path);
         let _ = std::fs::remove_file(&socket_path);
 

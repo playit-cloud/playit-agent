@@ -69,3 +69,9 @@ cd playit-agent
 # Build and run the release version
 cargo run --release
 ```
+
+## Local programmatic API
+
+The background daemon provides a local JSON-over-IPC API for automation, dashboards, and MCP integrations. It supports tunnel status, tunnel creation/deletion, account state, and browser-based agent claiming without exposing the agent secret to the caller.
+
+See [docs/ipc-api.md](docs/ipc-api.md) for the wire format, operations, and security boundary.

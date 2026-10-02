@@ -17,7 +17,7 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 	fn unwrap_no_fail<S>(res: Result<ApiResult<S, ()>, C::Error>) -> Result<S, ApiErrorNoFail<C::Error>> {
 		match res {
 			Ok(ApiResult::Success(v)) => Ok(v),
-			Ok(ApiResult::Fail(_)) => panic!(),
+			Ok(ApiResult::Fail(_)) => Err(ApiErrorNoFail::UnexpectedFail),
 			Ok(ApiResult::Error(error)) => Err(ApiErrorNoFail::ApiError(error)),
 			Err(error) => Err(ApiErrorNoFail::ClientError(error)),
 		}
@@ -356,8 +356,9 @@ impl<F: std::fmt::Debug, C: std::fmt::Debug> std::error::Error for ApiError<F, C
 
 #[derive(Debug, serde::Serialize)]
 pub enum ApiErrorNoFail<C> {
-    ApiError(ApiResponseError),
-    ClientError(C),
+	UnexpectedFail,
+	ApiError(ApiResponseError),
+	ClientError(C),
 }
 
 impl<C: std::fmt::Debug> std::fmt::Display for ApiErrorNoFail<C> {
