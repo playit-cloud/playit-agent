@@ -1,5 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+#[cfg(any(target_os = "windows", test))]
+mod download_claim_import;
 #[cfg(target_os = "windows")]
 mod permissions;
 #[cfg(any(target_os = "windows", test))]
@@ -16,6 +18,7 @@ mod setup_log;
 const COMMANDS: &[&str] = &[
     "apply-installer-permissions",
     "ensure-startup-shortcut",
+    "import-download-claim",
     "migrate-v17-secret",
     "remove-startup-shortcut",
     "write-installed-user-sid",
@@ -52,6 +55,15 @@ fn run_and_log() -> Result<(), String> {
         }
         "ensure-startup-shortcut" => require_no_extra_arguments(&extra_args)
             .and_then(|()| startup_shortcut::ensure_startup_shortcut()),
+        "import-download-claim" => {
+            // The path is user-chosen, so a split on spaces is repaired rather than rejected.
+            let installer_path = extra_args
+                .iter()
+                .map(|arg| arg.to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(" ");
+            download_claim_import::import_download_claim(&installer_path)
+        }
         "migrate-v17-secret" => {
             if extra_args.len() > 1 {
                 Err(unexpected_extra_arguments(&extra_args))
