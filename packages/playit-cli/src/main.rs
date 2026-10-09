@@ -353,7 +353,10 @@ pub async fn claim_exchange(
             let setup = match setup_res {
                 Ok(v) => v,
                 Err(error) => {
-                    tracing::error!(?error, "Failed loading claim setup");
+                    tracing::warn!(
+                        ?error,
+                        "claim setup poll failed; will retry in 2s"
+                    );
                     console
                         .write_screen(format!("{}\n\nError: {:?}", last_message, error))
                         .await;

@@ -97,7 +97,11 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             .try_timeout(Duration::from_secs(10))
             .await?;
 
-        tracing::info!(old = %self.control.conn.pong_latest.tunnel_addr, new = %connected.pong_latest.tunnel_addr, "update control address");
+        tracing::info!(
+            old_tunnel_addr = %self.control.conn.pong_latest.tunnel_addr,
+            new_tunnel_addr = %connected.pong_latest.tunnel_addr,
+            "switching control channel to new tunnel address"
+        );
         connected.reset_established(&mut self.control, registered);
 
         Ok(true)
@@ -115,7 +119,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
             .try_timeout(Duration::from_secs(5))
             .await
         {
-            tracing::error!(?error, "failed to send setup udp channel request");
+            tracing::warn!(?error, "failed to request udp channel setup from tunnel; will retry");
         }
 
         true
@@ -123,7 +127,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
 
     pub async fn update(&mut self) -> Option<TunnelControlEvent> {
         if let Some(reason) = self.control.is_expired() {
-            tracing::warn!(?reason, "control session expired; reconnecting");
+            tracing::warn!(?reason, "control session expired; reauthenticating");
 
             if let Err(error) = self
                 .control
@@ -131,7 +135,7 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                 .try_timeout(Duration::from_secs(5))
                 .await
             {
-                tracing::error!(?error, "failed to authenticate");
+                tracing::error!(?error, "failed to reauthenticate control session");
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 return None;
             }
@@ -147,12 +151,12 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                 .try_timeout(Duration::from_secs(1))
                 .await
             {
-                tracing::error!(?error, "failed to send ping");
+                tracing::warn!(?error, "failed to send control ping to tunnel; will retry");
             }
         }
 
         let time_till_expire = self.control.get_expire_at().max(now) - now;
-        tracing::trace!(time_till_expire, "time till expire");
+        tracing::trace!(time_till_expire_ms = time_till_expire, "control session ttl");
 
         /* keep alive every 60s or every 10s if expiring soon */
         let interval = if time_till_expire < 30_000 {
@@ -164,14 +168,17 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         if interval < now - self.last_keep_alive {
             self.last_keep_alive = now;
 
-            tracing::debug!(time_till_expire, "send KeepAlive");
+            tracing::debug!(
+                time_till_expire_ms = time_till_expire,
+                "sending control keep-alive"
+            );
             if let Err(error) = self
                 .control
                 .send_keep_alive(100)
                 .try_timeout(Duration::from_secs(1))
                 .await
             {
-                tracing::error!(?error, "failed to send KeepAlive");
+                tracing::warn!(?error, "failed to send control keep-alive; will retry");
             }
         }
 
@@ -192,32 +199,34 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
                         return Some(TunnelControlEvent::UdpChannelDetails(details));
                     }
                     ControlResponse::Unauthorized => {
-                        tracing::debug!("session no longer authorized");
+                        tracing::info!(
+                            "tunnel server reports session as unauthorized; will reauthenticate"
+                        );
                         self.control.set_expired();
                     }
                     ControlResponse::Pong(pong) => {
                         self.last_pong = now_milli();
 
                         if pong.client_addr != self.control.pong_at_auth.client_addr {
-                            tracing::debug!(
-                                new_client = %pong.client_addr,
-                                old_client = %self.control.pong_at_auth.client_addr,
-                                "client ip changed"
+                            tracing::info!(
+                                new_client_addr = %pong.client_addr,
+                                old_client_addr = %self.control.pong_at_auth.client_addr,
+                                "tunnel server reports our client ip changed; session may expire"
                             );
                         }
                     }
                     msg => {
-                        tracing::debug!(?msg, "got response");
+                        tracing::debug!(?msg, "ignoring unhandled control response");
                     }
                 },
                 Ok(Err(error)) => {
-                    tracing::error!(?error, "failed to parse response");
+                    tracing::warn!(?error, "failed to parse message from tunnel control feed");
                 }
                 Err(_) => {
                     timeouts += 1;
 
                     if timeouts >= 10 {
-                        tracing::trace!("feed recv timeout");
+                        tracing::trace!("no control feed messages for 1s, yielding");
                         break;
                     }
                 }
@@ -225,7 +234,9 @@ impl<I: PacketIO, A: AuthResource> MaintainedControl<I, A> {
         }
 
         if self.last_pong != 0 && now_milli() - self.last_pong > 6_000 {
-            tracing::warn!("timeout waiting for pong");
+            tracing::warn!(
+                "no pong from tunnel server in 6s; marking session expired"
+            );
 
             self.last_pong = 0;
             self.control.set_expired();

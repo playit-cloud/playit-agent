@@ -125,7 +125,11 @@ impl<I: PacketRx> Task<I> {
                 Err(error) => {
                     let now = tokio::time::Instant::now();
                     if next_error_log_allowed <= now {
-                        tracing::warn!(?error, id = self.id, "failed to receive UDP packet");
+                        tracing::warn!(
+                            ?error,
+                            receiver_id = self.id,
+                            "udp socket recv failed (logging at most once per second)"
+                        );
                         next_error_log_allowed = now + Duration::from_secs(1);
                     }
 
