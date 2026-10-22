@@ -42,13 +42,14 @@ pub enum InstalledServiceStartState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub enum InstalledServiceStopState {
     AlreadyStopped,
     StopRequested,
 }
 
 pub async fn ensure_installed_service_running_for_cli(
-    console: Option<&mut ConsoleUi>,
+    #[cfg_attr(not(target_os = "linux"), allow(unused_variables))] console: Option<&mut ConsoleUi>,
     service_manager: ServiceManagerMode,
 ) -> Result<InstalledServiceStartState, CliError> {
     if IpcClient::is_running(get_default_socket_path()).await {
@@ -139,6 +140,7 @@ pub fn stop_installed_service_for_cli(
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn installed_service_is_active_for_cli(
     service_manager: ServiceManagerMode,
 ) -> Result<bool, CliError> {
@@ -162,10 +164,12 @@ pub fn installed_service_is_active_for_cli(
     }
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn no_service_manager_selected_error() -> CliError {
     CliError::ServiceError(no_service_manager_selected_message())
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn no_service_manager_selected_message() -> String {
     let socket_path = get_default_socket_path();
     format!(
@@ -185,6 +189,7 @@ pub(crate) fn linux_service_manager(
 }
 
 #[cfg(test)]
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 mod tests {
     use super::*;
 

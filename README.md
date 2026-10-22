@@ -24,6 +24,14 @@ Alternatively, you can install via winget (Windows package manager):
 winget install DevelopedMethods.playit
 ```
 
+The installer sets up:
+
+* **The `playit.gg` Windows service** (`playitd`). It starts with Windows, keeps your tunnels online, and retries on its own when the network is unavailable.
+* **The tray icon**. It starts when you sign in and shows whether playit is online. Right-click it to open playit, start or stop the service, open the logs, or turn off "Launch at Login".
+* **The Playit.gg shortcut**. It opens playit and brings the tray icon back if you closed it.
+
+Logs are in `%ProgramData%\playit_gg\logs`. The standalone `playit-windows-x86_64.exe` runs playit in its own window without installing the service.
+
 ### Installing on Ubuntu or Debian
 
 ```sh

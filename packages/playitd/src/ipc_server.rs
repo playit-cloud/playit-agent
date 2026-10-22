@@ -82,6 +82,7 @@ pub struct IpcServer {
     state_cache: Arc<StateCache>,
     secret_path: Option<PathBuf>,
     secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
+    secret_reset_tx: Option<mpsc::Sender<()>>,
     secret_provision_error: ServiceError,
     secret_reset_error: ServiceError,
     api: RwLock<Option<PlayitApi>>,
@@ -95,6 +96,7 @@ impl IpcServer {
         event_tx: broadcast::Sender<ServiceUpdate>,
         secret_path: Option<PathBuf>,
         secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
+        secret_reset_tx: Option<mpsc::Sender<()>>,
         secret_provision_error: ServiceError,
         secret_reset_error: ServiceError,
     ) -> Result<Self, IpcError> {
@@ -126,6 +128,7 @@ impl IpcServer {
             state_cache: Arc::new(StateCache::default()),
             secret_path,
             secret_provision_tx,
+            secret_reset_tx,
             secret_provision_error,
             secret_reset_error,
             api: RwLock::new(None),
@@ -143,6 +146,11 @@ impl IpcServer {
 
     pub async fn set_api(&self, api: PlayitApi) {
         *self.api.write().await = Some(api);
+    }
+
+    pub async fn clear_api(&self) {
+        *self.api.write().await = None;
+        *self.guest_login_cache.write().await = None;
     }
 
     pub async fn bind_listener(&self) -> Result<Listener, IpcError> {
@@ -203,8 +211,9 @@ impl IpcServer {
                     })?;
                 let listener = ListenerOptions::new().name(name);
                 #[cfg(target_os = "windows")]
-                let listener = listener
-                    .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
+                let listener = listener.security_descriptor(
+                    crate::windows::pipe_security_descriptor(&self.socket_path)?,
+                );
                 listener.create_tokio().map_err(IpcError::BindFailed)
             }
             IpcEndpoint::Filesystem(path) => {
@@ -213,8 +222,9 @@ impl IpcServer {
                 })?;
                 let listener = ListenerOptions::new().name(name);
                 #[cfg(target_os = "windows")]
-                let listener = listener
-                    .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
+                let listener = listener.security_descriptor(
+                    crate::windows::pipe_security_descriptor(&self.socket_path)?,
+                );
                 listener.create_tokio().map_err(IpcError::BindFailed)
             }
         }
@@ -387,8 +397,11 @@ impl IpcServer {
     async fn reset_secret_response(&self) -> ServiceResponse {
         match self.reset_secret().await {
             Ok(message) => {
-                tracing::info!("Secret reset, initiating shutdown");
-                self.cancel_token.cancel();
+                tracing::info!("Secret reset, returning to setup");
+                if let Some(secret_reset_tx) = &self.secret_reset_tx {
+                    // A full buffer means a reset is already pending, which is equivalent.
+                    let _ = secret_reset_tx.try_send(());
+                }
                 ServiceResponse::ResetSecret(CommandResponse {
                     accepted: true,
                     message: Some(message),
@@ -453,7 +466,7 @@ impl IpcServer {
 
         match tokio::fs::remove_file(secret_path).await {
             Ok(()) => Ok(format!(
-                "Deleted secret file at {}. Restart playitd to reprovision a new secret.",
+                "Deleted secret file at {}. playit is now waiting for setup.",
                 secret_path.display()
             )),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(format!(
@@ -651,6 +664,7 @@ mod tests {
                 Some(socket_path.clone()),
                 cancel_token.clone(),
                 event_tx,
+                None,
                 None,
                 None,
                 protocol_error(

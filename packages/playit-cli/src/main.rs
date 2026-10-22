@@ -30,6 +30,8 @@ pub static API_BASE: LazyLock<String> =
 mod client;
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "windows")]
+mod portable;
 mod service;
 pub mod signal_handle;
 pub mod ui;
@@ -147,8 +149,21 @@ async fn main() -> std::process::ExitCode {
         Ok(code) => code,
         Err(error) => {
             eprintln!("{error}");
+            pause_before_closing_console();
             std::process::ExitCode::FAILURE
         }
+    }
+}
+
+/// Windows closes a console it created for us (Start menu, tray, double-click) the moment
+/// we exit, so errors would vanish before anyone can read them.
+fn pause_before_closing_console() {
+    #[cfg(target_os = "windows")]
+    if playitd::windows::owns_console_window() {
+        eprintln!();
+        eprintln!("Press Enter to close this window.");
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
     }
 }
 
@@ -282,12 +297,17 @@ pub async fn run_setup_flow(
     ensure_service_waiting_for_secret(console, target, service_manager).await?;
 
     let claim_code = claim_generate();
+    let url = claim_url(&claim_code)?;
     console
         .write_screen(format!(
-            "Open this link to finish setting up playit:\n{}",
-            claim_url(&claim_code)?
+            "Open this link to finish setting up playit:\n{url}"
         ))
         .await;
+
+    #[cfg(target_os = "windows")]
+    if let Err(error) = playitd::windows::open_url(&url) {
+        tracing::warn!(%error, "failed to open the setup link in the browser");
+    }
 
     let key = claim_exchange(console, &claim_code, ClaimAgentType::Assignable, 0).await?;
     provision_service_secret(console, target, &key, service_manager).await?;

@@ -93,10 +93,12 @@ jobs:
             os: windows-latest
             arch: i686-pc-windows-msvc
             artifact: playit-windows-x86
+            artifact_daemon: playitd-windows-x86
           - name: windows 64bit
             os: windows-latest
             arch: x86_64-pc-windows-msvc
             artifact: playit-windows-x86_64
+            artifact_daemon: playitd-windows-x86_64
     runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v3
@@ -119,17 +121,29 @@ jobs:
           targets: ${{ matrix.platform.arch }}
 
       - run: cargo install cargo-wix
-      - run: cargo build --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd --package playitd-tray --package playitd-windows-setup
+      - run: cargo build --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd --package playitd-tray
       - run: cargo wix --target ${{ matrix.platform.arch }} --package playit-cli --nocapture --output=target/wix/${{ matrix.platform.artifact }}.msi
 
+      # The standalone .exe is the CLI: without an installed service it runs playit in
+      # its own window (portable mode) and walks the user through setup.
       - name: Upload .exe
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
-          asset_path: ./target/${{ matrix.platform.arch }}/release/playitd.exe
+          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-cli.exe
           asset_name: ${{ matrix.platform.artifact }}.exe
+          asset_content_type: application/octet-stream
+
+      - name: Upload daemon .exe
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/${{ matrix.platform.arch }}/release/playitd.exe
+          asset_name: ${{ matrix.platform.artifact_daemon }}.exe
           asset_content_type: application/octet-stream
 
       - name: Upload .msi

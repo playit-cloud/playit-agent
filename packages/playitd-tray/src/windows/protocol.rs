@@ -1,3 +1,5 @@
+use crate::presentation::ServiceView;
+
 #[derive(Clone, Debug)]
 pub(super) enum BackendRequest {
     RefreshStatus,
@@ -15,17 +17,11 @@ pub(super) enum BackendRequestKind {
     ResetAgent,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ServiceStateSnapshot {
-    pub(super) service_running: bool,
-    pub(super) reset_agent_enabled: bool,
-}
-
 #[derive(Clone, Debug)]
 pub(super) enum BackendResponse {
     RequestCompleted {
         request: BackendRequestKind,
-        snapshot: ServiceStateSnapshot,
+        view: ServiceView,
         error: Option<String>,
     },
 }

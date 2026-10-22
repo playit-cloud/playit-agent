@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
@@ -35,6 +35,8 @@ enum AttachErrorContext {
 pub enum CliTarget {
     InstalledService,
     ExplicitSocket(String),
+    /// A daemon running inside this process because no background service is installed.
+    Portable(String),
 }
 
 impl CliTarget {
@@ -48,7 +50,7 @@ impl CliTarget {
     pub fn socket_path(&self) -> &str {
         match self {
             Self::InstalledService => get_default_socket_path(),
-            Self::ExplicitSocket(path) => path.as_str(),
+            Self::ExplicitSocket(path) | Self::Portable(path) => path.as_str(),
         }
     }
 }
@@ -63,6 +65,19 @@ pub async fn run_auto_command(
     attach_mode: AttachMode,
     service_manager: ServiceManagerMode,
 ) -> Result<(), CliError> {
+    #[cfg(target_os = "windows")]
+    let portable = match target {
+        CliTarget::InstalledService if crate::portable::service_is_missing() => {
+            Some(crate::portable::PortableDaemon::start(console).await?)
+        }
+        _ => None,
+    };
+    #[cfg(target_os = "windows")]
+    let target = &portable
+        .as_ref()
+        .map(|daemon| daemon.target())
+        .unwrap_or_else(|| target.clone());
+
     let start_attempt_failed = match target {
         CliTarget::InstalledService => {
             ensure_installed_service_running_for_cli(Some(console), service_manager)
@@ -70,10 +85,10 @@ pub async fn run_auto_command(
                 .err()
                 .map(|error| error.to_string())
         }
-        CliTarget::ExplicitSocket(_) => None,
+        CliTarget::ExplicitSocket(_) | CliTarget::Portable(_) => None,
     };
 
-    let mut client = connect_target(target).await.map_err(|_| {
+    let lifecycle = wait_for_settled_lifecycle(target).await.map_err(|_| {
         initial_attach_error(
             target,
             &AttachErrorContext::AutoCommand {
@@ -82,8 +97,7 @@ pub async fn run_auto_command(
         )
     })?;
 
-    match wait_for_auto_lifecycle(&mut client).await? {
-        AgentLifecycle::Running(_) => {}
+    match lifecycle {
         AgentLifecycle::WaitingForSecret => {
             run_setup_flow(console, target, service_manager).await?;
         }
@@ -109,30 +123,16 @@ pub async fn run_auto_command(
             wait_for_service_waiting_for_secret(target).await?;
             run_setup_flow(console, target, service_manager).await?;
         }
-        AgentLifecycle::DisabledOverLimit(_) => {
-            return Err(CliError::ServiceError(format!(
-                "{}\n{}",
-                agent_over_limit_title(),
-                agent_over_limit_guidance()
-            )));
-        }
-        AgentLifecycle::Starting => {
-            return Err(CliError::ServiceError(
-                "Timed out while waiting for the playit service to finish starting. Try `playit status` to check its current state."
-                    .to_string(),
-            ));
-        }
         AgentLifecycle::Stopping => {
             return Err(CliError::ServiceError(
                 "The playit service is stopping. Try again in a few seconds.".to_string(),
             ));
         }
-        AgentLifecycle::Error(error) => {
-            return Err(CliError::ServiceError(format!(
-                "The playit service reported an error and cannot continue: {}",
-                error.message
-            )));
-        }
+        // The status view explains these states and updates live as the service retries.
+        AgentLifecycle::Running(_)
+        | AgentLifecycle::Starting
+        | AgentLifecycle::Error(_)
+        | AgentLifecycle::DisabledOverLimit(_) => {}
     }
 
     run_attach_command_with_context(
@@ -145,20 +145,41 @@ pub async fn run_auto_command(
     .await
 }
 
-async fn wait_for_auto_lifecycle(client: &mut IpcClient) -> Result<AgentLifecycle, CliError> {
-    for _ in 0..50 {
-        let lifecycle = client.lifecycle().await.map_err(|error| {
-            CliError::IpcError(format!("Failed to read playitd lifecycle: {error}"))
-        })?;
+/// Waits for the daemon to settle out of `Starting`, reconnecting if it is restarting.
+/// Returns `Starting` if it is still connecting when the wait ends.
+async fn wait_for_settled_lifecycle(target: &CliTarget) -> Result<AgentLifecycle, CliError> {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut client = None;
+    let mut seen_starting = false;
+    let mut last_error = None;
 
-        if !matches!(lifecycle, AgentLifecycle::Starting) {
-            return Ok(lifecycle);
+    while Instant::now() < deadline {
+        if client.is_none() {
+            client = connect_target(target).await.ok();
         }
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Some(connected) = client.as_mut() {
+            match connected.lifecycle().await {
+                Ok(AgentLifecycle::Starting) => seen_starting = true,
+                Ok(lifecycle) => return Ok(lifecycle),
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    client = None;
+                }
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
-    Ok(AgentLifecycle::Starting)
+    if seen_starting {
+        return Ok(AgentLifecycle::Starting);
+    }
+
+    Err(CliError::IpcError(format!(
+        "Could not read the playit service state: {}",
+        last_error.unwrap_or_else(|| "the service is not reachable".to_string())
+    )))
 }
 
 async fn reset_service_secret_for_setup(target: &CliTarget) -> Result<(), CliError> {
@@ -240,6 +261,15 @@ async fn run_attach_command_with_context(
     }
 }
 
+fn print_detach_message(target: &CliTarget) {
+    if let CliTarget::Portable(_) = target {
+        println!("playit stopped. Your tunnels are offline until you open playit again.");
+        return;
+    }
+    println!("Detached from service. Service continues running in background.");
+    println!("Use 'playit stop' to stop the service.");
+}
+
 async fn run_attach_tui_session(
     mut client: IpcClient,
     target: &CliTarget,
@@ -269,7 +299,7 @@ async fn run_attach_tui_session(
                     Ok(true) => {}
                     Ok(false) => {
                         tui.shutdown()?;
-                        print_detach_message();
+                        print_detach_message(target);
                         break;
                     }
                     Err(error) => {
@@ -301,7 +331,7 @@ async fn run_attach_stdout_session(
             }
             _ = tokio::signal::ctrl_c() => {
                 println!();
-                print_detach_message();
+                print_detach_message(target);
                 break;
             }
         }
@@ -331,17 +361,12 @@ fn apply_stdout_update(update: ServiceUpdate) {
     }
 }
 
-fn print_detach_message() {
-    println!("Detached from service. Service continues running in background.");
-    println!("Use 'playit stop' to stop the service.");
-}
-
 pub async fn run_start_command(
     console: &mut ConsoleUi,
     target: &CliTarget,
     service_manager: ServiceManagerMode,
 ) -> Result<(), CliError> {
-    if let CliTarget::ExplicitSocket(path) = target {
+    if let CliTarget::ExplicitSocket(path) | CliTarget::Portable(path) = target {
         return Err(CliError::ServiceError(format!(
             "`playit start` only manages the installed background service. Remove `--socket-path {path}` or start that daemon manually."
         )));
@@ -421,7 +446,7 @@ pub async fn run_stop_command(
 
             Ok(())
         }
-        CliTarget::ExplicitSocket(path) => {
+        CliTarget::ExplicitSocket(path) | CliTarget::Portable(path) => {
             let mut client = connect_target(target).await?;
             let response = client.stop().await.map_err(|error| {
                 CliError::IpcError(format!("Failed to stop daemon at {path}: {error}"))
@@ -453,7 +478,7 @@ pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
     if !IpcClient::is_running(target.socket_path()).await {
         match target {
             CliTarget::InstalledService => println!("The playit service is not running."),
-            CliTarget::ExplicitSocket(path) => {
+            CliTarget::ExplicitSocket(path) | CliTarget::Portable(path) => {
                 println!("The playit daemon is not reachable at socket {path}.")
             }
         }
@@ -466,7 +491,7 @@ pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
         Ok(status) => {
             match target {
                 CliTarget::InstalledService => println!("playit service status:"),
-                CliTarget::ExplicitSocket(path) => {
+                CliTarget::ExplicitSocket(path) | CliTarget::Portable(path) => {
                     println!("playitd daemon status for socket {path}:")
                 }
             }
@@ -585,27 +610,13 @@ pub async fn run_reset_command(target: &CliTarget) -> Result<(), CliError> {
         )));
     }
 
-    let stop_response = client.stop().await.map_err(|error| {
-        CliError::IpcError(format!(
-            "Secret was reset, but failed to stop playitd: {error}"
-        ))
-    })?;
-
-    if !stop_response.accepted {
-        return Err(CliError::IpcError(stop_response.message.unwrap_or_else(
-            || "Secret was reset, but playitd rejected the stop request".to_string(),
-        )));
-    }
-
-    let reset_message = reset_response
-        .message
-        .unwrap_or_else(|| "playitd reset the secret file".to_string());
-    let stop_message = stop_response
-        .message
-        .unwrap_or_else(|| "shutdown requested".to_string());
-
-    println!("{reset_message}");
-    println!("playitd stop requested: {stop_message}");
+    println!(
+        "{}",
+        reset_response
+            .message
+            .unwrap_or_else(|| "playitd reset the secret file".to_string())
+    );
+    println!("Run `playit` to set up this agent again.");
     Ok(())
 }
 
@@ -682,7 +693,7 @@ pub(crate) fn auto_attach_error(
                     .to_string(),
             ),
         },
-        CliTarget::ExplicitSocket(_) => ipc_connection_error(),
+        CliTarget::ExplicitSocket(_) | CliTarget::Portable(_) => ipc_connection_error(),
     }
 }
 
@@ -697,6 +708,7 @@ fn attach_lost_message(target: &CliTarget, error: &str) -> String {
             "Connection to the playit daemon was lost: {error}. Reattach with \"playit attach --socket-path {}\" once the daemon is reachable again.",
             path
         ),
+        CliTarget::Portable(_) => format!("playit stopped unexpectedly: {error}"),
     }
 }
 
@@ -739,6 +751,7 @@ fn format_log_level(level: &ServiceLogLevel) -> &'static str {
 }
 
 #[cfg(test)]
+#[cfg_attr(not(target_os = "linux"), allow(unused_imports))]
 mod tests {
     use super::*;
 

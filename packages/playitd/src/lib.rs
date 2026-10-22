@@ -23,4 +23,7 @@ pub use paths::{
 };
 
 #[cfg(target_os = "windows")]
-pub use paths::{windows_service_data_dir, windows_service_log_path, windows_service_secret_path};
+pub use paths::{
+    windows_portable_log_path, windows_portable_secret_path, windows_service_data_dir,
+    windows_service_log_dir, windows_service_log_path, windows_service_secret_path,
+};

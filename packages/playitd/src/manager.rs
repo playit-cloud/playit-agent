@@ -5,14 +5,16 @@ use crate::linux;
 use playit_ipc::ipc::{IpcClient, get_default_socket_path};
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Foundation::{
-    ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_NOT_ACTIVE,
+    ERROR_ACCESS_DENIED, ERROR_SERVICE_ALREADY_RUNNING, ERROR_SERVICE_DISABLED,
+    ERROR_SERVICE_DOES_NOT_EXIST, ERROR_SERVICE_NOT_ACTIVE,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::System::Services::{
     CloseServiceHandle, ControlService, OpenSCManagerW, OpenServiceW, QueryServiceStatusEx,
-    SC_HANDLE, SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_CONTROL_STOP,
-    SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START, SERVICE_STATUS, SERVICE_STATUS_PROCESS,
-    SERVICE_STOP, StartServiceW,
+    SC_HANDLE, SC_MANAGER_CONNECT, SC_STATUS_PROCESS_INFO, SERVICE_CONTINUE_PENDING,
+    SERVICE_CONTROL_STOP, SERVICE_PAUSE_PENDING, SERVICE_PAUSED, SERVICE_QUERY_STATUS,
+    SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING, SERVICE_STATUS, SERVICE_STATUS_PROCESS,
+    SERVICE_STOP, SERVICE_STOP_PENDING, SERVICE_STOPPED, StartServiceW,
 };
 
 #[cfg(target_os = "windows")]
@@ -36,7 +38,10 @@ impl std::fmt::Display for ServiceManagerError {
             Self::NotAvailable(msg) => write!(f, "Service manager not available: {msg}"),
             Self::StartFailed(msg) => write!(f, "Failed to start service: {msg}"),
             Self::StopFailed(msg) => write!(f, "Failed to stop service: {msg}"),
-            Self::NotFound => write!(f, "Service not found"),
+            Self::NotFound => write!(
+                f,
+                "The playit background service is not installed. Reinstall playit from https://playit.gg/download"
+            ),
             Self::IoError(e) => write!(f, "IO error: {e}"),
         }
     }
@@ -58,7 +63,10 @@ pub struct ServiceController {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstalledServiceState {
     Running,
+    Starting,
+    Stopping,
     Stopped,
+    NotInstalled,
     Unknown,
 }
 
@@ -163,7 +171,11 @@ pub async fn ensure_installed_service_running() -> Result<(), ServiceManagerErro
 
     #[cfg(target_os = "windows")]
     {
-        windows_start_installed_service()?;
+        match windows_installed_service_state()? {
+            InstalledServiceState::NotInstalled => return Err(ServiceManagerError::NotFound),
+            InstalledServiceState::Running | InstalledServiceState::Starting => {}
+            _ => windows_start_installed_service()?,
+        }
         wait_for_installed_service().await
     }
 }
@@ -218,16 +230,28 @@ pub fn stop_installed_service_with_linux_manager(
 }
 
 async fn wait_for_installed_service() -> Result<(), ServiceManagerError> {
-    for _ in 0..50 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    const STARTUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + STARTUP_TIMEOUT;
+
+    while std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         if IpcClient::is_running(get_default_socket_path()).await {
             return Ok(());
         }
+
+        #[cfg(target_os = "windows")]
+        if windows_installed_service_state()? == InstalledServiceState::Stopped {
+            return Err(ServiceManagerError::StartFailed(format!(
+                "The playit service stopped while starting. Details are in {}",
+                crate::windows_service_log_dir().display()
+            )));
+        }
     }
 
-    Err(ServiceManagerError::StartFailed(
-        "Service did not start within timeout".to_string(),
-    ))
+    Err(ServiceManagerError::StartFailed(format!(
+        "The service did not become reachable within {} seconds",
+        STARTUP_TIMEOUT.as_secs()
+    )))
 }
 
 #[cfg(target_os = "windows")]
@@ -251,10 +275,12 @@ fn windows_start_installed_service() -> Result<(), ServiceManagerError> {
         }
 
         let error = std::io::Error::last_os_error();
-        if error.raw_os_error() == Some(ERROR_SERVICE_ALREADY_RUNNING as i32) {
-            Ok(())
-        } else {
-            Err(ServiceManagerError::StartFailed(error.to_string()))
+        match error.raw_os_error().map(|code| code as u32) {
+            Some(ERROR_SERVICE_ALREADY_RUNNING) => Ok(()),
+            Some(ERROR_SERVICE_DISABLED) => Err(ServiceManagerError::StartFailed(
+                "The playit service is disabled. Open Windows Services (services.msc), set \"playit.gg\" to Automatic, then try again.".to_string(),
+            )),
+            _ => Err(ServiceManagerError::StartFailed(error.to_string())),
         }
     }
 }
@@ -296,7 +322,13 @@ fn windows_installed_service_state() -> Result<InstalledServiceState, ServiceMan
         let service_name = wide(INSTALLED_SERVICE_LABEL);
         let service = OpenServiceW(manager.0, service_name.as_ptr(), SERVICE_QUERY_STATUS);
         if service.is_null() {
-            return Ok(InstalledServiceState::Stopped);
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) {
+                return Ok(InstalledServiceState::NotInstalled);
+            }
+            return Err(ServiceManagerError::NotAvailable(format!(
+                "failed to open the playit service: {error}"
+            )));
         }
 
         let service = ServiceHandle(service);
@@ -317,10 +349,12 @@ fn windows_installed_service_state() -> Result<InstalledServiceState, ServiceMan
             )));
         }
 
-        Ok(if status.dwCurrentState == SERVICE_RUNNING {
-            InstalledServiceState::Running
-        } else {
-            InstalledServiceState::Stopped
+        Ok(match status.dwCurrentState {
+            SERVICE_RUNNING => InstalledServiceState::Running,
+            SERVICE_START_PENDING | SERVICE_CONTINUE_PENDING => InstalledServiceState::Starting,
+            SERVICE_STOP_PENDING | SERVICE_PAUSE_PENDING => InstalledServiceState::Stopping,
+            SERVICE_STOPPED | SERVICE_PAUSED => InstalledServiceState::Stopped,
+            _ => InstalledServiceState::Unknown,
         })
     }
 }
@@ -347,8 +381,22 @@ enum ServiceAction {
 #[cfg(target_os = "windows")]
 fn open_service_error(action: ServiceAction) -> ServiceManagerError {
     let error = std::io::Error::last_os_error();
-    if error.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST as i32) {
-        return ServiceManagerError::NotFound;
+    match error.raw_os_error().map(|code| code as u32) {
+        Some(ERROR_SERVICE_DOES_NOT_EXIST) => return ServiceManagerError::NotFound,
+        Some(ERROR_ACCESS_DENIED) => {
+            let verb = match action {
+                ServiceAction::Start => "start",
+                ServiceAction::Stop => "stop",
+            };
+            let message = format!(
+                "Windows denied permission to {verb} the playit service. Run the command from an administrator terminal, or reinstall playit to repair its permissions."
+            );
+            return match action {
+                ServiceAction::Start => ServiceManagerError::StartFailed(message),
+                ServiceAction::Stop => ServiceManagerError::StopFailed(message),
+            };
+        }
+        _ => {}
     }
 
     let message = format!("failed to open Windows service: {error}");

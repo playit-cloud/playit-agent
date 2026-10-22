@@ -1,11 +1,12 @@
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::ipc_server::{IpcServer, SecretProvisionRequest, StateCache};
 use crate::logging::{IpcBroadcastLayer, log_rate_limit_filter};
-use playit_agent_core::agent_control::errors::SetupError;
+use playit_agent_core::agent_control::errors::{SetupError, TimeoutSource};
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
 use playit_agent_core::network::origin_lookup::{OriginLookup, OriginResource, OriginTarget};
@@ -35,6 +36,12 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 pub const DEFAULT_VARIANT_ID: &str = "308943e8-faef-4835-a2ba-270351f72aa3";
 const AGENT_LIMIT_RETRY_INTERVAL: Duration = Duration::from_secs(30);
+const RETRY_DELAYS_SECS: [u64; 5] = [5, 10, 20, 40, 60];
+/// An agent that ran at least this long before stopping resets the retry backoff.
+const HEALTHY_AGENT_RUN: Duration = Duration::from_secs(300);
+/// Starting the agent makes HTTP calls without their own timeout; a stalled connection
+/// must become a retryable failure rather than an endless "Connecting".
+const AGENT_START_TIMEOUT: Duration = Duration::from_secs(60);
 #[cfg(target_os = "windows")]
 const WINDOWS_LOG_MAX_FILE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
 #[cfg(target_os = "windows")]
@@ -50,6 +57,8 @@ pub struct DaemonOptions {
     pub log_path: Option<PathBuf>,
     pub platform_docker: bool,
     pub version: VersionDetails,
+    /// Cancelling this token shuts the daemon down. IPC stop requests cancel it too.
+    pub shutdown: Option<CancellationToken>,
 }
 
 impl Default for DaemonOptions {
@@ -62,6 +71,7 @@ impl Default for DaemonOptions {
             platform_docker: false,
             version: VersionDetails::from_cargo_package()
                 .expect("Cargo package version must be a valid semver triplet"),
+            shutdown: None,
         }
     }
 }
@@ -293,32 +303,33 @@ pub async fn run_daemon(options: DaemonOptions) -> Result<(), DaemonError> {
     } else {
         (None, None)
     };
-    let mut runtime = initialize_runtime(&options, &secret_source, secret_provision_tx).await?;
+    let (secret_reset_tx, mut secret_reset_rx) = mpsc::channel::<()>(1);
+    let mut runtime = initialize_runtime(
+        &options,
+        &secret_source,
+        secret_provision_tx,
+        secret_reset_tx,
+    )
+    .await?;
 
-    let Some(secret_code) =
-        resolve_startup_secret(&mut runtime, &secret_source, &mut secret_rx).await?
-    else {
-        return Ok(());
-    };
-
-    let Some(agent) =
-        build_agent_with_reprovisioning(&mut runtime, &secret_source, &mut secret_rx, secret_code)
-            .await?
-    else {
-        return Ok(());
-    };
-
-    publish_runtime_state(
-        &runtime.state_cache,
-        &runtime.event_tx,
-        runtime
-            .status_context
-            .status(ServicePhase::Running, true, None),
-        AgentLifecycle::Starting,
+    let result = run_agent_sessions(
+        &mut runtime,
+        &secret_source,
+        &mut secret_rx,
+        &mut secret_reset_rx,
     )
     .await;
 
-    run_until_shutdown(runtime, agent).await
+    runtime.cancel_token.cancel();
+    let has_secret = runtime.state_cache.status().await.has_secret;
+    publish_stopping(&runtime, has_secret).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), await_ipc_shutdown(&mut runtime)).await;
+
+    match &result {
+        Ok(()) => tracing::info!("playitd shutdown complete"),
+        Err(error) => tracing::error!(%error, "playitd stopped with an error"),
+    }
+    result
 }
 
 struct DaemonRuntime {
@@ -333,17 +344,24 @@ struct DaemonRuntime {
     _log_guard: Option<WorkerGuard>,
 }
 
-struct AgentRuntime {
-    api: PlayitApi,
-    runner: PlayitAgent,
-    stats: AgentStats,
-    lookup: Arc<OriginLookup>,
+/// Why an agent session (one secret, many connection attempts) ended.
+enum SessionEnd {
+    Shutdown,
+    SecretReset,
+}
+
+/// Why a running agent stopped.
+enum AgentExit {
+    Shutdown,
+    SecretReset,
+    Stopped(String),
 }
 
 async fn initialize_runtime(
     options: &DaemonOptions,
     secret_source: &SecretSource,
     secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
+    secret_reset_tx: mpsc::Sender<()>,
 ) -> Result<DaemonRuntime, DaemonError> {
     let start_time = now_milli();
     let (event_tx, _) = broadcast::channel::<ServiceUpdate>(256);
@@ -387,7 +405,7 @@ async fn initialize_runtime(
         "Starting playitd"
     );
 
-    let cancel_token = CancellationToken::new();
+    let cancel_token = options.shutdown.clone().unwrap_or_default();
     let ipc_server = Arc::new(
         IpcServer::new_with_sender(
             options.socket_path.clone(),
@@ -395,6 +413,9 @@ async fn initialize_runtime(
             event_tx,
             secret_source.secret_path().map(PathBuf::from),
             secret_provision_tx,
+            secret_source
+                .allows_ipc_provisioning()
+                .then_some(secret_reset_tx),
             secret_source.secret_provision_error(),
             secret_source.secret_reset_error(),
         )
@@ -427,6 +448,31 @@ async fn initialize_runtime(
     })
 }
 
+/// Runs agent sessions until shutdown. A secret reset ends the current session and
+/// returns to waiting for setup instead of exiting the process.
+async fn run_agent_sessions(
+    runtime: &mut DaemonRuntime,
+    secret_source: &SecretSource,
+    secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
+    secret_reset_rx: &mut mpsc::Receiver<()>,
+) -> Result<(), DaemonError> {
+    loop {
+        drain_secret_resets(secret_reset_rx);
+        let Some(secret) = resolve_startup_secret(runtime, secret_source, secret_rx).await? else {
+            tracing::info!("playitd shutdown before setup completed");
+            return Ok(());
+        };
+
+        match run_agent_session(runtime, secret_source, secret_rx, secret_reset_rx, secret).await? {
+            SessionEnd::Shutdown => return Ok(()),
+            SessionEnd::SecretReset => {
+                tracing::info!("Agent secret was reset; waiting for setup");
+                runtime.ipc_server.clear_api().await;
+            }
+        }
+    }
+}
+
 async fn resolve_startup_secret(
     runtime: &mut DaemonRuntime,
     secret_source: &SecretSource,
@@ -437,13 +483,7 @@ async fn resolve_startup_secret(
             publish_starting(runtime).await;
             Ok(Some(secret))
         }
-        LoadedSecret::Missing => {
-            let secret = wait_for_startup_secret(runtime, secret_source, secret_rx).await?;
-            if secret.is_none() {
-                tracing::info!("playitd shutdown before provisioning completed");
-            }
-            Ok(secret)
-        }
+        LoadedSecret::Missing => wait_for_startup_secret(runtime, secret_source, secret_rx).await,
         LoadedSecret::Invalid(error) => {
             let service_error = daemon_error(
                 ServiceErrorCode::InvalidSecret,
@@ -466,11 +506,7 @@ async fn resolve_startup_secret(
                 return Err(DaemonError::SecretError(error));
             }
 
-            let secret = wait_for_startup_secret(runtime, secret_source, secret_rx).await?;
-            if secret.is_none() {
-                tracing::info!("playitd shutdown before invalid secret was corrected");
-            }
-            Ok(secret)
+            wait_for_startup_secret(runtime, secret_source, secret_rx).await
         }
     }
 }
@@ -508,56 +544,64 @@ async fn wait_for_provisioned_secret(
         .as_mut()
         .expect("file-backed secret mode must enable provisioning");
 
-    match wait_for_secret_provisioning(secret_path, secret_rx, &runtime.cancel_token)
+    let secret = wait_for_secret_provisioning(secret_path, secret_rx, &runtime.cancel_token)
         .await
-        .map_err(DaemonError::SecretError)?
-    {
-        Some(secret) => {
-            publish_starting(runtime).await;
-            Ok(Some(secret))
-        }
-        None => {
-            publish_stopping(runtime, false).await;
-            await_ipc_shutdown(runtime).await;
-            Ok(None)
-        }
+        .map_err(DaemonError::SecretError)?;
+
+    if secret.is_some() {
+        publish_starting(runtime).await;
     }
+    Ok(secret)
 }
 
-async fn build_agent_with_reprovisioning(
+/// Keeps one secret connected. Transient failures (no network at boot, DNS, firewall,
+/// the agent task dying) are retried with backoff while IPC stays available, so clients
+/// always see a lifecycle state instead of a vanished daemon.
+async fn run_agent_session(
     runtime: &mut DaemonRuntime,
     secret_source: &SecretSource,
     secret_rx: &mut Option<mpsc::Receiver<SecretProvisionRequest>>,
-    secret_code: String,
-) -> Result<Option<AgentRuntime>, DaemonError> {
+    secret_reset_rx: &mut mpsc::Receiver<()>,
+    mut secret_code: String,
+) -> Result<SessionEnd, DaemonError> {
     let lookup = Arc::new(OriginLookup::default());
-    let mut secret_code = secret_code;
+    let mut consecutive_failures: u32 = 0;
 
     loop {
         let api = PlayitApi::create(api_base(), Some(secret_code.clone()));
         runtime.ipc_server.set_api(api.clone()).await;
 
-        if let Ok(data) = api.v1_agents_rundata().await {
-            lookup.update_from_run_data(&data).await;
-        }
+        let build = async {
+            if let Ok(data) = api.v1_agents_rundata().await {
+                lookup.update_from_run_data(&data).await;
+            }
 
-        let settings = PlayitAgentSettings {
-            udp_settings: UdpSettings::default(),
-            tcp_settings: TcpSettings::default(),
-            api_url: api_base(),
-            secret_key: secret_code.clone(),
+            let settings = PlayitAgentSettings {
+                udp_settings: UdpSettings::default(),
+                tcp_settings: TcpSettings::default(),
+                api_url: api_base(),
+                secret_key: secret_code.clone(),
+            };
+            PlayitAgent::new(settings, lookup.clone()).await
         };
 
-        match PlayitAgent::new(settings, lookup.clone()).await {
-            Ok(runner) => {
-                let stats = runner.stats();
-                return Ok(Some(AgentRuntime {
-                    api,
-                    runner,
-                    stats,
-                    lookup,
-                }));
-            }
+        let build = async {
+            tokio::time::timeout(AGENT_START_TIMEOUT, build)
+                .await
+                .unwrap_or_else(|_| {
+                    Err(SetupError::Timeout(TimeoutSource {
+                        file_name: file!(),
+                        line_no: line!(),
+                    }))
+                })
+        };
+        let build_result = match interruptible(runtime, secret_reset_rx, build).await {
+            Ok(result) => result,
+            Err(end) => return Ok(end),
+        };
+
+        let runner = match build_result {
+            Ok(runner) => runner,
             Err(error)
                 if secret_source.allows_ipc_provisioning()
                     && is_invalid_agent_secret_error(&error) =>
@@ -587,10 +631,12 @@ async fn build_agent_with_reprovisioning(
                 let Some(secret) =
                     wait_for_provisioned_secret(runtime, secret_path, secret_rx).await?
                 else {
-                    tracing::info!("playitd shutdown before reprovisioning completed");
-                    return Ok(None);
+                    return Ok(SessionEnd::Shutdown);
                 };
+                drain_secret_resets(secret_reset_rx);
                 secret_code = secret;
+                consecutive_failures = 0;
+                continue;
             }
             Err(error) if is_agent_disabled_over_limit_error(&error) => {
                 tracing::warn!(
@@ -615,117 +661,175 @@ async fn build_agent_with_reprovisioning(
                 )
                 .await;
 
-                tokio::select! {
-                    _ = runtime.cancel_token.cancelled() => {
-                        publish_stopping(runtime, true).await;
-                        await_ipc_shutdown(runtime).await;
-                        tracing::info!("playitd shutdown while waiting for the account agent limit to be resolved");
-                        return Ok(None);
-                    }
-                    _ = tokio::time::sleep(AGENT_LIMIT_RETRY_INTERVAL) => {}
+                let wait = tokio::time::sleep(AGENT_LIMIT_RETRY_INTERVAL);
+                if let Err(end) = interruptible(runtime, secret_reset_rx, wait).await {
+                    return Ok(end);
                 }
+                continue;
             }
             Err(error) => {
+                consecutive_failures += 1;
+                let delay = retry_delay(consecutive_failures);
                 let message = setup_error_user_message(&error);
-                tracing::error!(?error, %message, "failed to start playit agent");
-                let service_error = daemon_error(ServiceErrorCode::Internal, message.clone(), true);
-                publish_runtime_state(
-                    &runtime.state_cache,
-                    &runtime.event_tx,
-                    runtime.status_context.status(
-                        ServicePhase::Error,
-                        true,
-                        Some(service_error.clone()),
-                    ),
-                    AgentLifecycle::Error(service_error),
+                tracing::error!(
+                    ?error,
+                    %message,
+                    retry_in_secs = delay.as_secs(),
+                    "failed to start playit agent"
+                );
+
+                publish_retrying_error(runtime, message, delay).await;
+                let wait = tokio::time::sleep(delay);
+                if let Err(end) = interruptible(runtime, secret_reset_rx, wait).await {
+                    return Ok(end);
+                }
+                continue;
+            }
+        };
+
+        publish_runtime_state(
+            &runtime.state_cache,
+            &runtime.event_tx,
+            runtime
+                .status_context
+                .status(ServicePhase::Running, true, None),
+            AgentLifecycle::Starting,
+        )
+        .await;
+
+        let started_at = Instant::now();
+        match run_agent(runtime, runner, api, lookup.clone(), secret_reset_rx).await {
+            AgentExit::Shutdown => return Ok(SessionEnd::Shutdown),
+            AgentExit::SecretReset => return Ok(SessionEnd::SecretReset),
+            AgentExit::Stopped(reason) => {
+                if started_at.elapsed() >= HEALTHY_AGENT_RUN {
+                    consecutive_failures = 0;
+                }
+                consecutive_failures += 1;
+                let delay = retry_delay(consecutive_failures);
+                tracing::error!(%reason, retry_in_secs = delay.as_secs(), "playit agent stopped unexpectedly");
+
+                publish_retrying_error(
+                    runtime,
+                    format!("The playit agent stopped unexpectedly ({reason})."),
+                    delay,
                 )
                 .await;
-                return Err(DaemonError::SetupError(message));
+                let wait = tokio::time::sleep(delay);
+                if let Err(end) = interruptible(runtime, secret_reset_rx, wait).await {
+                    return Ok(end);
+                }
             }
         }
     }
 }
 
-async fn run_until_shutdown(
-    mut runtime: DaemonRuntime,
-    agent: AgentRuntime,
-) -> Result<(), DaemonError> {
-    let agent_cancel = agent.runner.cancellation_token();
-    let mut agent_handle = tokio::spawn(agent.runner.run());
-    let stats_handle = {
-        let event_tx = runtime.event_tx.clone();
-        let token = runtime.cancel_token.clone();
-        let cache = runtime.state_cache.clone();
-        tokio::spawn(broadcast_stats(agent.stats, event_tx, cache, token))
-    };
-    let state_handle = {
-        let event_tx = runtime.event_tx.clone();
-        let token = runtime.cancel_token.clone();
-        let cache = runtime.state_cache.clone();
-        tokio::spawn(broadcast_agent_state(
-            agent.api,
-            agent.lookup,
-            event_tx,
-            cache,
-            token,
-            runtime.start_time,
-            runtime.version_string.clone(),
-        ))
-    };
+async fn run_agent(
+    runtime: &DaemonRuntime,
+    runner: PlayitAgent,
+    api: PlayitApi,
+    lookup: Arc<OriginLookup>,
+    secret_reset_rx: &mut mpsc::Receiver<()>,
+) -> AgentExit {
+    let session_token = runtime.cancel_token.child_token();
+    let stats = runner.stats();
+    let agent_cancel = runner.cancellation_token();
+    let mut agent_handle = tokio::spawn(runner.run());
+    let stats_handle = tokio::spawn(broadcast_stats(
+        stats,
+        runtime.event_tx.clone(),
+        runtime.state_cache.clone(),
+        session_token.clone(),
+    ));
+    let state_handle = tokio::spawn(broadcast_agent_state(
+        api,
+        lookup,
+        runtime.event_tx.clone(),
+        runtime.state_cache.clone(),
+        session_token.clone(),
+        runtime.start_time,
+        runtime.version_string.clone(),
+    ));
 
-    let shutdown_reason = tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("Received Ctrl+C, shutting down");
-            ShutdownReason::Requested
-        }
-        _ = runtime.cancel_token.cancelled() => {
-            tracing::info!("Shutdown requested via IPC");
-            ShutdownReason::Requested
-        }
+    let mut agent_finished = false;
+    let exit = tokio::select! {
+        _ = runtime.cancel_token.cancelled() => AgentExit::Shutdown,
+        Some(()) = secret_reset_rx.recv() => AgentExit::SecretReset,
         result = &mut agent_handle => {
-            if runtime.cancel_token.is_cancelled() || agent_cancel.is_cancelled() {
-                tracing::info!("Agent task completed during shutdown");
-                ShutdownReason::Requested
+            agent_finished = true;
+            if runtime.cancel_token.is_cancelled() {
+                AgentExit::Shutdown
             } else {
-                match &result {
-                    Ok(()) => tracing::error!("Agent task stopped unexpectedly"),
-                    Err(error) => tracing::error!(?error, "Agent task failed"),
+                match result {
+                    Ok(()) => AgentExit::Stopped("agent task exited".to_string()),
+                    Err(error) => AgentExit::Stopped(format!("agent task failed: {error}")),
                 }
-                ShutdownReason::AgentStopped(result)
             }
         }
     };
 
-    runtime.cancel_token.cancel();
+    session_token.cancel();
     agent_cancel.cancel();
-    publish_stopping(&runtime, true).await;
 
-    let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        if !matches!(shutdown_reason, ShutdownReason::AgentStopped(_)) {
-            let _ = (&mut agent_handle).await;
-        }
-        await_ipc_shutdown(&mut runtime).await;
-        let _ = stats_handle.await;
-        let _ = state_handle.await;
+    if !agent_finished
+        && tokio::time::timeout(Duration::from_secs(5), &mut agent_handle)
+            .await
+            .is_err()
+    {
+        tracing::warn!("playit agent did not stop within 5s, aborting it");
+        agent_handle.abort();
+    }
+    let mut stats_handle = stats_handle;
+    let mut state_handle = state_handle;
+    let _ = tokio::time::timeout(Duration::from_secs(2), async {
+        let _ = (&mut stats_handle).await;
+        let _ = (&mut state_handle).await;
     })
     .await;
+    // A status request stuck on the network must not publish this session's state later.
+    stats_handle.abort();
+    state_handle.abort();
 
-    tracing::info!("playitd shutdown complete");
+    exit
+}
 
-    match shutdown_reason {
-        ShutdownReason::Requested => Ok(()),
-        ShutdownReason::AgentStopped(Ok(())) => Err(DaemonError::SetupError(
-            "playit agent task stopped unexpectedly".to_string(),
-        )),
-        ShutdownReason::AgentStopped(Err(error)) => Err(DaemonError::SetupError(format!(
-            "playit agent task failed: {error}"
-        ))),
+/// Runs `future` unless the daemon is shut down or the secret is reset first.
+async fn interruptible<F: Future>(
+    runtime: &DaemonRuntime,
+    secret_reset_rx: &mut mpsc::Receiver<()>,
+    future: F,
+) -> Result<F::Output, SessionEnd> {
+    tokio::select! {
+        output = future => Ok(output),
+        _ = runtime.cancel_token.cancelled() => Err(SessionEnd::Shutdown),
+        Some(()) = secret_reset_rx.recv() => Err(SessionEnd::SecretReset),
     }
 }
 
-enum ShutdownReason {
-    Requested,
-    AgentStopped(Result<(), tokio::task::JoinError>),
+fn drain_secret_resets(secret_reset_rx: &mut mpsc::Receiver<()>) {
+    while secret_reset_rx.try_recv().is_ok() {}
+}
+
+fn retry_delay(consecutive_failures: u32) -> Duration {
+    let index = (consecutive_failures.max(1) - 1) as usize;
+    Duration::from_secs(RETRY_DELAYS_SECS[index.min(RETRY_DELAYS_SECS.len() - 1)])
+}
+
+async fn publish_retrying_error(runtime: &DaemonRuntime, message: String, delay: Duration) {
+    let service_error = daemon_error(
+        ServiceErrorCode::Internal,
+        format!("{message} Retrying in {}s.", delay.as_secs()),
+        true,
+    );
+    publish_runtime_state(
+        &runtime.state_cache,
+        &runtime.event_tx,
+        runtime
+            .status_context
+            .status(ServicePhase::Error, true, Some(service_error.clone())),
+        AgentLifecycle::Error(service_error),
+    )
+    .await;
 }
 
 async fn publish_starting(runtime: &DaemonRuntime) {
@@ -768,6 +872,8 @@ async fn broadcast_stats(
 
     loop {
         tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => break,
             _ = interval.tick() => {
                 let snapshot = stats.snapshot();
                 let stats = ConnectionStats {
@@ -779,7 +885,6 @@ async fn broadcast_stats(
                 state_cache.set_stats(stats.clone()).await;
                 let _ = event_tx.send(ServiceUpdate::Stats(stats));
             }
-            _ = cancel_token.cancelled() => break,
         }
     }
 }
@@ -799,8 +904,15 @@ async fn broadcast_agent_state(
 
     loop {
         tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => break,
             _ = interval.tick() => {
-                match api.v1_agents_rundata().await {
+                let run_data = tokio::select! {
+                    biased;
+                    _ = cancel_token.cancelled() => break,
+                    run_data = api.v1_agents_rundata() => run_data,
+                };
+                match run_data {
                     Ok(mut api_data) => {
                         lookup.update_from_run_data(&api_data).await;
 
@@ -888,6 +1000,9 @@ async fn broadcast_agent_state(
                             last_running_summary = Some(summary);
                         }
 
+                        if cancel_token.is_cancelled() {
+                            break;
+                        }
                         let lifecycle = AgentLifecycle::Running(state);
                         state_cache.set_lifecycle(lifecycle.clone()).await;
                         let _ = event_tx.send(ServiceUpdate::Lifecycle(lifecycle));
@@ -895,7 +1010,6 @@ async fn broadcast_agent_state(
                     Err(error) => tracing::error!(?error, "Failed to load agent data"),
                 }
             }
-            _ = cancel_token.cancelled() => break,
         }
     }
 }
@@ -1098,14 +1212,27 @@ fn secure_write_secret_file_blocking(path: &Path, content: &[u8]) -> Result<(), 
     result
 }
 
+/// Writes to a temporary file and renames it over the secret so a crash never leaves a
+/// truncated secret behind. The file inherits the directory ACL, which the Windows
+/// service restricts to SYSTEM and Administrators.
 #[cfg(not(unix))]
 async fn secure_write_secret_file(path: &Path, content: &[u8]) -> Result<(), String> {
-    tokio::fs::write(path, content)
-        .await
-        .map_err(|error| format!("Failed to write secret file {}: {error}", path.display()))
+    let tmp_path = path.with_extension(format!("tmp-{}", std::process::id()));
+    if let Err(error) = tokio::fs::write(&tmp_path, content).await {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(format!(
+            "Failed to write secret file {}: {error}",
+            tmp_path.display()
+        ));
+    }
+
+    tokio::fs::rename(&tmp_path, path).await.map_err(|error| {
+        let _ = std::fs::remove_file(&tmp_path);
+        format!("Failed to write secret file {}: {error}", path.display())
+    })
 }
 
-fn parse_secret_file(content: &str) -> Result<String, ()> {
+pub(crate) fn parse_secret_file(content: &str) -> Result<String, ()> {
     let trimmed = content.trim();
     if let Ok(secret) = validate_secret(trimmed) {
         return Ok(secret);
@@ -1281,7 +1408,8 @@ fn init_tracing(
                         )
                         .with_filter(log_rate_limit_filter()),
                 )
-                .init();
+                .try_init()
+                .ok();
 
             Ok(Some(guard))
         }
@@ -1297,7 +1425,8 @@ fn init_tracing(
                         )
                         .with_filter(log_rate_limit_filter()),
                 )
-                .init();
+                .try_init()
+                .ok();
 
             Ok(None)
         }
@@ -1521,6 +1650,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unreachable_api_keeps_daemon_up_and_reset_returns_to_setup() {
+        // Nothing listens on the discard port, so every agent start fails immediately.
+        unsafe { std::env::set_var("API_BASE", "http://127.0.0.1:9") };
+
+        let secret_path = unique_test_path("retry-secret", "toml");
+        let socket_path = unique_test_path("retry-secret", "sock")
+            .display()
+            .to_string();
+        std::fs::write(
+            &secret_path,
+            format!("secret_key = \"{}\"\n", "ab".repeat(32)),
+        )
+        .unwrap();
+
+        let daemon_handle = tokio::spawn(run_daemon(DaemonOptions {
+            secret: None,
+            secret_path: Some(secret_path.clone()),
+            socket_path: Some(socket_path.clone()),
+            log_path: None,
+            platform_docker: false,
+            shutdown: None,
+            ..DaemonOptions::default()
+        }));
+
+        let mut last_lifecycle = String::from("none");
+        let mut client = None;
+        for _ in 0..150 {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let Ok(mut connected) = IpcClient::connect_with_path(&socket_path).await else {
+                continue;
+            };
+            match connected.lifecycle().await {
+                Ok(AgentLifecycle::Error(error)) => {
+                    assert!(error.retryable);
+                    assert!(error.message.contains("Retrying in"), "{}", error.message);
+                    client = Some(connected);
+                    break;
+                }
+                Ok(other) => last_lifecycle = format!("{other:?}"),
+                Err(error) => last_lifecycle = format!("lifecycle error: {error}"),
+            }
+        }
+        let mut client = client.unwrap_or_else(|| {
+            panic!("daemon never reported a retrying error; last state: {last_lifecycle}")
+        });
+        assert!(
+            !daemon_handle.is_finished(),
+            "daemon exited instead of retrying"
+        );
+
+        let reset = client.reset_secret().await.unwrap();
+        assert!(reset.accepted);
+        assert!(!secret_path.exists());
+
+        let mut client = wait_for_waiting_for_secret(&socket_path).await;
+        assert!(!daemon_handle.is_finished(), "daemon exited after reset");
+
+        assert!(client.stop().await.unwrap().accepted);
+        let daemon_result = tokio::time::timeout(Duration::from_secs(5), daemon_handle)
+            .await
+            .expect("daemon did not stop after IPC stop request")
+            .expect("daemon task panicked");
+        assert!(daemon_result.is_ok());
+
+        let _ = std::fs::remove_file(&socket_path);
+    }
+
+    #[tokio::test]
     async fn missing_file_secret_reports_waiting_for_secret() {
         let secret_path = unique_test_path("missing-secret", "toml");
         let socket_path = unique_test_path("missing-secret", "sock")
@@ -1535,6 +1732,7 @@ mod tests {
             socket_path: Some(socket_path.clone()),
             log_path: None,
             platform_docker: false,
+            shutdown: None,
             ..DaemonOptions::default()
         }));
 

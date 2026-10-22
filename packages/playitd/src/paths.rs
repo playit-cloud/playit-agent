@@ -62,6 +62,25 @@ pub fn windows_service_secret_path() -> PathBuf {
 }
 
 #[cfg(target_os = "windows")]
+pub fn windows_service_log_dir() -> PathBuf {
+    windows_service_data_dir().join("logs")
+}
+
+#[cfg(target_os = "windows")]
 pub fn windows_service_log_path() -> PathBuf {
-    windows_service_data_dir().join("logs").join("playitd.log")
+    windows_service_log_dir().join("playitd.log")
+}
+
+/// Where `playit` keeps its secret when no background service is installed (portable
+/// mode). This is also where playit 0.17 stored its secret.
+#[cfg(target_os = "windows")]
+pub fn windows_portable_secret_path() -> PathBuf {
+    playit_ipc::paths::playit_config_dir().join("playit.toml")
+}
+
+#[cfg(target_os = "windows")]
+pub fn windows_portable_log_path() -> PathBuf {
+    playit_ipc::paths::playit_config_dir()
+        .join("logs")
+        .join("playitd.log")
 }

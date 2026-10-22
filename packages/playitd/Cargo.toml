@@ -33,10 +33,6 @@ serde_yml = "0.0.12"
 name = "playitd"
 path = "src/bin/playitd.rs"
 
-[[bin]]
-name = "playitd-service"
-path = "src/bin/playitd-service.rs"
-
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 uzers = { version = "0.12.2", default-features = false }
@@ -46,8 +42,14 @@ windows-sys = { version = "0.59.0", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_Registry",
     "Win32_System_Services",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
 ] }
 windows-service = "0.8.0"
 widestring = "1.2"
