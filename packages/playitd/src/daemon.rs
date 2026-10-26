@@ -1500,7 +1500,12 @@ mod tests {
     };
 
     fn unique_test_path(name: &str, extension: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
+        let directory = if cfg!(windows) && extension == "sock" {
+            std::path::PathBuf::from(r"\\.\pipe\")
+        } else {
+            std::env::temp_dir()
+        };
+        directory.join(format!(
             "playitd-{name}-{}-{}.{}",
             std::process::id(),
             SystemTime::now()
