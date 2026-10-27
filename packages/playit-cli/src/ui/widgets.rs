@@ -44,7 +44,7 @@ fn format_uptime(start_time: u64) -> String {
     }
 }
 
-/// Render the header bar with version, uptime, and connection status
+/// Render the agent connection, version, uptime, and account verification separately.
 pub fn render_header(frame: &mut Frame, area: Rect, agent_data: &AgentData, start_time: u64) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -63,6 +63,7 @@ pub fn render_header(frame: &mut Frame, area: Rect, agent_data: &AgentData, star
     };
 
     let title_block = Block::default()
+        .title(Line::from(" Agent online ").green())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Magenta));
 
@@ -77,6 +78,7 @@ pub fn render_header(frame: &mut Frame, area: Rect, agent_data: &AgentData, star
 
     // Uptime
     let uptime_block = Block::default()
+        .title(" Agent uptime ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray));
 
@@ -91,13 +93,14 @@ pub fn render_header(frame: &mut Frame, area: Rect, agent_data: &AgentData, star
 
     // Account status
     let (status_text, status_color) = match &agent_data.account_status {
-        AccountStatusInfo::Verified => ("● Verified", Color::Green),
+        AccountStatusInfo::Verified => ("● Email verified", Color::Green),
         AccountStatusInfo::Guest => ("○ Guest", Color::Yellow),
         AccountStatusInfo::EmailNotVerified => ("◐ Email Not Verified", Color::Yellow),
-        AccountStatusInfo::Unknown => ("? Connecting...", Color::DarkGray),
+        AccountStatusInfo::Unknown => ("? Unknown", Color::DarkGray),
     };
 
     let status_block = Block::default()
+        .title(" Account ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray));
 
