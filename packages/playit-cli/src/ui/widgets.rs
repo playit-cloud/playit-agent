@@ -82,12 +82,10 @@ pub fn render_header(frame: &mut Frame, area: Rect, agent_data: &AgentData, star
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Gray));
 
-    let uptime = Paragraph::new(Line::from(vec![
-        Span::styled("⏱ ", Style::default().fg(Color::Cyan)),
-        Span::styled(format_uptime(start_time), Style::default().fg(Color::White)),
-    ]))
-    .block(uptime_block)
-    .alignment(Alignment::Center);
+    let uptime = Paragraph::new(format_uptime(start_time))
+        .style(Style::default().fg(Color::White))
+        .block(uptime_block)
+        .alignment(Alignment::Center);
 
     frame.render_widget(uptime, chunks[1]);
 
