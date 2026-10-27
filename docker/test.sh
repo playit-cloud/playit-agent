@@ -17,12 +17,21 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' HUP INT TERM
 
+check_logs() {
+  docker logs "$name" > "$test_dir/stdout" 2> "$test_dir/stderr"
+  test ! -s "$test_dir/stderr"
+  if LC_ALL=C grep -q "$(printf '\033')" "$test_dir/stdout"; then
+    echo 'Container logs contain terminal escape sequences' >&2
+    exit 1
+  fi
+}
+
 start_agent() {
   docker run -d --name "$name" --network none -e SECRET_KEY=00 "$@" "$image" > "$test_dir/id"
   for attempt in $(seq 1 50); do
     docker logs "$name" > "$test_dir/stdout" 2> "$test_dir/stderr"
     if grep -q 'Starting playitd' "$test_dir/stdout"; then
-      test ! -s "$test_dir/stderr"
+      check_logs
       test "$(docker exec "$name" cat /proc/1/comm)" = playitd
       return
     fi
@@ -35,7 +44,7 @@ start_agent() {
 check_exit() {
   code="$(timeout 5 docker wait "$name")"
   test "$code" = 0
-  docker logs "$name" > "$test_dir/stdout" 2> "$test_dir/stderr"
+  check_logs
   grep -q 'playitd shutdown complete' "$test_dir/stdout"
   docker rm "$name" > /dev/null
 }

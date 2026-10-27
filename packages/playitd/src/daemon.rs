@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -385,7 +386,9 @@ async fn initialize_runtime(
 
     let log_filter =
         EnvFilter::try_from_env("PLAYIT_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
-    let use_ansi = matches!(platform, Platform::Linux | Platform::Docker);
+    let use_ansi = options.log_path.is_none()
+        && matches!(platform, Platform::Linux)
+        && std::io::stderr().is_terminal();
     let log_guard = init_tracing(
         log_filter,
         use_ansi,
