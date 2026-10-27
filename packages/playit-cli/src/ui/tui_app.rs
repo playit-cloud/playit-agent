@@ -356,9 +356,9 @@ impl TuiApp {
             .iter()
             .map(|tunnel| {
                 let (style, prefix) = if tunnel.is_disabled {
-                    (Style::default().fg(Color::Red), "✗ ")
+                    (Style::default().fg(Color::LightRed), "✗ ")
                 } else {
-                    (Style::default().fg(Color::Green), "● ")
+                    (Style::default().fg(Color::LightGreen), "● ")
                 };
 
                 let content = if let Some(reason) = &tunnel.disabled_reason {
@@ -386,7 +386,7 @@ impl TuiApp {
             .highlight_style(
                 Style::default()
                     .add_modifier(Modifier::BOLD)
-                    .bg(Color::DarkGray),
+                    .bg(Color::Gray),
             )
             .highlight_symbol("▶ ");
 
@@ -399,7 +399,7 @@ impl TuiApp {
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
+            .border_style(Style::default().fg(Color::Gray));
 
         let inner_height = area.height.saturating_sub(2) as usize;
         let start = log_entries.len().saturating_sub(inner_height);
@@ -408,11 +408,11 @@ impl TuiApp {
         let lines: Vec<Line> = visible_entries
             .map(|entry| {
                 let level_style = match entry.level {
-                    LogLevel::Error => Style::default().fg(Color::Red).bold(),
+                    LogLevel::Error => Style::default().fg(Color::LightRed).bold(),
                     LogLevel::Warn => Style::default().fg(Color::Yellow).bold(),
-                    LogLevel::Info => Style::default().fg(Color::Green),
-                    LogLevel::Debug => Style::default().fg(Color::Blue),
-                    LogLevel::Trace => Style::default().fg(Color::DarkGray),
+                    LogLevel::Info => Style::default().fg(Color::LightGreen),
+                    LogLevel::Debug => Style::default().fg(Color::LightBlue),
+                    LogLevel::Trace => Style::default().fg(Color::Gray),
                 };
 
                 Line::from(vec![
@@ -422,7 +422,7 @@ impl TuiApp {
                             "{}: ",
                             entry.target.split("::").last().unwrap_or(&entry.target)
                         ),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(Color::Gray),
                     ),
                     Span::raw(&entry.message),
                 ])
@@ -453,7 +453,7 @@ impl TuiApp {
 
         let title_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta))
+            .border_style(Style::default().fg(Color::LightMagenta))
             .title(" playit.gg ");
 
         let lines: Vec<Line> = message

@@ -63,12 +63,12 @@ pub fn render_header(frame: &mut Frame, area: Rect, agent_data: &AgentData, star
     };
 
     let title_block = Block::default()
-        .title(Line::from(" Agent running ").green())
+        .title(Line::from(" Agent running ").light_green())
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_style(Style::default().fg(Color::LightMagenta));
 
     let title = Paragraph::new(Line::from(vec![
-        Span::styled("playit", Style::default().fg(Color::Magenta).bold()),
+        Span::styled("playit", Style::default().fg(Color::LightMagenta).bold()),
         Span::styled(format!(" v{}", version), Style::default().fg(Color::White)),
     ]))
     .block(title_block)
@@ -80,7 +80,7 @@ pub fn render_header(frame: &mut Frame, area: Rect, agent_data: &AgentData, star
     let uptime_block = Block::default()
         .title(" Agent uptime ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(Color::Gray));
 
     let uptime = Paragraph::new(Line::from(vec![
         Span::styled("⏱ ", Style::default().fg(Color::Cyan)),
@@ -93,16 +93,16 @@ pub fn render_header(frame: &mut Frame, area: Rect, agent_data: &AgentData, star
 
     // Account status
     let (status_text, status_color) = match &agent_data.account_status {
-        AccountStatusInfo::Verified => ("● Email verified", Color::Green),
+        AccountStatusInfo::Verified => ("● Email verified", Color::LightGreen),
         AccountStatusInfo::Guest => ("○ Guest", Color::Yellow),
         AccountStatusInfo::EmailNotVerified => ("◐ Email Not Verified", Color::Yellow),
-        AccountStatusInfo::Unknown => ("? Unknown", Color::DarkGray),
+        AccountStatusInfo::Unknown => ("? Unknown", Color::Gray),
     };
 
     let status_block = Block::default()
         .title(" Account ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(Color::Gray));
 
     let status = Paragraph::new(Span::styled(status_text, Style::default().fg(status_color)))
         .block(status_block)
@@ -116,7 +116,7 @@ pub fn render_stats_bar(frame: &mut Frame, area: Rect, stats: &ConnectionStats) 
     let block = Block::default()
         .title(" Statistics ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(Color::Gray));
 
     let inner = block.inner(area);
     let chunks = Layout::default()
@@ -133,7 +133,7 @@ pub fn render_stats_bar(frame: &mut Frame, area: Rect, stats: &ConnectionStats) 
 
     // Bytes In
     let bytes_in = Paragraph::new(Line::from(vec![
-        Span::styled("↓ In: ", Style::default().fg(Color::Green)),
+        Span::styled("↓ In: ", Style::default().fg(Color::LightGreen)),
         Span::styled(
             format_bytes(stats.bytes_in),
             Style::default().fg(Color::White),
@@ -144,7 +144,7 @@ pub fn render_stats_bar(frame: &mut Frame, area: Rect, stats: &ConnectionStats) 
 
     // Bytes Out
     let bytes_out = Paragraph::new(Line::from(vec![
-        Span::styled("↑ Out: ", Style::default().fg(Color::Blue)),
+        Span::styled("↑ Out: ", Style::default().fg(Color::LightBlue)),
         Span::styled(
             format_bytes(stats.bytes_out),
             Style::default().fg(Color::White),
@@ -166,7 +166,7 @@ pub fn render_stats_bar(frame: &mut Frame, area: Rect, stats: &ConnectionStats) 
 
     // UDP Flows
     let udp = Paragraph::new(Line::from(vec![
-        Span::styled("UDP: ", Style::default().fg(Color::Magenta)),
+        Span::styled("UDP: ", Style::default().fg(Color::LightMagenta)),
         Span::styled(
             stats.active_udp.to_string(),
             Style::default().fg(Color::White),
@@ -192,9 +192,9 @@ pub fn render_help_bar(frame: &mut Frame, area: Rect, mode: SessionMode, quit_co
                 mode.close_question(),
                 Style::default().fg(Color::Yellow).bold(),
             ),
-            Span::styled("[y]", Style::default().fg(Color::Green).bold()),
+            Span::styled("[y]", Style::default().fg(Color::LightGreen).bold()),
             Span::raw(" Yes  "),
-            Span::styled("[n]", Style::default().fg(Color::Red).bold()),
+            Span::styled("[n]", Style::default().fg(Color::LightRed).bold()),
             Span::raw(" No"),
         ])
     } else {
@@ -213,7 +213,7 @@ pub fn render_help_bar(frame: &mut Frame, area: Rect, mode: SessionMode, quit_co
     };
 
     let help = Paragraph::new(help_text)
-        .style(Style::default().fg(Color::DarkGray))
+        .style(Style::default().fg(Color::Gray))
         .alignment(Alignment::Center);
 
     frame.render_widget(help, chunks[1]);
