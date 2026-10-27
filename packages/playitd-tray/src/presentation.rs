@@ -23,7 +23,7 @@ pub enum ServiceView {
 pub struct TrayPresentation {
     pub tooltip: String,
     pub status_line: String,
-    /// Tunnels are online; the tray shows the colored icon.
+    /// The agent is online; the tray shows the colored icon.
     pub online: bool,
     /// The primary action should read "Finish Setup" rather than "Open playit".
     pub needs_setup: bool,
@@ -82,17 +82,23 @@ impl TrayPresentation {
                     AgentLifecycle::Stopping => ("Stopping…".to_string(), base),
                     AgentLifecycle::Error(error) => (format!("Error: {}", error.message), running),
                     AgentLifecycle::Running(state) => {
-                        let tunnels = match state.tunnels.len() {
-                            1 => "1 tunnel".to_string(),
-                            count => format!("{count} tunnels"),
-                        };
+                        let disabled = state
+                            .tunnels
+                            .iter()
+                            .filter(|tunnel| tunnel.is_disabled)
+                            .count();
+                        let enabled = state.tunnels.len() - disabled;
+                        let mut tunnels = format!("{enabled} enabled, {disabled} disabled");
+                        if !state.pending_tunnels.is_empty() {
+                            tunnels.push_str(&format!(", {} pending", state.pending_tunnels.len()));
+                        }
                         let guest = if matches!(state.account_status, AccountStatus::Guest) {
                             " (guest account)"
                         } else {
                             ""
                         };
                         (
-                            format!("Online - {tunnels}{guest}"),
+                            format!("Agent online - {tunnels}{guest}"),
                             Self {
                                 online: true,
                                 ..running
@@ -140,10 +146,33 @@ mod tests {
         let presentation = TrayPresentation::from_view(&view);
 
         assert!(presentation.online);
-        assert_eq!(presentation.tooltip, "playit: Online - 2 tunnels");
+        assert_eq!(
+            presentation.tooltip,
+            "playit: Agent online - 2 enabled, 0 disabled"
+        );
         assert!(presentation.can_stop);
         assert!(presentation.can_reset);
         assert!(!presentation.can_start);
+    }
+
+    #[test]
+    fn disabled_tunnels_are_not_counted_as_enabled() {
+        let presentation =
+            TrayPresentation::from_view(&ServiceView::Agent(AgentLifecycle::Running(AgentState {
+                tunnels: vec![
+                    TunnelState {
+                        is_disabled: true,
+                        ..TunnelState::default()
+                    };
+                    2
+                ],
+                ..AgentState::default()
+            })));
+        assert!(presentation.online);
+        assert_eq!(
+            presentation.status_line,
+            "Agent online - 0 enabled, 2 disabled"
+        );
     }
 
     #[test]
