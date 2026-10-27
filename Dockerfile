@@ -21,7 +21,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     cargo test --workspace --all-targets --locked
 
 FROM alpine:3.24
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S playit
 
 COPY --from=build-env /usr/local/bin/playitd /usr/local/bin/playitd
 RUN mkdir /playit

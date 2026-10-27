@@ -24,6 +24,10 @@ check_logs() {
     echo 'Container logs contain terminal escape sequences' >&2
     exit 1
   fi
+  if grep -q 'IPC socket group is missing' "$test_dir/stdout"; then
+    echo 'The runtime image is missing the IPC socket group' >&2
+    exit 1
+  fi
 }
 
 start_agent() {

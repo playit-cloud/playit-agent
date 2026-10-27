@@ -21,7 +21,8 @@ RUN case "${TARGETARCH}" in \
 ########## RUNTIME CONTAINER ##########
 
 FROM alpine:3.24
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S playit
 
 COPY --from=artifact-downloader /extract/opt/playit/playitd /usr/local/bin/playitd
 RUN mkdir /playit
