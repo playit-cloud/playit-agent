@@ -234,7 +234,7 @@ impl OriginResource {
             target,
             port_count: tunn.port_count,
             proxy_protocol,
-            nethernet: tunnel_type == Some(TunnelType::NetherNet),
+            nethernet: tunnel_type == Some(TunnelType::Nethernet),
         })
     }
 

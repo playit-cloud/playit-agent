@@ -51,10 +51,24 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 		}
 	}
 	#[track_caller]
-	pub fn v1_tunnels_propset(&self, req: ReqTunnelsPropset) -> impl std::future::Future<Output = Result<(), ApiError<TunnelProxyPropSetError, C::Error>>> + '_ {
+	pub fn v1_tunnels_propset(&self, req: ReqTunnelsPropset) -> impl std::future::Future<Output = Result<(), ApiError<TunnelPropSetError, C::Error>>> + '_ {
 		let caller = std::panic::Location::caller();
 		async {
 			Self::unwrap(self.client.call(caller, "/v1/tunnels/propset", req).await)
+		}
+	}
+	#[track_caller]
+	pub fn v1_tunnels_regionset(&self, req: ReqTunnelsRegionsetV1) -> impl std::future::Future<Output = Result<ObjectId, ApiError<TunnelRegionsetErrorV1, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/v1/tunnels/regionset", req).await)
+		}
+	}
+	#[track_caller]
+	pub fn v1_tunnels_typeset(&self, req: ReqTunnelsTypeset) -> impl std::future::Future<Output = Result<(), ApiError<TunnelTypeSetError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/v1/tunnels/typeset", req).await)
 		}
 	}
 	#[track_caller]
@@ -72,10 +86,24 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 		}
 	}
 	#[track_caller]
+	pub fn info_regions(&self) -> impl std::future::Future<Output = Result<PlayitRegions, ApiErrorNoFail<C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap_no_fail(self.client.call(caller, "/info/regions", ReqInfoRegions {}).await)
+		}
+	}
+	#[track_caller]
 	pub fn login_signin(&self, req: ReqLoginSignin) -> impl std::future::Future<Output = Result<WebSession, ApiError<SigninFail, C::Error>>> + '_ {
 		let caller = std::panic::Location::caller();
 		async {
 			Self::unwrap(self.client.call(caller, "/login/signin", req).await)
+		}
+	}
+	#[track_caller]
+	pub fn login_apply(&self, req: ReqLoginApply) -> impl std::future::Future<Output = Result<WebSession, ApiErrorNoFail<C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap_no_fail(self.client.call(caller, "/login/apply", req).await)
 		}
 	}
 	#[track_caller]
@@ -261,10 +289,31 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 		}
 	}
 	#[track_caller]
+	pub fn proto_mtu_submit(&self, req: ReqProtoMtuSubmit) -> impl std::future::Future<Output = Result<ProtoMtuSubmit, ApiError<ProtoMtuSubmitError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/proto/mtu_submit", req).await)
+		}
+	}
+	#[track_caller]
 	pub fn query_region(&self, req: ReqQueryRegion) -> impl std::future::Future<Output = Result<QueryRegion, ApiError<QueryRegionError, C::Error>>> + '_ {
 		let caller = std::panic::Location::caller();
 		async {
 			Self::unwrap(self.client.call(caller, "/query/region", req).await)
+		}
+	}
+	#[track_caller]
+	pub fn health(&self) -> impl std::future::Future<Output = Result<HealthResponse, ApiErrorNoFail<C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap_no_fail(self.client.call(caller, "/health", ReqHealth {}).await)
+		}
+	}
+	#[track_caller]
+	pub fn status_page(&self) -> impl std::future::Future<Output = Result<StatusPage, ApiErrorNoFail<C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap_no_fail(self.client.call(caller, "/status-page", ReqStatusPage {}).await)
 		}
 	}
 }
@@ -304,12 +353,13 @@ pub enum AuthError {
 	AccountDoesNotExist,
 	AdminOnly,
 	InvalidToken,
-	TotpRequred,
+	TotpRequired,
 	NotAllowedWithReadOnly,
 	DefaultAgentBlocked,
 	AgentNotSelfManaged,
 	SelfManagedAgentCanOnlyAffectSelf,
 	AccountNotAuthorized,
+	ApiKeyScopeRequiresPremium,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -397,6 +447,7 @@ pub struct AccountTunnelV1 {
 	pub created_at: chrono::DateTime<chrono::Utc>,
 	pub name: Option<String>,
 	pub user_enabled: bool,
+	pub disabled_by_admin: bool,
 	pub offline_reasons: Option<Vec<AccountTunnelOfflineReason>>,
 	pub tunnel_type: Option<TunnelType>,
 	pub port_type: PortType,
@@ -407,6 +458,7 @@ pub struct AccountTunnelV1 {
 	pub port_allocation_requests: Vec<PortAllocationRequest>,
 	pub public_allocations: Vec<PublicAllocation>,
 	pub connect_addresses: Vec<ConnectAddress>,
+	pub region_change: Option<RegionChangeV1>,
 }
 
 
@@ -417,9 +469,13 @@ pub enum AccountTunnelOfflineReason {
 	OriginNotSet,
 	AgentDisabled,
 	AgentOverLimit,
-	TunnelDisabled,
+	RequiresTunnelDescription,
+	TunnelDisabledByAdmin,
+	TunnelDisabledByUser,
 	PublicAllocationMissing,
 	PublicAllocationPending,
+	SubscriptionNotStarted,
+	SubscriptionEnded,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
@@ -429,7 +485,7 @@ pub enum TunnelType {
 	#[serde(rename = "minecraft-bedrock")]
 	MinecraftBedrock,
 	#[serde(rename = "nethernet")]
-	NetherNet,
+	Nethernet,
 	#[serde(rename = "valheim")]
 	Valheim,
 	#[serde(rename = "terraria")]
@@ -444,6 +500,34 @@ pub enum TunnelType {
 	Unturned,
 	#[serde(rename = "https")]
 	Https,
+	#[serde(rename = "hytale")]
+	Hytale,
+	#[serde(rename = "project-zomboid")]
+	ProjectZomboid,
+	#[serde(rename = "vintage-story")]
+	VintageStory,
+	#[serde(rename = "mc-simple-voice-chat")]
+	McSimpleVoiceChat,
+	#[serde(rename = "ssh")]
+	Ssh,
+	#[serde(rename = "beam-mp")]
+	BeamMp,
+	#[serde(rename = "left-4-dead-2")]
+	Left4Dead2,
+	#[serde(rename = "veloren")]
+	Veloren,
+	#[serde(rename = "scp-secret-laboratory")]
+	ScpSecretLaboratory,
+	#[serde(rename = "necesse")]
+	Necesse,
+	#[serde(rename = "killing-floor")]
+	KillingFloor,
+	#[serde(rename = "garrys-mod")]
+	GarrysMod,
+	#[serde(rename = "factorio")]
+	Factorio,
+	#[serde(rename = "palworld")]
+	Palworld,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
@@ -460,6 +544,8 @@ pub enum PortType {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct AccountTunnelProps {
 	pub hostname_verify_level: HostnameVerifyLevel,
+	pub app_protect_level: u32,
+	pub http_firewall_ignore_acme: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
@@ -468,6 +554,7 @@ pub enum HostnameVerifyLevel {
 	NoRawIp,
 	NoAutoName,
 }
+
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "details")]
@@ -553,6 +640,7 @@ pub struct PortAllocationRequest {
 	pub region: PlayitNetwork,
 	pub public_port: Option<u16>,
 	pub public_ip: Option<std::net::IpAddr>,
+	pub replaces_alloc_id: Option<uuid::Uuid>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
@@ -584,8 +672,8 @@ pub enum PlayitNetwork {
 	Chile,
 	#[serde(rename = "seattle-washington")]
 	SeattleWashington,
-	#[serde(rename = "los-angeles-california")]
-	LosAngelesCalifornia,
+	#[serde(rename = "california")]
+	California,
 	#[serde(rename = "denver-colorado")]
 	DenverColorado,
 	#[serde(rename = "dallas-texas")]
@@ -594,10 +682,10 @@ pub enum PlayitNetwork {
 	ChicagoIllinois,
 	#[serde(rename = "new-york")]
 	NewYork,
-	#[serde(rename = "_NaReserved1")]
-	NaReserved1,
-	#[serde(rename = "_NaReserved2")]
-	NaReserved2,
+	#[serde(rename = "miami")]
+	Miami,
+	#[serde(rename = "atlanta")]
+	Atlanta,
 	#[serde(rename = "united-kingdom")]
 	UnitedKingdom,
 	#[serde(rename = "germany")]
@@ -614,6 +702,22 @@ pub enum PlayitNetwork {
 	Japan,
 	#[serde(rename = "australia")]
 	Australia,
+	#[serde(rename = "stage-seattle")]
+	StageSeattle,
+	#[serde(rename = "stage-frankfurt")]
+	StageFrankfurt,
+	#[serde(rename = "_Reserved3")]
+	Reserved3,
+	#[serde(rename = "_Reserved4")]
+	Reserved4,
+	#[serde(rename = "_Reserved5")]
+	Reserved5,
+	#[serde(rename = "_Reserved6")]
+	Reserved6,
+	#[serde(rename = "_Reserved7")]
+	Reserved7,
+	#[serde(rename = "_Reserved8")]
+	Reserved8,
 }
 
 
@@ -622,8 +726,8 @@ pub enum PlayitNetwork {
 pub enum PublicAllocation {
 	#[serde(rename = "PortAllocation")]
 	PortAllocation(PortAllocation),
-	#[serde(rename = "HostnameRouting")]
-	HostnameRouting(HostnameRouting),
+	#[serde(rename = "Gateway")]
+	Gateway(GatewayAllocation),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -637,6 +741,8 @@ pub struct PortAllocation {
 	pub port_count: u16,
 	pub port_type: PortType,
 	pub expire_notice: Option<ExpireNotice>,
+	pub replaces_alloc_id: Option<uuid::Uuid>,
+	pub scheduled_removal_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -655,19 +761,10 @@ pub enum DisabledReason {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct HostnameRouting {
+pub struct GatewayAllocation {
 	pub id: Option<uuid::Uuid>,
 	pub hostname: String,
-	pub routing_type: HostnameRoutingType,
 	pub region: PlayitNetwork,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
-pub enum HostnameRoutingType {
-	#[serde(rename = "https")]
-	Https,
-	#[serde(rename = "minecraft-java")]
-	MinecraftJava,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -699,8 +796,8 @@ pub struct ConnectAddr4 {
 pub enum ConnectAddressSource {
 	#[serde(rename = "port-allocation")]
 	PortAllocation(uuid::Uuid),
-	#[serde(rename = "hostname-routing")]
-	HostnameRouting(uuid::Uuid),
+	#[serde(rename = "gateway")]
+	Gateway(uuid::Uuid),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -749,28 +846,56 @@ pub enum DomainMode {
 	Hostname,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(tag = "state", content = "details")]
+pub enum RegionChangeV1 {
+	#[serde(rename = "allocating")]
+	Allocating(RegionChangeAllocating),
+	#[serde(rename = "overlapping")]
+	Overlapping(RegionChangeOverlapping),
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct RegionChangeAllocating {
+	pub request_id: uuid::Uuid,
+	pub target_region: PlayitNetwork,
+	pub status: PortAllocationStatus,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct RegionChangeOverlapping {
+	pub old_alloc_id: uuid::Uuid,
+	pub new_alloc_id: uuid::Uuid,
+	pub new_region: PlayitNetwork,
+	pub old_region: PlayitNetwork,
+	pub old_removed_at: chrono::DateTime<chrono::Utc>,
+}
+
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqTunnelsCreateV1 {
-	pub ports: TunnelPortDetails,
+	pub name: String,
+	pub protocol: TunnelProtocol,
 	pub origin: AccountTunnelOriginCreate,
+	pub endpoint: CreateTunnelEndpoint,
 	pub enabled: bool,
-	pub alloc: Option<CreateTunnelAllocationRequest>,
-	pub name: Option<String>,
 	pub firewall_id: Option<uuid::Uuid>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "details")]
-pub enum TunnelPortDetails {
+pub enum TunnelProtocol {
 	#[serde(rename = "tunnel-type")]
 	TunnelType(TunnelType),
-	#[serde(rename = "custom-tcp")]
-	CustomTcp(u16),
-	#[serde(rename = "custom-udp")]
-	CustomUdp(u16),
-	#[serde(rename = "custom-both")]
-	CustomBoth(u16),
+	#[serde(rename = "raw-ports")]
+	RawPorts(TunnelProtocolRawPorts),
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct TunnelProtocolRawPorts {
+	pub port_type: PortType,
+	pub port_count: u16,
+	pub software_description: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -788,9 +913,9 @@ pub struct AgentOrigin {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "details")]
-pub enum CreateTunnelAllocationRequest {
-	#[serde(rename = "hostname")]
-	Hostname(UseHostname),
+pub enum CreateTunnelEndpoint {
+	#[serde(rename = "gateway")]
+	Gateway(UseGateway),
 	#[serde(rename = "dedicated-ip")]
 	DedicatedIp(UseAllocDedicatedIp),
 	#[serde(rename = "shared-ip")]
@@ -802,8 +927,8 @@ pub enum CreateTunnelAllocationRequest {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct UseHostname {
-	pub hostname_id: uuid::Uuid,
+pub struct UseGateway {
+	pub gateway_id: uuid::Uuid,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -841,17 +966,20 @@ pub enum TunnelCreateErrorV1 {
 	RegionNotSupported,
 	InvalidTunnelConfig,
 	FirewallNotFound,
-	TunnelNameIsNotAscii,
-	TunnelNameTooLong,
 	PortAllocDoesNotMatchPortDetails,
 	RegionRequiresPlayitPremium,
 	PortAllocCurrentlyAssigned,
 	PublicPortRequiresPlayitPremium,
 	AgentVersionTooOld,
 	RequiresPlayitPremium,
-	AllocRequestNotSupportedByPorts,
-	InvalidHostnameId,
-	HostnameHasTunnelTypeTarget,
+	EndpointDoesNotSupportProtocol,
+	AccountHasFlaggedTunnel,
+	InvalidGatewayId,
+	GatewayAlreadyHasTunnelType,
+	GatewayDoesNotSupportTunnelType,
+	TunnelTypeBlockedOnRegion,
+	AccountTunnelLimitReached,
+	AccountUnassignedTunnelLimitReached,
 }
 
 impl std::fmt::Display for TunnelCreateErrorV1 {
@@ -946,7 +1074,7 @@ pub enum AgentSchemaValidationError {
 	#[serde(rename = "TooManyFields")]
 	TooManyFields,
 	#[serde(rename = "TunnelTypeNotSupported")]
-	TunnelTypeNotSupported(AgentTunnelPortAllocTypeDetails),
+	TunnelTypeNotSupported(TunnelEndpointPortRequirements),
 	#[serde(rename = "UnknownField")]
 	UnknownField(String),
 	#[serde(rename = "MissingRequiredField")]
@@ -958,7 +1086,7 @@ pub enum AgentSchemaValidationError {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct AgentTunnelPortAllocTypeDetails {
+pub struct TunnelEndpointPortRequirements {
 	pub tunnel_type: Option<TunnelType>,
 	pub port_type: PortType,
 	pub port_count: u16,
@@ -983,22 +1111,77 @@ pub struct ReqTunnelsPropset {
 pub enum PropsetDetails {
 	#[serde(rename = "hostname_verify_level")]
 	HostnameVerifyLevel(HostnameVerifyLevel),
+	#[serde(rename = "app_protect_level")]
+	AppProtectLevel(u32),
+	#[serde(rename = "http_firewall_ignore_acme")]
+	HttpFirewallIgnoreAcme(bool),
+	#[serde(rename = "custom_tunnel_details")]
+	CustomTunnelDetails(String),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
-pub enum TunnelProxyPropSetError {
-	RequiresPermium,
+pub enum TunnelPropSetError {
+	RequiresPremium,
 	TunnelNotFound,
 	PropertyValueNotSupportedForTunnelType,
+	PropertyValueInvalid,
 }
 
-impl std::fmt::Display for TunnelProxyPropSetError {
+impl std::fmt::Display for TunnelPropSetError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		write!(f, "{:?}", self)
 	}
 }
 
-impl std::error::Error for TunnelProxyPropSetError {
+impl std::error::Error for TunnelPropSetError {
+}
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqTunnelsRegionsetV1 {
+	pub tunnel_id: uuid::Uuid,
+	pub region: PlayitNetwork,
+	pub allow_port_change: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum TunnelRegionsetErrorV1 {
+	RequiresPlayitPremium,
+	TunnelNotFound,
+	RegionNotSupported,
+	AlreadyInRegion,
+	RegionChangePending,
+	NoCurrentAllocation,
+	RegionChangeNotSupportedForTunnel,
+}
+
+impl std::fmt::Display for TunnelRegionsetErrorV1 {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for TunnelRegionsetErrorV1 {
+}
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqTunnelsTypeset {
+	pub tunnel_id: uuid::Uuid,
+	pub tunnel_type: TunnelType,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum TunnelTypeSetError {
+	RequiresPremium,
+	TunnelNotFound,
+	TunnelHasInvalidSettingsForType,
+	CannotChangeTunnelType,
+}
+
+impl std::fmt::Display for TunnelTypeSetError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for TunnelTypeSetError {
 }
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqAgentsRundataV1 {
@@ -1126,7 +1309,153 @@ pub enum PlayitPop {
 	#[serde(rename = "USDenver")]
 	UsDenver,
 	Staging,
+	#[serde(rename = "USAtlanta")]
+	UsAtlanta,
+	StageSeattle,
+	StageFrankfurt,
 }
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqInfoRegions {
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PlayitRegions {
+	pub groups: Vec<RegionGroup>,
+	pub regions: Vec<RegionInfo>,
+	pub datacenters: Vec<DatacenterInfo>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct RegionGroup {
+	pub id: PlayitRegionGroup,
+	pub title: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum PlayitRegionGroup {
+	#[serde(rename = "global")]
+	Global,
+	#[serde(rename = "north-america")]
+	NorthAmerica,
+	#[serde(rename = "europe")]
+	Europe,
+	#[serde(rename = "asia")]
+	Asia,
+	#[serde(rename = "south-america")]
+	SouthAmerica,
+	#[serde(rename = "oceania")]
+	Oceania,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct RegionInfo {
+	pub id: PlayitNetwork,
+	pub required_tier: RegionPaymentTier,
+	pub group_id: PlayitRegionGroup,
+	pub title: String,
+	pub routing_title: String,
+	pub datacenter_ids: Vec<u32>,
+	pub min_agent_version: Option<String>,
+	pub allows_unprotected_tcp: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum RegionPaymentTier {
+	#[serde(rename = "free")]
+	Free,
+	#[serde(rename = "playit-premium")]
+	PlayitPremium,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct DatacenterInfo {
+	pub id: u32,
+	pub region: PlayitNetwork,
+	pub name: PlayitDataCenter,
+	pub title: String,
+	pub lat: f64,
+	pub lon: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum PlayitDataCenter {
+	SameDc,
+	FremontCa,
+	Atlanta,
+	Stockholm,
+	Tokyo,
+	Singapore,
+	Sydney,
+	SaoPaulo,
+	Warsaw,
+	Mumbai,
+	Santiago,
+	Frankfurt,
+	Madrid,
+	London,
+	Bucharest,
+	LosAngeles,
+	NewYork,
+	Seattle,
+	Denver,
+	Dallas,
+	Miami,
+	Chicago,
+	StageSeattle,
+	StageFrankfurt,
+	#[serde(rename = "_LosAngeles1")]
+	LosAngeles1,
+	#[serde(rename = "_TelAviv1")]
+	TelAviv1,
+	#[serde(rename = "_Chicago1")]
+	Chicago1,
+	#[serde(rename = "_Dallas1")]
+	Dallas1,
+	#[serde(rename = "_MexicoCity1")]
+	MexicoCity1,
+	#[serde(rename = "_Miami1")]
+	Miami1,
+	#[serde(rename = "_SeattleStage1")]
+	SeattleStage1,
+	#[serde(rename = "_SingaporeStage1")]
+	SingaporeStage1,
+	#[serde(rename = "_Toronto1")]
+	Toronto1,
+	#[serde(rename = "_London1")]
+	London1,
+	#[serde(rename = "_Amsterdam1")]
+	Amsterdam1,
+	#[serde(rename = "_FrankfurtStage1")]
+	FrankfurtStage1,
+	#[serde(rename = "_Paris1")]
+	Paris1,
+	#[serde(rename = "_Seoul1")]
+	Seoul1,
+	#[serde(rename = "_Madrid1")]
+	Madrid1,
+	#[serde(rename = "_Melbourne1")]
+	Melbourne1,
+	#[serde(rename = "_LasVegas1")]
+	LasVegas1,
+	#[serde(rename = "_Mumbai1")]
+	Mumbai1,
+	#[serde(rename = "_KansasCity1")]
+	KansasCity1,
+	#[serde(rename = "_Honolulu1")]
+	Honolulu1,
+	#[serde(rename = "_Dallas2")]
+	Dallas2,
+	#[serde(rename = "_NewYork1")]
+	NewYork1,
+	#[serde(rename = "_Miami2")]
+	Miami2,
+	#[serde(rename = "_Bangalore1")]
+	Bangalore1,
+	#[serde(rename = "_Delhi1")]
+	Delhi1,
+}
+
 
 pub type ReqLoginSignin = LoginCredentials;
 
@@ -1154,7 +1483,6 @@ pub struct WebAuthToken {
 	pub read_only: bool,
 	pub show_admin: bool,
 }
-
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(tag = "status")]
@@ -1187,6 +1515,11 @@ impl std::fmt::Display for SigninFail {
 impl std::error::Error for SigninFail {
 }
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqLoginApply {
+	pub token: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqLoginClearcookie {
 }
 
@@ -1201,8 +1534,17 @@ pub struct ReqLoginCreateGuest {
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub enum LoginCreateGuestError {
 	Blocked,
+	NoLongerSupported,
 }
 
+impl std::fmt::Display for LoginCreateGuestError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for LoginCreateGuestError {
+}
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqLoginGuest {
 }
@@ -1243,6 +1585,7 @@ pub struct ReqLoginResetSend {
 pub struct ReqTunnelsCreate {
 	pub name: Option<String>,
 	pub tunnel_type: Option<TunnelType>,
+	pub tunnel_description: Option<String>,
 	pub port_type: PortType,
 	pub port_count: u16,
 	pub origin: TunnelOriginCreate,
@@ -1324,11 +1667,15 @@ pub enum TunnelCreateError {
 	ManagedMissingAgentId,
 	InvalidPortCount,
 	RequiresVerifiedAccount,
-	InvalidTunnelName,
 	FirewallNotFound,
 	AllocInvalid,
 	InvalidOrigin,
 	RequiresPlayitPremium,
+	TunnelTypeBlockedOnRegion,
+	TunnelTypeRequiresDescription,
+	AccountHasFlaggedTunnel,
+	AccountTunnelLimitReached,
+	AccountUnassignedTunnelLimitReached,
 	Other,
 }
 
@@ -1538,17 +1885,8 @@ pub struct ReqTunnelsRename {
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub enum TunnelRenameError {
 	TunnelNotFound,
-	NameTooLong,
 }
 
-impl std::fmt::Display for TunnelRenameError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:?}", self)
-	}
-}
-
-impl std::error::Error for TunnelRenameError {
-}
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqTunnelsFirewallAssign {
 	pub tunnel_id: uuid::Uuid,
@@ -1647,19 +1985,9 @@ pub enum ClaimSetupResponse {
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub enum ClaimSetupError {
-	InvalidCode,
 	CodeExpired,
-	VersionTextTooLong,
 }
 
-impl std::fmt::Display for ClaimSetupError {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		write!(f, "{:?}", self)
-	}
-}
-
-impl std::error::Error for ClaimSetupError {
-}
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqClaimExchange {
 	pub code: String,
@@ -1696,7 +2024,6 @@ pub struct ReqAgentsRename {
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub enum AgentRenameError {
 	AgentNotFound,
-	InvalidName,
 	InvalidAgentId,
 }
 
@@ -1731,6 +2058,7 @@ pub enum AgentRoutingSetError {
 	RequiresPremium,
 	AgentNotFound,
 	InvalidAgentId,
+	RegionNotSupported,
 }
 
 impl std::fmt::Display for AgentRoutingSetError {
@@ -1872,10 +2200,25 @@ pub struct Domains {
 pub struct Domain {
 	pub id: uuid::Uuid,
 	pub name: String,
-	pub is_external: bool,
+	pub external_method: Option<ExternalDomainMethod>,
 	pub parent: Option<uuid::Uuid>,
 	pub sub_id: uuid::Uuid,
+	pub ip_version_only: Option<IpVersion>,
 	pub target: Option<DomainTarget>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum ExternalDomainMethod {
+	Ns,
+	Cname,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum IpVersion {
+	#[serde(rename = "ipv4")]
+	Ipv4,
+	#[serde(rename = "ipv6")]
+	Ipv6,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -1887,6 +2230,8 @@ pub enum DomainTarget {
 	Tunnel(DomainTargetTunnel),
 	#[serde(rename = "external-cname")]
 	ExternalCname(DomainTargetExternalCName),
+	#[serde(rename = "gateway")]
+	Gateway(DomainTargetGateway),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -1905,25 +2250,62 @@ pub struct DomainTargetExternalCName {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct DomainTargetGateway {
+	pub gateway_id: uuid::Uuid,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqShopPrices {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ShopPrices {
-	pub custom_domain: ShopPrice,
-	pub dedicated_ip: std::collections::HashMap<PlayitNetwork,ShopPrice>,
-	pub playit_premium: ShopPrice,
-	pub ports_both: ShopPrice,
-	pub ports_tcp: ShopPrice,
-	pub ports_udp: ShopPrice,
-	pub dedicated_port_global: ShopPrice,
-	pub dedicated_port_regional: ShopPrice,
+	pub currency_guess: Option<Currency>,
+	pub prices: Vec<ShopPrice>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum Currency {
+	#[serde(rename = "USD")]
+	Usd,
+	#[serde(rename = "EUR")]
+	Eur,
+	#[serde(rename = "GBP")]
+	Gbp,
+	#[serde(rename = "BRL")]
+	Brl,
+	#[serde(rename = "AUD")]
+	Aud,
+	#[serde(rename = "INR")]
+	Inr,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ShopPrice {
+	pub product: SubProductType,
+	pub currency: Currency,
 	pub monthly: Option<u32>,
 	pub yearly: Option<u32>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum SubProductType {
+	#[serde(rename = "playit-premium")]
+	PlayitPremium,
+	#[serde(rename = "playit-premium-trial")]
+	PlayitPremiumTrial,
+	#[serde(rename = "dedicated-ip")]
+	DedicatedIp,
+	#[serde(rename = "udp-ports")]
+	UdpPorts,
+	#[serde(rename = "tcp-ports")]
+	TcpPorts,
+	#[serde(rename = "both-ports")]
+	BothPorts,
+	#[serde(rename = "custom-domain")]
+	CustomDomain,
+	#[serde(rename = "dedicated-port-alloc")]
+	DedicatedPortAlloc,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -2025,6 +2407,7 @@ pub struct ChargeDetails {
 	pub total_cost: String,
 	pub items: Vec<ChargeDetailsItem>,
 	pub refund: Option<RefundStatus>,
+	pub currency: Currency,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
@@ -2055,26 +2438,6 @@ pub struct ChargeDetailsItem {
 	pub total_cost: String,
 }
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
-pub enum SubProductType {
-	#[serde(rename = "playit-premium")]
-	PlayitPremium,
-	#[serde(rename = "playit-premium-trial")]
-	PlayitPremiumTrial,
-	#[serde(rename = "dedicated-ip")]
-	DedicatedIp,
-	#[serde(rename = "udp-ports")]
-	UdpPorts,
-	#[serde(rename = "tcp-ports")]
-	TcpPorts,
-	#[serde(rename = "both-ports")]
-	BothPorts,
-	#[serde(rename = "custom-domain")]
-	CustomDomain,
-	#[serde(rename = "dedicated-port-alloc")]
-	DedicatedPortAlloc,
-}
-
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 #[serde(tag = "type", content = "details")]
 pub enum RefundStatus {
@@ -2084,6 +2447,8 @@ pub enum RefundStatus {
 	Applied(RefundApplied),
 	#[serde(rename = "DisputeCreated")]
 	DisputeCreated(DisputeCreated),
+	#[serde(rename = "ChargedBack")]
+	ChargedBack(ChargedBack),
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
@@ -2113,6 +2478,12 @@ pub struct DisputeCreated {
 	pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ChargedBack {
+	pub created_at: chrono::DateTime<chrono::Utc>,
+	pub amount: String,
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub enum ChargeGetError {
 	ChargeNotFound,
@@ -2129,7 +2500,6 @@ pub struct ReqChargeRefund {
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub enum ChargeRefundError {
 	ChargeNotFound,
-	MessageTooLarge,
 	UnauthorizedReason,
 }
 
@@ -2140,6 +2510,47 @@ impl std::fmt::Display for ChargeRefundError {
 }
 
 impl std::error::Error for ChargeRefundError {
+}
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqProtoMtuSubmit {
+	pub measurements: Vec<AgentMtuMeasurement>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct AgentMtuMeasurement {
+	pub data_center_id: u32,
+	pub direction: AgentMtuDirection,
+	pub mtu: u16,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum AgentMtuDirection {
+	#[serde(rename = "send")]
+	Send,
+	#[serde(rename = "receive")]
+	Receive,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ProtoMtuSubmit {
+	pub accepted: u64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum ProtoMtuSubmitError {
+	EmptyMeasurements,
+	TooManyMeasurements,
+	InvalidMtu,
+	InvalidDataCenter,
+}
+
+impl std::fmt::Display for ProtoMtuSubmitError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for ProtoMtuSubmitError {
 }
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqQueryRegion {
@@ -2155,5 +2566,54 @@ pub struct QueryRegion {
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub enum QueryRegionError {
 	FailedToDetermineLocation,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqHealth {
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct HealthResponse {
+	pub database: bool,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqStatusPage {
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StatusPage {
+	pub generated_at: Option<chrono::DateTime<chrono::Utc>>,
+	pub categories: Vec<StatusPageCategory>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StatusPageCategory {
+	pub category: String,
+	pub elements: Vec<StatusPageEntry>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct StatusPageEntry {
+	pub id: u64,
+	pub title: String,
+	pub details: String,
+	pub status: String,
+	pub status_level: StatusLevel,
+	pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum StatusLevel {
+	#[serde(rename = "success")]
+	Success,
+	#[serde(rename = "warning")]
+	Warning,
+	#[serde(rename = "error")]
+	Error,
+	#[serde(rename = "info")]
+	Info,
+	#[serde(rename = "critical")]
+	Critical,
 }
 
