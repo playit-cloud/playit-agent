@@ -81,6 +81,11 @@ is_fresh_install() {
   esac
 }
 
+fresh_install=false
+if is_fresh_install "$@" || [ ! -f "$PLAYIT_MANAGER_FILE" ]; then
+  fresh_install=true
+fi
+
 ensure_group
 ensure_user
 
@@ -104,9 +109,8 @@ if [ -f /etc/playit/playit.toml ]; then
   chmod 0600 /etc/playit/playit.toml
 fi
 
-rc-update add playit default || true
-
-if is_fresh_install "$@"; then
+if [ "$fresh_install" = true ]; then
+  rc-update add playit default || true
   rc-service playit start || true
 elif rc-service playit status >/dev/null 2>&1; then
   rc-service playit restart || true

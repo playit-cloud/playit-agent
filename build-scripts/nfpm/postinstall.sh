@@ -120,6 +120,12 @@ remove_legacy_unit_path() {
   rm -f "$legacy_unit"
 }
 
+fresh_install=false
+# Debian can retain the configured version after removal; removal clears the manager file.
+if is_fresh_install "$@" || [ ! -f "$PLAYIT_MANAGER_FILE" ]; then
+  fresh_install=true
+fi
+
 provision_user
 
 mkdir -p /usr/bin /etc/playit /var/log/playit /opt/playit/share/init
@@ -147,9 +153,9 @@ remove_legacy_unit_path /lib/systemd/system/playit.service
 
 if have_command systemctl; then
   systemctl daemon-reload || true
-  systemctl enable playit || true
 
-  if is_fresh_install "$@"; then
+  if [ "$fresh_install" = true ]; then
+    systemctl enable playit || true
     systemctl start playit || true
   elif systemctl is-active --quiet playit; then
     systemctl restart playit || true
