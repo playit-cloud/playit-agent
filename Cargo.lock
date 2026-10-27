@@ -2044,6 +2044,7 @@ dependencies = [
  "tray-icon",
  "windows",
  "windows-sys 0.59.0",
+ "winres",
 ]
 
 [[package]]

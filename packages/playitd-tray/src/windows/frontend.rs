@@ -401,7 +401,7 @@ fn handle_menu_event(hwnd: HWND, menu_event: MenuEvent) -> Result<(), String> {
         MenuAction::ResetAgent => {
             if confirm_warning(
                 "Reset playit agent?",
-                "This disconnects this computer from your playit account and removes its secret.\n\nplayit will open so you can set it up again.",
+                "Resetting disconnects all tunnels on this computer and removes its saved account connection.\n\nplayit will open for setup. Complete setup again before tunnels can reconnect.",
             ) {
                 dispatch_request(hwnd, BackendRequest::ResetAgent);
             }
