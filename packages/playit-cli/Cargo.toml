@@ -41,7 +41,7 @@ playit-api-client = { path = "../api_client", version = "0.2.0" }
 [target.'cfg(windows)'.dependencies]
 whoami = "1.5"
 
-[target.'cfg(windows)'.build-dependencies]
+[build-dependencies]
 winres = "0.1"
 
 [package.metadata.wix]
