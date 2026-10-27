@@ -1,24 +1,26 @@
 ###### DOWNLOAD RELEASE ARTIFACT ######
-FROM alpine:3.18 AS artifact-downloader
+FROM alpine:3.24 AS artifact-downloader
 
 ARG REPOSITORY
 ARG VERSION
 ARG TARGETARCH
+ARG ARTIFACT_BASE_URL
 
 WORKDIR /download
 
-RUN apk add --no-cache dpkg wget
+RUN apk add --no-cache ca-certificates dpkg wget
 RUN case "${TARGETARCH}" in \
       amd64) deb_arch="amd64" ;; \
       arm64) deb_arch="arm64" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && wget -O playit.deb "https://github.com/${REPOSITORY}/releases/download/${VERSION}/playit_${deb_arch}.deb" \
+    && artifact_base="${ARTIFACT_BASE_URL:-https://github.com/${REPOSITORY}/releases/download/${VERSION}}" \
+    && wget -O playit.deb "${artifact_base}/playit_${deb_arch}.deb" \
     && dpkg-deb -x playit.deb /extract
 
 ########## RUNTIME CONTAINER ##########
 
-FROM alpine:3.18
+FROM alpine:3.24
 RUN apk add --no-cache ca-certificates
 
 COPY --from=artifact-downloader /extract/opt/playit/playitd /usr/local/bin/playitd
