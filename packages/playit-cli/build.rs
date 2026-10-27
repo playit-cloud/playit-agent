@@ -4,6 +4,9 @@ fn main() {
     }
     let mut res = winres::WindowsResource::new();
     println!("cargo:rerun-if-env-changed=WINRES_TOOLKIT_PATH");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=../../Cargo.toml");
+    println!("cargo:rerun-if-changed=wix/Product.ico");
     if let Ok(path) = std::env::var("WINRES_TOOLKIT_PATH") {
         res.set_toolkit_path(&path);
     }

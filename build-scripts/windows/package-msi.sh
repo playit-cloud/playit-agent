@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+target="${1:?missing Rust target}"
+arch="${2:?missing MSI architecture}"
+suffix="${3:?missing release suffix}"
+version="${4:?missing version}"
+mkdir -p "/build/wix/$suffix" /build/msi
+
+if [[ ! -f "$WINEPREFIX/system.reg" ]]; then
+  wineboot --init
+  wineserver -w
+fi
+# Let Wine save its registry before the container or virtual display exits.
+trap 'wineserver -w' EXIT
+
+stage="$(winepath -w /build/stage)"
+bin="$(winepath -w "/build/stage/$target/release")"
+object="$(winepath -w "/build/wix/$suffix/main.wixobj")"
+msi="/build/msi/playit-windows-$suffix.msi"
+
+wine /opt/wix/candle.exe -nologo -arch "$arch" -ext WixUtilExtension \
+  "-dVersion=$version" "-dTargetTriple=$target" '-dCargoProfile=release' \
+  "-dCargoTargetDir=$stage" "-dCargoTargetBinDir=$bin" \
+  -out "$object" 'Z:\work\packages\playit-cli\wix\main.wxs'
+
+# ICE validation requires Windows; Windows smoke tests validate the finished installer.
+wine /opt/wix/light.exe -nologo -sval -ext WixUIExtension -ext WixUtilExtension \
+  -cultures:en-US -loc 'Z:\work\packages\playit-cli\wix\en-us.wxl' \
+  -b 'Z:\work' -out "$(winepath -w "$msi")" "$object"
+
+extract="/build/wix/$suffix/extracted"
+rm -rf "$extract"
+mkdir -p "$extract"
+msiextract -C "$extract" "$msi" > /dev/null
+python3 /work/build-scripts/windows/verify-msi.py "/build/stage/$target/release" "$extract"
