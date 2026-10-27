@@ -88,8 +88,35 @@ pub enum TuiMode {
     Running,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionMode {
+    Service,
+    Portable,
+    ExternalDaemon,
+}
+
+impl SessionMode {
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Service => "Background service: closing this window keeps tunnels running.",
+            Self::Portable => "Portable mode: closing this window stops the agent and all tunnels.",
+            Self::ExternalDaemon => {
+                "Connected to daemon: closing this window keeps the daemon running."
+            }
+        }
+    }
+
+    pub fn close_question(self) -> &'static str {
+        match self {
+            Self::Portable => "Stop the agent and all tunnels? ",
+            _ => "Close this window? Tunnels will keep running. ",
+        }
+    }
+}
+
 /// Main TUI application state
 pub struct TuiApp {
+    session_mode: SessionMode,
     service_logs: VecDeque<LogEntry>,
     agent_data: AgentData,
     stats: ConnectionStats,
@@ -104,8 +131,9 @@ pub struct TuiApp {
 }
 
 impl TuiApp {
-    pub fn new() -> Self {
+    pub fn new(session_mode: SessionMode) -> Self {
         Self {
+            session_mode,
             service_logs: VecDeque::with_capacity(SERVICE_LOG_CAPACITY),
             agent_data: AgentData::default(),
             stats: ConnectionStats::default(),
@@ -137,17 +165,17 @@ impl TuiApp {
         if self.service_logs.len() >= SERVICE_LOG_CAPACITY {
             self.service_logs.pop_front();
         }
-        self.service_logs.push_back(entry);
+        self.service_logs.push_back(user_facing_log(entry));
     }
 
     pub fn apply_lifecycle(&mut self, lifecycle: AgentLifecycle) {
         match lifecycle {
             AgentLifecycle::Running(state) => self.set_agent_data(state.into()),
             AgentLifecycle::WaitingForSecret => {
-                self.set_message("The playit service is waiting for setup to finish.");
+                self.set_message("The playit agent is waiting for setup to finish.");
             }
             AgentLifecycle::HasInvalidSecret(error) => self.set_message(format!(
-                "The playit service has an invalid secret: {}",
+                "The playit agent has an invalid secret: {}",
                 error.message
             )),
             AgentLifecycle::DisabledOverLimit(_) => self.set_message(format!(
@@ -156,14 +184,14 @@ impl TuiApp {
                 agent_over_limit_guidance()
             )),
             AgentLifecycle::Starting => {
-                self.set_message("The playit service is starting...");
+                self.set_message("The playit agent is connecting...");
             }
             AgentLifecycle::Stopping => {
-                self.set_message("The playit service is stopping...");
+                self.set_message("The playit agent is stopping...");
             }
             AgentLifecycle::Error(error) => {
                 self.set_message(format!(
-                    "The playit service reported an error: {}",
+                    "The playit agent reported an error: {}",
                     error.message
                 ));
             }
@@ -264,6 +292,7 @@ impl TuiApp {
         let stats = self.stats.clone();
         let start_time = agent_data.start_time;
         let quit_confirm = self.quit_confirm;
+        let session_mode = self.session_mode;
         let log_entries: Vec<_> = self.service_logs.iter().cloned().collect();
 
         terminal.draw(|frame| {
@@ -271,7 +300,7 @@ impl TuiApp {
 
             match &mode {
                 TuiMode::Message { message } => {
-                    Self::render_message_screen(frame, area, message, quit_confirm);
+                    Self::render_message_screen(frame, area, message, session_mode, quit_confirm);
                     return;
                 }
                 TuiMode::Running => {}
@@ -284,7 +313,7 @@ impl TuiApp {
                     Constraint::Min(8),
                     Constraint::Length(3),
                     Constraint::Length(10),
-                    Constraint::Length(1),
+                    Constraint::Length(3),
                 ])
                 .split(area);
 
@@ -296,7 +325,7 @@ impl TuiApp {
 
             Self::render_logs(frame, chunks[3], &log_entries);
 
-            render_help_bar(frame, chunks[4], quit_confirm);
+            render_help_bar(frame, chunks[4], session_mode, quit_confirm);
         })?;
 
         Ok(())
@@ -327,16 +356,19 @@ impl TuiApp {
             .iter()
             .map(|tunnel| {
                 let (style, prefix) = if tunnel.is_disabled {
-                    (Style::default().fg(Color::Red), "✗ ")
+                    (Style::default().fg(Color::Yellow), "○ ")
                 } else {
-                    (Style::default().fg(Color::Green), "● ")
+                    (Style::default().fg(Color::LightGreen), "● ")
                 };
 
-                let content = if let Some(reason) = &tunnel.disabled_reason {
-                    format!(
-                        "{}{} => (disabled: {})",
-                        prefix, tunnel.display_address, reason
-                    )
+                let content = if tunnel.is_disabled {
+                    let reason = tunnel.disabled_reason.as_deref().unwrap_or("disabled");
+                    let label = if reason.to_ascii_lowercase().starts_with("disabled") {
+                        reason.to_string()
+                    } else {
+                        format!("disabled: {reason}")
+                    };
+                    format!("{}{} — {}", prefix, tunnel.display_address, label)
                 } else {
                     format!(
                         "{}{} => {}",
@@ -357,7 +389,7 @@ impl TuiApp {
             .highlight_style(
                 Style::default()
                     .add_modifier(Modifier::BOLD)
-                    .bg(Color::DarkGray),
+                    .bg(Color::Gray),
             )
             .highlight_symbol("▶ ");
 
@@ -365,12 +397,12 @@ impl TuiApp {
     }
 
     fn render_logs(frame: &mut Frame, area: Rect, log_entries: &[LogEntry]) {
-        let title = format!(" Service Logs ({}) [following] ", log_entries.len());
+        let title = format!(" Agent Logs ({}) [following] ", log_entries.len());
 
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::DarkGray));
+            .border_style(Style::default().fg(Color::Gray));
 
         let inner_height = area.height.saturating_sub(2) as usize;
         let start = log_entries.len().saturating_sub(inner_height);
@@ -379,11 +411,11 @@ impl TuiApp {
         let lines: Vec<Line> = visible_entries
             .map(|entry| {
                 let level_style = match entry.level {
-                    LogLevel::Error => Style::default().fg(Color::Red).bold(),
+                    LogLevel::Error => Style::default().fg(Color::LightRed).bold(),
                     LogLevel::Warn => Style::default().fg(Color::Yellow).bold(),
-                    LogLevel::Info => Style::default().fg(Color::Green),
-                    LogLevel::Debug => Style::default().fg(Color::Blue),
-                    LogLevel::Trace => Style::default().fg(Color::DarkGray),
+                    LogLevel::Info => Style::default().fg(Color::LightGreen),
+                    LogLevel::Debug => Style::default().fg(Color::LightBlue),
+                    LogLevel::Trace => Style::default().fg(Color::Gray),
                 };
 
                 Line::from(vec![
@@ -393,7 +425,7 @@ impl TuiApp {
                             "{}: ",
                             entry.target.split("::").last().unwrap_or(&entry.target)
                         ),
-                        Style::default().fg(Color::DarkGray),
+                        Style::default().fg(Color::Gray),
                     ),
                     Span::raw(&entry.message),
                 ])
@@ -404,7 +436,13 @@ impl TuiApp {
         frame.render_widget(paragraph, area);
     }
 
-    fn render_message_screen(frame: &mut Frame, area: Rect, message: &str, quit_confirm: bool) {
+    fn render_message_screen(
+        frame: &mut Frame,
+        area: Rect,
+        message: &str,
+        session_mode: SessionMode,
+        quit_confirm: bool,
+    ) {
         use ratatui::layout::Alignment;
 
         let chunks = Layout::default()
@@ -412,13 +450,13 @@ impl TuiApp {
             .constraints([
                 Constraint::Percentage(30),
                 Constraint::Min(10),
-                Constraint::Length(1),
+                Constraint::Length(3),
             ])
             .split(area);
 
         let title_block = Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Magenta))
+            .border_style(Style::default().fg(Color::LightMagenta))
             .title(" playit.gg ");
 
         let lines: Vec<Line> = message
@@ -473,7 +511,7 @@ impl TuiApp {
             .wrap(Wrap { trim: false });
 
         frame.render_widget(paragraph, chunks[1]);
-        render_help_bar(frame, chunks[2], quit_confirm);
+        render_help_bar(frame, chunks[2], session_mode, quit_confirm);
     }
 }
 
@@ -491,7 +529,7 @@ fn status_message(status: &ServiceStatus) -> Option<String> {
 
     if let Some(error) = &status.last_error {
         return Some(format!(
-            "playit service status: {} ({})",
+            "playit agent status: {} ({})",
             service_phase_label(status),
             error.message
         ));
@@ -501,7 +539,7 @@ fn status_message(status: &ServiceStatus) -> Option<String> {
         None
     } else {
         Some(format!(
-            "playit service status: {}",
+            "playit agent status: {}",
             service_phase_label(status)
         ))
     }
@@ -526,7 +564,7 @@ fn agent_over_limit_guidance() -> String {
 }
 
 fn agent_over_limit_title() -> &'static str {
-    "The playit service cannot start because this account is over the agent limit."
+    "The playit agent cannot start because this account is over the agent limit."
 }
 
 fn level_label(level: &LogLevel) -> &'static str {
@@ -536,6 +574,61 @@ fn level_label(level: &LogLevel) -> &'static str {
         LogLevel::Info => "INFO",
         LogLevel::Warn => "WARN",
         LogLevel::Error => "ERROR",
+    }
+}
+
+fn user_facing_log(mut entry: LogEntry) -> LogEntry {
+    if entry.target == "playit_agent_core::agent_control::maintained_control"
+        && entry
+            .message
+            .starts_with("control session expired; reconnecting")
+    {
+        entry.message = if entry.message.contains("reason=SessionNotSetup") {
+            "Connecting to playit..."
+        } else {
+            "Connection interrupted; reconnecting..."
+        }
+        .to_string();
+        entry.target = "playit".to_string();
+        entry.level = LogLevel::Info;
+    }
+    entry
+}
+
+#[cfg(test)]
+mod log_presentation_tests {
+    use super::*;
+
+    #[test]
+    fn initial_connection_is_not_presented_as_a_setup_failure() {
+        let entry = user_facing_log(LogEntry {
+            level: LogLevel::Warn,
+            target: "playit_agent_core::agent_control::maintained_control".into(),
+            message: "control session expired; reconnecting, reason=SessionNotSetup".into(),
+            timestamp: 1,
+        });
+        assert_eq!(entry.message, "Connecting to playit...");
+        assert!(matches!(entry.level, LogLevel::Info));
+        assert_eq!(entry.timestamp, 1);
+    }
+
+    #[test]
+    fn reconnection_is_explained_but_authentication_errors_are_preserved() {
+        let mut entry = LogEntry {
+            level: LogLevel::Warn,
+            target: "playit_agent_core::agent_control::maintained_control".into(),
+            message: "control session expired; reconnecting, reason=FlowChanged".into(),
+            timestamp: 1,
+        };
+        assert_eq!(
+            user_facing_log(entry.clone()).message,
+            "Connection interrupted; reconnecting..."
+        );
+        entry.level = LogLevel::Error;
+        entry.message = "failed to authenticate, error=AuthenticationFailed".into();
+        let displayed = user_facing_log(entry.clone());
+        assert_eq!(displayed.message, entry.message);
+        assert!(matches!(displayed.level, LogLevel::Error));
     }
 }
 

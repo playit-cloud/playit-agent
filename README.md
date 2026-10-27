@@ -1,6 +1,6 @@
 # The playit program
 
-* Latest Release: 1.0.X
+* Latest Release: 1.1.X
 * Offical Website: https://playit.gg
 * Offical Downloads: https://playit.gg/download
 * Releases: https://github.com/playit-cloud/playit-agent/releases
@@ -8,7 +8,7 @@
 ---
 
 ** Non deprecated releases of the playit program:
- `0.17.1` and `1.0.X`
+ `0.17.1`, `1.0.X`, and `1.1.X`
 
 ---
 
@@ -23,6 +23,14 @@ Alternatively, you can install via winget (Windows package manager):
 ```sh
 winget install DevelopedMethods.playit
 ```
+
+The installer sets up:
+
+* **The `playit.gg` Windows service** (`playitd`). It starts with Windows, keeps your tunnels online, and retries on its own when the network is unavailable.
+* **The tray icon**. It starts when you sign in and shows whether playit is online. Right-click it to open playit, start or stop the service, open the logs, or turn off "Launch at Login".
+* **The Playit.gg shortcut**. It opens playit and brings the tray icon back if you closed it.
+
+Logs are in `%ProgramData%\playit_gg\logs`. The standalone `playit-windows-x86_64.exe` runs playit in its own window without installing the service.
 
 ### Installing on Ubuntu or Debian
 
@@ -50,12 +58,47 @@ Please only use the playit program if you downloaded it from an offical source o
 
 ### Docker
 
+The container runs the daemon in the foreground and writes plain logs to stdout.
+It requires no terminal or TUI.
+Generate an agent secret key [here](https://playit.gg/account/setup/wizard/new-account/docker/docker-name).
+
+On Linux, use host networking when the game server runs on the Docker host:
+
 ```sh
-docker run --rm -it --net=host -e SECRET_KEY=<secret key> ghcr.io/playit-cloud/playit-agent:latest
+docker run -d --name playit --restart unless-stopped --network host \
+  -e SECRET_KEY=YOUR_AGENT_SECRET ghcr.io/playit-cloud/playit-agent:latest
+docker logs -f playit
+docker stop playit
 ```
 
-> [!NOTE]
-> Secret key can be generated [here](https://playit.gg/account/setup/wizard/new-account/docker/docker-name).
+Alternatively, put the raw secret key in a file and mount it read-only:
+
+```sh
+docker run -d --name playit --restart unless-stopped --network host \
+  --mount type=bind,src=/absolute/path/playit-secret,dst=/run/secrets/playit,readonly \
+  -e SECRET_KEY_FILE=/run/secrets/playit ghcr.io/playit-cloud/playit-agent:latest
+```
+
+Set either `SECRET_KEY` or `SECRET_KEY_FILE`.
+The first positional argument also accepts a secret key for compatibility.
+The secret file contains only the key, without TOML syntax.
+
+With bridge networking, `127.0.0.1` refers to the container itself.
+Set tunnel origins to an address reachable from the container.
+To share a game container's loopback interface, use `--network container:GAME_CONTAINER` instead of `--network host`.
+No inbound port publishing is required for the agent.
+
+Pass daemon options after the image name, such as `--socket-path /tmp/playit.sock`.
+Use `-e PLAYIT_LOG=debug` for more detailed logs.
+Run `docker run --rm ghcr.io/playit-cloud/playit-agent:latest --help` to list daemon options.
+
+Build and test the current source with:
+
+```sh
+docker build -t playit-agent:docker-test .
+docker build --target test .
+./docker/test.sh playit-agent:docker-test
+```
 
 ## Building / Running Locally
 

@@ -7,9 +7,11 @@ use windows_sys::Win32::System::Console::{
     SetConsoleOutputCP, WriteConsoleW,
 };
 use windows_sys::Win32::System::Threading::CreateMutexW;
-use windows_sys::Win32::UI::WindowsAndMessaging::{
-    IDOK, MB_ICONERROR, MB_ICONWARNING, MB_OK, MB_OKCANCEL, MessageBoxW,
+use windows_sys::Win32::UI::Controls::{
+    TASKDIALOG_BUTTON, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0, TD_WARNING_ICON, TDCBF_CANCEL_BUTTON,
+    TDF_ALLOW_DIALOG_CANCELLATION, TaskDialogIndirect,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::{IDCANCEL, MB_ICONERROR, MB_OK, MessageBoxW};
 
 static DEBUG_CONSOLE: AtomicBool = AtomicBool::new(false);
 
@@ -88,16 +90,44 @@ pub(super) fn confirm_warning(title: &str, message: &str) -> bool {
     debug_log(&format!("{title}: {message}"));
     let title = wide(title);
     let message = wide(message);
+    const RESET_AGENT: i32 = 100;
+    let reset_label = wide("Reset Agent");
+    let reset_button = TASKDIALOG_BUTTON {
+        nButtonID: RESET_AGENT,
+        pszButtonText: reset_label.as_ptr(),
+    };
+    let config = TASKDIALOGCONFIG {
+        cbSize: std::mem::size_of::<TASKDIALOGCONFIG>() as u32,
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION,
+        dwCommonButtons: TDCBF_CANCEL_BUTTON,
+        pszWindowTitle: title.as_ptr(),
+        pszMainInstruction: title.as_ptr(),
+        pszContent: message.as_ptr(),
+        Anonymous1: TASKDIALOGCONFIG_0 {
+            pszMainIcon: TD_WARNING_ICON,
+        },
+        cButtons: 1,
+        pButtons: &reset_button,
+        nDefaultButton: IDCANCEL,
+        ..unsafe { std::mem::zeroed() }
+    };
+    let mut selected = IDCANCEL;
     let result = unsafe {
-        MessageBoxW(
+        TaskDialogIndirect(
+            &config,
+            &mut selected,
             std::ptr::null_mut(),
-            message.as_ptr(),
-            title.as_ptr(),
-            MB_OKCANCEL | MB_ICONWARNING,
+            std::ptr::null_mut(),
         )
     };
-
-    result == IDOK
+    if result < 0 {
+        show_error(
+            "Could not open Reset Agent",
+            "The confirmation dialog could not open. The agent has not been reset.",
+        );
+        return false;
+    }
+    selected == RESET_AGENT
 }
 
 pub(super) fn wide(value: &str) -> Vec<u16> {

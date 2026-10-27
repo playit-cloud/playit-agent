@@ -82,6 +82,7 @@ pub struct IpcServer {
     state_cache: Arc<StateCache>,
     secret_path: Option<PathBuf>,
     secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
+    secret_reset_tx: Option<mpsc::Sender<()>>,
     secret_provision_error: ServiceError,
     secret_reset_error: ServiceError,
     api: RwLock<Option<PlayitApi>>,
@@ -95,6 +96,7 @@ impl IpcServer {
         event_tx: broadcast::Sender<ServiceUpdate>,
         secret_path: Option<PathBuf>,
         secret_provision_tx: Option<mpsc::Sender<SecretProvisionRequest>>,
+        secret_reset_tx: Option<mpsc::Sender<()>>,
         secret_provision_error: ServiceError,
         secret_reset_error: ServiceError,
     ) -> Result<Self, IpcError> {
@@ -126,6 +128,7 @@ impl IpcServer {
             state_cache: Arc::new(StateCache::default()),
             secret_path,
             secret_provision_tx,
+            secret_reset_tx,
             secret_provision_error,
             secret_reset_error,
             api: RwLock::new(None),
@@ -143,6 +146,11 @@ impl IpcServer {
 
     pub async fn set_api(&self, api: PlayitApi) {
         *self.api.write().await = Some(api);
+    }
+
+    pub async fn clear_api(&self) {
+        *self.api.write().await = None;
+        *self.guest_login_cache.write().await = None;
     }
 
     pub async fn bind_listener(&self) -> Result<Listener, IpcError> {
@@ -203,8 +211,9 @@ impl IpcServer {
                     })?;
                 let listener = ListenerOptions::new().name(name);
                 #[cfg(target_os = "windows")]
-                let listener = listener
-                    .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
+                let listener = listener.security_descriptor(
+                    crate::windows::pipe_security_descriptor(&self.socket_path)?,
+                );
                 listener.create_tokio().map_err(IpcError::BindFailed)
             }
             IpcEndpoint::Filesystem(path) => {
@@ -213,8 +222,9 @@ impl IpcServer {
                 })?;
                 let listener = ListenerOptions::new().name(name);
                 #[cfg(target_os = "windows")]
-                let listener = listener
-                    .security_descriptor(crate::windows::restricted_pipe_security_descriptor()?);
+                let listener = listener.security_descriptor(
+                    crate::windows::pipe_security_descriptor(&self.socket_path)?,
+                );
                 listener.create_tokio().map_err(IpcError::BindFailed)
             }
         }
@@ -250,6 +260,7 @@ impl IpcServer {
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
+                _ = self.cancel_token.cancelled() => break,
             }
         }
 
@@ -387,8 +398,11 @@ impl IpcServer {
     async fn reset_secret_response(&self) -> ServiceResponse {
         match self.reset_secret().await {
             Ok(message) => {
-                tracing::info!("Secret reset, initiating shutdown");
-                self.cancel_token.cancel();
+                tracing::info!("Secret reset, returning to setup");
+                if let Some(secret_reset_tx) = &self.secret_reset_tx {
+                    // A full buffer means a reset is already pending, which is equivalent.
+                    let _ = secret_reset_tx.try_send(());
+                }
                 ServiceResponse::ResetSecret(CommandResponse {
                     accepted: true,
                     message: Some(message),
@@ -453,7 +467,7 @@ impl IpcServer {
 
         match tokio::fs::remove_file(secret_path).await {
             Ok(()) => Ok(format!(
-                "Deleted secret file at {}. Restart playitd to reprovision a new secret.",
+                "Deleted secret file at {}. playit is now waiting for setup.",
                 secret_path.display()
             )),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(format!(
@@ -607,7 +621,7 @@ fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{IpcServer, protocol_error, try_connect};
     use interprocess::local_socket::tokio::prelude::*;
@@ -622,7 +636,12 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     fn test_socket_path(name: &str) -> String {
-        std::env::temp_dir()
+        let socket_dir = if cfg!(windows) {
+            std::path::PathBuf::from(r"\\.\pipe\")
+        } else {
+            std::env::temp_dir()
+        };
+        socket_dir
             .join(format!(
                 "playitd-ipc-{name}-{}-{}.sock",
                 std::process::id(),
@@ -651,6 +670,7 @@ mod tests {
                 Some(socket_path.clone()),
                 cancel_token.clone(),
                 event_tx,
+                None,
                 None,
                 None,
                 protocol_error(
@@ -699,6 +719,26 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
         serde_json::from_str(line.trim()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn stop_disconnects_clients_while_the_host_process_stays_alive() {
+        let (_server, cancel_token, handle, socket_path) = spawn_test_server("stop-clients").await;
+        let mut subscriber = IpcClient::connect_with_path(&socket_path).await.unwrap();
+        subscriber.subscribe().await.unwrap();
+        let mut controller = IpcClient::connect_with_path(&socket_path).await.unwrap();
+
+        assert!(controller.stop().await.unwrap().accepted);
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Err(error) = subscriber.recv_update().await {
+                    return error.is_connection_closed();
+                }
+            }
+        })
+        .await;
+        shutdown_server(cancel_token, handle).await;
+        assert_eq!(closed, Ok(true), "shutdown left an IPC client connected");
     }
 
     #[tokio::test]

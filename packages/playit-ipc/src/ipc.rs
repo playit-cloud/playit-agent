@@ -664,7 +664,12 @@ mod tests {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     fn test_socket_path(name: &str) -> String {
-        std::env::temp_dir()
+        let socket_dir = if cfg!(windows) {
+            std::path::PathBuf::from(r"\\.\pipe\")
+        } else {
+            std::env::temp_dir()
+        };
+        socket_dir
             .join(format!(
                 "playit-ipc-{name}-{}-{}.sock",
                 std::process::id(),

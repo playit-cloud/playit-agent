@@ -847,10 +847,19 @@ async fn send_tunneled_packet(
 }
 
 async fn recv_tunneled_packet(socket: &UdpSocket) -> (UdpFlow, Vec<u8>, std::net::SocketAddr) {
-    let (len, source, buf) = recv_from_socket(socket).await;
-    let flow = UdpFlow::from_tail(&buf[..len]).expect("parse flow footer");
-    let payload = buf[..len - flow.footer_len()].to_vec();
-    (flow, payload, source)
+    loop {
+        let (len, source, buf) = recv_from_socket(socket).await;
+        if &buf[..len] == b"test-session-token" {
+            socket
+                .send_to(&UDP_CHANNEL_ESTABLISH_ID.to_be_bytes(), source)
+                .await
+                .expect("acknowledge session keepalive");
+            continue;
+        }
+        let flow = UdpFlow::from_tail(&buf[..len]).expect("parse flow footer");
+        let payload = buf[..len - flow.footer_len()].to_vec();
+        return (flow, payload, source);
+    }
 }
 
 async fn recv_from_socket(socket: &UdpSocket) -> (usize, std::net::SocketAddr, [u8; 2048]) {

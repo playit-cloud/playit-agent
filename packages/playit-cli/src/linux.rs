@@ -16,6 +16,19 @@ use crate::{CliError, ui::ConsoleUi};
 
 const PLAYIT_GROUP_NAME: &str = "playit";
 
+pub(crate) fn socket_group_access_message() -> Option<String> {
+    let socket_path = get_default_socket_path();
+    match socket_access_issue(socket_path)? {
+        LinuxSocketAccessIssue::PlayitGroupJoinRequired => {
+            Some(format_playit_group_join_message(socket_path))
+        }
+        LinuxSocketAccessIssue::PlayitGroupRefreshRequired => {
+            Some(format_playit_group_refresh_message(socket_path))
+        }
+        _ => None,
+    }
+}
+
 pub(crate) async fn prepare_installed_service_for_cli(
     console: Option<&mut ConsoleUi>,
     service_manager: LinuxServiceManager,

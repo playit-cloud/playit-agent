@@ -9,8 +9,8 @@ repository = "https://github.com/playit-cloud/playit-agent"
 [dependencies]
 tokio = { workspace = true }
 kanal = "0.1.1"
-playitd = { path = "../playitd", version = "1.0.12" }
-playit-ipc = { path = "../playit-ipc", version = "1.0.12" }
+playitd = { path = "../playitd", version = "1.1.0" }
+playit-ipc = { path = "../playit-ipc", version = "1.1.0" }
 
 [target."cfg(windows)".dependencies]
 image = { version = "0.25", default-features = false, features = ["ico"] }
@@ -26,9 +26,15 @@ windows-sys = { version = "0.59.0", features = [
     "Win32_System_Console",
     "Win32_System_Com",
     "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
     "Win32_Security",
     "Win32_System_Services",
     "Win32_System_Threading",
     "Win32_UI_Shell",
+    "Win32_UI_Controls",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[build-dependencies]
+winres = "0.1"

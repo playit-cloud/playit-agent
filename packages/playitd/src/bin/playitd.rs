@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use playitd::{DaemonOptions, VersionDetails, default_secret_path, load_version_overrides};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Parser)]
 #[command(name = "playitd")]
@@ -31,13 +32,25 @@ struct Cli {
     /// JSON or YAML file containing version overrides
     #[arg(long)]
     version_overrides: Option<PathBuf>,
+
+    /// Run as the installed Windows service (used by the service control manager)
+    #[cfg(target_os = "windows")]
+    #[arg(long, hide = true)]
+    windows_service: bool,
 }
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
+fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
 
-    let mut version = match VersionDetails::from_cargo_package() {
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("playitd failed to start tokio: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    let version = match runtime.block_on(resolve_version(&cli)) {
         Ok(version) => version,
         Err(error) => {
             eprintln!("playitd version error: {error}");
@@ -45,16 +58,21 @@ async fn main() -> std::process::ExitCode {
         }
     };
 
-    if let Some(path) = cli.version_overrides.as_deref() {
-        match load_version_overrides(path).await {
-            Ok(overrides) => version.apply_overrides(overrides),
+    #[cfg(target_os = "windows")]
+    if cli.windows_service {
+        // The service host builds its own runtime on the service thread.
+        drop(runtime);
+        let options = playitd::windows::service_host::service_options(version);
+        return match playitd::windows::service_host::run(options) {
+            Ok(()) => std::process::ExitCode::SUCCESS,
             Err(error) => {
-                eprintln!("playitd version override error: {error}");
-                return std::process::ExitCode::FAILURE;
+                eprintln!("{error}");
+                std::process::ExitCode::FAILURE
             }
-        }
+        };
     }
 
+    let shutdown = CancellationToken::new();
     let options = DaemonOptions {
         secret: cli.secret.clone(),
         secret_path: if cli.secret.is_some() {
@@ -66,13 +84,54 @@ async fn main() -> std::process::ExitCode {
         log_path: cli.log_path,
         platform_docker: cli.platform_docker,
         version,
+        shutdown: Some(shutdown.clone()),
     };
 
-    match playitd::run_daemon(options).await {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("playitd error: {error}");
-            std::process::ExitCode::FAILURE
+    let result = runtime.block_on(async move {
+        if let Err(error) = install_shutdown_handler(shutdown) {
+            eprintln!("Could not install the shutdown signal handler: {error}");
+            return std::process::ExitCode::FAILURE;
         }
+
+        match playitd::run_daemon(options).await {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("playitd error: {error}");
+                std::process::ExitCode::FAILURE
+            }
+        }
+    });
+    // DNS lookups can outlive cancellation when the network is unavailable.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    result
+}
+
+fn install_shutdown_handler(shutdown: CancellationToken) -> std::io::Result<()> {
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        let signal = tokio::select! {
+            result = tokio::signal::ctrl_c() => result.map(|_| "SIGINT"),
+            _ = terminate.recv() => Ok("SIGTERM"),
+        };
+        #[cfg(not(unix))]
+        let signal = tokio::signal::ctrl_c().await.map(|_| "Ctrl+C");
+
+        match signal {
+            Ok(signal) => tracing::info!(signal, "Received shutdown signal, shutting down"),
+            Err(error) => tracing::error!(%error, "Shutdown signal handler failed"),
+        }
+        shutdown.cancel();
+    });
+    Ok(())
+}
+
+async fn resolve_version(cli: &Cli) -> Result<VersionDetails, String> {
+    let mut version = VersionDetails::from_cargo_package()?;
+    if let Some(path) = cli.version_overrides.as_deref() {
+        version.apply_overrides(load_version_overrides(path).await?);
     }
+    Ok(version)
 }

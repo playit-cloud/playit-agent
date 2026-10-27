@@ -131,50 +131,48 @@ fn run_systemctl(
     args: &[&str],
     err_builder: fn(String) -> ServiceManagerError,
 ) -> Result<(), ServiceManagerError> {
-    let output = Command::new("systemctl")
-        .args(args)
-        .output()
-        .map_err(|e| err_builder(format!("Failed to run systemctl: {e}")))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    Err(err_builder(format!(
-        "systemctl {} failed: {}",
-        args.join(" "),
-        stderr
-    )))
+    run_service_command("systemctl", args, err_builder)
 }
 
 fn run_rc_service(
     args: &[&str],
     err_builder: fn(String) -> ServiceManagerError,
 ) -> Result<(), ServiceManagerError> {
-    let output = Command::new("rc-service")
-        .args(args)
-        .output()
-        .map_err(|e| err_builder(format!("Failed to run rc-service: {e}")))?;
+    run_service_command("rc-service", args, err_builder)
+}
 
-    if output.status.success() {
+fn service_command(program: &str, args: &[&str], is_root: bool) -> Command {
+    let mut command = if is_root {
+        Command::new(program)
+    } else {
+        let mut command = Command::new("sudo");
+        command.arg("--").arg(program);
+        command
+    };
+    command.args(args);
+    command
+}
+
+fn run_service_command(
+    program: &str,
+    args: &[&str],
+    err_builder: fn(String) -> ServiceManagerError,
+) -> Result<(), ServiceManagerError> {
+    let is_root = crate::unix_account::current_user_is_root();
+    let display = format!(
+        "{}{} {}",
+        if is_root { "" } else { "sudo " },
+        program,
+        args.join(" ")
+    );
+    let status = service_command(program, args, is_root)
+        .status()
+        .map_err(|error| err_builder(format!("Could not run `{display}`: {error}")))?;
+    if status.success() {
         return Ok(());
     }
-
-    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let detail = if !stderr.is_empty() {
-        stderr
-    } else if !stdout.is_empty() {
-        stdout
-    } else {
-        format!("exit status {}", output.status)
-    };
-
     Err(err_builder(format!(
-        "rc-service {} failed: {}",
-        args.join(" "),
-        detail
+        "`{display}` failed ({status}). Check the service manager output above."
     )))
 }
 
@@ -245,7 +243,8 @@ fn apply_socket_permissions(
 mod tests {
     use super::{
         PLAYIT_SOCKET_GROUP_NAME, PLAYIT_SOCKET_MODE, openrc_start_args, openrc_status_args,
-        openrc_stop_args, socket_permission_target, systemd_start_args, systemd_stop_args,
+        openrc_stop_args, service_command, socket_permission_target, systemd_start_args,
+        systemd_stop_args,
     };
 
     #[test]
@@ -259,6 +258,24 @@ mod tests {
         assert_eq!(openrc_start_args(), ["playit", "start"]);
         assert_eq!(openrc_status_args(), ["playit", "status"]);
         assert_eq!(openrc_stop_args(), ["playit", "stop"]);
+    }
+
+    #[test]
+    fn non_root_service_control_uses_sudo_for_both_managers() {
+        for (program, args) in [
+            ("systemctl", ["start", "playit"]),
+            ("rc-service", ["playit", "stop"]),
+        ] {
+            let command = service_command(program, &args, false);
+            assert_eq!(command.get_program(), "sudo");
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                ["--", program, args[0], args[1]]
+            );
+            let root_command = service_command(program, &args, true);
+            assert_eq!(root_command.get_program(), program);
+            assert_eq!(root_command.get_args().collect::<Vec<_>>(), args);
+        }
     }
 
     #[test]
