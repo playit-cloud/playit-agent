@@ -46,7 +46,7 @@ impl MenuItems {
             start_service: MenuItem::new("Start Service", false, None),
             stop_service: MenuItem::new("Stop Service", false, None),
             reset_agent: MenuItem::new("Reset Agent…", false, None),
-            launch_at_login: CheckMenuItem::new("Launch at Login", true, launch_at_login, None),
+            launch_at_login: CheckMenuItem::new("Show tray at login", true, launch_at_login, None),
             quit: MenuItem::new("Quit Tray", true, None),
         }
     }

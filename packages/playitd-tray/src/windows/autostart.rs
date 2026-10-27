@@ -1,5 +1,5 @@
 //! The installer registers the tray in HKLM\...\Run for every user. Each user can opt out
-//! with "Launch at Login", which is stored per user and checked on `--autostart`.
+//! with "Show tray at login", which is stored per user and checked on `--autostart`.
 
 use std::path::PathBuf;
 use std::ptr::null_mut;

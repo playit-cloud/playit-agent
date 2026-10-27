@@ -11,7 +11,7 @@ use std::ffi::OsString;
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct LaunchOptions {
     /// Started by the Run key at sign-in or by the installer; respects the user's
-    /// "Launch at Login" choice and never shows startup error dialogs.
+    /// "Show tray at login" choice and never shows startup error dialogs.
     pub(crate) autostart: bool,
     /// Started from the Start menu or desktop; also opens the playit window.
     pub(crate) open: bool,
