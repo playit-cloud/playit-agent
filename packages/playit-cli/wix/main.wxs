@@ -251,7 +251,7 @@
             <Publish Dialog="CustomizeDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="99">1</Publish>
 
             <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchTrayAndOpenPlayit">NOT Installed AND NOT WIX_UPGRADE_DETECTED</Publish>
-            <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchTray">NOT Installed AND WIX_UPGRADE_DETECTED</Publish>
+            <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchTray">(NOT Installed AND WIX_UPGRADE_DETECTED) OR (Installed AND NOT (REMOVE~="ALL"))</Publish>
         </UI>
 
         <!-- The banner BMP dimensions are 493 x 58 pixels. -->
