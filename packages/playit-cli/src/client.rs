@@ -41,6 +41,16 @@ pub enum CliTarget {
 }
 
 impl CliTarget {
+    fn check_access(&self) -> Result<(), CliError> {
+        #[cfg(target_os = "linux")]
+        if matches!(self, Self::InstalledService)
+            && let Some(message) = linux::socket_group_access_message()
+        {
+            return Err(CliError::IpcError(message));
+        }
+        Ok(())
+    }
+
     pub fn from_socket_path(socket_path: Option<String>) -> Self {
         match socket_path {
             Some(socket_path) => Self::ExplicitSocket(socket_path),
@@ -66,6 +76,7 @@ pub async fn run_auto_command(
     attach_mode: AttachMode,
     service_manager: ServiceManagerMode,
 ) -> Result<(), CliError> {
+    target.check_access()?;
     #[cfg(target_os = "windows")]
     let portable = match target {
         CliTarget::InstalledService if crate::portable::service_is_missing() => {
@@ -247,6 +258,7 @@ async fn run_attach_command_with_context(
     mode: AttachMode,
     error_context: AttachErrorContext,
 ) -> Result<(), CliError> {
+    target.check_access()?;
     let mut client = connect_target(target)
         .await
         .map_err(|_| initial_attach_error(target, &error_context))?;
@@ -481,6 +493,7 @@ pub async fn run_stop_command(
 }
 
 pub async fn run_status_command(target: &CliTarget) -> Result<(), CliError> {
+    target.check_access()?;
     if !IpcClient::is_running(target.socket_path()).await {
         match target {
             CliTarget::InstalledService => println!("The playit service is not running."),
@@ -654,6 +667,7 @@ pub async fn run_account_login_url_command(target: &CliTarget) -> Result<(), Cli
 }
 
 async fn connect_target(target: &CliTarget) -> Result<IpcClient, CliError> {
+    target.check_access()?;
     IpcClient::connect_with_path(target.socket_path())
         .await
         .map_err(|_| ipc_connection_error())
