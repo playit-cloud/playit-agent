@@ -165,7 +165,7 @@ impl TuiApp {
         if self.service_logs.len() >= SERVICE_LOG_CAPACITY {
             self.service_logs.pop_front();
         }
-        self.service_logs.push_back(entry);
+        self.service_logs.push_back(user_facing_log(entry));
     }
 
     pub fn apply_lifecycle(&mut self, lifecycle: AgentLifecycle) {
@@ -571,6 +571,61 @@ fn level_label(level: &LogLevel) -> &'static str {
         LogLevel::Info => "INFO",
         LogLevel::Warn => "WARN",
         LogLevel::Error => "ERROR",
+    }
+}
+
+fn user_facing_log(mut entry: LogEntry) -> LogEntry {
+    if entry.target == "playit_agent_core::agent_control::maintained_control"
+        && entry
+            .message
+            .starts_with("control session expired; reconnecting")
+    {
+        entry.message = if entry.message.contains("reason=SessionNotSetup") {
+            "Connecting to playit..."
+        } else {
+            "Connection interrupted; reconnecting..."
+        }
+        .to_string();
+        entry.target = "playit".to_string();
+        entry.level = LogLevel::Info;
+    }
+    entry
+}
+
+#[cfg(test)]
+mod log_presentation_tests {
+    use super::*;
+
+    #[test]
+    fn initial_connection_is_not_presented_as_a_setup_failure() {
+        let entry = user_facing_log(LogEntry {
+            level: LogLevel::Warn,
+            target: "playit_agent_core::agent_control::maintained_control".into(),
+            message: "control session expired; reconnecting, reason=SessionNotSetup".into(),
+            timestamp: 1,
+        });
+        assert_eq!(entry.message, "Connecting to playit...");
+        assert!(matches!(entry.level, LogLevel::Info));
+        assert_eq!(entry.timestamp, 1);
+    }
+
+    #[test]
+    fn reconnection_is_explained_but_authentication_errors_are_preserved() {
+        let mut entry = LogEntry {
+            level: LogLevel::Warn,
+            target: "playit_agent_core::agent_control::maintained_control".into(),
+            message: "control session expired; reconnecting, reason=FlowChanged".into(),
+            timestamp: 1,
+        };
+        assert_eq!(
+            user_facing_log(entry.clone()).message,
+            "Connection interrupted; reconnecting..."
+        );
+        entry.level = LogLevel::Error;
+        entry.message = "failed to authenticate, error=AuthenticationFailed".into();
+        let displayed = user_facing_log(entry.clone());
+        assert_eq!(displayed.message, entry.message);
+        assert!(matches!(displayed.level, LogLevel::Error));
     }
 }
 

@@ -63,7 +63,7 @@ pub fn render_header(frame: &mut Frame, area: Rect, agent_data: &AgentData, star
     };
 
     let title_block = Block::default()
-        .title(Line::from(" Agent online ").green())
+        .title(Line::from(" Agent running ").green())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Magenta));
 

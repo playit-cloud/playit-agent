@@ -98,7 +98,7 @@ impl TrayPresentation {
                             ""
                         };
                         (
-                            format!("Agent online - {tunnels}{guest}"),
+                            format!("Agent running - {tunnels}{guest}"),
                             Self {
                                 online: true,
                                 ..running
@@ -148,7 +148,7 @@ mod tests {
         assert!(presentation.online);
         assert_eq!(
             presentation.tooltip,
-            "playit: Agent online - 2 enabled, 0 disabled"
+            "playit: Agent running - 2 enabled, 0 disabled"
         );
         assert!(presentation.can_stop);
         assert!(presentation.can_reset);
@@ -171,7 +171,7 @@ mod tests {
         assert!(presentation.online);
         assert_eq!(
             presentation.status_line,
-            "Agent online - 0 enabled, 2 disabled"
+            "Agent running - 0 enabled, 2 disabled"
         );
     }
 
