@@ -87,13 +87,11 @@ fn main() -> std::process::ExitCode {
         shutdown: Some(shutdown.clone()),
     };
 
-    runtime.block_on(async move {
-        tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                tracing::info!("Received Ctrl+C, shutting down");
-                shutdown.cancel();
-            }
-        });
+    let result = runtime.block_on(async move {
+        if let Err(error) = install_shutdown_handler(shutdown) {
+            eprintln!("Could not install the shutdown signal handler: {error}");
+            return std::process::ExitCode::FAILURE;
+        }
 
         match playitd::run_daemon(options).await {
             Ok(()) => std::process::ExitCode::SUCCESS,
@@ -102,7 +100,32 @@ fn main() -> std::process::ExitCode {
                 std::process::ExitCode::FAILURE
             }
         }
-    })
+    });
+    // DNS lookups can outlive cancellation when the network is unavailable.
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+    result
+}
+
+fn install_shutdown_handler(shutdown: CancellationToken) -> std::io::Result<()> {
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        let signal = tokio::select! {
+            result = tokio::signal::ctrl_c() => result.map(|_| "SIGINT"),
+            _ = terminate.recv() => Ok("SIGTERM"),
+        };
+        #[cfg(not(unix))]
+        let signal = tokio::signal::ctrl_c().await.map(|_| "Ctrl+C");
+
+        match signal {
+            Ok(signal) => tracing::info!(signal, "Received shutdown signal, shutting down"),
+            Err(error) => tracing::error!(%error, "Shutdown signal handler failed"),
+        }
+        shutdown.cancel();
+    });
+    Ok(())
 }
 
 async fn resolve_version(cli: &Cli) -> Result<VersionDetails, String> {
