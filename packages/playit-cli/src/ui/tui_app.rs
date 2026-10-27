@@ -356,16 +356,19 @@ impl TuiApp {
             .iter()
             .map(|tunnel| {
                 let (style, prefix) = if tunnel.is_disabled {
-                    (Style::default().fg(Color::LightRed), "✗ ")
+                    (Style::default().fg(Color::Yellow), "○ ")
                 } else {
                     (Style::default().fg(Color::LightGreen), "● ")
                 };
 
-                let content = if let Some(reason) = &tunnel.disabled_reason {
-                    format!(
-                        "{}{} => (disabled: {})",
-                        prefix, tunnel.display_address, reason
-                    )
+                let content = if tunnel.is_disabled {
+                    let reason = tunnel.disabled_reason.as_deref().unwrap_or("disabled");
+                    let label = if reason.to_ascii_lowercase().starts_with("disabled") {
+                        reason.to_string()
+                    } else {
+                        format!("disabled: {reason}")
+                    };
+                    format!("{}{} — {}", prefix, tunnel.display_address, label)
                 } else {
                     format!(
                         "{}{} => {}",
