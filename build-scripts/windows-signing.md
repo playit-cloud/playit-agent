@@ -18,6 +18,8 @@ For testing without the YubiKey, run:
 
 Select one architecture with `--arch x86_64` or `--arch x86`.
 Run `./windows-build.sh --help` for all options.
+Progress messages go to stdout with UTC timestamps and elapsed times.
+Long-running stages print a status line every 15 seconds, including during SDK downloads, compilation, signing, and Wine shutdown.
 
 ## Requirements
 

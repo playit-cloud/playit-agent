@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/windows/log.sh"
 
 usage() {
   cat <<'HELP'
@@ -41,12 +42,13 @@ case "$architectures" in all|x86_64|x86) ;; *) echo 'Use --arch all, x86_64, or 
 [[ "$(uname -s)" = Linux && "$(uname -m)" = x86_64 ]] || {
   echo 'This pipeline requires an x86_64 Linux host' >&2; exit 1;
 }
+log 'Checking Docker access'
 command -v docker >/dev/null || { echo 'Install Docker before building' >&2; exit 1; }
 docker_cmd=(docker)
 if ! docker info >/dev/null 2>&1; then
   if command -v sudo >/dev/null && sudo -n docker info >/dev/null 2>&1; then
     docker_cmd=(sudo -n docker)
-    echo 'Docker requires root access; using passwordless sudo.'
+    log 'Docker requires root access; using passwordless sudo.'
   else
     echo 'Docker must be running and accessible to this user' >&2
     exit 1
@@ -57,10 +59,12 @@ version="$(awk '/^\[workspace.package\]/{p=1;next} p && /^\[/{exit} p && /^versi
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected a three-part workspace release version' >&2; exit 1; }
 mode=signed
 if "$skip_sign"; then mode=unsigned; fi
+log "Building playit $version for $architectures ($mode)"
 
 certificate="${PLAYIT_SIGN_CERTIFICATE:-$SCRIPT_DIR/digicert.pem}"
 sign_args=()
 if ! "$skip_sign"; then
+  log 'Checking signing tools and certificate'
   for tool in java osslsigncode; do
     command -v "$tool" >/dev/null || { echo "Install $tool, or use --skip-sign for testing" >&2; exit 1; }
   done
@@ -69,6 +73,7 @@ if ! "$skip_sign"; then
     [[ -r "$PLAYIT_SIGN_PIN_FILE" ]] || { echo 'Cannot read PLAYIT_SIGN_PIN_FILE' >&2; exit 1; }
     password="file:$PLAYIT_SIGN_PIN_FILE"
   else
+    log 'Waiting for YubiKey PIN entry on the terminal'
     read -r -s -p 'YubiKey PIN: ' PLAYIT_SIGN_PIN < /dev/tty
     printf '\n' > /dev/tty
     [[ -n "$PLAYIT_SIGN_PIN" ]] || { echo 'The YubiKey PIN must not be empty' >&2; exit 1; }
@@ -95,11 +100,12 @@ if [[ "$EUID" = 0 ]]; then
     "$REPO_DIR/target/windows-release" "$REPO_DIR/target/windows-release/$version" "$output"
 fi
 exec 9> "$build_root/.lock"
+log 'Acquiring build lock'
 flock -n 9 || { echo 'Another Windows build is using this checkout' >&2; exit 1; }
 rm -rf "$work/stage" "$work/msi"
 
 image=playit-windows-builder:rust1.99.1-xwin0.23.1
-"${docker_cmd[@]}" build --tag "$image" "$SCRIPT_DIR/windows"
+run_step 'Preparing compiler image' "${docker_cmd[@]}" build --progress plain --tag "$image" "$SCRIPT_DIR/windows"
 container() {
   "${docker_cmd[@]}" run --rm --init --platform linux/amd64 --user "$uid:$gid" \
     --mount "type=bind,src=$REPO_DIR,dst=/work,readonly" \
@@ -110,8 +116,9 @@ container() {
 }
 sign() {
   if ! "$skip_sign"; then
-    java -jar "$SCRIPT_DIR/jsign-5.0.jar" "${sign_args[@]}" "$1"
-    osslsigncode verify -in "$1"
+    run_step "Signing and timestamping ${1##*/} (touch the YubiKey if requested)" \
+      java -jar "$SCRIPT_DIR/jsign-5.0.jar" "${sign_args[@]}" "$1"
+    run_step "Verifying signature: ${1##*/}" osslsigncode verify -in "$1"
   fi
 }
 
@@ -122,17 +129,17 @@ for suffix in "${suffixes[@]}"; do
     x86_64) target=x86_64-pc-windows-msvc; arch=x64 ;;
     x86) target=i686-pc-windows-msvc; arch=x86 ;;
   esac
-  echo "Building $version for $suffix ($mode)"
-  container build "$target"
+  run_step "Compiling Windows executables ($suffix)" container build "$target"
   # Sign only staged copies. Cargo's unsigned build cache remains reusable.
   for program in playit-cli playitd playitd-tray; do
     sign "$work/stage/$target/release/$program.exe"
   done
-  container package "$target" "$arch" "$suffix" "$version"
+  run_step "Packaging MSI ($suffix)" container package "$target" "$arch" "$suffix" "$version"
   sign "$work/msi/playit-windows-$suffix.msi"
 done
 
 # Publish only after every requested architecture has built and passed verification.
+log 'Copying completed release artifacts'
 rm -f "$output"/playit-windows-*.exe "$output"/playit-windows-*.msi \
   "$output"/playitd-windows-*.exe "$output"/playitd-tray-windows-*.exe
 for suffix in "${suffixes[@]}"; do
@@ -147,6 +154,7 @@ if ! "$skip_sign"; then
     cp "$file" "${file%.*}-signed.${file##*.}"
   done
 fi
+log 'Calculating SHA-256 checksums'
 (cd "$output" && sha256sum -- *.exe *.msi > SHA256SUMS)
 if [[ "$EUID" = 0 ]]; then chown "$uid:$gid" "$output"/*; fi
-echo "Windows artifacts: $output"
+log "Build complete. Windows artifacts: $output"

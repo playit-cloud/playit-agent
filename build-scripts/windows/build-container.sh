@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+source /work/build-scripts/windows/log.sh
 
 export HOME=/cache/home
 export WINEPREFIX=/cache/wine
@@ -8,9 +9,11 @@ mkdir -p "$HOME"
 case "${1:-}" in
   build)
     target="${2:?missing Rust target}"
+    log "Compiling $target; the first build may download the Microsoft SDK and CRT"
     cargo xwin build --locked --release --target "$target" --target-dir /build/cargo \
       --package playit-cli --package playitd --package playitd-tray
     mkdir -p "/build/stage/$target/release"
+    log "Staging executables for $target"
     for program in playit-cli playitd playitd-tray; do
       cp "/build/cargo/$target/release/$program.exe" "/build/stage/$target/release/$program.exe"
     done
