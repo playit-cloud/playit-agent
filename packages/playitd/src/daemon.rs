@@ -1246,6 +1246,9 @@ pub(crate) fn parse_secret_file(content: &str) -> Result<String, ()> {
 }
 
 fn validate_secret(secret: &str) -> Result<String, String> {
+    if secret.is_empty() {
+        return Err("The secret key must not be empty.".to_string());
+    }
     hex::decode(secret)
         .map(|_| secret.to_string())
         .map_err(|_| {
@@ -1517,6 +1520,15 @@ mod tests {
                 .as_nanos(),
             extension,
         ))
+    }
+
+    #[test]
+    fn empty_keys_are_rejected_in_raw_and_toml_secrets() {
+        assert!(super::validate_secret("").is_err());
+        for content in ["", " \n\t", "secret_key = \"\"", "secret_key = \"   \""] {
+            assert!(super::parse_secret_file(content).is_err());
+        }
+        assert_eq!(super::parse_secret_file("00\n"), Ok("00".to_string()));
     }
 
     #[test]

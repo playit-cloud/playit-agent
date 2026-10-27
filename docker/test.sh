@@ -85,6 +85,7 @@ expect_error() {
 expect_error 'Set SECRET_KEY or SECRET_KEY_FILE' "$image"
 expect_error 'Set SECRET_KEY or SECRET_KEY_FILE' "$image" --socket-path /tmp/playit.sock
 expect_error 'Invalid secret passed via --secret' -e SECRET_KEY=not-a-key "$image"
+expect_error 'must not be empty' -e 'SECRET_KEY=   ' "$image"
 expect_error 'Set only one' -e SECRET_KEY=00 -e SECRET_KEY_FILE=/missing "$image"
 expect_error 'readable file' -e SECRET_KEY_FILE=/missing "$image"
 touch "$test_dir/empty"
