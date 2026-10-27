@@ -27,7 +27,7 @@ check_logs() {
 }
 
 start_agent() {
-  docker run -d --name "$name" --network none -e SECRET_KEY=00 "$@" "$image" > "$test_dir/id"
+  docker run -d --name "$name" --network none "$@" > "$test_dir/id"
   for attempt in $(seq 1 50); do
     docker logs "$name" > "$test_dir/stdout" 2> "$test_dir/stderr"
     if grep -q 'Starting playitd' "$test_dir/stdout"; then
@@ -49,18 +49,52 @@ check_exit() {
   docker rm "$name" > /dev/null
 }
 
-start_agent
+start_agent -e SECRET_KEY=00 "$image"
 test "$(docker inspect --format '{{.Config.Tty}} {{.Config.OpenStdin}}' "$name")" = 'false false'
 docker stop --timeout 2 "$name" > /dev/null
 check_exit
 echo 'Docker stop without a terminal: passed'
 
-start_agent -t
+start_agent -t -e SECRET_KEY=00 "$image"
 docker stop --timeout 2 "$name" > /dev/null
 check_exit
 echo 'Docker stop with a terminal: passed'
 
-start_agent
+start_agent -e SECRET_KEY=00 "$image"
 docker kill --signal INT "$name" > /dev/null
 check_exit
 echo 'SIGINT shutdown: passed'
+
+timeout 10 docker run --rm --network none "$image" --help > "$test_dir/help"
+grep -q 'Usage: playitd' "$test_dir/help"
+echo 'Help without credentials: passed'
+
+expect_error() {
+  expected="$1"
+  shift
+  status=0
+  timeout 10 docker run --rm --network none "$@" > "$test_dir/error" 2>&1 || status=$?
+  test "$status" = 1
+  grep -q "$expected" "$test_dir/error"
+}
+
+expect_error 'Set SECRET_KEY or SECRET_KEY_FILE' "$image"
+expect_error 'Set SECRET_KEY or SECRET_KEY_FILE' "$image" --socket-path /tmp/playit.sock
+expect_error 'Invalid secret passed via --secret' -e SECRET_KEY=not-a-key "$image"
+expect_error 'Set only one' -e SECRET_KEY=00 -e SECRET_KEY_FILE=/missing "$image"
+expect_error 'readable file' -e SECRET_KEY_FILE=/missing "$image"
+touch "$test_dir/empty"
+expect_error 'must not be empty' -v "$test_dir:/run/test:ro" -e SECRET_KEY_FILE=/run/test/empty "$image"
+echo 'Configuration errors fail promptly: passed'
+
+printf '00\n' > "$test_dir/secret"
+start_agent -v "$test_dir:/run/test:ro" -e SECRET_KEY_FILE=/run/test/secret "$image"
+docker stop --timeout 2 "$name" > /dev/null
+check_exit
+echo 'Read-only secret file: passed'
+
+start_agent "$image" 00 --socket-path /tmp/playit-test.sock
+docker exec "$name" test -S /tmp/playit-test.sock
+docker stop --timeout 2 "$name" > /dev/null
+check_exit
+echo 'Legacy secret argument and daemon options: passed'
