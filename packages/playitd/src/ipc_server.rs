@@ -260,6 +260,7 @@ impl IpcServer {
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
+                _ = self.cancel_token.cancelled() => break,
             }
         }
 
@@ -620,7 +621,7 @@ fn secret_provisioning_state_error(lifecycle: &AgentLifecycle) -> ServiceError {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::{IpcServer, protocol_error, try_connect};
     use interprocess::local_socket::tokio::prelude::*;
@@ -718,6 +719,26 @@ mod tests {
         let mut line = String::new();
         reader.read_line(&mut line).await.unwrap();
         serde_json::from_str(line.trim()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn stop_disconnects_clients_while_the_host_process_stays_alive() {
+        let (_server, cancel_token, handle, socket_path) = spawn_test_server("stop-clients").await;
+        let mut subscriber = IpcClient::connect_with_path(&socket_path).await.unwrap();
+        subscriber.subscribe().await.unwrap();
+        let mut controller = IpcClient::connect_with_path(&socket_path).await.unwrap();
+
+        assert!(controller.stop().await.unwrap().accepted);
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let Err(error) = subscriber.recv_update().await {
+                    return error.is_connection_closed();
+                }
+            }
+        })
+        .await;
+        shutdown_server(cancel_token, handle).await;
+        assert_eq!(closed, Ok(true), "shutdown left an IPC client connected");
     }
 
     #[tokio::test]
