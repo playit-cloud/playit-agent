@@ -88,8 +88,35 @@ pub enum TuiMode {
     Running,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionMode {
+    Service,
+    Portable,
+    ExternalDaemon,
+}
+
+impl SessionMode {
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Service => "Background service: closing this window keeps tunnels running.",
+            Self::Portable => "Portable mode: closing this window stops the agent and all tunnels.",
+            Self::ExternalDaemon => {
+                "Connected to daemon: closing this window keeps the daemon running."
+            }
+        }
+    }
+
+    pub fn close_question(self) -> &'static str {
+        match self {
+            Self::Portable => "Stop the agent and all tunnels? ",
+            _ => "Close this window? Tunnels will keep running. ",
+        }
+    }
+}
+
 /// Main TUI application state
 pub struct TuiApp {
+    session_mode: SessionMode,
     service_logs: VecDeque<LogEntry>,
     agent_data: AgentData,
     stats: ConnectionStats,
@@ -104,8 +131,9 @@ pub struct TuiApp {
 }
 
 impl TuiApp {
-    pub fn new() -> Self {
+    pub fn new(session_mode: SessionMode) -> Self {
         Self {
+            session_mode,
             service_logs: VecDeque::with_capacity(SERVICE_LOG_CAPACITY),
             agent_data: AgentData::default(),
             stats: ConnectionStats::default(),
@@ -144,10 +172,10 @@ impl TuiApp {
         match lifecycle {
             AgentLifecycle::Running(state) => self.set_agent_data(state.into()),
             AgentLifecycle::WaitingForSecret => {
-                self.set_message("The playit service is waiting for setup to finish.");
+                self.set_message("The playit agent is waiting for setup to finish.");
             }
             AgentLifecycle::HasInvalidSecret(error) => self.set_message(format!(
-                "The playit service has an invalid secret: {}",
+                "The playit agent has an invalid secret: {}",
                 error.message
             )),
             AgentLifecycle::DisabledOverLimit(_) => self.set_message(format!(
@@ -156,14 +184,14 @@ impl TuiApp {
                 agent_over_limit_guidance()
             )),
             AgentLifecycle::Starting => {
-                self.set_message("The playit service is starting...");
+                self.set_message("The playit agent is connecting...");
             }
             AgentLifecycle::Stopping => {
-                self.set_message("The playit service is stopping...");
+                self.set_message("The playit agent is stopping...");
             }
             AgentLifecycle::Error(error) => {
                 self.set_message(format!(
-                    "The playit service reported an error: {}",
+                    "The playit agent reported an error: {}",
                     error.message
                 ));
             }
@@ -264,6 +292,7 @@ impl TuiApp {
         let stats = self.stats.clone();
         let start_time = agent_data.start_time;
         let quit_confirm = self.quit_confirm;
+        let session_mode = self.session_mode;
         let log_entries: Vec<_> = self.service_logs.iter().cloned().collect();
 
         terminal.draw(|frame| {
@@ -271,7 +300,7 @@ impl TuiApp {
 
             match &mode {
                 TuiMode::Message { message } => {
-                    Self::render_message_screen(frame, area, message, quit_confirm);
+                    Self::render_message_screen(frame, area, message, session_mode, quit_confirm);
                     return;
                 }
                 TuiMode::Running => {}
@@ -284,7 +313,7 @@ impl TuiApp {
                     Constraint::Min(8),
                     Constraint::Length(3),
                     Constraint::Length(10),
-                    Constraint::Length(1),
+                    Constraint::Length(3),
                 ])
                 .split(area);
 
@@ -296,7 +325,7 @@ impl TuiApp {
 
             Self::render_logs(frame, chunks[3], &log_entries);
 
-            render_help_bar(frame, chunks[4], quit_confirm);
+            render_help_bar(frame, chunks[4], session_mode, quit_confirm);
         })?;
 
         Ok(())
@@ -365,7 +394,7 @@ impl TuiApp {
     }
 
     fn render_logs(frame: &mut Frame, area: Rect, log_entries: &[LogEntry]) {
-        let title = format!(" Service Logs ({}) [following] ", log_entries.len());
+        let title = format!(" Agent Logs ({}) [following] ", log_entries.len());
 
         let block = Block::default()
             .title(title)
@@ -404,7 +433,13 @@ impl TuiApp {
         frame.render_widget(paragraph, area);
     }
 
-    fn render_message_screen(frame: &mut Frame, area: Rect, message: &str, quit_confirm: bool) {
+    fn render_message_screen(
+        frame: &mut Frame,
+        area: Rect,
+        message: &str,
+        session_mode: SessionMode,
+        quit_confirm: bool,
+    ) {
         use ratatui::layout::Alignment;
 
         let chunks = Layout::default()
@@ -412,7 +447,7 @@ impl TuiApp {
             .constraints([
                 Constraint::Percentage(30),
                 Constraint::Min(10),
-                Constraint::Length(1),
+                Constraint::Length(3),
             ])
             .split(area);
 
@@ -473,7 +508,7 @@ impl TuiApp {
             .wrap(Wrap { trim: false });
 
         frame.render_widget(paragraph, chunks[1]);
-        render_help_bar(frame, chunks[2], quit_confirm);
+        render_help_bar(frame, chunks[2], session_mode, quit_confirm);
     }
 }
 
@@ -491,7 +526,7 @@ fn status_message(status: &ServiceStatus) -> Option<String> {
 
     if let Some(error) = &status.last_error {
         return Some(format!(
-            "playit service status: {} ({})",
+            "playit agent status: {} ({})",
             service_phase_label(status),
             error.message
         ));
@@ -501,7 +536,7 @@ fn status_message(status: &ServiceStatus) -> Option<String> {
         None
     } else {
         Some(format!(
-            "playit service status: {}",
+            "playit agent status: {}",
             service_phase_label(status)
         ))
     }
@@ -526,7 +561,7 @@ fn agent_over_limit_guidance() -> String {
 }
 
 fn agent_over_limit_title() -> &'static str {
-    "The playit service cannot start because this account is over the agent limit."
+    "The playit agent cannot start because this account is over the agent limit."
 }
 
 fn level_label(level: &LogLevel) -> &'static str {

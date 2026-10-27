@@ -7,7 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
 };
 
-use super::tui_app::{AccountStatusInfo, AgentData, ConnectionStats};
+use super::tui_app::{AccountStatusInfo, AgentData, ConnectionStats, SessionMode};
 
 /// Format bytes into a human-readable string
 fn format_bytes(bytes: u64) -> String {
@@ -174,10 +174,21 @@ pub fn render_stats_bar(frame: &mut Frame, area: Rect, stats: &ConnectionStats) 
 }
 
 /// Render the help bar with keybindings
-pub fn render_help_bar(frame: &mut Frame, area: Rect, quit_confirm: bool) {
+pub fn render_help_bar(frame: &mut Frame, area: Rect, mode: SessionMode, quit_confirm: bool) {
+    let chunks = Layout::vertical([Constraint::Min(2), Constraint::Length(1)]).split(area);
+    frame.render_widget(
+        Paragraph::new(mode.description())
+            .style(Style::default().fg(Color::Yellow))
+            .alignment(Alignment::Center)
+            .wrap(ratatui::widgets::Wrap { trim: true }),
+        chunks[0],
+    );
     let help_text = if quit_confirm {
         Line::from(vec![
-            Span::styled("Quit? ", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(
+                mode.close_question(),
+                Style::default().fg(Color::Yellow).bold(),
+            ),
             Span::styled("[y]", Style::default().fg(Color::Green).bold()),
             Span::raw(" Yes  "),
             Span::styled("[n]", Style::default().fg(Color::Red).bold()),
@@ -191,7 +202,10 @@ pub fn render_help_bar(frame: &mut Frame, area: Rect, quit_confirm: bool) {
                     .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(" Quit"),
+            Span::raw(match mode {
+                SessionMode::Portable => " Stop agent",
+                _ => " Close window",
+            }),
         ])
     };
 
@@ -199,5 +213,5 @@ pub fn render_help_bar(frame: &mut Frame, area: Rect, quit_confirm: bool) {
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
 
-    frame.render_widget(help, area);
+    frame.render_widget(help, chunks[1]);
 }

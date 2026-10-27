@@ -12,6 +12,7 @@ use crate::service::{
     InstalledServiceStartState, InstalledServiceStopState, ServiceManagerMode,
     ensure_installed_service_running_for_cli, stop_installed_service_for_cli,
 };
+use crate::ui::tui_app::SessionMode;
 use crate::ui::{ConnectionStats, ConsoleUi, TuiApp};
 use crate::{CliError, run_setup_flow};
 
@@ -275,7 +276,12 @@ async fn run_attach_tui_session(
     target: &CliTarget,
     subscribe: SubscribeResponse,
 ) -> Result<(), CliError> {
-    let mut tui = TuiApp::new();
+    let mode = match target {
+        CliTarget::InstalledService => SessionMode::Service,
+        CliTarget::Portable(_) => SessionMode::Portable,
+        CliTarget::ExplicitSocket(_) => SessionMode::ExternalDaemon,
+    };
+    let mut tui = TuiApp::new(mode);
     tui.apply_status(subscribe.snapshot.status);
     tui.apply_lifecycle(subscribe.snapshot.lifecycle);
     tui.set_stats(ConnectionStats::from(subscribe.snapshot.stats));
