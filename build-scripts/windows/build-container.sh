@@ -10,7 +10,9 @@ case "${1:-}" in
   build)
     target="${2:?missing Rust target}"
     log "Compiling $target; the first build may download the Microsoft SDK and CRT"
+    # Missing CRT PDBs affect debugging, not the release executable.
     cargo xwin build --locked --release --target "$target" --target-dir /build/cargo \
+      --config "target.$target.rustflags=['-C', 'link-arg=/IGNORE:4099']" \
       --package playit-cli --package playitd --package playitd-tray
     mkdir -p "/build/stage/$target/release"
     log "Staging executables for $target"

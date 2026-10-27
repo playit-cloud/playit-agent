@@ -54,6 +54,9 @@ The container contains:
 The WiX and Wine Mono downloads have pinned SHA-256 checksums.
 Signing runs on the Linux host, so the container needs no USB access or PIN.
 
+Release builds suppress [LNK4099](https://learn.microsoft.com/en-us/cpp/error-messages/tool-errors/linker-tools-warning-lnk4099), which reports missing Microsoft CRT debug symbols.
+Runtime code remains linked, and other linker diagnostics remain enabled.
+
 ## PIN and certificate selection
 
 The script prompts for the PIN without displaying it.
