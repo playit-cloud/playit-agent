@@ -133,6 +133,11 @@ for suffix in "${suffixes[@]}"; do
   cp "$work/stage/$target/release/playitd-tray.exe" "$output/playitd-tray-windows-$suffix.exe"
   cp "$work/msi/playit-windows-$suffix.msi" "$output/playit-windows-$suffix.msi"
 done
+if ! "$skip_sign"; then
+  for file in "$output"/*.exe "$output"/*.msi; do
+    cp "$file" "${file%.*}-signed.${file##*.}"
+  done
+fi
 (cd "$output" && sha256sum -- *.exe *.msi > SHA256SUMS)
 if [[ "$EUID" = 0 ]]; then chown "$uid:$gid" "$output"/*; fi
 echo "Windows artifacts: $output"

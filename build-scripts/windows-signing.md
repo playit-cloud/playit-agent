@@ -95,6 +95,7 @@ Each directory contains these files for `x86_64` and `x86`:
 | `SHA256SUMS` | Hashes of the completed artifacts |
 
 Signed artifacts use the same filenames as unsigned artifacts, in separate directories.
+Signed builds also include byte-identical `-signed` aliases for compatibility with the release download scripts.
 Only upload artifacts from the `signed` directory for a release.
 The script replaces the selected output directory's Windows artifacts after all requested architectures pass verification.
 
