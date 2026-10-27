@@ -23,6 +23,7 @@ Run `./windows-build.sh --help` for all options.
 
 Install Docker on the Linux machine.
 The current user must have permission to run containers.
+If passwordless sudo is available, the script uses it for Docker while signing as the current user.
 You can also run `sudo ./windows-build.sh --skip-sign`; generated files retain the invoking user's ownership.
 
 For signed builds, install Java, `osslsigncode`, Yubico's YKCS11 module, and PC/SC support on the host.

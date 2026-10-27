@@ -42,7 +42,16 @@ case "$architectures" in all|x86_64|x86) ;; *) echo 'Use --arch all, x86_64, or 
   echo 'This pipeline requires an x86_64 Linux host' >&2; exit 1;
 }
 command -v docker >/dev/null || { echo 'Install Docker before building' >&2; exit 1; }
-docker info >/dev/null 2>&1 || { echo 'Docker must be running and accessible to this user' >&2; exit 1; }
+docker_cmd=(docker)
+if ! docker info >/dev/null 2>&1; then
+  if command -v sudo >/dev/null && sudo -n docker info >/dev/null 2>&1; then
+    docker_cmd=(sudo -n docker)
+    echo 'Docker requires root access; using passwordless sudo.'
+  else
+    echo 'Docker must be running and accessible to this user' >&2
+    exit 1
+  fi
+fi
 
 version="$(awk '/^\[workspace.package\]/{p=1;next} p && /^\[/{exit} p && /^version = /{gsub(/"/, "", $3);print $3;exit}' "$REPO_DIR/Cargo.toml")"
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Expected a three-part workspace release version' >&2; exit 1; }
@@ -90,9 +99,9 @@ flock -n 9 || { echo 'Another Windows build is using this checkout' >&2; exit 1;
 rm -rf "$work/stage" "$work/msi"
 
 image=playit-windows-builder:rust1.99.1-xwin0.23.1
-docker build --tag "$image" "$SCRIPT_DIR/windows"
+"${docker_cmd[@]}" build --tag "$image" "$SCRIPT_DIR/windows"
 container() {
-  docker run --rm --init --platform linux/amd64 --user "$uid:$gid" \
+  "${docker_cmd[@]}" run --rm --init --platform linux/amd64 --user "$uid:$gid" \
     --mount "type=bind,src=$REPO_DIR,dst=/work,readonly" \
     --mount "type=bind,src=$work,dst=/build" \
     --mount "type=bind,src=$cache,dst=/cache" \
