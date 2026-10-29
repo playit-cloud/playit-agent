@@ -31,7 +31,7 @@ const UDP_STRESS_PACKET_SIZES: [usize; 4] = [32, 128, 512, 1300];
 const UDP_STRESS_BATCH_SIZE: usize = 32;
 
 #[tokio::test]
-async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flow_after_clear() {
+async fn nethernet_relays_nxs_stun_and_gameplay_in_both_directions_and_recovers_after_clear() {
     let tunnel_server = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0))
         .await
         .expect("bind tunnel server");
@@ -43,18 +43,26 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
     let origin_addr = origin_server.local_addr().expect("origin addr");
 
     let lookup = Arc::new(OriginLookup::default());
+    let tunnel = serde_json::from_value(serde_json::json!({
+        "id": "00000000-0000-0000-0000-000000000000",
+        "internal_id": 42,
+        "name": "nethernet-test",
+        "display_address": "public.example:44079",
+        "port_type": "both",
+        "port_count": 1,
+        "tunnel_type": "nethernet",
+        "tunnel_type_display": "NetherNet",
+        "agent_config": {"fields": [
+            {"name": "local_ip", "value": "127.0.0.1"},
+            {"name": "local_port", "value": origin_addr.port().to_string()}
+        ]},
+        "disabled_reason": null
+    }))
+    .expect("tunnel config");
     lookup
-        .update(std::iter::once(OriginResource {
-            tunnel_id: 42,
-            proto: PortProto::Udp,
-            target: OriginTarget::Port {
-                ip: OriginIp::IpAddress(IpAddr::V4(Ipv4Addr::LOCALHOST)),
-                port: origin_addr.port(),
-            },
-            port_count: 0,
-            proxy_protocol: None,
-            nethernet: false,
-        }))
+        .update(std::iter::once(
+            OriginResource::from_agent_tunnel(&tunnel).unwrap(),
+        ))
         .await;
 
     let stats = AgentStats::new();
@@ -63,7 +71,6 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
         lookup,
         Packets::new(64),
         stats.clone(),
-        Arc::new(playit_agent_core::network::nethernet::sessions::NetherNetSessions::new()),
     );
     let mut udp_channel = UdpChannel::new(Packets::new(64))
         .await
@@ -86,7 +93,8 @@ async fn encapsulated_udp_tunnel_relays_in_both_directions_and_recovers_same_flo
 
     let flow = test_flow();
 
-    let origin_payload_1 = b"packet to local origin";
+    let origin_payload_1 =
+        b"\x00\x01\x00\x14\x21\x12\xa4\x42abcdefghijkl\x00\x06\x00\x0dNXS1test:peer\0\0\0";
     send_tunneled_packet(&tunnel_server, channel_addr, flow, origin_payload_1).await;
 
     let (recv_flow_1, recv_packet_1) = timeout(TEST_TIMEOUT, udp_channel.recv())
@@ -227,7 +235,6 @@ async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
             },
             port_count: 0,
             proxy_protocol: None,
-            nethernet: false,
         }))
         .await;
 
@@ -237,7 +244,6 @@ async fn encapsulated_udp_tunnel_supports_ipv6_origin_addresses() {
         lookup,
         Packets::new(64),
         stats.clone(),
-        Arc::new(playit_agent_core::network::nethernet::sessions::NetherNetSessions::new()),
     );
     let mut udp_channel = UdpChannel::new(Packets::new(64))
         .await
@@ -319,7 +325,6 @@ async fn encapsulated_udp_tunnel_isolates_multiple_parallel_flows_and_recovers_t
             },
             port_count: 0,
             proxy_protocol: None,
-            nethernet: false,
         }))
         .await;
 
@@ -329,7 +334,6 @@ async fn encapsulated_udp_tunnel_isolates_multiple_parallel_flows_and_recovers_t
         lookup,
         Packets::new(128),
         stats.clone(),
-        Arc::new(playit_agent_core::network::nethernet::sessions::NetherNetSessions::new()),
     );
     let mut udp_channel = UdpChannel::new(Packets::new(128))
         .await
@@ -431,7 +435,6 @@ async fn udp_tunnel_stress_reports_bitrate_by_packet_size() {
             },
             port_count: 0,
             proxy_protocol: None,
-            nethernet: false,
         }))
         .await;
 
@@ -441,7 +444,6 @@ async fn udp_tunnel_stress_reports_bitrate_by_packet_size() {
         lookup,
         Packets::new(4096),
         stats.clone(),
-        Arc::new(playit_agent_core::network::nethernet::sessions::NetherNetSessions::new()),
     );
     let mut udp_channel = UdpChannel::new(Packets::new(4096))
         .await

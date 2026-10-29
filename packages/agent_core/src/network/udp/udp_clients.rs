@@ -18,7 +18,6 @@ use tokio::{
 
 use crate::network::{
     lan_address::LanAddress,
-    nethernet::{sessions::NetherNetSessions, udp_state::NetherNetUdpState},
     origin_lookup::{OriginLookup, OriginResource},
     proxy_protocol::ProxyProtocolHeader,
 };
@@ -43,18 +42,6 @@ pub struct UdpClients {
 
     new_client_limiter: DefaultDirectRateLimiter,
     stats: AgentStats,
-    nethernet_sessions: Arc<NetherNetSessions>,
-}
-
-pub enum PacketAction {
-    Forward,
-    /// Replace whatever is at this client address. A NetherNet join names the
-    /// state and the Bedrock server socket it forwards to. Ordinary origins
-    /// carry no join and resolve their target once the new client is allowed.
-    Open {
-        join: Option<(NetherNetUdpState, SocketAddr)>,
-    },
-    Drop,
 }
 
 struct Client {
@@ -64,7 +51,6 @@ struct Client {
     target_addr: SocketAddr,
     port_offset: u16,
     flow: UdpFlow,
-    nethernet: Option<NetherNetUdpState>,
 
     /* when dropped, rx task get killed */
     receiver: UdpReceiver,
@@ -117,7 +103,6 @@ impl UdpClients {
         lookup: Arc<OriginLookup>,
         packets: Packets,
         stats: AgentStats,
-        nethernet_sessions: Arc<NetherNetSessions>,
     ) -> Self {
         let (origin_tx, origin_rx) = channel(2048);
 
@@ -133,7 +118,6 @@ impl UdpClients {
             rx: origin_rx,
             new_client_limiter: RateLimiter::direct(build_quota(&settings)),
             stats,
-            nethernet_sessions,
         }
     }
 
@@ -147,7 +131,6 @@ impl UdpClients {
 
             let remove = {
                 receiver_closed
-                || client.nethernet.as_ref().is_some_and(|ice| ice.is_expired(now_ms))
                 ||
                 /* both haven't seen action in over 1m */
                 60_000 < since_tunnel && 60_000 < since_origin
@@ -202,9 +185,6 @@ impl UdpClients {
             return None;
         }
 
-        if let Some(ice) = &mut client.nethernet {
-            ice.establish(packet.packet.as_ref());
-        }
         let port_offset = client.port_offset;
 
         client.from_origin_ts = now_ms;
@@ -251,61 +231,25 @@ impl UdpClients {
             tunnel_id: extension.tunnel_id.get(),
         };
 
-        let route = if origin.nethernet {
-            let sessions = self.nethernet_sessions.clone();
-            let current = self
-                .live_client(&key)
-                .map(|client| (client.nethernet.as_ref(), client.target_addr));
-            NetherNetUdpState::route(
-                packet.as_ref(),
-                key.tunnel_id,
-                flow.src().ip(),
-                now_ms,
-                &sessions,
-                current,
-            )
-        } else if self.live_client(&key).is_some() {
-            PacketAction::Forward
-        } else {
-            PacketAction::Open { join: None }
-        };
-
-        match route {
-            PacketAction::Drop => udp_errors().nethernet_rejected.inc(),
-            PacketAction::Forward => {
-                if let Some(&slot) = self.virtual_client_lookup.get(&key) {
-                    self.forward_to_client(now_ms, slot, extension, &packet)
-                        .await;
-                }
+        if self.live_client(&key).is_some() {
+            if let Some(&slot) = self.virtual_client_lookup.get(&key) {
+                self.forward_to_client(now_ms, slot, extension, &packet)
+                    .await;
             }
-            PacketAction::Open { join } => {
-                if let Some(&slot) = self.virtual_client_lookup.get(&key) {
-                    self.remove_client(&key, slot);
-                }
-                if self.new_client_limiter.check().is_err() {
-                    udp_errors().new_client_ratelimit.inc();
-                    return;
-                }
-                let (nethernet, target_addr) = match join {
-                    Some((nethernet, target_addr)) => (Some(nethernet), target_addr),
-                    None => match origin.resolve_local(extension.port_offset).await {
-                        Some(target_addr) => (None, target_addr),
-                        None => return,
-                    },
-                };
-                self.create_client(
-                    now_ms,
-                    key,
-                    flow,
-                    extension,
-                    packet,
-                    &origin,
-                    target_addr,
-                    nethernet,
-                )
-                .await;
-            }
+            return;
         }
+        if let Some(&slot) = self.virtual_client_lookup.get(&key) {
+            self.remove_client(&key, slot);
+        }
+        if self.new_client_limiter.check().is_err() {
+            udp_errors().new_client_ratelimit.inc();
+            return;
+        }
+        let Some(target_addr) = origin.resolve_local(extension.port_offset).await else {
+            return;
+        };
+        self.create_client(now_ms, key, flow, extension, packet, &origin, target_addr)
+            .await;
     }
 
     /// The client at this address, while its socket is still open.
@@ -365,7 +309,6 @@ impl UdpClients {
         packet: Packet,
         origin: &OriginResource,
         target_addr: SocketAddr,
-        nethernet: Option<NetherNetUdpState>,
     ) {
         let special_lan = matches!(target_addr, SocketAddr::V4(addr) if addr.ip().is_loopback())
             && origin.proxy_protocol.is_none();
@@ -427,7 +370,6 @@ impl UdpClients {
             port_offset: extension.port_offset,
             receiver,
             flow: client_flow,
-            nethernet,
             from_tunnel_ts: now_ms,
             from_origin_ts: now_ms,
         };

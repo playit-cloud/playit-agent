@@ -1,6 +1,5 @@
 pub mod errors;
 pub mod lan_address;
-pub mod nethernet;
 pub mod origin_lookup;
 pub mod proxy_protocol;
 pub mod tcp;
