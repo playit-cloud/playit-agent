@@ -8,7 +8,7 @@
 ---
 
 ** Non deprecated releases of the playit program:
- `0.17.1`, `1.0.X`, and `1.1.X`
+ `1.2.X`
 
 ---
 
