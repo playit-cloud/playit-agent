@@ -1,11 +1,11 @@
 {
   "agent_variant_id": "308943e8-faef-4835-a2ba-270351f72aa3",
   "version_major": 1,
-  "version_minor": 2,
+  "version_minor": 3,
   "version_patch": 0,
   "proto_version": 2,
   "allow_self_managed": true,
-  "release_url": "https://github.com/playit-cloud/playit-agent/releases/tag/v1.2.0",
+  "release_url": "https://github.com/playit-cloud/playit-agent/releases/tag/v1.3.0",
   "schema": {
     "default_schema": {
       "fields": {
@@ -33,7 +33,8 @@
           "value_type": "String",
           "variants": [
             "proxy-protocol-v1",
-            "proxy-protocol-v2"
+            "proxy-protocol-v2",
+            "proxy-protocol-v2-pkt"
           ]
         }
       }
@@ -82,6 +83,42 @@
         },
         "tunnel_type": {
           "details": "https",
+          "name": "tunnel-type"
+        }
+      },
+      {
+        "schema": {
+          "fields": {
+            "local_ip": {
+              "allow_null": false,
+              "default_value": "127.0.0.1",
+              "description": "IP or hostname",
+              "label": "Local IP",
+              "value_type": "String",
+              "variants": null
+            },
+            "local_port": {
+              "allow_null": true,
+              "default_value": null,
+              "description": null,
+              "label": "Local Port",
+              "value_type": "Port",
+              "variants": null
+            },
+            "proxy_protocol": {
+              "allow_null": true,
+              "default_value": null,
+              "description": "Send a PROXY protocol header with every UDP datagram.",
+              "label": "Proxy Protocol",
+              "value_type": "String",
+              "variants": [
+                "proxy-protocol-v2-pkt"
+              ]
+            }
+          }
+        },
+        "tunnel_type": {
+          "details": "nethernet",
           "name": "tunnel-type"
         }
       }

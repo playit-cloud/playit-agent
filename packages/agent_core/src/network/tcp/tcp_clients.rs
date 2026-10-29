@@ -378,7 +378,9 @@ impl Worker {
                                     ) => res,
                                 }
                             }
-                            Some(ProxyProtocol::ProxyProtocolV2) => {
+                            Some(
+                                ProxyProtocol::ProxyProtocolV2 | ProxyProtocol::ProxyProtocolV2Pkt,
+                            ) => {
                                 tokio::select! {
                                     _ = cancel.cancelled() => return,
                                     res = tokio::time::timeout(
