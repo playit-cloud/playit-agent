@@ -1,6 +1,6 @@
 # The playit program
 
-* Latest Release: 1.1.X
+* Latest Release: 1.3.X
 * Offical Website: https://playit.gg
 * Offical Downloads: https://playit.gg/download
 * Releases: https://github.com/playit-cloud/playit-agent/releases
@@ -8,7 +8,7 @@
 ---
 
 ** Non deprecated releases of the playit program:
- `1.2.X`
+ `1.3.X`
 
 ---
 
@@ -99,6 +99,20 @@ docker build -t playit-agent:docker-test .
 docker build --target test .
 ./docker/test.sh playit-agent:docker-test
 ```
+
+## PROXY protocol
+
+Tunnel origin settings support these PROXY protocol modes:
+
+* `proxy-protocol-v1` sends a text header when a TCP connection opens.
+* `proxy-protocol-v2` sends a binary header when a TCP connection or UDP flow opens.
+  For UDP, this header is a separate datagram before the payload.
+* `proxy-protocol-v2-pkt` (v2, every packet) prepends a binary header to every UDP datagram, including the first.
+  On TCP connections, it sends one binary header when the connection opens.
+
+NetherNet offers `proxy-protocol-v2-pkt` as its only PROXY protocol mode.
+PROXY protocol remains optional.
+The origin server must support the selected framing and trust the agent as a relay.
 
 ## Building / Running Locally
 
