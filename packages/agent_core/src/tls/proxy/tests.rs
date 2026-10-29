@@ -491,6 +491,13 @@ async fn proxy_protocol_v2_header_precedes_the_request() {
     assert!(bytes[28..].starts_with(b"GET / HTTP/1.1\r\n"));
 }
 
+#[tokio::test]
+async fn per_packet_proxy_protocol_sends_one_v2_header_on_tcp() {
+    let bytes = capture_upstream_bytes(ProxyProtocol::ProxyProtocolV2Pkt).await;
+    let v2 = capture_upstream_bytes(ProxyProtocol::ProxyProtocolV2).await;
+    assert_eq!(bytes, v2);
+}
+
 fn test_forwarder(upstream: Upstream, timeouts: Timeouts) -> Forwarder {
     let (alive, _) = mpsc::channel(1);
     let executor = TaskExecutor {

@@ -520,7 +520,9 @@ impl Forwarder {
         if let Some((version, header)) = &self.ctx.proxy_protocol {
             let result = match version {
                 ProxyProtocol::ProxyProtocolV1 => header.write_v1_tcp(&mut tcp).await,
-                ProxyProtocol::ProxyProtocolV2 => header.write_v2_tcp(&mut tcp).await,
+                ProxyProtocol::ProxyProtocolV2 | ProxyProtocol::ProxyProtocolV2Pkt => {
+                    header.write_v2_tcp(&mut tcp).await
+                }
             };
             result.map_err(|e| format!("could not write the proxy protocol header: {e}"))?;
         }

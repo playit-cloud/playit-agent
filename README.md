@@ -192,6 +192,20 @@ unchanged, but restricts the files and folders it creates inside it.
 Deleting a domain's folder makes playit request a new certificate the next time it starts.
 Let's Encrypt allows 5 certificates for the same domain each week.
 
+## PROXY protocol
+
+Tunnel origin settings support these PROXY protocol modes:
+
+* `proxy-protocol-v1` sends a text header when a TCP connection opens.
+* `proxy-protocol-v2` sends a binary header when a TCP connection or UDP flow opens.
+  For UDP, this header is a separate datagram before the payload.
+* `proxy-protocol-v2-pkt` (v2, every packet) prepends a binary header to every UDP datagram, including the first.
+  On TCP connections, it sends one binary header when the connection opens.
+
+NetherNet offers `proxy-protocol-v2-pkt` as its only PROXY protocol mode.
+PROXY protocol remains optional.
+The origin server must support the selected framing and trust the agent as a relay.
+
 ## Building / Running Locally
 
 Requires Rust: https://rustup.rs
