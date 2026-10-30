@@ -234,10 +234,11 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
             playitd::macos::uninstall_launch_agent().map_err(|error| {
                 CliError::ServiceError(format!("Failed to uninstall the service: {error}"))
             })?;
-            println!(
-                "Removed the playit background service. Your secret key is still in {}",
-                playitd::macos_launch_agent_secret_path().display()
-            );
+            println!("Removed the playit background service.");
+            let secret_path = playitd::macos_launch_agent_secret_path();
+            if secret_path.exists() {
+                println!("Your secret key is still in {}", secret_path.display());
+            }
         }
         Some(Commands::Reset) => {
             run_reset_command(&target).await?;

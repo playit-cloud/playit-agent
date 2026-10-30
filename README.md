@@ -34,19 +34,19 @@ Logs are in `%ProgramData%\playit_gg\logs`. The standalone `playit-windows-x86_6
 
 ### Installing on macOS
 
-Download `playit-macos-universal.tar.gz` (Apple Silicon and Intel), extract it, and keep `playit` and `playitd` in the same folder. Then run:
+Download `playit-<version>.pkg` (Apple Silicon and Intel) and open it. The installer sets up:
 
-```sh
-./playit
-```
+* **playit.app** in Applications. It lives in the menu bar and shows whether playit is online. Click the icon to open playit, start or stop the service, open the logs, or turn off "Open at Login".
+* **The background service** (`playitd`). It runs as a per-user LaunchAgent, starts when you log in, keeps your tunnels online, and restarts if it crashes.
+* **The `playit` command** in `/usr/local/bin`.
 
-On first run, playit installs a LaunchAgent for your user (`~/Library/LaunchAgents/gg.playit.playitd.plist`) and prints a link to finish setup. No administrator password is needed.
+After installing, playit opens in Terminal with a link to finish setup. Other users on the Mac get the service the first time they open playit.app.
 
-* **The background service** (`playitd`) starts when you log in and keeps your tunnels online. launchd restarts it if it crashes.
-* `playit stop` stops it until you run `playit start` or log in again.
-* `playit uninstall` stops it and removes the LaunchAgent. Your secret stays in `~/Library/Application Support/playit_gg/playit.toml`.
+Logs are in `~/Library/Logs/playit`. Your agent's secret is in `~/Library/Application Support/playit_gg/playit.toml`. To remove playit, choose "Uninstall playit…" from the menu bar icon, or run `sudo /Applications/playit.app/Contents/Resources/uninstall.sh`. Uninstalling keeps the secret, so reinstalling reconnects the same agent.
 
-Logs are in `~/Library/Logs/playit`. To build the package from source, run `build-scripts/package-macos.sh` on a Mac.
+To run playit without installing it, download `playit-macos-universal.tar.gz`, keep `playit` and `playitd` in the same folder, and run `./playit`. It installs the background service for your user on first run; `playit uninstall` removes it.
+
+To build both from source, run `build-scripts/package-macos.sh` on a Mac.
 
 ### Installing on Ubuntu or Debian
 

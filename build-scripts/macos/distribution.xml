@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="2">
+    <title>playit</title>
+    <organization>gg.playit</organization>
+    <domains enable_localSystem="true"/>
+    <options customize="never" require-scripts="true" hostArchitectures="arm64,x86_64"/>
+    <os-version min="11.0"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="gg.playit.pkg"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="gg.playit.pkg" visible="false">
+        <pkg-ref id="gg.playit.pkg"/>
+    </choice>
+    <pkg-ref id="gg.playit.pkg" version="@VERSION@" onConclusion="none">playit-component.pkg</pkg-ref>
+</installer-gui-script>

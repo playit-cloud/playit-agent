@@ -13,25 +13,41 @@ use crate::manager::{INSTALLED_SERVICE_LABEL, InstalledServiceState, ServiceMana
 /// `launchctl` exit status when the job is not loaded in the domain.
 const LAUNCHCTL_NO_SUCH_PROCESS: i32 = 113;
 
-pub fn launch_agent_plist_path() -> PathBuf {
+/// Bundle identifier of playit.app. Login Items in System Settings uses it to show the app's
+/// name and icon for our LaunchAgents.
+pub const APP_BUNDLE_ID: &str = "gg.playit.app";
+
+pub fn user_launch_agent_path(label: &str) -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| ".".into())
         .join("Library")
         .join("LaunchAgents")
-        .join(format!("{INSTALLED_SERVICE_LABEL}.plist"))
+        .join(format!("{label}.plist"))
+}
+
+pub fn launch_agent_plist_path() -> PathBuf {
+    user_launch_agent_path(INSTALLED_SERVICE_LABEL)
 }
 
 pub fn launch_agent_is_installed() -> bool {
     launch_agent_plist_path().exists()
 }
 
-/// The `playitd` binary shipped next to the running executable. The path is not canonicalized,
-/// so a Homebrew symlink stays stable across upgrades.
+/// The `playitd` binary shipped next to the running executable. A `playitd` beside the path
+/// playit was started from wins, so a Homebrew-style symlink pair stays stable across upgrades.
+/// Otherwise the symlink is followed, as for `/usr/local/bin/playit` pointing into playit.app.
 pub fn bundled_playitd_path() -> Result<PathBuf, ServiceManagerError> {
     let exe = std::env::current_exe()?;
     let path = exe.with_file_name("playitd");
     if path.is_file() {
         return Ok(path);
+    }
+
+    if let Ok(resolved) = exe.canonicalize() {
+        let resolved = resolved.with_file_name("playitd");
+        if resolved.is_file() {
+            return Ok(resolved);
+        }
     }
 
     Err(ServiceManagerError::NotAvailable(format!(
@@ -197,6 +213,8 @@ fn launch_agent_plist(playitd_path: &Path) -> String {
     <integer>10</integer>
     <key>StandardErrorPath</key>
     <string>{stderr}</string>
+    <key>AssociatedBundleIdentifiers</key>
+    <string>{APP_BUNDLE_ID}</string>
 </dict>
 </plist>
 "#,
@@ -205,7 +223,7 @@ fn launch_agent_plist(playitd_path: &Path) -> String {
     )
 }
 
-fn xml_escape(value: &str) -> String {
+pub fn xml_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")
