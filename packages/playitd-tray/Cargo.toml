@@ -3,7 +3,7 @@ name = "playitd-tray"
 version.workspace = true
 edition = "2024"
 authors = ["Patrick Lorio <patrick@playit.gg>"]
-description = "Windows tray application for managing the playit background service"
+description = "Windows tray and macOS menu bar application for managing the playit background service"
 repository = "https://github.com/playit-cloud/playit-agent"
 
 [dependencies]
@@ -12,9 +12,17 @@ kanal = "0.1.1"
 playitd = { path = "../playitd", version = "1.2.0" }
 playit-ipc = { path = "../playit-ipc", version = "1.2.0" }
 
-[target."cfg(windows)".dependencies]
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 image = { version = "0.25", default-features = false, features = ["ico"] }
 tray-icon = "0.22"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+dirs = { workspace = true }
+libc = "0.2"
+rfd = { version = "0.15", default-features = false }
+tao = "0.34"
+
+[target."cfg(windows)".dependencies]
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_System_Com",

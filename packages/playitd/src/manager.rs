@@ -134,7 +134,12 @@ pub fn installed_service_state() -> Result<InstalledServiceState, ServiceManager
         return windows_installed_service_state();
     }
 
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::launch_agent_state()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         Err(ServiceManagerError::NotAvailable(
             "service status queries are not supported on this platform".to_string(),
@@ -161,8 +166,13 @@ pub async fn ensure_installed_service_running() -> Result<(), ServiceManagerErro
         return wait_for_installed_service().await;
     }
 
-    #[cfg(not(target_os = "linux"))]
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::install_and_start_launch_agent(&crate::macos::bundled_playitd_path()?)?;
+        wait_for_installed_service().await
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let controller = ServiceController::new()?;
         controller.start()?;
@@ -206,8 +216,12 @@ pub fn stop_installed_service() -> Result<(), ServiceManagerError> {
         return linux::stop_systemd_service();
     }
 
-    #[cfg(not(target_os = "linux"))]
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::macos::stop_launch_agent()
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
     {
         let controller = ServiceController::new()?;
         controller.stop()
@@ -248,10 +262,22 @@ async fn wait_for_installed_service() -> Result<(), ServiceManagerError> {
         }
     }
 
-    Err(ServiceManagerError::StartFailed(format!(
-        "The service did not become reachable within {} seconds",
-        STARTUP_TIMEOUT.as_secs()
-    )))
+    #[cfg(target_os = "macos")]
+    {
+        Err(ServiceManagerError::StartFailed(format!(
+            "The service did not become reachable within {} seconds. Details are in {}",
+            STARTUP_TIMEOUT.as_secs(),
+            crate::macos_launch_agent_log_dir().display()
+        )))
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(ServiceManagerError::StartFailed(format!(
+            "The service did not become reachable within {} seconds",
+            STARTUP_TIMEOUT.as_secs()
+        )))
+    }
 }
 
 #[cfg(target_os = "windows")]

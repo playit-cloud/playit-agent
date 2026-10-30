@@ -3,6 +3,8 @@ mod ipc_server;
 #[cfg(target_os = "linux")]
 pub(crate) mod linux;
 pub mod logging;
+#[cfg(target_os = "macos")]
+pub mod macos;
 pub mod manager;
 pub mod paths;
 #[cfg(unix)]
@@ -19,7 +21,7 @@ pub use paths::default_secret_path;
 #[cfg(target_os = "macos")]
 pub use paths::{
     macos_launch_agent_data_dir, macos_launch_agent_log_dir, macos_launch_agent_log_path,
-    macos_launch_agent_secret_path, macos_launch_agent_socket_path,
+    macos_launch_agent_secret_path, macos_launch_agent_socket_path, macos_launch_agent_stderr_path,
 };
 
 #[cfg(target_os = "windows")]

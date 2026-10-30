@@ -87,9 +87,19 @@ pub async fn ensure_installed_service_running_for_cli(
             }
             #[cfg(not(any(target_os = "linux", target_os = "windows")))]
             ServiceManagerMode::Native => {
+                #[cfg(target_os = "macos")]
+                let newly_installed = !playitd::macos::launch_agent_is_installed();
+
                 ensure_installed_service_running().await.map_err(|error| {
                     CliError::ServiceError(format!("Failed to start service: {error}"))
                 })?;
+
+                #[cfg(target_os = "macos")]
+                if newly_installed {
+                    println!(
+                        "Installed the playit background service. It starts when you log in and keeps your tunnels online.\nRun `playit uninstall` to remove it."
+                    );
+                }
             }
         }
     }

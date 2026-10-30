@@ -48,6 +48,12 @@ pub fn macos_launch_agent_log_path() -> PathBuf {
     macos_launch_agent_log_dir().join("playitd.log")
 }
 
+/// launchd writes panics and other output that bypasses tracing here.
+#[cfg(target_os = "macos")]
+pub fn macos_launch_agent_stderr_path() -> PathBuf {
+    macos_launch_agent_log_dir().join("playitd.stderr.log")
+}
+
 #[cfg(target_os = "windows")]
 pub fn windows_service_data_dir() -> PathBuf {
     std::env::var_os("PROGRAMDATA")
