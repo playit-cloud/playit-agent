@@ -32,6 +32,22 @@ The installer sets up:
 
 Logs are in `%ProgramData%\playit_gg\logs`. The standalone `playit-windows-x86_64.exe` runs playit in its own window without installing the service.
 
+### Installing on macOS
+
+Download `playit-macos-universal.tar.gz` (Apple Silicon and Intel), extract it, and keep `playit` and `playitd` in the same folder. Then run:
+
+```sh
+./playit
+```
+
+On first run, playit installs a LaunchAgent for your user (`~/Library/LaunchAgents/gg.playit.playitd.plist`) and prints a link to finish setup. No administrator password is needed.
+
+* **The background service** (`playitd`) starts when you log in and keeps your tunnels online. launchd restarts it if it crashes.
+* `playit stop` stops it until you run `playit start` or log in again.
+* `playit uninstall` stops it and removes the LaunchAgent. Your secret stays in `~/Library/Application Support/playit_gg/playit.toml`.
+
+Logs are in `~/Library/Logs/playit`. To build the package from source, run `build-scripts/package-macos.sh` on a Mac.
+
 ### Installing on Ubuntu or Debian
 
 ```sh

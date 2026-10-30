@@ -81,6 +81,10 @@ enum Commands {
     /// Show the status of the installed playitd service
     Status,
 
+    /// Stop the background service and remove it from login items. Keeps the secret key
+    #[cfg(target_os = "macos")]
+    Uninstall,
+
     /// Removes the secret key on your system so the playit agent can be re-claimed
     Reset,
 
@@ -225,6 +229,16 @@ async fn run_cli() -> Result<std::process::ExitCode, CliError> {
         Some(Commands::Setup) => {
             run_setup_flow(&mut console, &target, service_manager).await?;
         }
+        #[cfg(target_os = "macos")]
+        Some(Commands::Uninstall) => {
+            playitd::macos::uninstall_launch_agent().map_err(|error| {
+                CliError::ServiceError(format!("Failed to uninstall the service: {error}"))
+            })?;
+            println!(
+                "Removed the playit background service. Your secret key is still in {}",
+                playitd::macos_launch_agent_secret_path().display()
+            );
+        }
         Some(Commands::Reset) => {
             run_reset_command(&target).await?;
         }
@@ -306,6 +320,11 @@ pub async fn run_setup_flow(
 
     #[cfg(target_os = "windows")]
     if let Err(error) = playitd::windows::open_url(&url) {
+        tracing::warn!(%error, "failed to open the setup link in the browser");
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Err(error) = std::process::Command::new("open").arg(&url).status() {
         tracing::warn!(%error, "failed to open the setup link in the browser");
     }
 
