@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use image::ImageFormat;
+use playit_ipc::model::AgentLifecycle;
 use tao::event::{Event, StartCause};
 use tao::event_loop::{ControlFlow, EventLoopBuilder};
 use tao::platform::macos::{ActivationPolicy, EventLoopExtMacOS};
@@ -17,6 +18,7 @@ use super::util::{SingleInstance, confirm_warning, log, show_error};
 use crate::presentation::{ServiceView, TrayPresentation};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
+const AFTER_INSTALL_SETTLE_TIMEOUT: Duration = Duration::from_secs(15);
 const PLAYIT_ICON_BYTES: &[u8] = include_bytes!("../../../playit-cli/wix/Product.ico");
 
 #[derive(Debug)]
@@ -90,8 +92,9 @@ struct AppState {
     refresh_inflight: bool,
     refresh_after_current: bool,
     action_pending: bool,
-    /// Set until the first status arrives after an install, which decides whether to open setup.
-    pending_after_install: bool,
+    /// After an install, the first settled status decides whether to open setup. An upgrade
+    /// restarts the service, so it reports Starting for a moment first.
+    after_install_deadline: Option<Instant>,
 }
 
 pub(super) fn run(options: LaunchOptions) -> Result<(), String> {
@@ -203,7 +206,9 @@ impl AppState {
             refresh_inflight: false,
             refresh_after_current: false,
             action_pending: false,
-            pending_after_install: options.after_install,
+            after_install_deadline: options
+                .after_install
+                .then(|| Instant::now() + AFTER_INSTALL_SETTLE_TIMEOUT),
         })
     }
 
@@ -235,11 +240,15 @@ impl AppState {
             _ => self.action_pending = false,
         }
 
-        if std::mem::take(&mut self.pending_after_install)
-            && needs_setup(&response.view)
-            && let Err(error) = launch_playit()
+        if let Some(deadline) = self.after_install_deadline
+            && (is_settled(&response.view) || Instant::now() >= deadline)
         {
-            log(&format!("failed to open playit after install: {error}"));
+            self.after_install_deadline = None;
+            if needs_setup(&response.view)
+                && let Err(error) = launch_playit()
+            {
+                log(&format!("failed to open playit after install: {error}"));
+            }
         }
 
         self.apply_view(&response.view);
@@ -360,12 +369,22 @@ impl AppState {
     }
 }
 
+fn is_settled(view: &ServiceView) -> bool {
+    !matches!(
+        view,
+        ServiceView::Starting
+            | ServiceView::Stopping
+            | ServiceView::Unknown(_)
+            | ServiceView::Agent(AgentLifecycle::Starting | AgentLifecycle::Stopping)
+    )
+}
+
 fn needs_setup(view: &ServiceView) -> bool {
     matches!(
         view,
         ServiceView::NotInstalled
             | ServiceView::Stopped
-            | ServiceView::Agent(playit_ipc::model::AgentLifecycle::WaitingForSecret)
+            | ServiceView::Agent(AgentLifecycle::WaitingForSecret)
     )
 }
 
