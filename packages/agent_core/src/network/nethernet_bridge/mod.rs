@@ -396,7 +396,8 @@ mod tests {
                 bytes: bridge_fingerprint.as_ref().to_vec(),
             });
             api.start_dtls(false).unwrap();
-            api.start_sctp(false);
+            /* libwebrtc, inside the Bedrock client, sends its own SCTP INIT as well. */
+            api.start_sctp(true);
             api.create_data_channel(ChannelConfig {
                 label: session::RELIABLE_CHANNEL.into(),
                 ordered: true,

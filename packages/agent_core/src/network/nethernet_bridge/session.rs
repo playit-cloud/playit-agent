@@ -217,7 +217,9 @@ pub async fn run(setup: SessionSetup) -> SessionEnd {
         if let Err(error) = api.start_dtls(true) {
             return SessionEnd::Rtc(format!("start dtls: {error}"));
         }
-        api.start_sctp(true);
+        /* The client's libwebrtc always opens the SCTP association. Opening it from both ends
+         * as well collides, and str0m only settles that on its 3 second INIT retransmit. */
+        api.start_sctp(false);
     }
 
     /* Connect to the server while WebRTC sets up; packets wait in the channel meanwhile. */
