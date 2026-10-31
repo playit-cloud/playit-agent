@@ -1,0 +1,61 @@
+{
+  "kind": "nxs-stateless-admission-vectors",
+  "version": 1,
+  "warning": "Public deterministic test material only. Never use fixture keys/nonces in production.",
+  "context": {
+    "keyId": "K001",
+    "secret": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+    "audience": "nxs-stateless-host-v1/0123456789abcdef0123456789abcdef"
+  },
+  "claims": {
+    "expiresAt": 1788484830000,
+    "clientFingerprintHex": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "clientIcePwd": "clientPassword01234567890",
+    "clientSctpPort": 5000,
+    "clientMaxMessageSize": 262144,
+    "networkId": "18446744073709551615",
+    "identityBindingHex": "84f4938e0ed5004eede8f55ff99abb5c"
+  },
+  "clientIceUfrag": "clientFixtureUf",
+  "nonceHex": "000102030405060708090a0b",
+  "now": 1788484800000,
+  "maxTtlMs": 60000,
+  "expected": {
+    "localUfrag": "NXS1K001AAECAwQFBgcICQoLdmyMSn5L1qmXVDtK+5OT1q+/lC0AucGZUHG2cae56GTDJoOujCkB1Q1fdh64sjRS+2Mm1GyEIg5bq9AU9kZ3G14af9B1x9yYizUKhfOODUMu2UdOouEac4USNI/Zf/k+OnhQnQ4Om9k12BdA",
+    "icePwd": "hIrH0fD9ha/MbJHvMD4+Q0poQHaRc4+Y",
+    "ufragLength": 168
+  },
+  "budget": {
+    "headerAscii": 8,
+    "nonceBytes": 12,
+    "fixedPlaintextBytes": 67,
+    "tagBytes": 16,
+    "maxUfragChars": 256,
+    "maxPasswordBytes": 91
+  },
+  "rejections": [
+    "tampered-ciphertext",
+    "expired",
+    "wrong-host",
+    "wrong-profile-incarnation",
+    "wrong-key",
+    "wrong-client-ufrag",
+    "password-over-budget",
+    "noncanonical-base64"
+  ],
+  "identity": {
+    "publicKeyJwk": {
+      "key_ops": [
+        "verify"
+      ],
+      "ext": true,
+      "kty": "EC",
+      "x": "7onqrvcQqP_J5uJk-j3M7KhZqAB3OwxxFkg2XodPmV9KmC7ALcVeK0CQ-pJqX88F",
+      "y": "7mSiEjHsP4o6StG48-3Vvb2BfG8WTuYxmfrYmaS_CZDVHoWibgPWvmkGUbVQG9xq",
+      "crv": "P-384"
+    },
+    "canonicalCpk": "MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAE7onqrvcQqP/J5uJk+j3M7KhZqAB3OwxxFkg2XodPmV9KmC7ALcVeK0CQ+pJqX88F7mSiEjHsP4o6StG48+3Vvb2BfG8WTuYxmfrYmaS/CZDVHoWibgPWvmkGUbVQG9xq",
+    "hmacInputHex": "6e78732d6964656e746974792d62696e64696e672d7631006e78732d73746174656c6573732d686f73742d76312f3031323334353637383961626364656630313233343536373839616263646566004d485977454159484b6f5a497a6a3043415159464b3445454143494459674145376f6e717276635171502f4a35754a6b2b6a334d374b685a714142334f777878466b6732586f64506d56394b6d4337414c6356654b3043512b704a7158383846376d5369456a487350346f3653744734382b33567662324266473857547559786d6672596d61532f435a4456486f576962675057766d6b475562565147397871",
+    "hmacSha256Hex": "84f4938e0ed5004eede8f55ff99abb5cefe2746a8756f5b856d49ecbfe728bb2"
+  }
+}

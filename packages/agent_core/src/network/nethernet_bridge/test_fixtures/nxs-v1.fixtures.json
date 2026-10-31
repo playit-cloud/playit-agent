@@ -1,0 +1,132 @@
+{
+  "warning": "LOCAL CONFORMANCE KEY ONLY. Never deploy this key.",
+  "protocol": "nethernet-external-signaling-v1",
+  "publicKeyJwk": {
+    "key_ops": [
+      "verify"
+    ],
+    "ext": true,
+    "kty": "EC",
+    "x": "7onqrvcQqP_J5uJk-j3M7KhZqAB3OwxxFkg2XodPmV9KmC7ALcVeK0CQ-pJqX88F",
+    "y": "7mSiEjHsP4o6StG48-3Vvb2BfG8WTuYxmfrYmaS_CZDVHoWibgPWvmkGUbVQG9xq",
+    "crv": "P-384"
+  },
+  "privateKeyJwk": {
+    "key_ops": [
+      "sign"
+    ],
+    "ext": true,
+    "kty": "EC",
+    "x": "7onqrvcQqP_J5uJk-j3M7KhZqAB3OwxxFkg2XodPmV9KmC7ALcVeK0CQ-pJqX88F",
+    "y": "7mSiEjHsP4o6StG48-3Vvb2BfG8WTuYxmfrYmaS_CZDVHoWibgPWvmkGUbVQG9xq",
+    "crv": "P-384",
+    "d": "yjEPqO0LygBnf919VCmdziREaPgeFeCT4M4QC_lW1Nvkda9iOoZHuRlQAUUGYua4"
+  },
+  "challenge": {
+    "protocol": "nethernet-external-signaling-v1",
+    "signature": "nxs-es384-v1",
+    "challengeId": "challenge_fixture",
+    "nonce": "8WH8OdS12DO6ju0_",
+    "audience": "https://provider.example",
+    "thumbprint": "FV0R5dHP--qigTPgspmBk6zImSz6BhG0368xJW7Gxlo",
+    "context": {
+      "mode": "attach-instance",
+      "label": "EU caf\u00e9 \ud83e\udd8a \"<proxy>\"",
+      "authorizationId": "auth_fixture",
+      "serviceId": "service_neutral",
+      "registrationId": ""
+    },
+    "contextDigest": "Hu89N906fM9fi_xz3fvGwdVmEVAw46VOpa7SY2Ur9TU",
+    "expiresAt": 1788484800000,
+    "serverTime": 1788484200000,
+    "pow": {
+      "difficulty": 0
+    },
+    "authorization": {
+      "scheme": "bearer-token",
+      "reference": "auth_fixture"
+    }
+  },
+  "proofNonce": "0",
+  "idempotencyKey": "intent_fixture_0001",
+  "proof": {
+    "payload": "[\"nethernet-external-signaling-v1\",\"complete\",\"https://provider.example\",\"challenge_fixture\",\"8WH8OdS12DO6ju0_\",\"FV0R5dHP--qigTPgspmBk6zImSz6BhG0368xJW7Gxlo\",\"Hu89N906fM9fi_xz3fvGwdVmEVAw46VOpa7SY2Ur9TU\",1788484800000,\"0\",\"intent_fixture_0001\"]",
+    "signature": "2tJGHhFSTyyZ0TZH6lu9legkqoSfjX6N5Zu2UyHdwDFPw06GotOQYxdnu3O3QCiknlpthANRMBJ8hFjMNj5D7FPjK6S7bIbkDSNKwpM1SJOSJ6d5khm4cbndFg89QsiA"
+  },
+  "request": {
+    "input": {
+      "audience": "https://provider.example",
+      "method": "POST",
+      "path": "/v1/nxs/heartbeat",
+      "timestamp": 1788484200123,
+      "instanceId": "machine_neutral",
+      "keyId": "key_fixture",
+      "idempotencyKey": "intent_fixture_0001",
+      "generation": 2,
+      "sequence": 17,
+      "body": "{\"example\":\"caf\u00e9 \ud83e\udd8a\"}\n"
+    },
+    "payload": "[\"nethernet-external-signaling-v1\",\"nxs-es384-v1\",\"https://provider.example\",\"POST\",\"/v1/nxs/heartbeat\",1788484200123,\"machine_neutral\",\"key_fixture\",\"intent_fixture_0001\",2,17,\"gbTKXii0H2PwM5KsmHfDXepWMxlOLqblOPv6sqGyh50\"]",
+    "signature": "pDdUgYr7KaB1d5f2ySIXt0EXWhVMplz-WcPmSPrFhNk8wZ0a5YaDm1A01DU0RSkCcmSUuwEeZ3DBFm-xTIMmWr5ITMaXJjIFgkgooo7u6r2EI0wfkTDaxvNS6dtnP5ha",
+    "note": "Signing vector only; the body is not a valid heartbeat."
+  },
+  "rotation": {
+    "note": "The replacement key signs the rotation proof.",
+    "replacementPublicKeyJwk": {
+      "crv": "P-384",
+      "kty": "EC",
+      "x": "IncO1h8BaNhWHP6t5WmCJ5sA2BH39n2ei2HqyeiTAKynnGevEElk-F9ENhqdmEi_",
+      "y": "v4tNzvrJ6Mr3qT1xRq_vO_ODQmtrmiPxTot62yp2VuHTtYOY_l3gan12hSs4Vgi3"
+    },
+    "replacementPrivateKeyJwk": {
+      "crv": "P-384",
+      "d": "GMUjdLGZLyhNDx6C9e2SMEvQHceduqQwnBnU6-fvoRndsKtMeHPevmpVHMlla4Ft",
+      "kty": "EC",
+      "x": "IncO1h8BaNhWHP6t5WmCJ5sA2BH39n2ei2HqyeiTAKynnGevEElk-F9ENhqdmEi_",
+      "y": "v4tNzvrJ6Mr3qT1xRq_vO_ODQmtrmiPxTot62yp2VuHTtYOY_l3gan12hSs4Vgi3"
+    },
+    "input": {
+      "audience": "https://provider.example",
+      "instanceId": "machine_neutral",
+      "oldKeyId": "key_fixture",
+      "generation": 2,
+      "idempotencyKey": "intent_fixture_rotate_0001"
+    },
+    "payload": "[\"nethernet-external-signaling-v1\",\"rotate\",\"https://provider.example\",\"machine_neutral\",\"key_fixture\",\"otJRr4O9TzZQzfla0J8p8LNaTDkZEvS2xlcRZPcMDUE\",2,\"intent_fixture_rotate_0001\"]",
+    "signature": "tTaHM1PEtN0zE5aHHcBUoHYP4L-xyuS--2_oOKY4BCP8pjlxGHDIGTEcrQxLt6y7eOWBm-MzXuj5Ta9Bfi67LO58SDi7nDtLWARvSslkPrnbB4lMaYtUNIzGhVqsYKH6"
+  },
+  "fleetExamples": {
+    "registration": {
+      "protocol": "nethernet-external-signaling-v1",
+      "provider": "https://provider.example",
+      "registrationId": "reg_fleet_1",
+      "instanceId": "instance_fleet_1",
+      "keyId": "key_fleet_1",
+      "leaseGeneration": 1
+    },
+    "heartbeat": {
+      "capacity": 20,
+      "connectedPlayers": {
+        "count": 3,
+        "sampledAt": 1788799970000
+      },
+      "gameOutcomes": "unavailable",
+      "serverStatus": {
+        "name": "Network listing",
+        "level": "world",
+        "maxPlayerCount": 30000,
+        "gameType": 0
+      },
+      "software": {
+        "name": "ExampleProxy",
+        "version": "1.0.0"
+      },
+      "acceptingPlayers": true
+    },
+    "error": {
+      "code": "capacity_reached",
+      "message": "This provider is not accepting more servers without a token. Add a token, or start the server again later.",
+      "actionUrl": "https://provider.example/tokens"
+    }
+  }
+}

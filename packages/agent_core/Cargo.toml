@@ -31,6 +31,10 @@ governor = "0.10.0"
 crossbeam = "0.8.4"
 slab = "0.4.9"
 slotmap = "1.1.1"
+str0m = { version = "0.24", default-features = false, features = ["rust-crypto"] }
+ring = "0.17"
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

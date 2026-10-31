@@ -2,28 +2,62 @@ use std::{
     collections::HashMap,
     fmt::Display,
     net::{IpAddr, SocketAddr},
+    path::PathBuf,
     str::FromStr,
 };
 
 use playit_agent_proto::PortProto;
 use playit_api_client::api::{AgentRunDataV1, AgentTunnelV1, PortType, ProxyProtocol, TunnelType};
 use tokio::net::lookup_host;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
+
+use crate::network::nethernet_bridge::{self, NetherNetBridges};
 
 #[derive(Default)]
 pub struct OriginLookup {
     map: RwLock<HashMap<Key, OriginResource>>,
+    bridges: Mutex<NetherNetBridges>,
 }
 
 impl OriginLookup {
+    /// Where NetherNet bridges keep their signaling registrations across restarts.
+    pub async fn set_nethernet_state_dir(&self, dir: PathBuf) {
+        self.bridges.lock().await.set_state_dir(dir);
+    }
+
     pub async fn update_from_run_data(&self, run_data: &AgentRunDataV1) {
-        self.update(
-            run_data
-                .tunnels
-                .iter()
-                .filter_map(OriginResource::from_agent_tunnel),
-        )
-        .await;
+        let mut resources = Vec::with_capacity(run_data.tunnels.len());
+        let mut bridged = Vec::new();
+
+        for tunnel in &run_data.tunnels {
+            let Some(resource) = OriginResource::from_agent_tunnel(tunnel) else {
+                continue;
+            };
+            let is_nethernet = tunnel.tunnel_type.as_deref() == Some("nethernet");
+            if is_nethernet {
+                if let Some(token) =
+                    nethernet_bridge::token_for(tunnel.internal_id, tunnel.nethernet_token.as_deref())
+                {
+                    bridged.push((resource.clone(), token));
+                }
+            }
+            resources.push(resource);
+        }
+
+        /* A bridged tunnel's UDP goes to its bridge, which connects to the tunnel's origin. */
+        let bridge_addrs = self.bridges.lock().await.update(bridged).await;
+        for resource in &mut resources {
+            if let Some(addr) = bridge_addrs.get(&resource.tunnel_id) {
+                resource.target = OriginTarget::Port {
+                    ip: OriginIp::IpAddress(addr.ip()),
+                    port: addr.port(),
+                };
+                resource.port_count = 0;
+                resource.proxy_protocol = None;
+            }
+        }
+
+        self.update(resources.into_iter()).await;
     }
 
     pub async fn update<I: Iterator<Item = OriginResource>>(&self, resources: I) {
@@ -302,6 +336,7 @@ mod tests {
             tunnel_type_display: "test".to_owned(),
             agent_config: AgentTunnelConfig { fields },
             disabled_reason: None,
+            nethernet_token: None,
         }
     }
 

@@ -568,6 +568,14 @@ async fn run_agent_session(
     mut secret_code: String,
 ) -> Result<SessionEnd, DaemonError> {
     let lookup = Arc::new(OriginLookup::default());
+    let nethernet_state_dir = secret_source
+        .secret_path()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .or_else(|| dirs::data_local_dir().map(|dir| dir.join("playit_gg")));
+    if let Some(dir) = nethernet_state_dir {
+        lookup.set_nethernet_state_dir(dir).await;
+    }
     let mut consecutive_failures: u32 = 0;
 
     loop {

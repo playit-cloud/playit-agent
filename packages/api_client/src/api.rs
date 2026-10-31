@@ -1025,6 +1025,9 @@ pub struct AgentTunnelV1 {
 	pub tunnel_type_display: String,
 	pub agent_config: AgentTunnelConfig,
 	pub disabled_reason: Option<std::borrow::Cow<'static,str>>,
+	/// Present on NetherNet tunnels whose agent hosts the players itself.
+	#[serde(default, skip_serializing_if = "Option::is_none")]
+	pub nethernet_token: Option<String>,
 }
 
 
