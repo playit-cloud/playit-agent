@@ -5,9 +5,10 @@
 //! no longer sees the player's Xbox identity and treats returning players as new ones.
 //!
 //! The bridge replaces the proxy. It registers with playit's NetherNet signaling service using
-//! the tunnel's token, terminates each player's WebRTC connection, and relays their game
-//! packets to the server over RakNet without decoding them. The server keeps `online-mode=true`
-//! and authenticates players itself, exactly as it did on a plain Bedrock tunnel.
+//! the tunnel's token and terminates each player's WebRTC connection. For each player it opens
+//! a second NetherNet connection to the server (`transport=nethernet`) through the server's own
+//! HTTP signaling, and copies data channel messages between the two without decoding them. The
+//! server keeps `online-mode=true` and authenticates players itself.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -21,13 +22,14 @@ use tokio::sync::{mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use self::admission::{AdmissionKeys, UsedTokens};
+use self::bds::{Signaling, SignalingIdentity};
 use self::nxs::{HostProfile, NxsHost, NxsToken, ServerSample};
 use crate::network::origin_lookup::OriginResource;
 use crate::utils::now_milli;
 
 pub mod admission;
+pub mod bds;
 pub mod nxs;
-pub mod raknet;
 pub mod session;
 pub mod stun;
 
@@ -84,7 +86,10 @@ impl NetherNetBridges {
     /// Starts, updates, or stops bridges so exactly `wanted` run. Each entry is the tunnel's
     /// own origin (the Bedrock server) and its token. Returns each bridge's local address,
     /// where the tunnel's UDP should go instead.
-    pub async fn update(&mut self, wanted: Vec<(OriginResource, NxsToken)>) -> HashMap<u64, SocketAddr> {
+    pub async fn update(
+        &mut self,
+        wanted: Vec<(OriginResource, NxsToken)>,
+    ) -> HashMap<u64, SocketAddr> {
         let mut keep = HashMap::new();
         for (origin, token) in wanted {
             let tunnel_id = origin.tunnel_id;
@@ -105,10 +110,17 @@ impl NetherNetBridges {
         }
         /* Bridges left in `self.running` are no longer wanted; dropping them stops them. */
         self.running = keep;
-        self.running.iter().map(|(id, running)| (*id, running.local_addr)).collect()
+        self.running
+            .iter()
+            .map(|(id, running)| (*id, running.local_addr))
+            .collect()
     }
 
-    async fn start(&self, origin: OriginResource, token: NxsToken) -> std::io::Result<RunningBridge> {
+    async fn start(
+        &self,
+        origin: OriginResource,
+        token: NxsToken,
+    ) -> std::io::Result<RunningBridge> {
         let socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)).await?;
         let local_addr = socket.local_addr()?;
         let cert = str0m::crypto::from_feature_flags()
@@ -131,7 +143,8 @@ impl NetherNetBridges {
 
         let tunnel_id = origin.tunnel_id;
         let (origin_tx, origin_rx) = watch::channel(origin);
-        let (keys_tx, keys_rx) = watch::channel(Arc::new(AdmissionKeys::new(&incarnation, Vec::new())));
+        let (keys_tx, keys_rx) =
+            watch::channel(Arc::new(AdmissionKeys::new(&incarnation, Vec::new())));
         let cancel = CancellationToken::new();
 
         let state_path = self
@@ -139,14 +152,20 @@ impl NetherNetBridges {
             .as_ref()
             .map(|dir| dir.join(format!("nethernet-{tunnel_id}.json")));
         if state_path.is_none() {
-            tracing::warn!(tunnel_id, "no state directory for NetherNet registration; it will not survive a restart");
+            tracing::warn!(
+                tunnel_id,
+                "no state directory for NetherNet registration; it will not survive a restart"
+            );
         }
 
+        let signaling = Arc::new(Signaling::default());
         let host = NxsHost::new(token.clone(), state_path, profile, keys_tx);
         let status_origin = origin_rx.clone();
+        let status_signaling = signaling.clone();
         tokio::spawn(host.run(cancel.child_token(), move || {
             let origin = status_origin.borrow().clone();
-            sample_server(origin)
+            let signaling = status_signaling.clone();
+            async move { sample_server(&signaling, origin).await }
         }));
 
         tokio::spawn(
@@ -154,6 +173,8 @@ impl NetherNetBridges {
                 socket: Arc::new(socket),
                 local_addr,
                 cert,
+                signaling,
+                identity: Arc::new(SignalingIdentity::generate()),
                 keys: keys_rx,
                 origin: origin_rx,
                 sessions: HashMap::new(),
@@ -172,25 +193,33 @@ impl NetherNetBridges {
     }
 }
 
-async fn sample_server(origin: OriginResource) -> ServerSample {
+async fn sample_server(signaling: &Signaling, origin: OriginResource) -> ServerSample {
     let sampled_at_ms = now_milli();
     let Some(server) = origin.resolve_local(0).await else {
         return ServerSample::default();
     };
-    match raknet::query_status(server, STATUS_TIMEOUT).await {
+    match signaling.status(server, STATUS_TIMEOUT).await {
         Some(status) => ServerSample {
             reachable: true,
-            name: if status.motd.trim().is_empty() { DEFAULT_SERVER_NAME.to_string() } else { status.motd },
+            name: if status.name.trim().is_empty() {
+                DEFAULT_SERVER_NAME.to_string()
+            } else {
+                status.name
+            },
             level: status.level,
             players: status.players,
-            max_players: if status.max_players == 0 { DEFAULT_MAX_PLAYERS } else { status.max_players },
+            max_players: if status.max_players == 0 {
+                DEFAULT_MAX_PLAYERS
+            } else {
+                status.max_players
+            },
             game_type: status.game_type,
             protocol: status.protocol,
             version: status.version,
             sampled_at_ms,
         },
         None => {
-            tracing::warn!(%server, "Bedrock server did not answer a status ping; NetherNet players are paused until it does");
+            tracing::warn!(%server, "Bedrock server did not answer at its NetherNet signaling port (is it set to transport=nethernet?); players are paused until it does");
             ServerSample {
                 sampled_at_ms,
                 ..ServerSample::default()
@@ -203,6 +232,8 @@ struct Listener {
     socket: Arc<UdpSocket>,
     local_addr: SocketAddr,
     cert: DtlsCert,
+    signaling: Arc<Signaling>,
+    identity: Arc<SignalingIdentity>,
     keys: watch::Receiver<Arc<AdmissionKeys>>,
     origin: watch::Receiver<OriginResource>,
     sessions: HashMap<SocketAddr, mpsc::Sender<Vec<u8>>>,
@@ -258,7 +289,10 @@ impl Listener {
 
             let origin = self.origin.borrow().clone();
             let Some(server) = origin.resolve_local(0).await else {
-                tracing::warn!(tunnel_id = origin.tunnel_id, "could not resolve the Bedrock server address for a NetherNet player");
+                tracing::warn!(
+                    tunnel_id = origin.tunnel_id,
+                    "could not resolve the Bedrock server address for a NetherNet player"
+                );
                 continue;
             };
 
@@ -272,6 +306,8 @@ impl Listener {
                 socket: self.socket.clone(),
                 cert: self.cert.clone(),
                 server,
+                signaling: self.signaling.clone(),
+                identity: self.identity.clone(),
                 first_packet: packet.to_vec(),
                 from_client: rx,
             };
@@ -309,8 +345,8 @@ mod tests {
     /// Plays a Bedrock client against the bridge: ICE and DTLS through an admission token,
     /// then a RequestNetworkSettings batch that only a real server answers.
     ///
-    /// Needs a Bedrock Dedicated Server with `transport=raknet`:
-    /// `NETHERNET_TEST_BDS=127.0.0.1:19232 cargo test -p playit-agent-core -- --ignored bridge_reaches`
+    /// Needs a Bedrock Dedicated Server with `transport=nethernet`, at its `server-port`:
+    /// `NETHERNET_TEST_BDS=127.0.0.1:19232 NETHERNET_TEST_PROTOCOL=<protocol> cargo test -p playit-agent-core -- --ignored bridge_reaches`
     #[tokio::test]
     #[ignore]
     async fn bridge_reaches_bedrock_server() {
@@ -322,10 +358,15 @@ mod tests {
             .unwrap_or_else(|_| "127.0.0.1:19232".into())
             .parse()
             .unwrap();
-        let protocol = raknet::query_status(server, Duration::from_secs(2))
+        let signaling = Arc::new(Signaling::default());
+        let status = signaling
+            .status(server, Duration::from_secs(2))
             .await
-            .expect("server answers status ping")
-            .protocol
+            .expect("server answers at its signaling port");
+        let protocol: u32 = std::env::var("NETHERNET_TEST_PROTOCOL")
+            .ok()
+            .and_then(|protocol| protocol.parse().ok())
+            .or(status.protocol)
             .unwrap_or(2225);
 
         /* Bridge side. */
@@ -333,7 +374,8 @@ mod tests {
         let bridge_addr = socket.local_addr().unwrap();
         let provider = str0m::crypto::from_feature_flags();
         let bridge_cert = provider.dtls_provider.generate_certificate().unwrap();
-        let bridge_fingerprint = ring::digest::digest(&ring::digest::SHA256, &bridge_cert.certificate);
+        let bridge_fingerprint =
+            ring::digest::digest(&ring::digest::SHA256, &bridge_cert.certificate);
         let (_keys_tx, keys_rx) = watch::channel(Arc::new(fixture_keys()));
         let origin = OriginResource {
             tunnel_id: 1,
@@ -352,6 +394,8 @@ mod tests {
                 socket: Arc::new(socket),
                 local_addr: bridge_addr,
                 cert: bridge_cert,
+                signaling,
+                identity: Arc::new(SignalingIdentity::generate()),
                 keys: keys_rx,
                 origin: origin_rx,
                 sessions: HashMap::new(),
@@ -362,14 +406,21 @@ mod tests {
 
         /* Client side: what the signaling service would have handed a player. */
         let client_cert = provider.dtls_provider.generate_certificate().unwrap();
-        let client_fingerprint: [u8; 32] = ring::digest::digest(&ring::digest::SHA256, &client_cert.certificate)
-            .as_ref()
-            .try_into()
-            .unwrap();
+        let client_fingerprint: [u8; 32] =
+            ring::digest::digest(&ring::digest::SHA256, &client_cert.certificate)
+                .as_ref()
+                .try_into()
+                .unwrap();
         let client_ufrag = "clientUfragTest";
         let client_password = "clientPassword0123456789";
         let keys = fixture_keys();
-        let token = mint(&keys, client_ufrag, client_password, client_fingerprint, (now_milli() / 1000) as u32 + 60);
+        let token = mint(
+            &keys,
+            client_ufrag,
+            client_password,
+            client_fingerprint,
+            (now_milli() / 1000) as u32 + 60,
+        );
         let host_password = host_ice_password(SECRET.as_bytes(), &audience(INCARNATION), &token);
 
         let client_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -407,16 +458,19 @@ mod tests {
             })
         };
 
-        /* RequestNetworkSettings (id 193) as an uncompressed batch: length, id, protocol. */
-        let mut request = vec![0x06, 0xc1, 0x01];
+        /* One NetherNet segment (no more to follow) holding an uncompressed batch with
+         * RequestNetworkSettings (id 193): length, id, protocol. */
+        let mut request = vec![0x00, 0x06, 0xc1, 0x01];
         request.extend_from_slice(&(protocol as i32).to_be_bytes());
 
         let mut sent = false;
-        let mut assembler = session::SegmentAssembler::default();
         let mut buf = vec![0u8; 2048];
         let deadline = Instant::now() + Duration::from_secs(15);
         let response = 'client: loop {
-            assert!(Instant::now() < deadline, "no NetworkSettings from the server");
+            assert!(
+                Instant::now() < deadline,
+                "no NetworkSettings from the server"
+            );
             let timeout = loop {
                 match rtc.poll_output().unwrap() {
                     Output::Timeout(at) => break at,
@@ -428,22 +482,22 @@ mod tests {
                             &host_password,
                         );
                         let contents = rewritten.as_deref().unwrap_or(&transmit.contents);
-                        client_socket.send_to(contents, transmit.destination).await.unwrap();
+                        client_socket
+                            .send_to(contents, transmit.destination)
+                            .await
+                            .unwrap();
                     }
                     Output::Event(Event::ChannelOpen(id, _)) if id == channel_id && !sent => {
-                        let segment = session::segment(&request).unwrap().remove(0);
-                        assert!(rtc.channel(id).unwrap().write(true, &segment).unwrap());
+                        assert!(rtc.channel(id).unwrap().write(true, &request).unwrap());
                         sent = true;
                     }
-                    Output::Event(Event::ChannelData(data)) => {
-                        if let Some(message) = assembler.push(&data.data).unwrap() {
-                            break 'client message;
-                        }
-                    }
+                    Output::Event(Event::ChannelData(data)) => break 'client data.data,
                     Output::Event(_) => {}
                 }
             };
-            let wait = timeout.saturating_duration_since(Instant::now()).min(Duration::from_millis(50));
+            let wait = timeout
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(50));
             match tokio::time::timeout(wait, client_socket.recv_from(&mut buf)).await {
                 Ok(Ok((len, source))) => {
                     let rewritten = stun::rewrite_username(
@@ -454,14 +508,20 @@ mod tests {
                     );
                     let packet = rewritten.as_deref().unwrap_or(&buf[..len]);
                     let receive = Receive::new(Protocol::Udp, source, client_addr, packet).unwrap();
-                    rtc.handle_input(Input::Receive(Instant::now(), receive)).unwrap();
+                    rtc.handle_input(Input::Receive(Instant::now(), receive))
+                        .unwrap();
                 }
                 _ => rtc.handle_input(Input::Timeout(Instant::now())).unwrap(),
             }
         };
 
-        /* NetworkSettings is packet id 143. */
-        assert_eq!(&response[1..3], &[0x8f, 0x01], "unexpected reply {response:02x?}");
+        /* A single segment whose batch starts with NetworkSettings, packet id 143. */
+        assert_eq!(&response[..1], &[0x00], "unexpected reply {response:02x?}");
+        assert_eq!(
+            &response[2..4],
+            &[0x8f, 0x01],
+            "unexpected reply {response:02x?}"
+        );
         cancel.cancel();
     }
 }

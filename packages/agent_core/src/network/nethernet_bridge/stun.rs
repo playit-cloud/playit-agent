@@ -70,7 +70,7 @@ fn push_attr(out: &mut Vec<u8>, kind: u16, value: &[u8]) {
     out.extend_from_slice(&kind.to_be_bytes());
     out.extend_from_slice(&(value.len() as u16).to_be_bytes());
     out.extend_from_slice(value);
-    while out.len() % 4 != 0 {
+    while !out.len().is_multiple_of(4) {
         out.push(0);
     }
 }
@@ -84,7 +84,11 @@ fn crc32(data: &[u8]) -> u32 {
     for &byte in data {
         crc ^= byte as u32;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xedb8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -103,7 +107,8 @@ mod tests {
     #[test]
     fn rewritten_request_verifies_with_new_username() {
         let original = binding_request("longtoken:client", "first password");
-        let rewritten = rewrite_username(&original, "longtoken:client", "s:client", "second password").unwrap();
+        let rewritten =
+            rewrite_username(&original, "longtoken:client", "s:client", "second password").unwrap();
 
         /* Strip FINGERPRINT and check MESSAGE-INTEGRITY the way a receiver does. */
         let without_fingerprint = &rewritten[..rewritten.len() - 8];

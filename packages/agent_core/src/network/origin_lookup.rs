@@ -35,9 +35,10 @@ impl OriginLookup {
             };
             let is_nethernet = tunnel.tunnel_type.as_deref() == Some("nethernet");
             if is_nethernet {
-                if let Some(token) =
-                    nethernet_bridge::token_for(tunnel.internal_id, tunnel.nethernet_token.as_deref())
-                {
+                if let Some(token) = nethernet_bridge::token_for(
+                    tunnel.internal_id,
+                    tunnel.nethernet_token.as_deref(),
+                ) {
                     bridged.push((resource.clone(), token));
                 }
             }

@@ -37,13 +37,19 @@ impl NxsToken {
         let mut parts = token.trim().split('.');
         let valid = parts.next() == Some("pnx1")
             && parts.next().is_some_and(|id| id.parse::<u64>().is_ok())
-            && parts.next().is_some_and(|secret| URL_SAFE_NO_PAD.decode(secret).is_ok())
+            && parts
+                .next()
+                .is_some_and(|secret| URL_SAFE_NO_PAD.decode(secret).is_ok())
             && parts.next().is_none();
         valid.then(|| NxsToken(token.trim().to_string()))
     }
 
     pub fn tunnel_id(&self) -> u64 {
-        self.0.split('.').nth(1).and_then(|id| id.parse().ok()).unwrap_or(0)
+        self.0
+            .split('.')
+            .nth(1)
+            .and_then(|id| id.parse().ok())
+            .unwrap_or(0)
     }
 }
 
@@ -65,7 +71,7 @@ pub struct HostProfile {
     pub max_message_size: u32,
 }
 
-/// The Bedrock server's state, as its RakNet status reply reports it.
+/// The Bedrock server's state, as its NetherNet status reply reports it.
 #[derive(Clone, Debug, Default)]
 pub struct ServerSample {
     pub reachable: bool,
@@ -168,12 +174,15 @@ impl MachineKey {
         if let Some(key) = URL_SAFE_NO_PAD
             .decode(&state.state.machine_key)
             .ok()
-            .and_then(|pkcs8| EcdsaKeyPair::from_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, &pkcs8, rng).ok())
+            .and_then(|pkcs8| {
+                EcdsaKeyPair::from_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, &pkcs8, rng).ok()
+            })
         {
             return Self::from_pair(key);
         }
 
-        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, rng).expect("generate P-384 key");
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, rng)
+            .expect("generate P-384 key");
         /* A new key cannot recover the old registration. */
         state.state = SavedState {
             origin: PROVIDER_ORIGIN.to_string(),
@@ -182,7 +191,10 @@ impl MachineKey {
             ..SavedState::default()
         };
         state.save();
-        Self::from_pair(EcdsaKeyPair::from_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, pkcs8.as_ref(), rng).unwrap())
+        Self::from_pair(
+            EcdsaKeyPair::from_pkcs8(&ECDSA_P384_SHA384_FIXED_SIGNING, pkcs8.as_ref(), rng)
+                .unwrap(),
+        )
     }
 
     fn from_pair(pair: EcdsaKeyPair) -> Self {
@@ -206,7 +218,10 @@ impl MachineKey {
 /// RFC 7638 thumbprint of a P-384 public key.
 fn jwk_thumbprint(x: &str, y: &str) -> String {
     let canonical = format!(r#"{{"crv":"P-384","kty":"EC","x":"{x}","y":"{y}"}}"#);
-    URL_SAFE_NO_PAD.encode(ring::digest::digest(&ring::digest::SHA256, canonical.as_bytes()))
+    URL_SAFE_NO_PAD.encode(ring::digest::digest(
+        &ring::digest::SHA256,
+        canonical.as_bytes(),
+    ))
 }
 
 /// The provider signs and verifies JSON arrays exactly as `JSON.stringify` writes them.
@@ -269,7 +284,12 @@ impl std::fmt::Display for NxsError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             NxsError::Transport(error) => write!(f, "{error}"),
-            NxsError::Refused { status, code, message, .. } => {
+            NxsError::Refused {
+                status,
+                code,
+                message,
+                ..
+            } => {
                 write!(f, "{status} {code}")?;
                 if let Some(message) = message {
                     write!(f, ": {message}")?;
@@ -359,7 +379,10 @@ impl NxsHost {
                 }
             };
             self.publish_keys();
-            tracing::info!(tunnel_id = self.token.tunnel_id(), "registered with NetherNet signaling");
+            tracing::info!(
+                tunnel_id = self.token.tunnel_id(),
+                "registered with NetherNet signaling"
+            );
 
             let mut was_routable = None;
             let mut interval;
@@ -372,7 +395,10 @@ impl NxsHost {
                         interval = beat.next;
                         if was_routable != Some(beat.routable) {
                             if beat.routable {
-                                tracing::info!(tunnel_id = self.token.tunnel_id(), "NetherNet tunnel is accepting players");
+                                tracing::info!(
+                                    tunnel_id = self.token.tunnel_id(),
+                                    "NetherNet tunnel is accepting players"
+                                );
                             } else {
                                 tracing::warn!(tunnel_id = self.token.tunnel_id(), reasons = ?beat.reasons, "NetherNet signaling is not routing players to this agent");
                             }
@@ -413,7 +439,11 @@ impl NxsHost {
                 /* Stop routing players here before the agent goes away. */
                 let mut server = sample().await;
                 server.reachable = false;
-                let _ = tokio::time::timeout(Duration::from_secs(3), self.heartbeat(&mut registration, &server, false)).await;
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(3),
+                    self.heartbeat(&mut registration, &server, false),
+                )
+                .await;
                 return;
             }
         }
@@ -433,7 +463,10 @@ impl NxsHost {
                 retire_after: key.retire_after,
             })
             .collect();
-        let _ = self.keys_tx.send(Arc::new(AdmissionKeys::new(&self.profile.incarnation, keys)));
+        let _ = self.keys_tx.send(Arc::new(AdmissionKeys::new(
+            &self.profile.incarnation,
+            keys,
+        )));
     }
 
     async fn discover(&self) -> Result<Duration, NxsError> {
@@ -445,10 +478,17 @@ impl NxsHost {
             .map_err(NxsError::Transport)?;
         let body: Value = Self::read_json(response).await?;
         let lists = |key: &str, value: &str| {
-            body[key].as_array().is_some_and(|items| items.iter().any(|item| item == value))
+            body[key]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item == value))
         };
-        if body["provider"] != self.origin.as_str() || !lists("protocols", PROTOCOL) || !lists("signatures", SIGNATURE_VERSION) {
-            return Err(NxsError::Invalid("discovery does not offer nethernet-external-signaling-v1"));
+        if body["provider"] != self.origin.as_str()
+            || !lists("protocols", PROTOCOL)
+            || !lists("signatures", SIGNATURE_VERSION)
+        {
+            return Err(NxsError::Invalid(
+                "discovery does not offer nethernet-external-signaling-v1",
+            ));
         }
         Ok(body["limits"]["heartbeatIntervalMs"]
             .as_u64()
@@ -508,7 +548,11 @@ impl NxsHost {
 
     async fn recover_by(&mut self, field: &str, id: &str) -> Result<Registration, NxsError> {
         let challenge = self
-            .post_json("/v1/nxs/register", &json!({"protocol": PROTOCOL, field: id}), None)
+            .post_json(
+                "/v1/nxs/register",
+                &json!({"protocol": PROTOCOL, field: id}),
+                None,
+            )
             .await?;
         self.check_challenge(&challenge, "recover")?;
         self.complete(&challenge).await
@@ -531,8 +575,14 @@ impl NxsHost {
             && challenge["contextDigest"] == digest.as_str()
             && context["mode"] == mode
             && challenge["pow"]["difficulty"].as_u64().unwrap_or(0) == 0
-            && challenge["expiresAt"].as_u64().is_some_and(|at| now_ms() < at);
-        if valid { Ok(()) } else { Err(NxsError::Invalid("challenge does not match this host")) }
+            && challenge["expiresAt"]
+                .as_u64()
+                .is_some_and(|at| now_ms() < at);
+        if valid {
+            Ok(())
+        } else {
+            Err(NxsError::Invalid("challenge does not match this host"))
+        }
     }
 
     async fn complete(&mut self, challenge: &Value) -> Result<Registration, NxsError> {
@@ -563,7 +613,9 @@ impl NxsHost {
             match self.post_json("/v1/nxs/complete", &request, None).await {
                 Ok(reply) => return self.accept_registration(&reply),
                 Err(error) if error.is_retryable() => {
-                    let wait = error.retry_after().unwrap_or(Duration::from_millis(250 << attempt.min(4)));
+                    let wait = error
+                        .retry_after()
+                        .unwrap_or(Duration::from_millis(250 << attempt.min(4)));
                     last_error = Some(error);
                     tokio::time::sleep(wait.min(Duration::from_secs(10))).await;
                 }
@@ -574,11 +626,18 @@ impl NxsHost {
     }
 
     fn accept_registration(&mut self, reply: &Value) -> Result<Registration, NxsError> {
-        let field = |name: &str| reply[name].as_str().map(str::to_string).ok_or(NxsError::Invalid("registration is missing ids"));
+        let field = |name: &str| {
+            reply[name]
+                .as_str()
+                .map(str::to_string)
+                .ok_or(NxsError::Invalid("registration is missing ids"))
+        };
         let registration_id = field("registrationId")?;
         let instance_id = field("instanceId")?;
         let key_id = field("keyId")?;
-        let generation = reply["leaseGeneration"].as_u64().ok_or(NxsError::Invalid("registration is missing leaseGeneration"))?;
+        let generation = reply["leaseGeneration"]
+            .as_u64()
+            .ok_or(NxsError::Invalid("registration is missing leaseGeneration"))?;
 
         let saved = &mut self.state.state;
         saved.challenge_id = None;
@@ -601,7 +660,10 @@ impl NxsHost {
     fn read_admission_key(value: &Value) -> Option<SavedKey> {
         let key_id = value["keyId"].as_str()?;
         let secret = value["secret"].as_str()?;
-        let valid_id = key_id.len() == 4 && key_id.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
+        let valid_id = key_id.len() == 4
+            && key_id
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit());
         (valid_id && secret.len() == 43).then(|| SavedKey {
             key_id: key_id.to_string(),
             secret: secret.to_string(),
@@ -616,7 +678,10 @@ impl NxsHost {
         accepting: bool,
     ) -> Result<Heartbeat, NxsError> {
         let now = now_ms();
-        self.state.state.admission_keys.retain(|key| key.retire_after.is_none_or(|at| now < at));
+        self.state
+            .state
+            .admission_keys
+            .retain(|key| key.retire_after.is_none_or(|at| now < at));
 
         let accepting = accepting && server.reachable;
         let max_players = server.max_players.clamp(1, 1_000_000);
@@ -638,7 +703,13 @@ impl NxsHost {
             body["bedrockProtocols"] = json!({"accepted": [protocol], "version": server.version});
         }
 
-        let installed: Vec<&str> = self.state.state.admission_keys.iter().map(|key| key.key_id.as_str()).collect();
+        let installed: Vec<&str> = self
+            .state
+            .state
+            .admission_keys
+            .iter()
+            .map(|key| key.key_id.as_str())
+            .collect();
         if let Some(active) = installed.last() {
             body["installedAdmissionKeyIds"] = json!(installed);
             body["hostProfile"] = json!({
@@ -657,19 +728,28 @@ impl NxsHost {
             });
         }
         if installed.is_empty() {
-            let request_id = self.pending_key_request.get_or_insert_with(|| random_id(&self.rng)).clone();
+            let request_id = self
+                .pending_key_request
+                .get_or_insert_with(|| random_id(&self.rng))
+                .clone();
             body["admissionKeyRequestId"] = json!(request_id);
         }
 
         registration.sequence += 1;
-        let reply = self.signed_post("/v1/nxs/heartbeat", registration, &body).await?;
+        let reply = self
+            .signed_post("/v1/nxs/heartbeat", registration, &body)
+            .await?;
 
         let mut again_soon = false;
         if let Some(key) = Self::read_admission_key(&reply["admissionKey"]) {
-            let requested = reply["admissionKeyRequest"]["id"].as_str() == self.pending_key_request.as_deref();
+            let requested =
+                reply["admissionKeyRequest"]["id"].as_str() == self.pending_key_request.as_deref();
             if requested || self.pending_key_request.is_none() {
                 self.pending_key_request = None;
-                self.state.state.admission_keys.retain(|saved| saved.key_id != key.key_id);
+                self.state
+                    .state
+                    .admission_keys
+                    .retain(|saved| saved.key_id != key.key_id);
                 self.state.state.admission_keys.push(key);
                 self.state.save();
                 self.publish_keys();
@@ -682,10 +762,19 @@ impl NxsHost {
         }
         if let Some(retirements) = reply["admissionKeyRetirements"].as_array() {
             for retirement in retirements {
-                let (Some(key_id), Some(at)) = (retirement["keyId"].as_str(), retirement["retireAfter"].as_u64()) else {
+                let (Some(key_id), Some(at)) = (
+                    retirement["keyId"].as_str(),
+                    retirement["retireAfter"].as_u64(),
+                ) else {
                     continue;
                 };
-                if let Some(saved) = self.state.state.admission_keys.iter_mut().find(|key| key.key_id == key_id) {
+                if let Some(saved) = self
+                    .state
+                    .state
+                    .admission_keys
+                    .iter_mut()
+                    .find(|key| key.key_id == key_id)
+                {
                     saved.retire_after = Some(saved.retire_after.map_or(at, |old| old.min(at)));
                 }
             }
@@ -696,7 +785,12 @@ impl NxsHost {
         let routable = reply["readiness"]["routable"].as_bool().unwrap_or(false);
         let reasons = reply["readiness"]["reasons"]
             .as_array()
-            .map(|reasons| reasons.iter().filter_map(|r| r.as_str().map(str::to_string)).collect())
+            .map(|reasons| {
+                reasons
+                    .iter()
+                    .filter_map(|r| r.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         let next = reply["checkIn"]["afterMillis"]
             .as_u64()
@@ -713,7 +807,12 @@ impl NxsHost {
     }
 
     /// Sends a signed operation, retrying transient failures with the same sequence and body.
-    async fn signed_post(&self, path: &str, registration: &Registration, body: &Value) -> Result<Value, NxsError> {
+    async fn signed_post(
+        &self,
+        path: &str,
+        registration: &Registration,
+        body: &Value,
+    ) -> Result<Value, NxsError> {
         let body = serde_json::to_vec(body).expect("serialize body");
         let idempotency_key = random_id(&self.rng);
 
@@ -754,7 +853,9 @@ impl NxsHost {
             };
             match result {
                 Err(error) if error.is_retryable() && attempt + 1 < ATTEMPTS_PER_REQUEST => {
-                    let wait = error.retry_after().filter(|wait| *wait <= Duration::from_secs(10));
+                    let wait = error
+                        .retry_after()
+                        .filter(|wait| *wait <= Duration::from_secs(10));
                     tokio::time::sleep(wait.unwrap_or(Duration::from_millis(250 << attempt))).await;
                     attempt += 1;
                 }
@@ -763,7 +864,12 @@ impl NxsHost {
         }
     }
 
-    async fn post_json(&self, path: &str, body: &Value, bearer: Option<&str>) -> Result<Value, NxsError> {
+    async fn post_json(
+        &self,
+        path: &str,
+        body: &Value,
+        bearer: Option<&str>,
+    ) -> Result<Value, NxsError> {
         let mut attempt = 0;
         loop {
             let mut request = self
@@ -780,8 +886,14 @@ impl NxsHost {
             };
             match result {
                 /* complete() retries itself; a replayed completion has different semantics. */
-                Err(error) if error.is_retryable() && attempt + 1 < ATTEMPTS_PER_REQUEST && path != "/v1/nxs/complete" => {
-                    let wait = error.retry_after().filter(|wait| *wait <= Duration::from_secs(10));
+                Err(error)
+                    if error.is_retryable()
+                        && attempt + 1 < ATTEMPTS_PER_REQUEST
+                        && path != "/v1/nxs/complete" =>
+                {
+                    let wait = error
+                        .retry_after()
+                        .filter(|wait| *wait <= Duration::from_secs(10));
                     tokio::time::sleep(wait.unwrap_or(Duration::from_millis(250 << attempt))).await;
                     attempt += 1;
                 }

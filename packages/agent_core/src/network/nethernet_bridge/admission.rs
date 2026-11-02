@@ -105,7 +105,12 @@ impl AdmissionKeys {
         Ok(admitted)
     }
 
-    fn open(&self, local_ufrag: &str, remote_ufrag: &str, now_ms: u64) -> Result<Admitted, AdmissionError> {
+    fn open(
+        &self,
+        local_ufrag: &str,
+        remote_ufrag: &str,
+        now_ms: u64,
+    ) -> Result<Admitted, AdmissionError> {
         if MAX_UFRAG_LEN < local_ufrag.len()
             || local_ufrag.len() <= HEADER_LEN
             || !local_ufrag.starts_with(HEADER_PREFIX)
@@ -114,7 +119,10 @@ impl AdmissionKeys {
         }
         let header = &local_ufrag[..HEADER_LEN];
         let key_id = &header[HEADER_PREFIX.len()..];
-        if !key_id.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()) {
+        if !key_id
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit())
+        {
             return Err(AdmissionError::MalformedToken);
         }
 
@@ -138,7 +146,10 @@ impl AdmissionKeys {
         }
 
         let secret = key.secret.as_bytes();
-        let aead_key = hmac_sha256(secret, &[b"nxs-stateless-aead-v1", b"\0", self.audience.as_bytes()]);
+        let aead_key = hmac_sha256(
+            secret,
+            &[b"nxs-stateless-aead-v1", b"\0", self.audience.as_bytes()],
+        );
         let aad = [
             b"nxs-stateless-admission-v1".as_slice(),
             b"\0",
@@ -185,7 +196,13 @@ impl AdmissionKeys {
 pub(crate) fn host_ice_password(secret: &[u8], audience: &str, local_ufrag: &str) -> String {
     let mac = hmac_sha256(
         secret,
-        &[b"nxs-stateless-ice-v1", b"\0", audience.as_bytes(), b"\0", local_ufrag.as_bytes()],
+        &[
+            b"nxs-stateless-ice-v1",
+            b"\0",
+            audience.as_bytes(),
+            b"\0",
+            local_ufrag.as_bytes(),
+        ],
     );
     STANDARD_NO_PAD.encode(&mac[..24])
 }
@@ -279,7 +296,10 @@ impl<'a> StunRequest<'a> {
                 .ok_or(AdmissionError::MalformedStun)?;
             match attr {
                 ATTR_USERNAME if integrity_at.is_none() => {
-                    username = Some(std::str::from_utf8(value).map_err(|_| AdmissionError::MalformedUsername)?);
+                    username = Some(
+                        std::str::from_utf8(value)
+                            .map_err(|_| AdmissionError::MalformedUsername)?,
+                    );
                 }
                 ATTR_MESSAGE_INTEGRITY => {
                     if attr_len != MESSAGE_INTEGRITY_LEN {
@@ -313,7 +333,12 @@ impl<'a> StunRequest<'a> {
 
         let key = hmac::Key::new(hmac::HMAC_SHA1_FOR_LEGACY_USE_ONLY, password);
         let start = self.integrity_at + 4;
-        hmac::verify(&key, &covered, &self.packet[start..start + MESSAGE_INTEGRITY_LEN]).is_ok()
+        hmac::verify(
+            &key,
+            &covered,
+            &self.packet[start..start + MESSAGE_INTEGRITY_LEN],
+        )
+        .is_ok()
     }
 }
 
@@ -333,8 +358,10 @@ impl UsedTokens {
             Some((claimed_by, _)) => *claimed_by == source,
             None if Self::MAX_TRACKED <= self.used.len() => false,
             None => {
-                self.used
-                    .insert(admitted.local_ufrag.clone(), (source, admitted.expires_at_ms));
+                self.used.insert(
+                    admitted.local_ufrag.clone(),
+                    (source, admitted.expires_at_ms),
+                );
                 true
             }
         }
@@ -363,7 +390,13 @@ pub(crate) mod tests {
     }
 
     /// Mints a token the way the signaling service does, for tests that need a full STUN packet.
-    pub(crate) fn mint(keys: &AdmissionKeys, client_ufrag: &str, client_password: &str, fingerprint: [u8; 32], expires_at_s: u32) -> String {
+    pub(crate) fn mint(
+        keys: &AdmissionKeys,
+        client_ufrag: &str,
+        client_password: &str,
+        fingerprint: [u8; 32],
+        expires_at_s: u32,
+    ) -> String {
         let key = &keys.keys[0];
         let header = format!("NXS1{}", key.key_id);
         let mut plaintext = Vec::new();
@@ -376,7 +409,10 @@ pub(crate) mod tests {
         plaintext.push(client_password.len() as u8);
         plaintext.extend_from_slice(client_password.as_bytes());
 
-        let aead_key = hmac_sha256(key.secret.as_bytes(), &[b"nxs-stateless-aead-v1", b"\0", keys.audience.as_bytes()]);
+        let aead_key = hmac_sha256(
+            key.secret.as_bytes(),
+            &[b"nxs-stateless-aead-v1", b"\0", keys.audience.as_bytes()],
+        );
         let aad = [
             b"nxs-stateless-admission-v1".as_slice(),
             b"\0",
@@ -388,9 +424,14 @@ pub(crate) mod tests {
         ]
         .concat();
         let nonce = [7u8; 12];
-        let sealing = aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &aead_key).unwrap());
+        let sealing =
+            aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &aead_key).unwrap());
         sealing
-            .seal_in_place_append_tag(aead::Nonce::assume_unique_for_key(nonce), aead::Aad::from(&aad), &mut plaintext)
+            .seal_in_place_append_tag(
+                aead::Nonce::assume_unique_for_key(nonce),
+                aead::Aad::from(&aad),
+                &mut plaintext,
+            )
             .unwrap();
         let mut envelope = nonce.to_vec();
         envelope.extend_from_slice(&plaintext);
@@ -422,13 +463,24 @@ pub(crate) mod tests {
 
     #[test]
     fn opens_fixture_token() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!("test_fixtures/stateless-admission-v1.fixtures.json")).unwrap();
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "test_fixtures/stateless-admission-v1.fixtures.json"
+        ))
+        .unwrap();
         let full_ufrag = fixture["expected"]["localUfrag"].as_str().unwrap();
 
-        let admitted = fixture_keys().open(full_ufrag, CLIENT_UFRAG, NOW_MS).unwrap();
-        assert_eq!(admitted.local_password, fixture["expected"]["icePwd"].as_str().unwrap());
+        let admitted = fixture_keys()
+            .open(full_ufrag, CLIENT_UFRAG, NOW_MS)
+            .unwrap();
+        assert_eq!(
+            admitted.local_password,
+            fixture["expected"]["icePwd"].as_str().unwrap()
+        );
         assert_eq!(admitted.remote_password, "clientPassword01234567890");
-        assert_eq!(hex::encode(admitted.client_fingerprint), fixture["claims"]["clientFingerprintHex"].as_str().unwrap());
+        assert_eq!(
+            hex::encode(admitted.client_fingerprint),
+            fixture["claims"]["clientFingerprintHex"].as_str().unwrap()
+        );
         assert_eq!(admitted.client_sctp_port, 5000);
         assert_eq!(admitted.client_max_message_size, 262144);
         assert_eq!(admitted.expires_at_ms, 1788484830000);
@@ -441,22 +493,38 @@ pub(crate) mod tests {
             fixture_keys().open(full_ufrag, CLIENT_UFRAG, 1788484830000),
             Err(AdmissionError::Expired)
         );
-        let other_incarnation = AdmissionKeys::new("ffffffffffffffffffffffffffffffff", fixture_keys().keys);
-        assert_eq!(other_incarnation.open(full_ufrag, CLIENT_UFRAG, NOW_MS), Err(AdmissionError::Unsealed));
+        let other_incarnation =
+            AdmissionKeys::new("ffffffffffffffffffffffffffffffff", fixture_keys().keys);
+        assert_eq!(
+            other_incarnation.open(full_ufrag, CLIENT_UFRAG, NOW_MS),
+            Err(AdmissionError::Unsealed)
+        );
     }
 
     #[test]
     fn admits_signed_binding_request_once_per_source() {
         let keys = fixture_keys();
-        let token = mint(&keys, "abcdUfrag", "clientPassword01234567890", [0xab; 32], (NOW_MS / 1000) as u32 + 60);
+        let token = mint(
+            &keys,
+            "abcdUfrag",
+            "clientPassword01234567890",
+            [0xab; 32],
+            (NOW_MS / 1000) as u32 + 60,
+        );
         let password = host_ice_password(SECRET.as_bytes(), &keys.audience, &token);
 
         let packet = binding_request(&format!("{token}:abcdUfrag"), &password);
         let admitted = keys.admit(&packet, NOW_MS).unwrap();
         assert_eq!(admitted.remote_ufrag, "abcdUfrag");
 
-        let forged = binding_request(&format!("{token}:abcdUfrag"), "wrong password wrong password!!");
-        assert_eq!(keys.admit(&forged, NOW_MS), Err(AdmissionError::BadIntegrity));
+        let forged = binding_request(
+            &format!("{token}:abcdUfrag"),
+            "wrong password wrong password!!",
+        );
+        assert_eq!(
+            keys.admit(&forged, NOW_MS),
+            Err(AdmissionError::BadIntegrity)
+        );
 
         let mut used = UsedTokens::default();
         let a: SocketAddr = "127.0.0.1:1000".parse().unwrap();
