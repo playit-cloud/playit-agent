@@ -365,32 +365,13 @@ async fn connect_server(
     cert: DtlsCert,
     server: SocketAddr,
 ) -> Result<(Rtc, UdpSocket, SocketAddr), SessionEnd> {
-    let unreachable = |error: std::io::Error| SessionEnd::ServerUnreachable(error.to_string());
-
-    /* Bind to the interface that routes to the server, so the offer's candidate is one it can reach. */
-    let any = match server {
-        SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-        SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-    };
-    let probe = UdpSocket::bind(SocketAddr::new(any, 0))
-        .await
-        .map_err(unreachable)?;
-    probe.connect(server).await.map_err(unreachable)?;
-    let route_ip = probe.local_addr().map_err(unreachable)?.ip();
-    drop(probe);
-    let socket = UdpSocket::bind(SocketAddr::new(route_ip, 0))
-        .await
-        .map_err(unreachable)?;
-    let local = socket.local_addr().map_err(unreachable)?;
-
     let mut rtc = RtcConfig::new()
         .set_dtls_cert(cert)
         .set_sctp_max_buffered_amount(SCTP_BUFFER)
         .build(Instant::now());
-    let candidate = Candidate::host(local, "udp")
-        .map_err(|error| SessionEnd::Rtc(format!("local candidate: {error}")))?;
-    rtc.add_local_candidate(candidate);
 
+    /* The offer goes without candidates: which interface to use depends on the answer. The
+     * server learns the bridge's address from its connectivity checks. */
     let mut changes = rtc.sdp_api();
     changes.add_channel_with_config(ChannelConfig {
         label: RELIABLE_CHANNEL.into(),
@@ -415,18 +396,39 @@ async fn connect_server(
         .offer(server, &offer)
         .await
         .map_err(SessionEnd::ServerRefused)?;
-    let (answer, port) = prepare_answer(&answer).map_err(SessionEnd::ServerRefused)?;
-    let answer = SdpAnswer::from_sdp_string(&answer)
+    let answer = prepare_answer(&answer, server).map_err(SessionEnd::ServerRefused)?;
+    let sdp = SdpAnswer::from_sdp_string(&answer.sdp)
         .map_err(|error| SessionEnd::Rtc(format!("server answer: {error}")))?;
     rtc.sdp_api()
-        .accept_answer(pending, answer)
+        .accept_answer(pending, sdp)
         .map_err(|error| SessionEnd::Rtc(format!("server answer: {error}")))?;
 
-    let remote = SocketAddr::new(server.ip(), port);
-    if let Ok(candidate) = Candidate::host(remote, "udp") {
-        rtc.add_remote_candidate(candidate);
-    }
+    let socket = bind_toward(answer.target)
+        .await
+        .map_err(|error| SessionEnd::ServerUnreachable(error.to_string()))?;
+    let local = socket
+        .local_addr()
+        .map_err(|error| SessionEnd::ServerUnreachable(error.to_string()))?;
+    let candidate = Candidate::host(local, "udp")
+        .map_err(|error| SessionEnd::Rtc(format!("local candidate: {error}")))?;
+    rtc.add_local_candidate(candidate);
+    let candidate = Candidate::host(answer.target, "udp")
+        .map_err(|error| SessionEnd::Rtc(format!("server candidate: {error}")))?;
+    rtc.add_remote_candidate(candidate);
+    tracing::debug!(%local, target = %answer.target, "offered NetherNet connection to the Bedrock server");
     Ok((rtc, socket, local))
+}
+
+/// Binds a socket on the interface that routes to `target`, so str0m knows its exact address.
+async fn bind_toward(target: SocketAddr) -> std::io::Result<UdpSocket> {
+    let any = match target {
+        SocketAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        SocketAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    };
+    let probe = UdpSocket::bind(SocketAddr::new(any, 0)).await?;
+    probe.connect(target).await?;
+    let route_ip = probe.local_addr()?.ip();
+    UdpSocket::bind(SocketAddr::new(route_ip, 0)).await
 }
 
 impl Session {

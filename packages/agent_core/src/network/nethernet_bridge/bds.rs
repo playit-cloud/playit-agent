@@ -129,14 +129,38 @@ impl Signaling {
     }
 }
 
+pub struct Answer {
+    /// The answer as str0m takes it.
+    pub sdp: String,
+    /// Where the bridge sends the session's UDP.
+    pub target: SocketAddr,
+}
+
 /// Prepares the server's answer for str0m: drops `a=identity`, which str0m does not read, and
-/// the candidates, which name the server's own interfaces. The bridge reaches the server at
-/// the address it already knows, on the UDP port from the media line.
-pub fn prepare_answer(answer: &str) -> Result<(String, u16), SignalingError> {
+/// the candidates, which pick the address the bridge sends to instead.
+///
+/// The server binds its UDP only on the interfaces it lists, not necessarily the one its
+/// signaling answered on (on Windows, never on loopback). `server` is the signaling address.
+pub fn prepare_answer(answer: &str, server: SocketAddr) -> Result<Answer, SignalingError> {
     let mut port = None;
-    let mut out = String::with_capacity(answer.len());
+    let mut candidates = Vec::new();
+    let mut sdp = String::with_capacity(answer.len());
     for line in answer.lines() {
-        if line.starts_with("a=identity:") || line.starts_with("a=candidate:") {
+        if line.starts_with("a=identity:") {
+            continue;
+        }
+        if let Some(candidate) = line.strip_prefix("a=candidate:") {
+            /* <foundation> <component> <transport> <priority> <address> <port> typ <type> ... */
+            let fields: Vec<&str> = candidate.split(' ').collect();
+            if let [_, _, transport, _, address, port, "typ", "host", ..] = fields[..] {
+                if let (true, Ok(ip), Ok(port)) = (
+                    transport.eq_ignore_ascii_case("udp"),
+                    address.parse(),
+                    port.parse(),
+                ) {
+                    candidates.push(SocketAddr::new(ip, port));
+                }
+            }
             continue;
         }
         if let Some(media) = line.strip_prefix("m=") {
@@ -146,13 +170,32 @@ pub fn prepare_answer(answer: &str) -> Result<(String, u16), SignalingError> {
                 .nth(1)
                 .and_then(|port| port.parse::<u16>().ok());
         }
-        out.push_str(line);
-        out.push_str("\r\n");
+        sdp.push_str(line);
+        sdp.push_str("\r\n");
     }
-    match port {
-        Some(0 | DISCARD_PORT) | None => Err(SignalingError::NoPort),
-        Some(port) => Ok((out, port)),
-    }
+    let port = match port {
+        Some(0 | DISCARD_PORT) | None => return Err(SignalingError::NoPort),
+        Some(port) => port,
+    };
+
+    let same_ip = candidates
+        .iter()
+        .find(|candidate| candidate.ip() == server.ip());
+    /* A server reached over loopback runs on this machine, so any address it lists is local. */
+    let same_machine = server
+        .ip()
+        .is_loopback()
+        .then(|| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.is_ipv4() == server.is_ipv4())
+        })
+        .flatten();
+    let target = same_ip
+        .or(same_machine)
+        .copied()
+        .unwrap_or(SocketAddr::new(server.ip(), port));
+    Ok(Answer { sdp, target })
 }
 
 /// The key the bridge signs its offers' `a=identity` with.
@@ -277,16 +320,32 @@ mod tests {
     }
 
     #[test]
-    fn answer_keeps_port_and_drops_candidates() {
-        let answer = "v=0\r\na=identity:abc\r\nm=application 19234 UDP/DTLS/SCTP webrtc-datachannel\r\n\
+    fn answer_target_prefers_reachable_candidates() {
+        const ANSWER: &str = "v=0\r\na=identity:abc\r\nm=application 19234 UDP/DTLS/SCTP webrtc-datachannel\r\n\
             a=candidate:1 1 udp 2122260223 10.1.50.251 19234 typ host generation 0 network-id 1\r\na=setup:active\r\n";
-        let (prepared, port) = prepare_answer(answer).unwrap();
-        assert_eq!(port, 19234);
-        assert!(!prepared.contains("a=identity") && !prepared.contains("a=candidate"));
-        assert!(prepared.contains("a=setup:active\r\n"));
+        let loopback: SocketAddr = "127.0.0.1:19232".parse().unwrap();
+        let answer = prepare_answer(ANSWER, loopback).unwrap();
+        assert_eq!(answer.target, "10.1.50.251:19234".parse().unwrap());
+        assert!(!answer.sdp.contains("a=identity") && !answer.sdp.contains("a=candidate"));
+        assert!(answer.sdp.contains("a=setup:active\r\n"));
+
+        /* Another machine: its signaling address, unless it lists that address itself. */
+        let remote: SocketAddr = "192.168.1.5:19232".parse().unwrap();
+        assert_eq!(
+            prepare_answer(ANSWER, remote).unwrap().target,
+            "192.168.1.5:19234".parse().unwrap()
+        );
+        let listed: SocketAddr = "10.1.50.251:19232".parse().unwrap();
+        assert_eq!(
+            prepare_answer(ANSWER, listed).unwrap().target,
+            "10.1.50.251:19234".parse().unwrap()
+        );
 
         assert!(matches!(
-            prepare_answer("v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n"),
+            prepare_answer(
+                "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n",
+                loopback
+            ),
             Err(SignalingError::NoPort)
         ));
     }
