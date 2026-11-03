@@ -1308,6 +1308,8 @@ pub enum ProxyProtocol {
 	ProxyProtocolV1,
 	#[serde(rename = "proxy-protocol-v2")]
 	ProxyProtocolV2,
+	#[serde(rename = "proxy-protocol-v2-pkt")]
+	ProxyProtocolV2Pkt,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]

@@ -306,6 +306,27 @@ mod tests {
     }
 
     #[test]
+    fn from_agent_tunnel_parses_per_packet_proxy_protocol() {
+        let mut tunnel = build_tunnel(
+            Some("nethernet"),
+            "127.0.0.1",
+            Some("19172"),
+            PortType::Udp,
+            1,
+        );
+        tunnel.agent_config.fields.push(AgentTunnelAttr {
+            name: "proxy_protocol".to_owned(),
+            value: "proxy-protocol-v2-pkt".to_owned(),
+        });
+
+        let resource = OriginResource::from_agent_tunnel(&tunnel).unwrap();
+        assert_eq!(
+            resource.proxy_protocol,
+            Some(ProxyProtocol::ProxyProtocolV2Pkt)
+        );
+    }
+
+    #[test]
     fn from_agent_tunnel_preserves_hostname_target() {
         let tunnel = build_tunnel(None, "origin.internal", Some("25565"), PortType::Tcp, 0);
 
