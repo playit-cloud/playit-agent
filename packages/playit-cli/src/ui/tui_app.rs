@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::io::{self, Stdout, stdout};
 use std::time::Duration;
 
+use chrono::{DateTime, Local, NaiveDate};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
     execute,
@@ -332,10 +333,17 @@ impl TuiApp {
     }
 
     fn render_tunnels(frame: &mut Frame, area: Rect, agent_data: &AgentData) {
-        let block = Block::default()
+        let mut block = Block::default()
             .title(" Tunnels ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan));
+        if !agent_data.agent_id.is_empty() {
+            block = block.title(
+                Line::from(format!(" Agent ID: {} ", agent_data.agent_id))
+                    .right_aligned()
+                    .fg(Color::Gray),
+            );
+        }
 
         if agent_data.tunnels.is_empty() && agent_data.pending_tunnels.is_empty() {
             let msg = if agent_data.agent_id.is_empty() {
@@ -408,6 +416,7 @@ impl TuiApp {
         let start = log_entries.len().saturating_sub(inner_height);
         let visible_entries = log_entries.iter().skip(start).take(inner_height);
 
+        let today = Local::now().date_naive();
         let lines: Vec<Line> = visible_entries
             .map(|entry| {
                 let level_style = match entry.level {
@@ -419,6 +428,10 @@ impl TuiApp {
                 };
 
                 Line::from(vec![
+                    Span::styled(
+                        format!("{} ", log_time_label(entry.timestamp, today)),
+                        Style::default().fg(Color::DarkGray),
+                    ),
                     Span::styled(format!("[{}] ", level_label(&entry.level)), level_style),
                     Span::styled(
                         format!(
@@ -577,6 +590,19 @@ fn level_label(level: &LogLevel) -> &'static str {
     }
 }
 
+/// Formats a log timestamp in local time, including the date only when it is not `today`.
+fn log_time_label(timestamp_millis: u64, today: NaiveDate) -> String {
+    let Some(time) = DateTime::from_timestamp_millis(timestamp_millis as i64) else {
+        return "--:--:--".to_string();
+    };
+    let time = time.with_timezone(&Local);
+    if time.date_naive() == today {
+        time.format("%H:%M:%S").to_string()
+    } else {
+        time.format("%Y-%m-%d %H:%M:%S").to_string()
+    }
+}
+
 fn user_facing_log(mut entry: LogEntry) -> LogEntry {
     if entry.target == "playit_agent_core::agent_control::maintained_control"
         && entry
@@ -629,6 +655,22 @@ mod log_presentation_tests {
         let displayed = user_facing_log(entry.clone());
         assert_eq!(displayed.message, entry.message);
         assert!(matches!(displayed.level, LogLevel::Error));
+    }
+
+    #[test]
+    fn log_time_includes_date_only_for_earlier_days() {
+        let timestamp = 1_700_000_000_000;
+        let local = DateTime::from_timestamp_millis(timestamp as i64)
+            .unwrap()
+            .with_timezone(&Local);
+        assert_eq!(
+            log_time_label(timestamp, local.date_naive()),
+            local.format("%H:%M:%S").to_string()
+        );
+        assert_eq!(
+            log_time_label(timestamp, local.date_naive().succ_opt().unwrap()),
+            local.format("%Y-%m-%d %H:%M:%S").to_string()
+        );
     }
 }
 
