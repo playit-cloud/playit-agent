@@ -25,12 +25,12 @@ impl<IO: PacketIO> AddressSelector<IO> {
         let mut buffer: Vec<u8> = Vec::new();
 
         for addr in self.options {
-            tracing::debug!(?addr, "trying to establish tunnel connection");
+            tracing::debug!(%addr, "probing tunnel control address");
 
             let is_ip6 = addr.is_ipv6();
             let attempts = if is_ip6 { 1 } else { 3 };
 
-            for _ in 0..attempts {
+            for attempt in 1..=attempts {
                 buffer.clear();
 
                 ControlRpcMessage {
@@ -44,7 +44,7 @@ impl<IO: PacketIO> AddressSelector<IO> {
                 .write_to(&mut buffer)?;
 
                 if let Err(error) = self.packet_io.send_to(&buffer, addr).await {
-                    tracing::error!(?error, ?addr, "failed to send initial ping");
+                    tracing::warn!(?error, %addr, "could not send probe ping to tunnel address");
                     break;
                 }
 
@@ -61,7 +61,11 @@ impl<IO: PacketIO> AddressSelector<IO> {
                     match res {
                         Ok(Ok((bytes, peer))) => {
                             if peer != addr {
-                                tracing::error!(?peer, ?addr, "got message from different source");
+                                tracing::debug!(
+                                    %peer,
+                                    %addr,
+                                    "ignoring probe response from unexpected source"
+                                );
                                 continue;
                             }
 
@@ -69,9 +73,9 @@ impl<IO: PacketIO> AddressSelector<IO> {
                             match ControlFeed::read_from(&mut reader) {
                                 Ok(ControlFeed::Response(msg)) => {
                                     if msg.request_id != 1 {
-                                        tracing::error!(
+                                        tracing::debug!(
                                             ?msg,
-                                            "got response with unexpected request_id"
+                                            "ignoring tunnel response for a different request_id"
                                         );
                                         continue;
                                     }
@@ -79,8 +83,9 @@ impl<IO: PacketIO> AddressSelector<IO> {
                                     match msg.content {
                                         ControlResponse::Pong(pong) => {
                                             tracing::debug!(
+                                                %addr,
                                                 ?pong,
-                                                "got initial pong from tunnel server"
+                                                "received initial pong from tunnel server"
                                             );
                                             return Ok(ConnectedControl::new(
                                                 addr,
@@ -89,34 +94,56 @@ impl<IO: PacketIO> AddressSelector<IO> {
                                             ));
                                         }
                                         other => {
-                                            tracing::error!(
+                                            tracing::debug!(
+                                                %addr,
                                                 ?other,
-                                                "expected pong got other response"
+                                                "expected pong, got a different control response"
                                             );
                                         }
                                     }
                                 }
                                 Ok(other) => {
-                                    tracing::error!(?other, "unexpected control feed");
+                                    tracing::debug!(
+                                        %addr,
+                                        ?other,
+                                        "expected control response, got something else"
+                                    );
                                 }
                                 Err(error) => {
-                                    tracing::error!(?error, test = ?(), "failed to parse response data");
+                                    tracing::debug!(
+                                        ?error,
+                                        %addr,
+                                        "could not parse tunnel control response"
+                                    );
                                 }
                             }
                         }
                         Ok(Err(error)) => {
-                            tracing::error!(?error, "failed to receive UDP packet");
+                            tracing::debug!(
+                                ?error,
+                                %addr,
+                                "udp recv failed while waiting for probe pong"
+                            );
                         }
                         Err(_) => {
-                            tracing::debug!(%addr, "waited {}ms for pong", (i + 1) * 500);
+                            tracing::trace!(
+                                %addr,
+                                waited_ms = (i + 1) * 500,
+                                "still waiting for pong from tunnel server"
+                            );
                         }
                     }
                 }
 
-                tracing::error!("timeout waiting for pong");
+                tracing::debug!(
+                    %addr,
+                    attempt,
+                    attempts,
+                    "no pong from tunnel server within timeout"
+                );
             }
 
-            tracing::error!("failed to ping tunnel server");
+            tracing::warn!(%addr, "failed to reach tunnel server after all attempts");
         }
 
         Err(SetupError::FailedToConnect)

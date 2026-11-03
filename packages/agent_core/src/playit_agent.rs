@@ -123,7 +123,7 @@ impl PlayitAgent {
                         break;
                     };
                     if sent {
-                        tracing::debug!("udp channel requires auth, sent auth request");
+                        tracing::debug!("udp tunnel channel needs auth; sent setup request");
                     }
                 }
 
@@ -134,7 +134,10 @@ impl PlayitAgent {
                     let reload =
                         control.reload_control_addr(async { DualStackUdpSocket::new().await });
                     if let Some(Err(error)) = tunnel_cancel.run_until_cancelled(reload).await {
-                        tracing::error!(?error, "failed to reload_control_addr");
+                        tracing::warn!(
+                            ?error,
+                            "failed to refresh control addresses from api; keeping previous addresses"
+                        );
                     }
                 }
 
@@ -151,13 +154,13 @@ impl PlayitAgent {
                         }
                     }
                     Some(TunnelControlEvent::UdpChannelDetails(udp_details)) => {
-                        tracing::debug!("udp session details received");
+                        tracing::debug!("received udp channel session details from tunnel");
                         let _ = udp_session_tx.try_send(udp_details);
                     }
                     None => {}
                 }
             }
-        });
+        }.instrument(tracing::info_span!("tunnel_control")));
 
         let udp_cancel = cancel_token.child_token();
         let mut udp_channel = udp_channel;
@@ -184,7 +187,7 @@ impl PlayitAgent {
                     }
                     session_opt = udp_session_rx.recv() => {
                         let Some(session) = session_opt else {
-                            tracing::debug!("udp session channel closed");
+                            tracing::debug!("udp session channel closed; ending udp task");
                             break;
                         };
                         udp_channel.update_session(session).await;
@@ -212,13 +215,13 @@ impl PlayitAgent {
             result = &mut tunnel_task => {
                 tunnel_done = true;
                 if let Err(error) = result {
-                    tracing::error!(?error, "tunnel task failed");
+                    tracing::error!(?error, "tunnel control task panicked; agent will shut down");
                 }
             }
             result = &mut udp_task => {
                 udp_done = true;
                 if let Err(error) = result {
-                    tracing::error!(?error, "udp task failed");
+                    tracing::error!(?error, "udp dispatch task panicked; agent will shut down");
                 }
             }
             _ = cancel_token.cancelled() => {}

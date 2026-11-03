@@ -176,7 +176,7 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
 
         tracing::debug!(
             last_pong = ?self.pong_at_auth,
-            "authenticate control"
+            "control session authenticated with tunnel server"
         );
 
         Ok(())
@@ -192,7 +192,7 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
         if let ControlFeed::Response(res) = &feed {
             match &res.content {
                 ControlResponse::AgentRegistered(registered) => {
-                    tracing::debug!(details = ?registered, "agent registered");
+                    tracing::debug!(details = ?registered, "tunnel server confirmed agent registration");
                     self.registered = registered.clone();
                 }
                 ControlResponse::Pong(pong) => {
@@ -205,8 +205,8 @@ impl<A: AuthResource, IO: PacketIO> EstablishedControl<A, IO> {
 
                     if 10_000 < self.clock_offset.abs() {
                         tracing::warn!(
-                            offset = self.clock_offset,
-                            "local timestamp if over 10 seconds off"
+                            clock_offset_ms = self.clock_offset,
+                            "local clock differs from tunnel server by more than 10s; check system time"
                         );
                     }
 

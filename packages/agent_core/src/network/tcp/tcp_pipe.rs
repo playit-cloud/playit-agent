@@ -12,12 +12,30 @@ use crate::utils::now_milli;
 const TCP_PIPE_BUFFER_SIZE: usize = 16 * 1024;
 
 /// Direction of data flow for stats tracking
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum PipeDirection {
     /// Data flowing from tunnel to local origin (bytes in)
     TunnelToOrigin,
     /// Data flowing from local origin to tunnel (bytes out)
     OriginToTunnel,
+}
+
+impl PipeDirection {
+    /// Name of the peer this pipe reads from.
+    fn read_source(self) -> &'static str {
+        match self {
+            Self::TunnelToOrigin => "tunnel",
+            Self::OriginToTunnel => "origin",
+        }
+    }
+
+    /// Name of the peer this pipe writes to.
+    fn write_destination(self) -> &'static str {
+        match self {
+            Self::TunnelToOrigin => "origin",
+            Self::OriginToTunnel => "tunnel",
+        }
+    }
 }
 
 pub struct TcpPipe {
@@ -117,13 +135,16 @@ struct Worker<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> {
 
 impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
     pub async fn start(mut self) {
+        let direction = self.direction;
+        let read_source = direction.read_source();
+        let write_destination = direction.write_destination();
         let mut buffer = vec![0u8; TCP_PIPE_BUFFER_SIZE];
 
         loop {
             // Keep the pipe cooperative when both sockets stay continuously ready.
             tokio::select! {
                 _ = self.cancel.cancelled() => {
-                    tracing::debug!("TcpPipe cancelled");
+                    tracing::debug!(?direction, "pipe cancelled before next read");
                     break;
                 }
                 _ = tokio::task::yield_now() => {}
@@ -134,27 +155,48 @@ impl<R: AsyncRead + Unpin, W: AsyncWrite + Unpin> Worker<R, W> {
                 .run_until_cancelled(self.from.read(&mut buffer[..]))
                 .await
             else {
-                tracing::debug!("TcpPipe cancelled");
+                tracing::debug!(
+                    ?direction,
+                    "pipe cancelled while awaiting data from {read_source}"
+                );
                 break;
             };
 
             let byte_count = match read_res {
                 Ok(count) => count,
                 Err(error) => {
-                    tracing::error!(?error, "failed to read data");
+                    tracing::debug!(
+                        ?direction,
+                        ?error,
+                        "read from {read_source} failed; closing pipe"
+                    );
                     break;
                 }
             };
 
             if byte_count == 0 {
-                tracing::debug!("pipe ended due to EOF");
+                tracing::debug!(
+                    ?direction,
+                    "{read_source} closed the connection (EOF); closing pipe"
+                );
                 break;
             }
 
             if let Err(error) = self.to.write_all(&buffer[..byte_count]).await {
-                tracing::error!(?error, "failed to write data");
+                tracing::debug!(
+                    ?direction,
+                    bytes = byte_count,
+                    ?error,
+                    "write to {write_destination} failed; closing pipe"
+                );
                 break;
             }
+
+            tracing::trace!(
+                ?direction,
+                bytes = byte_count,
+                "forwarded chunk from {read_source} to {write_destination}"
+            );
 
             self.shared
                 .last_activity
