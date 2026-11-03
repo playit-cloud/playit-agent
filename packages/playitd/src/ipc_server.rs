@@ -636,8 +636,11 @@ mod tests {
     use tokio_util::sync::CancellationToken;
 
     fn test_socket_path(name: &str) -> String {
+        // macOS's per-user temp dir is too long for a 104-byte socket path.
         let socket_dir = if cfg!(windows) {
             std::path::PathBuf::from(r"\\.\pipe\")
+        } else if cfg!(target_os = "macos") {
+            std::path::PathBuf::from("/tmp")
         } else {
             std::env::temp_dir()
         };

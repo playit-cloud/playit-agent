@@ -43,12 +43,12 @@ const HEALTHY_AGENT_RUN: Duration = Duration::from_secs(300);
 /// Starting the agent makes HTTP calls without their own timeout; a stalled connection
 /// must become a retryable failure rather than an endless "Connecting".
 const AGENT_START_TIMEOUT: Duration = Duration::from_secs(60);
-#[cfg(target_os = "windows")]
-const WINDOWS_LOG_MAX_FILE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
-#[cfg(target_os = "windows")]
-const WINDOWS_LOG_MAX_TOTAL_FILES: usize = 3;
-#[cfg(target_os = "windows")]
-const WINDOWS_LOG_MAX_ROTATED_FILES: usize = WINDOWS_LOG_MAX_TOTAL_FILES - 1;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+const LOG_MAX_FILE_SIZE_BYTES: u64 = 5 * 1024 * 1024;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+const LOG_MAX_TOTAL_FILES: usize = 3;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+const LOG_MAX_ROTATED_FILES: usize = LOG_MAX_TOTAL_FILES - 1;
 
 #[derive(Debug, Clone)]
 pub struct DaemonOptions {
@@ -1439,24 +1439,20 @@ fn init_tracing(
     }
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn log_file_writer(path: &Path) -> Result<tracing_rolling_file::RollingFileAppenderBase, String> {
-    windows_log_file_writer_with_limits(
-        path,
-        WINDOWS_LOG_MAX_FILE_SIZE_BYTES,
-        WINDOWS_LOG_MAX_ROTATED_FILES,
-    )
+    rotating_log_file_writer_with_limits(path, LOG_MAX_FILE_SIZE_BYTES, LOG_MAX_ROTATED_FILES)
 }
 
-#[cfg(target_os = "windows")]
-fn windows_log_file_writer_with_limits(
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn rotating_log_file_writer_with_limits(
     path: &Path,
     max_file_size_bytes: u64,
     max_rotated_files: usize,
 ) -> Result<tracing_rolling_file::RollingFileAppenderBase, String> {
     create_log_parent_dir(path)?;
 
-    Ok(tracing_rolling_file::RollingFileAppenderBase::builder()
+    tracing_rolling_file::RollingFileAppenderBase::builder()
         .filename(path.display().to_string())
         .max_filecount(max_rotated_files)
         .condition_max_file_size(max_file_size_bytes)
@@ -1466,10 +1462,10 @@ fn windows_log_file_writer_with_limits(
                 "Failed to create log file writer {}: {error}",
                 path.display()
             )
-        })?)
+        })
 }
 
-#[cfg(not(target_os = "windows"))]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn log_file_writer(path: &Path) -> Result<tracing_appender::rolling::RollingFileAppender, String> {
     create_log_parent_dir(path)?;
 
@@ -1506,8 +1502,11 @@ mod tests {
     };
 
     fn unique_test_path(name: &str, extension: &str) -> std::path::PathBuf {
+        // macOS's per-user temp dir is too long for a 104-byte socket path.
         let directory = if cfg!(windows) && extension == "sock" {
             std::path::PathBuf::from(r"\\.\pipe\")
+        } else if cfg!(target_os = "macos") && extension == "sock" {
+            std::path::PathBuf::from("/tmp")
         } else {
             std::env::temp_dir()
         };
@@ -1604,9 +1603,9 @@ mod tests {
         assert_eq!(summary.account_status, "verified");
     }
 
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[test]
-    fn windows_log_file_writer_rotates_by_size_and_file_count() {
+    fn rotating_log_file_writer_rotates_by_size_and_file_count() {
         use std::io::Write;
 
         let log_path = unique_test_path("rotating-log", "log");
@@ -1615,7 +1614,7 @@ mod tests {
         }
 
         {
-            let mut writer = super::windows_log_file_writer_with_limits(&log_path, 64, 2).unwrap();
+            let mut writer = super::rotating_log_file_writer_with_limits(&log_path, 64, 2).unwrap();
             for _ in 0..8 {
                 writer
                     .write_all(b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ\n")

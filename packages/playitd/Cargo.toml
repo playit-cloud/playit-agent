@@ -53,4 +53,6 @@ windows-sys = { version = "0.59.0", features = [
 ] }
 windows-service = "0.8.0"
 widestring = "1.2"
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 tracing-rolling-file = "0.1.3"

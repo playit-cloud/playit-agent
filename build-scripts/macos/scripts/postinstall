@@ -1,0 +1,28 @@
+#!/bin/bash
+# Runs as root after playit.app is copied to /Applications.
+APP="/Applications/playit.app"
+SERVICE_LABEL="gg.playit.playitd"
+
+mkdir -p /usr/local/bin
+ln -sfn "${APP}/Contents/MacOS/playit" /usr/local/bin/playit
+
+user="$(stat -f %Su /dev/console)"
+if [[ -z "${user}" || "${user}" == "root" || "${user}" == "loginwindow" ]]; then
+  # No one is logged in at the screen (for example a remote install). Each user gets the
+  # service the first time they open playit.
+  exit 0
+fi
+uid="$(id -u "${user}")"
+
+as_user() {
+  launchctl asuser "${uid}" sudo -u "${user}" "$@"
+}
+
+# On upgrade, restart the service so it runs the new playitd.
+if launchctl print "gui/${uid}/${SERVICE_LABEL}" >/dev/null 2>&1; then
+  launchctl kickstart -k "gui/${uid}/${SERVICE_LABEL}" >/dev/null 2>&1 || true
+fi
+
+# The menu bar app opens playit in Terminal if the agent still needs setup.
+as_user open -a "${APP}" --args --after-install || true
+exit 0

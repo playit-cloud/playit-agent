@@ -1,0 +1,5 @@
+#!/bin/bash
+# Runs as root before files are copied. Quit running menu bar apps so the new version
+# replaces them; postinstall reopens it for the logged-in user.
+pkill -x playitd-tray >/dev/null 2>&1 || true
+exit 0
