@@ -71,6 +71,9 @@ impl std::fmt::Display for ServiceError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TunnelState {
+    /// The tunnel's ID on playit.gg. Empty when the daemon predates this field.
+    #[serde(default)]
+    pub id: String,
     pub display_address: String,
     pub destination: String,
     pub is_disabled: bool,

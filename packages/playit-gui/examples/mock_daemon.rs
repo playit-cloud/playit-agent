@@ -87,21 +87,25 @@ mod unix {
         }
         state.tunnels = vec![
             TunnelState {
+                id: "7c1e2a40-0f6b-4d2e-9a61-3b5f8e2d1c01".into(),
                 display_address: "mc-survival.joinmc.link".into(),
                 destination: "127.0.0.1:25565".into(),
                 ..Default::default()
             },
             TunnelState {
+                id: "1a9d3f52-6e7c-4b80-8f14-2c6e9d0a7b02".into(),
                 display_address: "bedrock-friends.gl.at.ply.gg:19132".into(),
                 destination: "192.168.1.20:19132".into(),
                 ..Default::default()
             },
             TunnelState {
+                id: "5e8b0c13-9d2a-4f61-b7c3-0a4d6e1f8c03".into(),
                 display_address: "web-demo.gl.at.ply.gg:7012".into(),
                 destination: "127.0.0.1:8080".into(),
                 ..Default::default()
             },
             TunnelState {
+                id: "c2f47d86-3a1b-4e95-8d20-7f9b1c5e6a04".into(),
                 display_address: "terraria-old.gl.at.ply.gg:41200".into(),
                 destination: "127.0.0.1:7777".into(),
                 is_disabled: true,
