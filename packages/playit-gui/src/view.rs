@@ -100,6 +100,7 @@ const LOG_ROW_HEIGHT: f32 = 22.;
 /// An expanded log shows at most this many lines before it scrolls.
 const LOG_MAX_ROWS: usize = 8;
 const CARD_WIDTH: f32 = 580.;
+const SECTION_TITLE_SIZE: f32 = 15.;
 /// `p_8` on both sides plus the 1px border.
 const CARD_PADDING_AND_BORDER: f32 = 66.;
 /// Width of the action column on tunnel rows, so every row's button lines up.
@@ -271,7 +272,7 @@ impl PlayitWindow {
             Screen::Unreachable { .. } => ("Service not responding", theme::failure()),
             Screen::InvalidSecret { .. } => ("Needs relinking", theme::attention()),
             Screen::OverLimit { .. } => ("Computer limit reached", theme::attention()),
-            Screen::Error { message } => (error_hint(message).pill, theme::failure()),
+            Screen::Error { .. } => ("Retrying", theme::attention()),
         };
 
         let mut right = div().flex().items_center().gap_5();
@@ -417,11 +418,32 @@ impl PlayitWindow {
             ));
         }
 
-        body = body.child(self.render_tunnels(agent, compact, narrow, cx));
-        if has_tunnels {
-            body = body.child(self.render_stats());
+        if !has_tunnels {
+            // Like the recovery screens, the empty state keeps its card and log in one
+            // centered column.
+            return body.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .items_center()
+                    .child(spacer(1.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_4()
+                            .w(px(CARD_WIDTH))
+                            .max_w_full()
+                            .child(self.render_no_tunnels(&agent.agent_id))
+                            .child(self.render_logs(true, cx)),
+                    )
+                    .child(spacer(2.)),
+            );
         }
-        body.child(self.render_logs(true, cx))
+        body.child(self.render_tunnels(agent, compact, narrow, cx))
+            .child(self.render_stats())
+            .child(self.render_logs(true, cx))
     }
 
     fn render_notice(
@@ -438,9 +460,14 @@ impl PlayitWindow {
             match action {
                 NoticeAction::None => None,
                 NoticeAction::Link(link) => Some(
-                    notice_link("notice-link", "See what's new", color)
-                        .on_click(move |_, _, cx| cx.open_url(&link))
-                        .into_any_element(),
+                    button(
+                        "notice-link",
+                        "See what's new",
+                        ButtonStyle::Secondary,
+                        Some(Icon::External),
+                    )
+                    .on_click(move |_, _, cx| cx.open_url(&link))
+                    .into_any_element(),
                 ),
                 NoticeAction::GuestLogin(login_link) => Some(
                     button(
@@ -625,7 +652,7 @@ impl PlayitWindow {
                             .text_center()
                             .text_xs()
                             .text_color(theme::faint())
-                            .child("Address pending")
+                            .child("No address yet")
                             .into_any_element(),
                         manage_url: None,
                     },
@@ -646,7 +673,7 @@ impl PlayitWindow {
                     .gap_3()
                     .child(
                         div()
-                            .text_base()
+                            .text_size(px(SECTION_TITLE_SIZE))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Tunnels"),
                     )
@@ -695,7 +722,7 @@ impl PlayitWindow {
 
     fn render_no_tunnels(&self, agent_id: &str) -> AnyElement {
         let new_tunnel = new_tunnel_url(agent_id);
-        div().flex().justify_center().child(panel()
+        (panel()
             .w(px(CARD_WIDTH))
             .max_w_full()
             .flex()
@@ -738,7 +765,7 @@ impl PlayitWindow {
                 ))
                 .on_click(move |_, _, cx| cx.open_url(&new_tunnel)),
             ))
-            .into_any_element()
+        .into_any_element()
     }
 
     fn render_stats(&self) -> impl IntoElement {
@@ -756,7 +783,7 @@ impl PlayitWindow {
                     .pt_3()
                     .child(
                         div()
-                            .text_base()
+                            .text_size(px(SECTION_TITLE_SIZE))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Traffic"),
                     )
@@ -832,37 +859,18 @@ impl PlayitWindow {
         if healthy && (warnings > 0 || errors > 0) {
             let mut counts = Vec::new();
             if warnings > 0 {
-                counts.push((
-                    format!(
-                        "{warnings} {}",
-                        if warnings == 1 { "warning" } else { "warnings" }
-                    ),
-                    theme::attention(),
+                counts.push(format!(
+                    "{warnings} {}",
+                    if warnings == 1 { "warning" } else { "warnings" }
                 ));
             }
             if errors > 0 {
-                counts.push((
-                    format!("{errors} {}", if errors == 1 { "error" } else { "errors" }),
-                    theme::failure(),
+                counts.push(format!(
+                    "{errors} {}",
+                    if errors == 1 { "error" } else { "errors" }
                 ));
             }
-            summary = summary.child("·");
-            let last = counts.len() - 1;
-            for (ix, (label, color)) in counts.into_iter().enumerate() {
-                summary = summary.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .child(div().size(px(6.)).rounded_full().bg(color.opacity(0.8)))
-                        .child(if ix == last {
-                            label
-                        } else {
-                            format!("{label},")
-                        }),
-                );
-            }
-            summary = summary.child("earlier");
+            summary = summary.child(format!("· including {}", counts.join(" and ")));
         }
 
         let title = div()
@@ -889,7 +897,7 @@ impl PlayitWindow {
                     ))
                     .child(
                         div()
-                            .text_base()
+                            .text_size(px(SECTION_TITLE_SIZE))
                             .font_weight(FontWeight::SEMIBOLD)
                             .child("Activity log"),
                     ),
@@ -1071,8 +1079,9 @@ impl PlayitWindow {
             }
             Screen::Error { message } => {
                 let hint = error_hint(message);
-                card.badge = Badge::Icon(Icon::XCircle);
-                card.color = theme::failure();
+                // playit keeps retrying, so this reads as a problem to watch, not a dead end.
+                card.badge = Badge::Icon(Icon::Alert);
+                card.color = theme::attention();
                 card.title = hint.title.into();
                 card.body = vec![hint.next_step.to_string()];
                 card.action_note = Some("Still stuck? The playit support team can help.".into());
@@ -1083,7 +1092,7 @@ impl PlayitWindow {
                     "get-help",
                     "Get help",
                     SUPPORT_URL,
-                    ButtonStyle::Primary,
+                    ButtonStyle::Secondary,
                 ));
             }
             Screen::InvalidSecret { message } => {
@@ -1198,8 +1207,8 @@ impl PlayitWindow {
             Screen::Running(_) => unreachable!("running screen has its own layout"),
         }
 
-        // A fixed top offset keeps the badge and title in place as the state changes; only
-        // the content below them grows.
+        // Spacers weighted 2:3 sit the card a little above center, so short states don't
+        // look stranded at the top of the window.
         let mut group = div()
             .flex()
             .flex_col()
@@ -1224,9 +1233,9 @@ impl PlayitWindow {
             .flex_col()
             .flex_1()
             .items_center()
-            .pt(px(72.))
-            .pb_4()
+            .child(spacer(2.))
             .child(group)
+            .child(spacer(3.))
     }
 
     fn render_footer(
@@ -1253,11 +1262,14 @@ impl PlayitWindow {
                             .child("Scroll for more"),
                     )
                 })
-                .child(div().min_w_0().truncate().child(if more_below {
-                    "Closing keeps your tunnels running."
-                } else {
-                    "Closing this window keeps playit and your tunnels running."
-                }))
+                .when(!more_below, |left| {
+                    left.child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child("Closing this window keeps playit and your tunnels running."),
+                    )
+                })
                 .into_any_element()
         } else {
             div().into_any_element()
@@ -1594,21 +1606,6 @@ fn notice_color(notice: &NoticeState) -> Hsla {
     }
 }
 
-fn notice_link(id: &'static str, label: &'static str, color: Hsla) -> Stateful<Div> {
-    div()
-        .id(id)
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap_1()
-        .text_color(color)
-        .font_weight(FontWeight::MEDIUM)
-        .cursor_pointer()
-        .hover(|style| style.underline())
-        .child(label)
-        .child(icon(Icon::External, 13., color))
-}
-
 /// The account reads in neutral tones so green stays reserved for connection state.
 fn render_account(status: &AccountStatus) -> AnyElement {
     let row = div().flex().items_center().gap_1p5();
@@ -1629,7 +1626,6 @@ fn render_account(status: &AccountStatus) -> AnyElement {
 }
 
 struct ErrorHint {
-    pill: &'static str,
     title: &'static str,
     next_step: &'static str,
 }
@@ -1639,13 +1635,11 @@ fn error_hint(message: &str) -> ErrorHint {
     let message = message.to_ascii_lowercase();
     if message.contains("address already in use") || message.contains("address in use") {
         ErrorHint {
-            pill: "Can't start",
             title: "Network port already in use",
-            next_step: "Another program on this computer is using a port playit needs. Close any second copy of playit. If it keeps happening, restart your computer.",
+            next_step: "Another program is using a network port playit needs. If you have playit open twice, close one. Restarting your computer usually fixes this.",
         }
     } else if message.contains("permission denied") || message.contains("access is denied") {
         ErrorHint {
-            pill: "Permission problem",
             title: "The playit service is missing a permission",
             next_step: "Restarting the playit service usually fixes this.",
         }
@@ -1654,13 +1648,11 @@ fn error_hint(message: &str) -> ErrorHint {
         || message.contains("resolve")
     {
         ErrorHint {
-            pill: "No network",
             title: "Can't reach the playit network",
             next_step: "Check your internet connection and firewall.",
         }
     } else {
         ErrorHint {
-            pill: "Can't start",
             title: "Something interrupted playit",
             next_step: "Your tunnels are offline until it recovers.",
         }
@@ -2206,6 +2198,14 @@ fn log_row(entry: &LogEntry, today: chrono::NaiveDate, show_target: bool) -> Div
         )
 }
 
+/// Flexible empty space that takes `weight` shares of the leftover height.
+fn spacer(weight: f32) -> Div {
+    let mut spacer = div().min_h(px(16.));
+    spacer.style().flex_grow = Some(weight);
+    spacer.style().flex_basis = Some(px(0.).into());
+    spacer
+}
+
 /// Explains why a tunnel is disabled and, for the reasons we recognize, how to turn it back on.
 fn disabled_explanation(reason: Option<&str>) -> String {
     let reason = disabled_reason(reason);
@@ -2376,7 +2376,7 @@ fn stat_cell(
         .gap_0p5()
         .px_4()
         .pt_1p5()
-        .pb_3()
+        .pb_2p5()
         .when(divider, |cell| {
             cell.border_r_1().border_color(theme::border())
         })
@@ -2385,24 +2385,32 @@ fn stat_cell(
                 .flex()
                 .items_center()
                 .gap_1p5()
-                .min_w_0()
                 .text_xs()
                 .text_color(theme::muted())
                 .child(icon(icon_kind, 14., theme::muted()))
-                .child(div().flex_none().child(label))
+                .child(div().truncate().child(label)),
+        )
+        .child(
+            div()
+                .flex()
+                .items_baseline()
+                .gap_2()
+                .min_w_0()
+                .child(
+                    div()
+                        .flex_none()
+                        .text_xl()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(value),
+                )
                 .children(detail.map(|detail| {
                     div()
                         .min_w_0()
                         .truncate()
+                        .text_xs()
                         .text_color(theme::faint())
-                        .child(format!("({detail})"))
+                        .child(detail)
                 })),
-        )
-        .child(
-            div()
-                .text_lg()
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(value),
         )
 }
 
@@ -2495,6 +2503,7 @@ fn button(
 fn row_button(id: impl Into<ElementId>, label: &'static str, kind: Icon) -> Stateful<Div> {
     button(id, label, ButtonStyle::Secondary, Some(kind))
         .w_full()
+        .justify_center()
         .px_3()
         .py_1p5()
         .bg(gpui::transparent_black())
