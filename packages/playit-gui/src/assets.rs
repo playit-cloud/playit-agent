@@ -17,6 +17,7 @@ pub enum Icon {
     Clock,
     Copy,
     External,
+    Globe,
     Info,
     Link,
     Loader,
@@ -42,6 +43,7 @@ const ALL: &[Icon] = &[
     Icon::Clock,
     Icon::Copy,
     Icon::External,
+    Icon::Globe,
     Icon::Info,
     Icon::Link,
     Icon::Loader,
@@ -69,6 +71,7 @@ impl Icon {
             Self::Clock => "icons/clock.svg",
             Self::Copy => "icons/copy.svg",
             Self::External => "icons/external.svg",
+            Self::Globe => "icons/globe.svg",
             Self::Info => "icons/info.svg",
             Self::Link => "icons/link.svg",
             Self::Loader => "icons/loader.svg",
@@ -101,6 +104,9 @@ impl Icon {
             }
             Self::External => {
                 r#"<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>"#
+            }
+            Self::Globe => {
+                r#"<circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10 15 15 0 0 1-4-10 15 15 0 0 1 4-10z"/>"#
             }
             Self::Info => {
                 r#"<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>"#

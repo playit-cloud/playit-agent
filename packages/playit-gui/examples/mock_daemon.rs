@@ -216,7 +216,7 @@ mod unix {
         match lifecycle {
             AgentLifecycle::WaitingForSecret => (LogLevel::Info, "waiting for an agent secret"),
             AgentLifecycle::HasInvalidSecret(_) => (
-                LogLevel::Error,
+                LogLevel::Warn,
                 "failed to authenticate, error=AuthenticationFailed",
             ),
             AgentLifecycle::DisabledOverLimit(_) => (
