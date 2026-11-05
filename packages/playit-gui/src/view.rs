@@ -287,7 +287,7 @@ impl PlayitWindow {
             Screen::Starting => ("Starting", theme::progress()),
             Screen::Stopping => ("Stopping", theme::progress()),
             Screen::Setup(_) => ("Not set up", theme::accent()),
-            Screen::Unreachable { .. } => ("Service unreachable", theme::failure()),
+            Screen::Unreachable { .. } => ("Can't connect", theme::failure()),
             // Whenever tunnels can't carry traffic the badge says so; the card says why and
             // whether playit is retrying on its own.
             Screen::InvalidSecret { .. } | Screen::OverLimit { .. } | Screen::Error { .. } => {
@@ -546,10 +546,14 @@ impl PlayitWindow {
             summary = summary.child("·").child(
                 div()
                     .id("jump-to-disabled")
+                    .flex()
+                    .items_center()
+                    .gap_0p5()
                     .cursor_pointer()
                     .text_color(theme::attention())
-                    .hover(|style| style.underline())
+                    .underline()
                     .child(format!("{disabled} disabled"))
+                    .child(icon(Icon::ArrowDown, 12., theme::attention()))
                     .on_click(cx.listener(|view, _, _, cx| view.scroll_to_attention(cx))),
             );
         }
@@ -630,7 +634,8 @@ impl PlayitWindow {
                                 .on_click(move |_, _, cx| cx.open_url(&url))
                                 .into_any_element()
                             }),
-                            manage_url: Some(tunnel_url(&tunnel.id)),
+                            // The fix button already opens this tunnel's page.
+                            manage_url: None,
                         },
                     )
                     .into_any_element(),
@@ -645,7 +650,10 @@ impl PlayitWindow {
                         TunnelRow {
                             address: tunnel.display_address.clone(),
                             has_address: true,
-                            status: Some(("Active".into(), theme::online())),
+                            status: Some((
+                                if narrow { "Active" } else { "Tunnel active" }.into(),
+                                theme::online(),
+                            )),
                             quiet_status: true,
                             detail: forwards_to(&tunnel.destination),
                             needs_attention: false,
@@ -673,7 +681,7 @@ impl PlayitWindow {
                     narrow,
                     TunnelRow {
                         address: pending.id.clone(),
-                        has_address: true,
+                        has_address: false,
                         status: Some(("Setting up".into(), theme::progress())),
                         quiet_status: false,
                         detail: div()
@@ -710,7 +718,7 @@ impl PlayitWindow {
             .child(div().text_xs().text_color(theme::muted()).child(if narrow {
                 "Your game server must be running for friends to join."
             } else {
-                "Share an address with friends. Your game server must be running for them to join."
+                "Share an address with friends. An active tunnel doesn't start your game; your server must also be running."
             }));
 
         panel()
@@ -896,28 +904,17 @@ impl PlayitWindow {
             .text_xs()
             .text_color(theme::muted())
             .child(plural(visible.len(), "message"));
-        // Counts keep their level's color, like the disabled count above, so a problem is
-        // visible while the log is collapsed; "this session" says they're not necessarily
-        // current.
+        // While the agent runs, logged problems are history: they're counted in muted text
+        // and called "logged" so they don't read as a current fault.
         if healthy && (errors > 0 || warnings > 0) {
-            summary = summary.child("this session, including");
+            let mut counts = Vec::new();
             if errors > 0 {
-                summary = summary.child(
-                    div()
-                        .text_color(theme::failure())
-                        .child(plural(errors, "error")),
-                );
-            }
-            if errors > 0 && warnings > 0 {
-                summary = summary.child("and");
+                counts.push(plural(errors, "error"));
             }
             if warnings > 0 {
-                summary = summary.child(
-                    div()
-                        .text_color(theme::attention())
-                        .child(plural(warnings, "warning")),
-                );
+                counts.push(plural(warnings, "warning"));
             }
+            summary = summary.child(format!("· {} logged this session", counts.join(" and ")));
         }
 
         let title = div()
@@ -2081,7 +2078,7 @@ fn unreachable_guidance(mode: SessionMode, error: &str) -> UnreachableGuidance {
         return UnreachableGuidance {
             title: "Can't reach the playit service",
             body: vec![
-                "The background service that runs your tunnels isn't answering, so this window can't show their status. This window keeps trying to reconnect; if it doesn't, restarting your computer usually helps.".into(),
+                "The background part of playit that runs your tunnels isn't responding, so this window can't show their status. If this keeps happening, restart your computer.".into(),
             ],
             command: None,
         };
@@ -2228,9 +2225,10 @@ fn tunnel_row(
                 div()
                     .absolute()
                     .left_0()
-                    .top_0()
-                    .bottom_0()
+                    .top(px(6.))
+                    .bottom(px(6.))
                     .w(px(3.))
+                    .rounded_r_sm()
                     .bg(theme::attention()),
             )
         })
@@ -2307,7 +2305,7 @@ fn log_row(entry: &LogEntry, today: chrono::NaiveDate, show_target: bool) -> Div
 }
 
 /// Space above the card on every non-running screen.
-const CARD_TOP_OFFSET: f32 = 72.;
+const CARD_TOP_OFFSET: f32 = 112.;
 
 /// Explains why a tunnel is disabled and, for the reasons we recognize, how to turn it back on.
 fn disabled_explanation(reason: Option<&str>) -> String {
