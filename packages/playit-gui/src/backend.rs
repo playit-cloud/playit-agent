@@ -51,9 +51,11 @@ pub enum UiCommand {
     ResetSecret,
     /// Open the guest account's one-click login link, which the daemon creates on request.
     OpenGuestLogin,
-    /// Skip the remaining reconnect delay and try the daemon again now, starting the
-    /// installed service if it still isn't running.
+    /// Skip the remaining reconnect delay and try the daemon again now. Where starting the
+    /// service needs no password, this also starts it if it still isn't running.
     Reconnect,
+    /// Start the installed service, which may ask for an administrator password.
+    StartService,
 }
 
 /// Results of commands the window has to act on, like opening a link or showing an error.
@@ -63,9 +65,13 @@ pub enum CommandOutcome {
     Failed(String),
 }
 
+/// Starting the Linux service needs root, so systemd asks for a password. There the window
+/// starts it only when the user presses Start service; on Windows and macOS it needs none.
+pub const START_NEEDS_PASSWORD: bool = cfg!(target_os = "linux");
+
 /// Wakes the subscription loop early. `start_service` asks it to also try starting the
-/// installed service: at launch if playitd isn't answering, and each time the user retries.
-/// Once connected it is cleared, so a service the user stops later stays stopped.
+/// installed service: when the user asks, and, where that needs no password, at launch and on
+/// each retry. Once connected it is cleared, so a service the user stops later stays stopped.
 struct Reconnect {
     notify: Notify,
     start_service: AtomicBool,
@@ -81,7 +87,7 @@ pub fn spawn(
 ) {
     let reconnect = Arc::new(Reconnect {
         notify: Notify::new(),
-        start_service: AtomicBool::new(manage_service),
+        start_service: AtomicBool::new(manage_service && !START_NEEDS_PASSWORD),
     });
     runtime.spawn(run_subscription(
         socket_path.clone(),
@@ -244,6 +250,12 @@ async fn run_commands(
                 });
             }
             UiCommand::Reconnect => {
+                if !START_NEEDS_PASSWORD {
+                    reconnect.start_service.store(true, Ordering::Relaxed);
+                }
+                reconnect.notify.notify_one();
+            }
+            UiCommand::StartService => {
                 reconnect.start_service.store(true, Ordering::Relaxed);
                 reconnect.notify.notify_one();
             }

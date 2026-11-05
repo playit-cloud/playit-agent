@@ -15,7 +15,7 @@ use playit_ipc::model::{AccountStatus, AgentState, LogEntry, LogLevel, NoticeSta
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::assets::{Icon, LOGO_MARK, LOGO_WORDMARK};
-use crate::backend::{BackendEvent, CommandOutcome, SetupStep, UiCommand};
+use crate::backend::{BackendEvent, CommandOutcome, START_NEEDS_PASSWORD, SetupStep, UiCommand};
 use crate::state::{
     ACCOUNT_AGENTS_URL, ACCOUNT_UPGRADE_URL, ACCOUNT_URL, AppState, Screen, SessionMode,
     disabled_reason, format_bytes, format_uptime, level_label, log_time_label, new_tunnel_url,
@@ -1157,9 +1157,11 @@ impl PlayitWindow {
                 card.badge = Badge::Spinner;
                 card.tone = theme::info();
                 card.title = "Starting the playit service".into();
-                card.body = vec![
-                    "The playit background service on this computer wasn't running, so playit is starting it.".into(),
-                ];
+                card.body = vec![if START_NEEDS_PASSWORD {
+                    "If your computer asks for your password, enter it to let playit start its background service.".into()
+                } else {
+                    "The playit background service on this computer wasn't running, so playit is starting it.".into()
+                }];
                 card.waiting = Some("Starting…".into());
             }
             Screen::Unreachable { error, start_error } => {
@@ -1176,11 +1178,30 @@ impl PlayitWindow {
                 }
                 card.details = Some(details);
                 card.waiting = Some("Reconnecting automatically every few seconds…".into());
+                if guidance.offer_start {
+                    card.actions.push(
+                        large(button(
+                            "start-service",
+                            "Start service",
+                            ButtonStyle::Primary,
+                            Some(Icon::Power),
+                        ))
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.send(UiCommand::StartService);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                    );
+                }
                 card.actions.push(
                     large(button(
                         "reconnect",
                         "Retry now",
-                        ButtonStyle::Primary,
+                        if guidance.offer_start {
+                            ButtonStyle::Secondary
+                        } else {
+                            ButtonStyle::Primary
+                        },
                         Some(Icon::Refresh),
                     ))
                     .on_click(cx.listener(|view, _, _, cx| {
@@ -2185,6 +2206,8 @@ struct UnreachableGuidance {
     title: &'static str,
     body: Vec<String>,
     command: Option<String>,
+    /// Show a Start service button, for services that only start with a password.
+    offer_start: bool,
 }
 
 fn unreachable_guidance(mode: SessionMode, error: &str, start_failed: bool) -> UnreachableGuidance {
@@ -2196,6 +2219,7 @@ fn unreachable_guidance(mode: SessionMode, error: &str, start_failed: bool) -> U
                 "This window and the playit background service are from different versions of playit, so they can't work together. Install the latest playit to update both.".into(),
             ],
             command: None,
+            offer_start: false,
         };
     }
     if mode == SessionMode::ExternalDaemon {
@@ -2205,6 +2229,7 @@ fn unreachable_guidance(mode: SessionMode, error: &str, start_failed: bool) -> U
                 "The background part of playit that runs your tunnels isn't responding, so this window can't show their status. If this keeps happening, restart your computer.".into(),
             ],
             command: None,
+            offer_start: false,
         };
     }
     if cfg!(target_os = "linux") && error.contains("Permission denied") {
@@ -2214,6 +2239,7 @@ fn unreachable_guidance(mode: SessionMode, error: &str, start_failed: bool) -> U
                 "The playit service is running, but your user isn't allowed to talk to it yet. Add yourself to the playit group, then log out and back in.".into(),
             ],
             command: Some("sudo usermod -aG playit $USER".into()),
+            offer_start: false,
         };
     }
     // `playit start` on Linux needs to know the init system, so name systemd directly.
@@ -2226,13 +2252,18 @@ fn unreachable_guidance(mode: SessionMode, error: &str, start_failed: bool) -> U
         "Your tunnels are offline until the playit background service on this computer starts again.".into(),
     ];
     if start_failed {
-        body.push("playit couldn't start it for you. The details below say why.".into());
+        body.push("playit couldn't start it. The details below say why.".into());
     }
-    body.push("Start it from a terminal. This window reconnects automatically:".into());
+    body.push(if START_NEEDS_PASSWORD {
+        "Press Start service and enter your password when asked, or run this in a terminal:".into()
+    } else {
+        "Start it from a terminal. This window reconnects automatically:".into()
+    });
     UnreachableGuidance {
         title: "The playit service isn't running",
         body,
         command: Some(command.into()),
+        offer_start: START_NEEDS_PASSWORD,
     }
 }
 
@@ -2827,6 +2858,24 @@ mod tests {
         );
         assert_eq!(guidance.title, "playit needs an update");
         assert!(guidance.command.is_none());
+    }
+
+    #[test]
+    fn start_button_only_where_starting_asks_for_a_password() {
+        let stopped = super::unreachable_guidance(
+            crate::state::SessionMode::Service,
+            "No such file or directory (os error 2)",
+            false,
+        );
+        assert_eq!(stopped.offer_start, crate::backend::START_NEEDS_PASSWORD);
+        assert!(stopped.command.is_some());
+
+        let custom_socket = super::unreachable_guidance(
+            crate::state::SessionMode::ExternalDaemon,
+            "No such file or directory (os error 2)",
+            false,
+        );
+        assert!(!custom_socket.offer_start);
     }
 
     #[test]
