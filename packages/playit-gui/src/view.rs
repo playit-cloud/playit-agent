@@ -107,8 +107,11 @@ const TOAST_DURATION: Duration = Duration::from_secs(2);
 const SLOW_START: Duration = Duration::from_secs(20);
 /// Windows shorter than this use tighter spacing.
 const COMPACT_HEIGHT: f32 = 640.;
+/// Windows narrower than this drop the account summary and shorten long lines.
+const NARROW_WIDTH: f32 = 760.;
 
-const GUEST_NOTICE: &str = "You're using a guest account. Save it to keep your tunnels if you reinstall or switch computers.";
+const GUEST_NOTICE: &str =
+    "Save your guest account to keep your tunnels if you reinstall or switch computers.";
 
 pub struct PlayitWindow {
     state: AppState,
@@ -250,6 +253,7 @@ impl PlayitWindow {
         &self,
         screen: &Screen,
         compact: bool,
+        narrow: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let (status_label, status_color) = match screen {
@@ -273,14 +277,20 @@ impl PlayitWindow {
                         .child(format_uptime(agent.start_time, now_millis()))
                         .into_any_element(),
                 ))
-                .child(header_stat(
-                    "Account",
-                    render_account(&agent.account_status),
-                ))
+                .when(!narrow, |right| {
+                    right.child(header_stat(
+                        "Account",
+                        render_account(&agent.account_status),
+                    ))
+                })
                 .child(
                     button(
                         "dashboard",
-                        "Open dashboard",
+                        if narrow {
+                            "Dashboard"
+                        } else {
+                            "Open dashboard"
+                        },
                         ButtonStyle::Secondary,
                         Some(Icon::External),
                     )
@@ -332,7 +342,13 @@ impl PlayitWindow {
             .child(right)
     }
 
-    fn render_running(&self, agent: &AgentState, compact: bool, cx: &mut Context<Self>) -> Div {
+    fn render_running(
+        &self,
+        agent: &AgentState,
+        compact: bool,
+        narrow: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let has_tunnels = !agent.tunnels.is_empty() || !agent.pending_tunnels.is_empty();
         let mut body = div()
             .flex()
@@ -371,7 +387,7 @@ impl PlayitWindow {
             ));
         }
 
-        body = body.child(self.render_tunnels(agent, compact, cx));
+        body = body.child(self.render_tunnels(agent, compact, narrow, cx));
         if has_tunnels {
             body = body.child(self.render_stats());
         }
@@ -391,7 +407,7 @@ impl PlayitWindow {
         let action: Option<AnyElement> = match action {
             NoticeAction::None => None,
             NoticeAction::Link(link) => Some(
-                notice_link("notice-link", "Learn more", color)
+                notice_link("notice-link", "See what's new", color)
                     .on_click(move |_, _, cx| cx.open_url(&link))
                     .into_any_element(),
             ),
@@ -443,6 +459,7 @@ impl PlayitWindow {
         &self,
         agent: &AgentState,
         compact: bool,
+        narrow: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let has_tunnels = !agent.tunnels.is_empty() || !agent.pending_tunnels.is_empty();
@@ -504,6 +521,8 @@ impl PlayitWindow {
                             )),
                             detail: forwards_to(&tunnel.destination),
                             action: row_button(("manage-tunnel", ix), "Fix tunnel", Icon::External)
+                                .border_color(theme::attention().opacity(0.5))
+                                .text_color(theme::attention())
                                 .on_click(cx.listener(|view, _, _, cx| view.open_dashboard(cx)))
                                 .into_any_element(),
                         },
@@ -521,7 +540,7 @@ impl PlayitWindow {
                             address: tunnel.display_address.clone(),
                             dimmed: false,
                             has_address: true,
-                            status: None,
+                            status: Some(("Connected".into(), theme::online())),
                             detail: forwards_to(&tunnel.destination),
                             action: row_button(("copy-tunnel", ix), "Copy", Icon::Copy)
                                 .on_click(cx.listener(move |view, _, _, cx| {
@@ -544,7 +563,7 @@ impl PlayitWindow {
                         dot_color: theme::progress(),
                         address: pending.id.clone(),
                         dimmed: false,
-                        has_address: false,
+                        has_address: true,
                         status: Some(("Setting up".into(), theme::progress())),
                         detail: div()
                             .flex()
@@ -557,7 +576,13 @@ impl PlayitWindow {
                                 "{}. The address appears here when it's ready.",
                                 sentence_case(&pending.status_msg)
                             ))),
-                        action: div().into_any_element(),
+                        action: div()
+                            .w_full()
+                            .text_center()
+                            .text_xs()
+                            .text_color(theme::faint())
+                            .child("Not ready yet")
+                            .into_any_element(),
                     },
                 )
                 .into_any_element(),
@@ -591,7 +616,11 @@ impl PlayitWindow {
                 div()
                     .text_xs()
                     .text_color(theme::muted())
-                    .child("Share an address with friends. Your game server must also be running for them to join."),
+                    .child(if narrow {
+                        "Share an address with friends. Keep your game server running."
+                    } else {
+                        "Share an address with friends. Your game server must also be running for them to join."
+                    }),
             );
 
         panel()
@@ -682,7 +711,7 @@ impl PlayitWindow {
                     .items_baseline()
                     .gap_3()
                     .px_4()
-                    .pt_2p5()
+                    .pt_3()
                     .child(
                         div()
                             .text_base()
@@ -703,14 +732,14 @@ impl PlayitWindow {
                         Icon::ArrowDown,
                         "Received",
                         format_bytes(stats.bytes_in),
-                        None,
+                        Some("total".into()),
                         true,
                     ))
                     .child(stat_cell(
                         Icon::ArrowUp,
                         "Sent",
                         format_bytes(stats.bytes_out),
-                        None,
+                        Some("total".into()),
                         true,
                     ))
                     .child(stat_cell(
@@ -761,7 +790,7 @@ impl PlayitWindow {
         if healthy && warnings > 0 {
             summary = summary.child(count_badge(
                 format!(
-                    "{warnings} {} logged",
+                    "{warnings} earlier {}",
                     if warnings == 1 { "warning" } else { "warnings" }
                 ),
                 theme::attention(),
@@ -770,7 +799,7 @@ impl PlayitWindow {
         if healthy && errors > 0 {
             summary = summary.child(count_badge(
                 format!(
-                    "{errors} {} logged",
+                    "{errors} earlier {}",
                     if errors == 1 { "error" } else { "errors" }
                 ),
                 theme::failure(),
@@ -956,6 +985,12 @@ impl PlayitWindow {
                     }))
                     .into_any_element(),
                 );
+                card.actions.push(link_button(
+                    "unreachable-help",
+                    "Troubleshooting help",
+                    SUPPORT_URL,
+                    ButtonStyle::Secondary,
+                ));
             }
             Screen::Starting => {
                 card.badge = Badge::Icon(Icon::Clock);
@@ -967,7 +1002,7 @@ impl PlayitWindow {
                         "This is taking longer than usual. The activity log below shows what is happening.".into(),
                     );
                 }
-                card.waiting = Some("Waiting for the playit network…".into());
+                card.waiting = Some("Connecting…".into());
             }
             Screen::Stopping => {
                 card.badge = Badge::Icon(Icon::Clock);
@@ -1000,7 +1035,7 @@ impl PlayitWindow {
                 card.title = "Link this computer again".into();
                 card.body = vec![
                     "The sign-in key saved on this computer no longer works. This computer may have been removed from your playit account.".into(),
-                    "Linking it again takes a few seconds in your browser.".into(),
+                    "Link this computer again in your browser to bring your tunnels back.".into(),
                 ];
                 card.details = Some(message.to_string());
                 card.actions.push(
@@ -1205,10 +1240,12 @@ impl PlayitWindow {
 
 impl Render for PlayitWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let compact = window.viewport_size().height < px(COMPACT_HEIGHT);
+        let viewport = window.viewport_size();
+        let compact = viewport.height < px(COMPACT_HEIGHT);
+        let narrow = viewport.width < px(NARROW_WIDTH);
         let screen = self.state.screen();
         let body = match &screen {
-            Screen::Running(agent) => self.render_running(agent, compact, cx),
+            Screen::Running(agent) => self.render_running(agent, compact, narrow, cx),
             screen => self.render_message(screen, cx),
         };
 
@@ -1221,7 +1258,7 @@ impl Render for PlayitWindow {
             .font_family(UI_FONT)
             .text_color(theme::text())
             .text_sm()
-            .child(self.render_header(&screen, compact, cx));
+            .child(self.render_header(&screen, compact, narrow, cx));
 
         if let Some(error) = self.command_error.clone() {
             root = root.child(
@@ -1353,9 +1390,7 @@ fn notice_link(id: &'static str, label: &'static str, color: Hsla) -> Stateful<D
 fn render_account(status: &AccountStatus) -> AnyElement {
     let row = div().flex().items_center().gap_1p5();
     match status {
-        AccountStatus::Verified => row
-            .child(icon(Icon::CheckCircle, 14., theme::muted()))
-            .child("Signed in"),
+        AccountStatus::Verified => row.child("Signed in"),
         AccountStatus::EmailNotVerified => row
             .text_color(theme::attention())
             .child(icon(Icon::Alert, 14., theme::attention()))
@@ -1379,9 +1414,9 @@ fn error_hint(message: &str) -> ErrorHint {
     let message = message.to_ascii_lowercase();
     if message.contains("address already in use") || message.contains("address in use") {
         ErrorHint {
-            pill: "Port in use",
-            title: "Another program is blocking playit",
-            next_step: "A network port playit needs is in use by another program. Close any second copy of playit, or restart your computer.",
+            pill: "Can't start",
+            title: "A network port playit needs is already in use",
+            next_step: "Another program on this computer is using it. Close any second copy of playit, or restart your computer.",
         }
     } else if message.contains("permission denied") || message.contains("access is denied") {
         ErrorHint {
@@ -1748,7 +1783,8 @@ fn unreachable_guidance(mode: SessionMode, error: &str) -> UnreachableGuidance {
         return UnreachableGuidance {
             title: "The playit background service isn't responding",
             body: vec![
-                "This window shows the status of a separate playit background service, which isn't answering. Make sure that service is running. This window reconnects on its own.".into(),
+                "This window can't reach the playit background service. Check that it's running."
+                    .into(),
             ],
             command: None,
         };
@@ -1824,7 +1860,7 @@ fn tunnel_row(id: impl Into<ElementId>, compact: bool, row: TunnelRow) -> impl I
                                 .min_w_0()
                                 .truncate()
                                 .text_size(px(15.))
-                                .when(row.has_address && !row.dimmed, |text| {
+                                .when(row.has_address, |text| {
                                     text.font_weight(FontWeight::SEMIBOLD)
                                 })
                                 .text_color(if row.dimmed {
@@ -2001,16 +2037,19 @@ fn chip(label: impl Into<SharedString>, color: Hsla) -> impl IntoElement {
         .child(label.into())
 }
 
-/// Logged problem counts in the log header, kept soft so they read as history.
+/// Logged problem counts in the log header: neutral with a severity dot, so they read as
+/// history rather than a current fault.
 fn count_badge(label: String, color: Hsla) -> impl IntoElement {
     div()
+        .flex()
+        .items_center()
+        .gap_1p5()
         .px_1p5()
         .rounded_sm()
         .border_1()
-        .border_color(color.opacity(0.2))
-        .bg(color.opacity(0.07))
-        .text_color(color)
-        .font_weight(FontWeight::MEDIUM)
+        .border_color(theme::border_strong())
+        .text_color(theme::muted())
+        .child(div().size(px(6.)).rounded_full().bg(color))
         .child(label)
 }
 
@@ -2038,8 +2077,8 @@ fn stat_cell(
         .flex_col()
         .gap_0p5()
         .px_4()
-        .pt_1()
-        .pb_2p5()
+        .pt_1p5()
+        .pb_3()
         .when(divider, |cell| {
             cell.border_r_1().border_color(theme::border())
         })
@@ -2055,26 +2094,17 @@ fn stat_cell(
         )
         .child(
             div()
-                .flex()
-                .items_baseline()
-                .gap_2()
-                .min_w_0()
-                .child(
-                    div()
-                        .flex_none()
-                        .text_lg()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(value),
-                )
-                .children(caption.map(|caption| {
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_xs()
-                        .text_color(theme::muted())
-                        .child(caption)
-                })),
+                .text_lg()
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(value),
         )
+        .children(caption.map(|caption| {
+            div()
+                .truncate()
+                .text_xs()
+                .text_color(theme::muted())
+                .child(caption)
+        }))
 }
 
 fn toggle(id: &'static str, label: impl Into<SharedString>, on: bool) -> Stateful<Div> {
@@ -2167,6 +2197,8 @@ fn row_button(id: impl Into<ElementId>, label: &'static str, kind: Icon) -> Stat
         .w_full()
         .px_3()
         .py_1p5()
+        .bg(gpui::transparent_black())
+        .border_color(theme::border())
 }
 
 /// A taller button for the main action of a screen.
