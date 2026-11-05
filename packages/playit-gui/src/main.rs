@@ -71,6 +71,8 @@ fn main() {
     };
     if manage_service {
         desktop::start_tray();
+        #[cfg(target_os = "linux")]
+        desktop::register_launcher_entry();
     }
 
     let runtime = tokio::runtime::Runtime::new().expect("failed to start the tokio runtime");
@@ -119,7 +121,7 @@ fn main() {
                         title: Some(desktop::WINDOW_TITLE.into()),
                         ..Default::default()
                     }),
-                    app_id: Some("gg.playit.gui".to_string()),
+                    app_id: Some(desktop::APP_ID.to_string()),
                     window_decorations: Some(if client_decorations {
                         WindowDecorations::Client
                     } else {
