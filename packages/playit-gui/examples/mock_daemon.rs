@@ -199,22 +199,45 @@ mod unix {
         ),
     ];
 
+    const IDLE_LOG_LINES: &[(LogLevel, &str, &str)] = &[
+        (
+            LogLevel::Info,
+            "playit",
+            "Connected to playit; waiting for tunnels",
+        ),
+        (
+            LogLevel::Debug,
+            "playit_agent_core::agent_control::maintained_control",
+            "sent keep alive, latency=31ms",
+        ),
+    ];
+
     async fn simulate_traffic(mock: Shared, events: broadcast::Sender<ServiceUpdate>) {
         let mut tick = 0usize;
         loop {
             tokio::time::sleep(Duration::from_millis(700)).await;
-            let stats = {
+            let (stats, has_tunnels) = {
                 let mut mock = mock.lock().unwrap();
-                if !matches!(mock.lifecycle, AgentLifecycle::Running(_)) {
-                    continue;
+                let has_tunnels = match &mock.lifecycle {
+                    AgentLifecycle::Running(state) => !state.tunnels.is_empty(),
+                    _ => continue,
+                };
+                if !has_tunnels {
+                    (mock.stats.clone(), false)
+                } else {
+                    mock.stats.bytes_in += 48_211 + (tick as u64 * 977) % 20_000;
+                    mock.stats.bytes_out += 1_284_337 + (tick as u64 * 7919) % 400_000;
+                    mock.stats.active_tcp = 3 + (tick % 4) as u32;
+                    mock.stats.active_udp = 2 + (tick % 3) as u32;
+                    (mock.stats.clone(), true)
                 }
-                mock.stats.bytes_in += 48_211 + (tick as u64 * 977) % 20_000;
-                mock.stats.bytes_out += 1_284_337 + (tick as u64 * 7919) % 400_000;
-                mock.stats.active_tcp = 3 + (tick % 4) as u32;
-                mock.stats.active_udp = 2 + (tick % 3) as u32;
-                mock.stats.clone()
             };
-            let (level, target, message) = &LOG_LINES[tick % LOG_LINES.len()];
+            // An idle agent announces itself once, then only sends keep-alives.
+            let (level, target, message) = if has_tunnels {
+                &LOG_LINES[tick % LOG_LINES.len()]
+            } else {
+                &IDLE_LOG_LINES[tick.min(1)]
+            };
             let _ = events.send(ServiceUpdate::Log(LogEntry {
                 level: level.clone(),
                 target: target.to_string(),

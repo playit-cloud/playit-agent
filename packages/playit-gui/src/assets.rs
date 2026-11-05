@@ -19,10 +19,13 @@ pub enum Icon {
     External,
     Info,
     Link,
+    Loader,
+    Play,
     Plug,
     Plus,
     Power,
     User,
+    X,
 }
 
 const ALL: &[Icon] = &[
@@ -39,10 +42,13 @@ const ALL: &[Icon] = &[
     Icon::External,
     Icon::Info,
     Icon::Link,
+    Icon::Loader,
+    Icon::Play,
     Icon::Plug,
     Icon::Plus,
     Icon::Power,
     Icon::User,
+    Icon::X,
 ];
 
 impl Icon {
@@ -61,10 +67,13 @@ impl Icon {
             Self::External => "icons/external.svg",
             Self::Info => "icons/info.svg",
             Self::Link => "icons/link.svg",
+            Self::Loader => "icons/loader.svg",
+            Self::Play => "icons/play.svg",
             Self::Plug => "icons/plug.svg",
             Self::Plus => "icons/plus.svg",
             Self::Power => "icons/power.svg",
             Self::User => "icons/user.svg",
+            Self::X => "icons/x.svg",
         }
     }
 
@@ -93,12 +102,15 @@ impl Icon {
             Self::Link => {
                 r#"<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>"#
             }
+            Self::Loader => r#"<path d="M21 12a9 9 0 1 1-6.2-8.6"/>"#,
+            Self::Play => r#"<path d="M8 5.5v13l10.5-6.5z" fill="black"/>"#,
             Self::Plug => {
                 r#"<path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/>"#
             }
             Self::Plus => r#"<path d="M5 12h14"/><path d="M12 5v14"/>"#,
             Self::Power => r#"<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>"#,
             Self::User => r#"<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>"#,
+            Self::X => r#"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#,
         }
     }
 }
