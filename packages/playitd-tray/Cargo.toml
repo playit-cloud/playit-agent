@@ -9,8 +9,8 @@ repository = "https://github.com/playit-cloud/playit-agent"
 [dependencies]
 tokio = { workspace = true }
 kanal = "0.1.1"
-playitd = { path = "../playitd", version = "1.2.0" }
-playit-ipc = { path = "../playit-ipc", version = "1.2.0" }
+playitd = { path = "../playitd", version = "2.0.0" }
+playit-ipc = { path = "../playit-ipc", version = "2.0.0" }
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 image = { version = "0.25", default-features = false, features = ["ico"] }

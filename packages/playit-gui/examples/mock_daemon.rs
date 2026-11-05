@@ -75,7 +75,7 @@ mod unix {
 
     fn running_state(scenario: &str) -> AgentState {
         let mut state = AgentState {
-            version: "1.2.0".into(),
+            version: "2.0.0".into(),
             account_status: AccountStatus::Verified,
             agent_id: "a3f1c9e2-5b7d-4e8a-9c21-7f0d6b4e2a18".into(),
             start_time: now() - 3 * 3_600_000 - 17 * 60_000 - 42_000,
@@ -162,7 +162,7 @@ mod unix {
                 AgentLifecycle::Error(_) => ServicePhase::Error,
             },
             pid: std::process::id(),
-            version: "1.2.0".into(),
+            version: "2.0.0".into(),
             socket_path: mock.socket_path.clone(),
             has_secret: !matches!(mock.lifecycle, AgentLifecycle::WaitingForSecret),
             protocol: protocol_info(),
