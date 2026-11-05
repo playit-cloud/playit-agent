@@ -71,7 +71,7 @@ fn main() {
             })
             .detach();
 
-            let bounds = Bounds::centered(None, size(px(1040.), px(780.)), cx);
+            let bounds = Bounds::centered(None, size(px(1040.), px(800.)), cx);
             let state = AppState::new(socket_path, session_mode);
             cx.open_window(
                 WindowOptions {

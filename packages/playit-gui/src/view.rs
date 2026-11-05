@@ -78,6 +78,15 @@ mod theme {
     }
 }
 
+// GPUI maps the Linux system UI font to IBM Plex Sans, which most desktops lack, and its
+// fallback face has no bold weight. Noto Sans ships with most distributions.
+#[cfg(target_os = "macos")]
+const UI_FONT: &str = ".SystemUIFont";
+#[cfg(target_os = "windows")]
+const UI_FONT: &str = "Segoe UI";
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+const UI_FONT: &str = "Noto Sans";
+
 #[cfg(target_os = "macos")]
 const MONO_FONT: &str = "Menlo";
 #[cfg(target_os = "windows")]
@@ -248,18 +257,18 @@ impl PlayitWindow {
             Screen::Connecting => ("Connecting", theme::progress()),
             Screen::Starting => ("Starting", theme::progress()),
             Screen::Stopping => ("Stopping", theme::progress()),
-            Screen::Setup(_) => ("Not set up", theme::progress()),
+            Screen::Setup(_) => ("Not set up", theme::accent()),
             Screen::Unreachable { .. } => ("Not responding", theme::failure()),
             Screen::InvalidSecret { .. } => ("Sign-in problem", theme::attention()),
             Screen::OverLimit { .. } => ("Account limit reached", theme::attention()),
-            Screen::Error { .. } => ("Error", theme::failure()),
+            Screen::Error { message } => (error_hint(message).pill, theme::failure()),
         };
 
         let mut right = div().flex().items_center().gap_5();
         if let Screen::Running(agent) = screen {
             right = right
                 .child(header_stat(
-                    "Running for",
+                    "Online for",
                     div()
                         .child(format_uptime(agent.start_time, now_millis()))
                         .into_any_element(),
@@ -462,6 +471,7 @@ impl PlayitWindow {
                             dot_color: theme::attention(),
                             address: tunnel.display_address.clone(),
                             dimmed: true,
+                            has_address: true,
                             status: Some(("Disabled", theme::attention())),
                             detail: div()
                                 .flex()
@@ -497,6 +507,7 @@ impl PlayitWindow {
                             dot_color: theme::online(),
                             address: tunnel.display_address.clone(),
                             dimmed: false,
+                            has_address: true,
                             status: None,
                             detail: div()
                                 .flex()
@@ -513,9 +524,8 @@ impl PlayitWindow {
                                     div()
                                         .min_w_0()
                                         .truncate()
-                                        .font_family(MONO_FONT)
                                         .text_color(theme::muted())
-                                        .child(tunnel.destination.clone()),
+                                        .child(destination_label(&tunnel.destination)),
                                 ),
                             action: row_button(("copy-tunnel", ix), "Copy address", Icon::Copy)
                                 .on_click(cx.listener(move |view, _, _, cx| {
@@ -538,6 +548,7 @@ impl PlayitWindow {
                         dot_color: theme::progress(),
                         address: pending.id.clone(),
                         dimmed: false,
+                        has_address: false,
                         status: Some(("Setting up", theme::progress())),
                         detail: div()
                             .flex()
@@ -552,11 +563,9 @@ impl PlayitWindow {
                                     .truncate()
                                     .child(format!("{}…", sentence_case(&pending.status_msg))),
                             ),
-                        action: div()
-                            .px_3()
-                            .text_xs()
-                            .text_color(theme::faint())
-                            .child("Address coming soon")
+                        action: row_button(("pending-copy", ix), "Copy address", Icon::Copy)
+                            .opacity(0.4)
+                            .cursor_default()
                             .into_any_element(),
                     },
                 )
@@ -591,7 +600,7 @@ impl PlayitWindow {
                 div()
                     .text_xs()
                     .text_color(theme::muted())
-                    .child("Share these addresses with friends. Your game server needs to be running for them to join."),
+                    .child("Share these addresses with friends."),
             );
 
         panel()
@@ -620,6 +629,18 @@ impl PlayitWindow {
                     ),
             )
             .child(div().flex().flex_col().children(rows))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_4()
+                    .py_2()
+                    .text_size(px(13.))
+                    .text_color(theme::muted())
+                    .child(icon(Icon::Info, 14., theme::muted()))
+                    .child("Your game server needs to be running for friends to join."),
+            )
             .into_any_element()
     }
 
@@ -679,25 +700,37 @@ impl PlayitWindow {
             .flex_col()
             .child(
                 div()
+                    .flex()
+                    .items_baseline()
+                    .gap_3()
                     .px_4()
-                    .pt_2()
-                    .text_xs()
-                    .text_color(theme::faint())
-                    .child("Traffic since playit started"),
+                    .pt_2p5()
+                    .child(
+                        div()
+                            .text_base()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Traffic"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme::muted())
+                            .child("since playit started"),
+                    ),
             )
             .child(
                 div()
                     .flex()
                     .child(stat_cell(
                         Icon::ArrowDown,
-                        "Received from players",
+                        "Received",
                         format_bytes(stats.bytes_in),
                         None,
                         true,
                     ))
                     .child(stat_cell(
                         Icon::ArrowUp,
-                        "Sent to players",
+                        "Sent",
                         format_bytes(stats.bytes_out),
                         None,
                         true,
@@ -748,7 +781,7 @@ impl PlayitWindow {
         if warnings > 0 {
             summary = summary.child(count_badge(
                 format!(
-                    "{warnings} recorded {}",
+                    "{warnings} {}",
                     if warnings == 1 { "warning" } else { "warnings" }
                 ),
                 theme::attention(),
@@ -757,10 +790,7 @@ impl PlayitWindow {
         }
         if errors > 0 {
             summary = summary.child(count_badge(
-                format!(
-                    "{errors} recorded {}",
-                    if errors == 1 { "error" } else { "errors" }
-                ),
+                format!("{errors} {}", if errors == 1 { "error" } else { "errors" }),
                 theme::failure(),
                 healthy,
             ));
@@ -931,12 +961,12 @@ impl PlayitWindow {
                 card.body = guidance.body;
                 card.command = guidance.command;
                 card.details = Some(format!("Address: {}\n{}", self.state.socket_path, error));
-                card.waiting = Some("Trying again every few seconds…".into());
+                card.waiting = Some("Reconnecting automatically every few seconds…".into());
                 card.actions.push(
                     large(button(
                         "reconnect",
-                        "Try again now",
-                        ButtonStyle::Primary,
+                        "Retry connection",
+                        ButtonStyle::Secondary,
                         Some(Icon::Refresh),
                     ))
                     .on_click(cx.listener(|view, _, _, cx| {
@@ -950,15 +980,13 @@ impl PlayitWindow {
                 card.badge = Badge::Icon(Icon::Clock);
                 card.color = theme::progress();
                 card.title = "Starting playit".into();
-                card.body = vec![
-                    "Connecting to the playit network. This usually takes a few seconds.".into(),
-                ];
+                card.body = vec!["This usually takes a few seconds.".into()];
                 if self.state.lifecycle_since.elapsed() >= SLOW_START {
                     card.body.push(
                         "This is taking longer than usual. The activity log below shows what is happening.".into(),
                     );
                 }
-                card.waiting = Some("Connecting…".into());
+                card.waiting = Some("Waiting for the playit network…".into());
             }
             Screen::Stopping => {
                 card.badge = Badge::Icon(Icon::Clock);
@@ -969,7 +997,7 @@ impl PlayitWindow {
             }
             Screen::Error { message } => {
                 let hint = error_hint(message);
-                card.badge = Badge::Icon(Icon::Alert);
+                card.badge = Badge::Icon(Icon::XCircle);
                 card.color = theme::failure();
                 card.title = hint.title.into();
                 card.body = vec![hint.next_step.to_string()];
@@ -1014,10 +1042,10 @@ impl PlayitWindow {
                 card.color = theme::attention();
                 card.title = "Your account has too many computers linked".into();
                 card.body = vec![
-                    "Each computer you link uses one of your plan's computer spots. Remove a computer you no longer use, or upgrade your plan.".into(),
+                    "Each computer you link uses one slot on your plan. Remove a computer you no longer use, or upgrade your plan.".into(),
                 ];
                 card.details = Some(message.to_string());
-                card.waiting = Some("Starts automatically once a spot is free".into());
+                card.waiting = Some("Starts automatically once a slot is free".into());
                 card.actions.push(link_button(
                     "agents",
                     "Manage computers",
@@ -1041,7 +1069,7 @@ impl PlayitWindow {
                 ];
                 match &setup.step {
                     SetupStep::Rejected | SetupStep::Failed(_) => {
-                        card.badge = Badge::Icon(Icon::Alert);
+                        card.badge = Badge::Icon(Icon::XCircle);
                         card.color = theme::failure();
                         card.body = vec![match &setup.step {
                             SetupStep::Failed(error) => format!("Setup didn't finish: {error}"),
@@ -1097,8 +1125,8 @@ impl PlayitWindow {
             Screen::Running(_) => unreachable!("running screen has its own layout"),
         }
 
-        // A fixed top offset keeps the card from jumping as the state changes; the
-        // activity log sits right under it.
+        // Spacers weighted 2:3 hold the card and its log about 40% of the way down, so short
+        // and tall states share the same visual balance.
         let mut group = div()
             .flex()
             .flex_col()
@@ -1114,9 +1142,9 @@ impl PlayitWindow {
             .flex_col()
             .flex_1()
             .items_center()
-            .pt(px(56.))
-            .pb_4()
+            .child(spacer(2.))
             .child(group)
+            .child(spacer(3.))
     }
 
     fn render_footer(
@@ -1132,7 +1160,7 @@ impl PlayitWindow {
                 .gap_1()
                 .text_color(theme::muted())
                 .child(icon(Icon::ChevronDown, 14., theme::muted()))
-                .child("Scroll for traffic and activity")
+                .child("Scroll down for more")
                 .into_any_element()
         } else if matches!(screen, Screen::Running(_)) {
             div()
@@ -1209,6 +1237,7 @@ impl Render for PlayitWindow {
             .flex()
             .flex_col()
             .bg(theme::bg())
+            .font_family(UI_FONT)
             .text_color(theme::text())
             .text_sm()
             .child(self.render_header(&screen, compact, cx));
@@ -1359,6 +1388,7 @@ fn render_account(status: &AccountStatus) -> AnyElement {
 }
 
 struct ErrorHint {
+    pill: &'static str,
     title: &'static str,
     next_step: &'static str,
 }
@@ -1368,11 +1398,13 @@ fn error_hint(message: &str) -> ErrorHint {
     let message = message.to_ascii_lowercase();
     if message.contains("address already in use") || message.contains("address in use") {
         ErrorHint {
+            pill: "Port in use",
             title: "A network port playit needs is already in use",
-            next_step: "Another program is using it. Restarting your computer usually frees the port.",
+            next_step: "Another program is using it. If a second copy of playit is running, close it. Restarting your computer can also free the port.",
         }
     } else if message.contains("permission denied") || message.contains("access is denied") {
         ErrorHint {
+            pill: "Permission problem",
             title: "The playit service is missing a permission",
             next_step: "Restarting the playit service usually fixes this.",
         }
@@ -1381,11 +1413,13 @@ fn error_hint(message: &str) -> ErrorHint {
         || message.contains("resolve")
     {
         ErrorHint {
+            pill: "No network",
             title: "Can't reach the playit network",
             next_step: "Check your internet connection and firewall.",
         }
     } else {
         ErrorHint {
+            pill: "Can't start",
             title: "Something interrupted playit",
             next_step: "Your tunnels are offline until it recovers.",
         }
@@ -1733,7 +1767,7 @@ fn unreachable_guidance(mode: SessionMode, error: &str) -> UnreachableGuidance {
         return UnreachableGuidance {
             title: "No response from playit",
             body: vec![
-                "If you started playit yourself, start or restart it. This window reconnects automatically.".into(),
+                "Make sure the playit app or service is running on this computer. This window reconnects on its own.".into(),
             ],
             command: None,
         };
@@ -1767,6 +1801,8 @@ struct TunnelRow {
     dot_color: Hsla,
     address: String,
     dimmed: bool,
+    /// Pending tunnels show their name, which isn't something to share yet.
+    has_address: bool,
     /// Only exceptions get a label; the dot says "online" on its own.
     status: Option<(&'static str, Hsla)>,
     detail: Div,
@@ -1783,7 +1819,7 @@ fn tunnel_row(id: impl Into<ElementId>, compact: bool, row: TunnelRow) -> impl I
         .gap_3()
         .px_4()
         .when(compact, |el| el.py_1p5())
-        .when(!compact, |el| el.py_2p5())
+        .when(!compact, |el| el.py_2())
         .border_b_1()
         .border_color(theme::border().opacity(0.6))
         .when(row.dimmed, |el| el.bg(theme::attention().opacity(0.04)))
@@ -1806,9 +1842,10 @@ fn tunnel_row(id: impl Into<ElementId>, compact: bool, row: TunnelRow) -> impl I
                             div()
                                 .min_w_0()
                                 .truncate()
-                                .font_family(MONO_FONT)
                                 .text_size(px(15.))
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .when(row.has_address, |text| {
+                                    text.font_weight(FontWeight::SEMIBOLD)
+                                })
                                 .text_color(if row.dimmed {
                                     theme::muted()
                                 } else {
@@ -1880,6 +1917,30 @@ fn log_row(entry: &LogEntry, today: chrono::NaiveDate, show_target: bool) -> Div
                 .text_color(message_color)
                 .child(entry.message.clone()),
         )
+}
+
+/// Flexible empty space that takes `weight` shares of the leftover height.
+fn spacer(weight: f32) -> Div {
+    let mut spacer = div().min_h(px(16.));
+    spacer.style().flex_grow = Some(weight);
+    spacer.style().flex_basis = Some(px(0.).into());
+    spacer
+}
+
+/// Describes where a tunnel forwards to, naming this computer instead of a loopback address.
+fn destination_label(destination: &str) -> String {
+    let (host, port) = match destination.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+            (host.trim_matches(['[', ']']), Some(port))
+        }
+        _ => (destination, None),
+    };
+    let loopback = host == "localhost" || host == "::1" || host.starts_with("127.");
+    match (loopback, port) {
+        (true, Some(port)) => format!("this computer, port {port}"),
+        (true, None) => "this computer".to_string(),
+        (false, _) => destination.to_string(),
+    }
 }
 
 fn sentence_case(text: &str) -> String {
@@ -1967,24 +2028,16 @@ fn chip(label: &'static str, color: Hsla) -> impl IntoElement {
         .child(label)
 }
 
-/// Problem counts in the log header: outlined and quiet while things are healthy, filled
-/// when the screen is about that problem.
+/// Problem counts in the log header, in their severity color: softer while things are
+/// healthy, stronger when the screen is about that problem.
 fn count_badge(label: String, color: Hsla, quiet: bool) -> impl IntoElement {
     div()
         .px_1p5()
         .rounded_sm()
         .border_1()
-        .when(quiet, |badge| {
-            badge
-                .border_color(theme::border_strong())
-                .text_color(theme::muted())
-        })
-        .when(!quiet, |badge| {
-            badge
-                .border_color(color.opacity(0.3))
-                .bg(color.opacity(0.14))
-                .text_color(color)
-        })
+        .border_color(color.opacity(if quiet { 0.2 } else { 0.3 }))
+        .bg(color.opacity(if quiet { 0.07 } else { 0.14 }))
+        .text_color(color)
         .font_weight(FontWeight::MEDIUM)
         .child(label)
 }
@@ -2037,7 +2090,7 @@ fn stat_cell(
                 .child(
                     div()
                         .flex_none()
-                        .text_xl()
+                        .text_lg()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(value),
                 )
@@ -2154,4 +2207,23 @@ fn link_button(id: &'static str, label: &'static str, url: &str, style: ButtonSt
     large(button(id, label, style, Some(Icon::External)))
         .on_click(move |_, _, cx| cx.open_url(&url))
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::destination_label;
+
+    #[test]
+    fn loopback_destinations_name_this_computer() {
+        assert_eq!(
+            destination_label("127.0.0.1:25565"),
+            "this computer, port 25565"
+        );
+        assert_eq!(destination_label("[::1]:8080"), "this computer, port 8080");
+        assert_eq!(destination_label("localhost"), "this computer");
+        assert_eq!(
+            destination_label("192.168.1.20:19132"),
+            "192.168.1.20:19132"
+        );
+    }
 }

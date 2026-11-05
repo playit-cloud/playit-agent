@@ -27,6 +27,7 @@ pub enum Icon {
     Refresh,
     User,
     X,
+    XCircle,
 }
 
 const ALL: &[Icon] = &[
@@ -51,6 +52,7 @@ const ALL: &[Icon] = &[
     Icon::Refresh,
     Icon::User,
     Icon::X,
+    Icon::XCircle,
 ];
 
 impl Icon {
@@ -77,6 +79,7 @@ impl Icon {
             Self::Refresh => "icons/refresh.svg",
             Self::User => "icons/user.svg",
             Self::X => "icons/x.svg",
+            Self::XCircle => "icons/x-circle.svg",
         }
     }
 
@@ -115,6 +118,9 @@ impl Icon {
             Self::Refresh => r#"<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>"#,
             Self::User => r#"<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>"#,
             Self::X => r#"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#,
+            Self::XCircle => {
+                r#"<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>"#
+            }
         }
     }
 }
