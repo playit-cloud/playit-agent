@@ -9,9 +9,11 @@ use gpui::{
 use playit_ipc::ipc::get_default_socket_path;
 use tracing_subscriber::EnvFilter;
 
+use crate::assets::Assets;
 use crate::state::{AppState, SessionMode};
 use crate::view::PlayitWindow;
 
+mod assets;
 mod backend;
 mod state;
 mod view;
@@ -54,37 +56,39 @@ fn main() {
         outcome_tx,
     );
 
-    Application::new().run(move |cx: &mut App| {
-        cx.bind_keys([
-            KeyBinding::new("cmd-q", Quit, None),
-            KeyBinding::new("ctrl-q", Quit, None),
-        ]);
-        cx.on_action(|_: &Quit, cx| cx.quit());
-        cx.on_window_closed(|cx| {
-            if cx.windows().is_empty() {
-                cx.quit();
-            }
-        })
-        .detach();
+    Application::new()
+        .with_assets(Assets)
+        .run(move |cx: &mut App| {
+            cx.bind_keys([
+                KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("ctrl-q", Quit, None),
+            ]);
+            cx.on_action(|_: &Quit, cx| cx.quit());
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
 
-        let bounds = Bounds::centered(None, size(px(1000.), px(760.)), cx);
-        let state = AppState::new(socket_path, session_mode);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(640.), px(480.))),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("playit".into()),
+            let bounds = Bounds::centered(None, size(px(1000.), px(800.)), cx);
+            let state = AppState::new(socket_path, session_mode);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(bounds)),
+                    window_min_size: Some(size(px(640.), px(480.))),
+                    titlebar: Some(TitlebarOptions {
+                        title: Some("playit".into()),
+                        ..Default::default()
+                    }),
+                    app_id: Some("gg.playit.gui".to_string()),
                     ..Default::default()
-                }),
-                app_id: Some("gg.playit.gui".to_string()),
-                ..Default::default()
-            },
-            |_, cx| cx.new(|cx| PlayitWindow::new(state, command_tx, event_rx, outcome_rx, cx)),
-        )
-        .expect("failed to open the playit window");
-        cx.activate(true);
-    });
+                },
+                |_, cx| cx.new(|cx| PlayitWindow::new(state, command_tx, event_rx, outcome_rx, cx)),
+            )
+            .expect("failed to open the playit window");
+            cx.activate(true);
+        });
 
     drop(runtime);
 }

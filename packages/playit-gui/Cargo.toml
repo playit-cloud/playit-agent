@@ -18,6 +18,7 @@ chrono = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 
+anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 gpui = "0.2.2"
 

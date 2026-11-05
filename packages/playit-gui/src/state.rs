@@ -18,17 +18,6 @@ pub enum SessionMode {
     ExternalDaemon,
 }
 
-impl SessionMode {
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::Service => "Background service: closing this window keeps tunnels running.",
-            Self::ExternalDaemon => {
-                "Connected to daemon: closing this window keeps the daemon running."
-            }
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub enum Connection {
     Connecting,
@@ -212,11 +201,11 @@ pub fn format_bytes(bytes: u64) -> String {
     const GB: u64 = MB * 1024;
 
     if bytes >= GB {
-        format!("{:.2} GB", bytes as f64 / GB as f64)
+        format!("{:.1} GB", bytes as f64 / GB as f64)
     } else if bytes >= MB {
-        format!("{:.2} MB", bytes as f64 / MB as f64)
+        format!("{:.1} MB", bytes as f64 / MB as f64)
     } else if bytes >= KB {
-        format!("{:.2} KB", bytes as f64 / KB as f64)
+        format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
         format!("{bytes} B")
     }
@@ -237,12 +226,18 @@ pub fn format_uptime(start_time_millis: u64, now_millis: u64) -> String {
     }
 }
 
-pub fn disabled_label(reason: Option<&str>) -> String {
-    let reason = reason.unwrap_or("disabled");
-    if reason.to_ascii_lowercase().starts_with("disabled") {
-        reason.to_string()
-    } else {
-        format!("disabled: {reason}")
+/// Explains why a tunnel is disabled as a sentence, without a redundant "disabled" prefix.
+pub fn disabled_reason(reason: Option<&str>) -> String {
+    let reason = reason.unwrap_or_default().trim();
+    let lower = reason.to_ascii_lowercase();
+    let reason = match lower.strip_prefix("disabled") {
+        Some(rest) => reason[reason.len() - rest.len()..].trim_start_matches([':', ' ', '-']),
+        None => reason,
+    };
+    let mut chars = reason.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => "Turned off in your playit account".to_string(),
     }
 }
 
@@ -333,11 +328,15 @@ mod tests {
     #[test]
     fn formats_values_like_the_terminal_ui() {
         assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(1536), "1.50 KB");
+        assert_eq!(format_bytes(1536), "1.5 KB");
         assert_eq!(format_uptime(0, 3_723_000), "1h 02m 03s");
         assert_eq!(format_uptime(0, 61_000), "1m 01s");
-        assert_eq!(disabled_label(Some("over limit")), "disabled: over limit");
-        assert_eq!(disabled_label(Some("Disabled by user")), "Disabled by user");
+        assert_eq!(
+            disabled_reason(Some("over tunnel limit")),
+            "Over tunnel limit"
+        );
+        assert_eq!(disabled_reason(Some("Disabled: by user")), "By user");
+        assert_eq!(disabled_reason(None), "Turned off in your playit account");
         assert_eq!(short_target("a::b::c"), "c");
     }
 }

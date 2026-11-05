@@ -4901,6 +4901,7 @@ version = "1.2.0"
 name = "playit-gui"
 version = "1.2.0"
 dependencies = [
+ "anyhow",
  "chrono",
  "clap",
  "gpui",
