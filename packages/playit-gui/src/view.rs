@@ -102,7 +102,7 @@ const LOG_MAX_ROWS: usize = 8;
 /// Space above the card on every non-running screen.
 const CARD_TOP_OFFSET: f32 = 72.;
 const CARD_WIDTH: f32 = 580.;
-const SECTION_TITLE_SIZE: f32 = 15.;
+const SECTION_TITLE_SIZE: f32 = 17.;
 /// `p_8` on both sides plus the 1px border.
 const CARD_PADDING_AND_BORDER: f32 = 66.;
 /// Width of the action column on tunnel rows, so every row's button lines up.
@@ -271,13 +271,15 @@ impl PlayitWindow {
             Screen::Starting => ("Starting", theme::progress()),
             Screen::Stopping => ("Stopping", theme::progress()),
             Screen::Setup(_) => ("Not set up", theme::accent()),
-            Screen::Unreachable { .. } => ("Offline", theme::failure()),
+            Screen::Unreachable { .. } => ("Service unreachable", theme::failure()),
             // The card names the specific problem; the badge only says what kind of state
             // this is.
             Screen::InvalidSecret { .. } | Screen::OverLimit { .. } => {
                 ("Action needed", theme::attention())
             }
-            Screen::Error { .. } => ("Retrying", theme::attention()),
+            // playit recovers from these on its own, so the badge uses the in-progress color
+            // and amber stays for states that need the user.
+            Screen::Error { .. } => ("Retrying", theme::progress()),
         };
 
         let mut right = div().flex().items_center().gap_5();
@@ -427,7 +429,6 @@ impl PlayitWindow {
         if !has_tunnels {
             return body
                 .child(self.render_no_tunnels(&agent.agent_id))
-                .child(self.render_stats())
                 .child(self.render_logs(true, cx));
         }
         body.child(self.render_tunnels(agent, compact, narrow, cx))
@@ -552,14 +553,13 @@ impl PlayitWindow {
                 )
         };
 
-        // Disabled tunnels come first: they're the ones that need the user, and a small
-        // window would otherwise hide them below the healthy rows.
-        let mut tunnels: Vec<_> = agent.tunnels.iter().enumerate().collect();
-        tunnels.sort_by_key(|(_, tunnel)| !tunnel.is_disabled);
+        // Working addresses come first since sharing them is the main task; disabled tunnels
+        // go last, and the header's count still flags them.
         let mut rows: Vec<AnyElement> = Vec::new();
-        for (ix, tunnel) in tunnels {
+        let mut disabled_rows: Vec<AnyElement> = Vec::new();
+        for (ix, tunnel) in agent.tunnels.iter().enumerate() {
             if tunnel.is_disabled {
-                rows.push(
+                disabled_rows.push(
                     tunnel_row(
                         ("tunnel", ix),
                         compact,
@@ -568,7 +568,6 @@ impl PlayitWindow {
                             address: tunnel.display_address.clone(),
                             has_address: true,
                             status: Some(("Disabled".into(), theme::attention())),
-                            quiet_status: false,
                             detail: div()
                                 .flex()
                                 .items_center()
@@ -599,7 +598,6 @@ impl PlayitWindow {
                             address: tunnel.display_address.clone(),
                             has_address: true,
                             status: Some(("Active".into(), theme::online())),
-                            quiet_status: true,
                             detail: forwards_to(&tunnel.destination),
                             action: row_button(("copy-tunnel", ix), "Copy address", Icon::Copy)
                                 .on_click(cx.listener(move |view, _, _, cx| {
@@ -624,7 +622,6 @@ impl PlayitWindow {
                         address: pending.id.clone(),
                         has_address: true,
                         status: Some(("Setting up".into(), theme::progress())),
-                        quiet_status: false,
                         detail: div()
                             .flex()
                             .items_center()
@@ -644,6 +641,8 @@ impl PlayitWindow {
                 .into_any_element(),
             );
         }
+
+        rows.extend(disabled_rows);
 
         let title = div()
             .flex()
@@ -1218,17 +1217,15 @@ impl PlayitWindow {
                             .gap_1()
                             .text_color(theme::muted())
                             .child(icon(Icon::ChevronDown, 14., theme::muted()))
-                            .child("Scroll for more"),
+                            .child("More below"),
                     )
                 })
-                .when(!more_below, |left| {
-                    left.child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .child("Closing this window keeps playit and your tunnels running."),
-                    )
-                })
+                // The reassurance stays even when the scroll cue joins it, in a shorter form.
+                .child(div().min_w_0().truncate().child(if more_below {
+                    "Closing this window keeps your tunnels running."
+                } else {
+                    "Closing this window keeps playit and your tunnels running."
+                }))
                 .into_any_element()
         } else {
             // The recovery screens have nothing to say about closing the window, so the
@@ -1607,7 +1604,7 @@ fn error_hint(message: &str) -> ErrorHint {
     if message.contains("address already in use") || message.contains("address in use") {
         ErrorHint {
             title: "Network port already in use",
-            next_step: "Another program, or a second copy of the playit service, is using a network port playit needs, so your tunnels are offline. If this continues, try restarting your computer.",
+            next_step: "Another program, or a second copy of the playit service, is using a network port playit needs, so your tunnels are offline until it's free.",
         }
     } else if message.contains("permission denied") || message.contains("access is denied") {
         ErrorHint {
@@ -2024,8 +2021,6 @@ struct TunnelRow {
     has_address: bool,
     /// The row's state in words, so status never depends on color alone.
     status: Option<(SharedString, Hsla)>,
-    /// Healthy states use an outline label so exceptions stand out.
-    quiet_status: bool,
     detail: Div,
     action: AnyElement,
     /// The tunnel's page on playit.gg, linked from a quiet "Manage" action.
@@ -2056,16 +2051,7 @@ fn tunnel_row(
                 .text_color(theme::text())
                 .child(row.address),
         )
-        .children(row.status.map(|(label, color)| {
-            if row.quiet_status && narrow {
-                // Narrow rows keep the width for the address; the dot alone marks health.
-                dot(color).into_any_element()
-            } else if row.quiet_status {
-                quiet_status_label(label, color).into_any_element()
-            } else {
-                chip(label, color).into_any_element()
-            }
-        }));
+        .children(row.status.map(|(label, color)| chip(label, color)));
     let detail = div().flex().min_w_0().text_size(px(14.)).child(row.detail);
     let actions = div()
         .flex()
@@ -2297,20 +2283,6 @@ fn pill(label: &'static str, color: Hsla) -> impl IntoElement {
         .text_color(color)
         .child(dot(color))
         .child(label)
-}
-
-/// A low-key status for the healthy case: a small dot and text, no badge chrome, so the
-/// exceptional rows carry the visual weight.
-fn quiet_status_label(label: impl Into<SharedString>, color: Hsla) -> impl IntoElement {
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .gap_1p5()
-        .text_xs()
-        .text_color(theme::muted())
-        .child(dot(color))
-        .child(label.into())
 }
 
 fn chip(label: impl Into<SharedString>, color: Hsla) -> impl IntoElement {
