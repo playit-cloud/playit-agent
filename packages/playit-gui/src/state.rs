@@ -243,10 +243,11 @@ pub fn format_uptime(start_time_millis: u64, now_millis: u64) -> String {
     let minutes = (elapsed_secs % 3600) / 60;
     let seconds = elapsed_secs % 60;
 
+    // Seconds only while they're the whole story, so the header doesn't tick every second.
     if hours > 0 {
-        format!("{hours}h {minutes:02}m {seconds:02}s")
+        format!("{hours}h {minutes:02}m")
     } else if minutes > 0 {
-        format!("{minutes}m {seconds:02}s")
+        format!("{minutes}m")
     } else {
         format!("{seconds}s")
     }
@@ -355,8 +356,8 @@ mod tests {
     fn formats_values_like_the_terminal_ui() {
         assert_eq!(format_bytes(512), "512 B");
         assert_eq!(format_bytes(1536), "1.5 KB");
-        assert_eq!(format_uptime(0, 3_723_000), "1h 02m 03s");
-        assert_eq!(format_uptime(0, 61_000), "1m 01s");
+        assert_eq!(format_uptime(0, 3_723_000), "1h 02m");
+        assert_eq!(format_uptime(0, 61_000), "1m");
         assert_eq!(
             disabled_reason(Some("over tunnel limit")),
             "Over tunnel limit"

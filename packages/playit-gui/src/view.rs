@@ -279,8 +279,6 @@ impl PlayitWindow {
 
         let mut right = div().flex().items_center().gap_5();
         if let Screen::Running(agent) = screen {
-            // Narrow windows show the account only when it needs something from the user.
-            let show_account = !narrow || !matches!(agent.account_status, AccountStatus::Verified);
             right = right
                 .child(header_stat(
                     "Running for",
@@ -288,12 +286,10 @@ impl PlayitWindow {
                         .child(format_uptime(agent.start_time, now_millis()))
                         .into_any_element(),
                 ))
-                .when(show_account, |right| {
-                    right.child(header_stat(
-                        "Account",
-                        render_account(&agent.account_status),
-                    ))
-                })
+                .child(header_stat(
+                    "Account",
+                    render_account(&agent.account_status),
+                ))
                 .child(
                     button(
                         "dashboard",
@@ -450,7 +446,7 @@ impl PlayitWindow {
                     button(
                         "notice-link",
                         "See what's new",
-                        ButtonStyle::Secondary,
+                        ButtonStyle::Ghost,
                         Some(Icon::External),
                     )
                     .on_click(move |_, _, cx| cx.open_url(&link))
@@ -460,7 +456,7 @@ impl PlayitWindow {
                     button(
                         "guest-login",
                         "Save account",
-                        ButtonStyle::Primary,
+                        ButtonStyle::Secondary,
                         Some(Icon::External),
                     )
                     .on_click(cx.listener(move |view, _, _, cx| {
@@ -576,6 +572,7 @@ impl PlayitWindow {
                             address: tunnel.display_address.clone(),
                             has_address: true,
                             status: Some(("Disabled".into(), theme::attention())),
+                            quiet_status: false,
                             detail: div()
                                 .flex()
                                 .items_center()
@@ -589,9 +586,19 @@ impl PlayitWindow {
                                     tunnel.disabled_reason.as_deref(),
                                 ))),
                             needs_attention: true,
-                            // A disabled tunnel's address doesn't work, so there's nothing to copy.
-                            action: None,
-                            manage_url: Some(tunnel_url(&tunnel.id)),
+                            // A disabled tunnel's address doesn't work, so instead of copying it
+                            // the row offers the page where it can be turned back on.
+                            action: Some({
+                                let url = tunnel_url(&tunnel.id);
+                                row_button(
+                                    ("fix-tunnel", ix),
+                                    if narrow { "Manage" } else { "Manage tunnel" },
+                                    Icon::External,
+                                )
+                                .on_click(move |_, _, cx| cx.open_url(&url))
+                                .into_any_element()
+                            }),
+                            manage_url: None,
                         },
                     )
                     .into_any_element(),
@@ -607,6 +614,7 @@ impl PlayitWindow {
                             address: tunnel.display_address.clone(),
                             has_address: true,
                             status: Some(("Active".into(), theme::online())),
+                            quiet_status: true,
                             detail: forwards_to(&tunnel.destination),
                             needs_attention: false,
                             action: Some(
@@ -638,6 +646,7 @@ impl PlayitWindow {
                         address: pending.id.clone(),
                         has_address: true,
                         status: Some(("Setting up".into(), theme::progress())),
+                        quiet_status: false,
                         detail: div()
                             .flex()
                             .items_center()
@@ -796,30 +805,32 @@ impl PlayitWindow {
             .flex_none()
             .flex()
             .flex_col()
-            .child(div().px_4().pt_3().child(section_title(
-                "Traffic",
-                "through your tunnels since playit started",
-            )))
+            .child(
+                div()
+                    .px_4()
+                    .pt_3()
+                    .child(section_title("Traffic", "through your tunnels")),
+            )
             .child(
                 div()
                     .flex()
                     .child(stat_cell(
                         Icon::ArrowDown,
-                        "From players",
+                        "Received since start",
                         format_bytes(stats.bytes_in),
                         None,
                         true,
                     ))
                     .child(stat_cell(
                         Icon::ArrowUp,
-                        "To players",
+                        "Sent since start",
                         format_bytes(stats.bytes_out),
                         None,
                         true,
                     ))
                     .child(stat_cell(
                         Icon::Plug,
-                        "Active connections",
+                        "Connections now",
                         (stats.active_tcp + stats.active_udp).to_string(),
                         Some(format!(
                             "{} TCP, {} UDP",
@@ -1034,17 +1045,11 @@ impl PlayitWindow {
                 card.command = guidance.command;
                 card.details = Some(format!("Address: {}\n{}", self.state.socket_path, error));
                 card.waiting = Some("Reconnecting automatically every few seconds…".into());
-                card.actions.push(link_button(
-                    "unreachable-help",
-                    "Troubleshooting guide",
-                    SUPPORT_URL,
-                    ButtonStyle::Primary,
-                ));
                 card.actions.push(
                     large(button(
                         "reconnect",
                         "Retry now",
-                        ButtonStyle::Secondary,
+                        ButtonStyle::Primary,
                         Some(Icon::Refresh),
                     ))
                     .on_click(cx.listener(|view, _, _, cx| {
@@ -1053,6 +1058,12 @@ impl PlayitWindow {
                     }))
                     .into_any_element(),
                 );
+                card.actions.push(link_button(
+                    "unreachable-help",
+                    "Troubleshooting guide",
+                    SUPPORT_URL,
+                    ButtonStyle::Secondary,
+                ));
             }
             Screen::Starting => {
                 card.badge = Badge::Spinner;
@@ -1226,7 +1237,12 @@ impl PlayitWindow {
             .child(group)
     }
 
-    fn render_footer(&self, screen: &Screen, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_footer(
+        &self,
+        screen: &Screen,
+        narrow: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let left: AnyElement = if matches!(screen, Screen::Running(_)) {
             div()
                 .flex()
@@ -1243,17 +1259,7 @@ impl PlayitWindow {
         } else {
             // The recovery screens have nothing to say about closing the window, so the
             // footer offers help instead of sitting empty.
-            div()
-                .id("footer-help")
-                .flex()
-                .items_center()
-                .gap_1()
-                .cursor_pointer()
-                .hover(|style| style.text_color(theme::text()))
-                .child(icon(Icon::Info, 12., theme::muted()))
-                .child("Help and support")
-                .on_click(|_, _, cx| cx.open_url(SUPPORT_URL))
-                .into_any_element()
+            help_link().into_any_element()
         };
 
         let mut right = div()
@@ -1264,17 +1270,13 @@ impl PlayitWindow {
             .text_color(theme::faint());
         // The other screens put help on the left; here the left holds the reassurance.
         if matches!(screen, Screen::Running(_)) {
-            right = right.child(
-                div()
-                    .id("footer-help")
-                    .cursor_pointer()
-                    .hover(|style| style.text_color(theme::muted()))
-                    .child("Help")
-                    .on_click(|_, _, cx| cx.open_url(SUPPORT_URL)),
-            );
+            right = right.child(help_link());
         }
+        // Narrow windows leave the computer ID out; it's for support conversations, which
+        // happen with the window at a comfortable size.
         if let Screen::Running(agent) = screen
             && !agent.agent_id.is_empty()
+            && !narrow
         {
             let agent_id = agent.agent_id.clone();
             let short_id: String = agent.agent_id.chars().take(8).collect();
@@ -1437,7 +1439,7 @@ impl Render for PlayitWindow {
                         )
                     }),
             )
-            .child(self.render_footer(&screen, cx));
+            .child(self.render_footer(&screen, narrow, cx));
 
         if let Some((toast, _)) = &self.toast {
             root = root.child(
@@ -2074,6 +2076,8 @@ struct TunnelRow {
     has_address: bool,
     /// The row's state in words, so status never depends on color alone.
     status: Option<(SharedString, Hsla)>,
+    /// The healthy state reads as a dot and plain text so the exceptions' badges stand out.
+    quiet_status: bool,
     detail: Div,
     /// Marks a row that needs the user with an amber edge.
     needs_attention: bool,
@@ -2103,10 +2107,21 @@ fn tunnel_row(
                 .when(row.has_address, |text| {
                     text.font_weight(FontWeight::SEMIBOLD)
                 })
-                .text_color(theme::text())
+                // A disabled tunnel's address doesn't work, so it shouldn't read as shareable.
+                .text_color(if row.needs_attention {
+                    theme::muted()
+                } else {
+                    theme::text()
+                })
                 .child(row.address),
         )
-        .children(row.status.map(|(label, color)| chip(label, color)));
+        .children(row.status.map(|(label, color)| {
+            if row.quiet_status {
+                quiet_status_label(label, color).into_any_element()
+            } else {
+                chip(label, color).into_any_element()
+            }
+        }));
     let detail = div().flex().min_w_0().text_size(px(14.)).child(row.detail);
     // Rows with any action keep both slots so the buttons stay in columns. Narrow windows
     // shorten the Copy button so the address keeps its width and Manage its label.
@@ -2343,6 +2358,18 @@ fn pill(label: &'static str, color: Hsla) -> impl IntoElement {
         .child(label)
 }
 
+fn quiet_status_label(label: impl Into<SharedString>, color: Hsla) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap_1p5()
+        .text_xs()
+        .text_color(theme::muted())
+        .child(dot(color))
+        .child(label.into())
+}
+
 fn chip(label: impl Into<SharedString>, color: Hsla) -> impl IntoElement {
     div()
         .flex_none()
@@ -2353,6 +2380,21 @@ fn chip(label: impl Into<SharedString>, color: Hsla) -> impl IntoElement {
         .font_weight(FontWeight::MEDIUM)
         .text_color(color)
         .child(label.into())
+}
+
+/// The footer's link to playit's help pages, the same on every screen.
+fn help_link() -> impl IntoElement {
+    div()
+        .id("footer-help")
+        .flex()
+        .items_center()
+        .gap_1()
+        .cursor_pointer()
+        .text_color(theme::muted())
+        .hover(|style| style.text_color(theme::text()))
+        .child(icon(Icon::Info, 12., theme::muted()))
+        .child("Help")
+        .on_click(|_, _, cx| cx.open_url(SUPPORT_URL))
 }
 
 /// A section heading with a caption beside it. Both share one line box so the caption's
