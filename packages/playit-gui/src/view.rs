@@ -269,9 +269,12 @@ impl PlayitWindow {
             Screen::Starting => ("Starting", theme::progress()),
             Screen::Stopping => ("Stopping", theme::progress()),
             Screen::Setup(_) => ("Not set up", theme::accent()),
-            Screen::Unreachable { .. } => ("Service not responding", theme::failure()),
-            Screen::InvalidSecret { .. } => ("Needs relinking", theme::attention()),
-            Screen::OverLimit { .. } => ("Computer limit reached", theme::attention()),
+            Screen::Unreachable { .. } => ("Offline", theme::failure()),
+            // The card names the specific problem; the badge only says what kind of state
+            // this is.
+            Screen::InvalidSecret { .. } | Screen::OverLimit { .. } => {
+                ("Action needed", theme::attention())
+            }
             Screen::Error { .. } => ("Retrying", theme::attention()),
         };
 
@@ -419,27 +422,9 @@ impl PlayitWindow {
         }
 
         if !has_tunnels {
-            // Like the recovery screens, the empty state keeps its card and log in one
-            // centered column.
-            return body.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .items_center()
-                    .child(spacer(1.))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_4()
-                            .w(px(CARD_WIDTH))
-                            .max_w_full()
-                            .child(self.render_no_tunnels(&agent.agent_id))
-                            .child(self.render_logs(true, cx)),
-                    )
-                    .child(spacer(2.)),
-            );
+            return body
+                .child(self.render_no_tunnels(&agent.agent_id))
+                .child(self.render_logs(true, cx));
         }
         body.child(self.render_tunnels(agent, compact, narrow, cx))
             .child(self.render_stats())
@@ -534,7 +519,7 @@ impl PlayitWindow {
 
         let online = agent.tunnels.iter().filter(|t| !t.is_disabled).count();
         let disabled = agent.tunnels.len() - online;
-        let mut summary = vec![format!("{online} connected")];
+        let mut summary = vec![format!("{online} active")];
         if disabled > 0 {
             summary.push(format!("{disabled} disabled"));
         }
@@ -570,8 +555,9 @@ impl PlayitWindow {
                     tunnel_row(
                         ("tunnel", ix),
                         compact,
+                        narrow,
                         TunnelRow {
-                            address: fit_address(&tunnel.display_address, narrow),
+                            address: tunnel.display_address.clone(),
                             dimmed: true,
                             has_address: true,
                             status: Some(("Disabled".into(), theme::attention())),
@@ -588,9 +574,15 @@ impl PlayitWindow {
                                 .child(div().flex_1().min_w_0().child(disabled_explanation(
                                     tunnel.disabled_reason.as_deref(),
                                 ))),
-                            // A disabled tunnel's address doesn't work, so there's nothing to copy.
-                            action: div().into_any_element(),
-                            manage_url: Some(tunnel_url(&tunnel.id)),
+                            // A disabled tunnel's address doesn't work, so instead of copying
+                            // it the row offers the page where it can be turned back on.
+                            action: {
+                                let url = tunnel_url(&tunnel.id);
+                                row_button(("fix-tunnel", ix), "Manage tunnel", Icon::External)
+                                    .on_click(move |_, _, cx| cx.open_url(&url))
+                                    .into_any_element()
+                            },
+                            manage_url: None,
                         },
                     )
                     .into_any_element(),
@@ -601,22 +593,19 @@ impl PlayitWindow {
                     tunnel_row(
                         ("tunnel", ix),
                         compact,
+                        narrow,
                         TunnelRow {
-                            address: fit_address(&tunnel.display_address, narrow),
+                            address: tunnel.display_address.clone(),
                             dimmed: false,
                             has_address: true,
-                            status: Some(("Connected".into(), theme::online())),
+                            status: Some(("Active".into(), theme::online())),
                             quiet_status: true,
                             detail: forwards_to(&tunnel.destination),
-                            action: row_button(
-                                ("copy-tunnel", ix),
-                                if narrow { "Copy" } else { "Copy address" },
-                                Icon::Copy,
-                            )
-                            .on_click(cx.listener(move |view, _, _, cx| {
-                                view.copy(address.clone(), "address", cx)
-                            }))
-                            .into_any_element(),
+                            action: row_button(("copy-tunnel", ix), "Copy address", Icon::Copy)
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.copy(address.clone(), "address", cx)
+                                }))
+                                .into_any_element(),
                             manage_url: Some(tunnel_url(&tunnel.id)),
                         },
                     )
@@ -630,6 +619,7 @@ impl PlayitWindow {
                 tunnel_row(
                     ("pending", ix),
                     compact,
+                    narrow,
                     TunnelRow {
                         address: pending.id.clone(),
                         dimmed: false,
@@ -647,9 +637,16 @@ impl PlayitWindow {
                                 "{}. The address appears here when it's ready.",
                                 sentence_case(&pending.status_msg)
                             ))),
+                        // Holds the Copy button's place so the row keeps the same columns.
                         action: div()
+                            .flex()
                             .w_full()
-                            .text_center()
+                            .justify_center()
+                            .px_3()
+                            .py_1p5()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(theme::border().opacity(0.5))
                             .text_xs()
                             .text_color(theme::faint())
                             .child("No address yet")
@@ -666,24 +663,7 @@ impl PlayitWindow {
             .flex_col()
             .gap_0p5()
             .min_w_0()
-            .child(
-                div()
-                    .flex()
-                    .items_baseline()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_size(px(SECTION_TITLE_SIZE))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Tunnels"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::muted())
-                            .child(summary.join(" · ")),
-                    ),
-            )
+            .child(section_title("Tunnels", summary.join(" · ")))
             .child(div().text_xs().text_color(theme::muted()).child(
                 "Share an address with friends. Your game server must be running for them to join.",
             ));
@@ -720,52 +700,78 @@ impl PlayitWindow {
             .into_any_element()
     }
 
+    /// The empty state fills the same full-width Tunnels panel the running view uses, so
+    /// the screen keeps its structure once the first tunnel arrives.
     fn render_no_tunnels(&self, agent_id: &str) -> AnyElement {
         let new_tunnel = new_tunnel_url(agent_id);
-        (panel()
-            .w(px(CARD_WIDTH))
-            .max_w_full()
+        panel()
             .flex()
             .flex_col()
             .flex_none()
-            .items_start()
-            .gap_3()
-            .p_8()
             .child(
                 div()
-                    .size(px(48.))
-                    .min_h(px(48.))
-                    .flex_none()
-                    .rounded_full()
                     .flex()
                     .items_center()
-                    .justify_center()
-                    .bg(theme::accent().opacity(0.12))
-                    .child(icon(Icon::Globe, 24., theme::accent())),
+                    .gap_3()
+                    .px_4()
+                    .py_2p5()
+                    .border_b_1()
+                    .border_color(theme::border())
+                    .child(section_title(
+                        "Tunnels",
+                        "Share an address with friends once you have one",
+                    )),
             )
             .child(
                 div()
-                    .text_lg()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Add your first tunnel"),
+                    .flex()
+                    .items_start()
+                    .gap_5()
+                    .p_6()
+                    .child(
+                        div()
+                            .size(px(48.))
+                            .min_h(px(48.))
+                            .flex_none()
+                            .rounded_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .bg(theme::accent().opacity(0.12))
+                            .child(icon(Icon::Globe, 24., theme::accent())),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .items_start()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_lg()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Add your first tunnel"),
+                            )
+                            .child(
+                                div()
+                                    .w_full()
+                                    .text_color(theme::muted())
+                                    .child("A tunnel gives your game server a public address your friends can join. Create one on playit.gg and it shows up here automatically."),
+                            )
+                            .child(
+                                large(button(
+                                    "add-tunnel",
+                                    "Add a tunnel on playit.gg",
+                                    ButtonStyle::Primary,
+                                    Some(Icon::External),
+                                ))
+                                .on_click(move |_, _, cx| cx.open_url(&new_tunnel)),
+                            ),
+                    ),
             )
-            .child(
-                div()
-                    .w(px(CARD_WIDTH - CARD_PADDING_AND_BORDER))
-                    .max_w_full()
-                    .text_color(theme::muted())
-                    .child("A tunnel gives your game server a public address your friends can join. Create one on playit.gg and it shows up here automatically."),
-            )
-            .child(
-                large(button(
-                    "add-tunnel",
-                    "Add a tunnel on playit.gg",
-                    ButtonStyle::Primary,
-                    Some(Icon::External),
-                ))
-                .on_click(move |_, _, cx| cx.open_url(&new_tunnel)),
-            ))
-        .into_any_element()
+            .into_any_element()
     }
 
     fn render_stats(&self) -> impl IntoElement {
@@ -776,23 +782,9 @@ impl PlayitWindow {
             .flex_col()
             .child(
                 div()
-                    .flex()
-                    .items_baseline()
-                    .gap_3()
                     .px_4()
                     .pt_3()
-                    .child(
-                        div()
-                            .text_size(px(SECTION_TITLE_SIZE))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child("Traffic"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(theme::muted())
-                            .child("since playit started"),
-                    ),
+                    .child(section_title("Traffic", "since playit started")),
             )
             .child(
                 div()
@@ -839,38 +831,31 @@ impl PlayitWindow {
             .filter(|entry| matches!(entry.level, LogLevel::Error))
             .count();
 
-        // Logged problems are history; on the main view they're mentioned quietly so they
-        // don't read as a current fault, and recovery cards already explain the problem.
+        // Logged problems are history: on the main view they're counted as "recorded" so
+        // they don't read as a current fault, but colored so they're easy to spot.
+        let plural = |count: usize, word: &str| {
+            format!("{count} {word}{}", if count == 1 { "" } else { "s" })
+        };
         let mut summary = div()
             .flex()
             .items_center()
-            .gap_1p5()
+            .gap_1()
             .text_xs()
             .text_color(theme::muted())
-            .child(format!(
-                "{} {}",
-                visible.len(),
-                if visible.len() == 1 {
-                    "message"
-                } else {
-                    "messages"
-                }
-            ));
+            .child(plural(visible.len(), "message"));
         if healthy && (warnings > 0 || errors > 0) {
-            let mut counts = Vec::new();
+            summary = summary.child("·");
             if warnings > 0 {
-                counts.push(format!(
-                    "{warnings} {}",
-                    if warnings == 1 { "warning" } else { "warnings" }
-                ));
+                summary =
+                    summary.child(count_label(plural(warnings, "warning"), theme::attention()));
+            }
+            if warnings > 0 && errors > 0 {
+                summary = summary.child("and");
             }
             if errors > 0 {
-                counts.push(format!(
-                    "{errors} {}",
-                    if errors == 1 { "error" } else { "errors" }
-                ));
+                summary = summary.child(count_label(plural(errors, "error"), theme::failure()));
             }
-            summary = summary.child(format!("· including {}", counts.join(" and ")));
+            summary = summary.child("recorded");
         }
 
         let title = div()
@@ -1272,7 +1257,19 @@ impl PlayitWindow {
                 })
                 .into_any_element()
         } else {
-            div().into_any_element()
+            // The recovery screens have nothing to say about closing the window, so the
+            // footer offers help instead of sitting empty.
+            div()
+                .id("footer-help")
+                .flex()
+                .items_center()
+                .gap_1()
+                .cursor_pointer()
+                .hover(|style| style.text_color(theme::text()))
+                .child(icon(Icon::Info, 12., theme::muted()))
+                .child("Help and support")
+                .on_click(|_, _, cx| cx.open_url(SUPPORT_URL))
+                .into_any_element()
         };
 
         let mut right = div()
@@ -1636,7 +1633,7 @@ fn error_hint(message: &str) -> ErrorHint {
     if message.contains("address already in use") || message.contains("address in use") {
         ErrorHint {
             title: "Network port already in use",
-            next_step: "Another program is using a network port playit needs. If you have playit open twice, close one. Restarting your computer usually fixes this.",
+            next_step: "Another program, or a second copy of the playit service, is using a network port playit needs. Restarting your computer usually fixes this.",
         }
     } else if message.contains("permission denied") || message.contains("access is denied") {
         ErrorHint {
@@ -2017,7 +2014,7 @@ fn unreachable_guidance(mode: SessionMode, error: &str) -> UnreachableGuidance {
         return UnreachableGuidance {
             title: "Can't reach the playit service",
             body: vec![
-                "The background service that runs your tunnels isn't answering. Closing and reopening this window won't restart it; restarting your computer usually does.".into(),
+                "The background service that runs your tunnels isn't answering. Restarting your computer usually fixes this.".into(),
             ],
             command: None,
         };
@@ -2063,20 +2060,52 @@ struct TunnelRow {
 }
 
 /// One tunnel: the address with its status label, a detail line, and an action in a
-/// fixed-width column so every row's button lines up.
-fn tunnel_row(id: impl Into<ElementId>, compact: bool, row: TunnelRow) -> impl IntoElement {
-    div()
-        .id(id)
+/// fixed-width column so every row's button lines up. Narrow windows give the address its
+/// own line so it never has to share width with the actions.
+fn tunnel_row(
+    id: impl Into<ElementId>,
+    compact: bool,
+    narrow: bool,
+    row: TunnelRow,
+) -> impl IntoElement {
+    let address_line = div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .min_w_0()
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .text_size(px(15.))
+                .when(row.has_address, |text| {
+                    text.font_weight(FontWeight::SEMIBOLD)
+                })
+                .text_color(if row.dimmed {
+                    theme::muted()
+                } else {
+                    theme::text()
+                })
+                .child(row.address),
+        )
+        .children(row.status.map(|(label, color)| {
+            if row.quiet_status {
+                quiet_status_label(label, color).into_any_element()
+            } else {
+                chip(label, color).into_any_element()
+            }
+        }));
+    let detail = div().flex().min_w_0().text_size(px(13.)).child(row.detail);
+    let (own_line, inline) = if narrow {
+        (Some(address_line), None)
+    } else {
+        (None, Some(address_line))
+    };
+
+    let columns = div()
         .flex()
         .items_center()
         .gap_3()
-        .px_4()
-        .when(compact, |el| el.py_1p5())
-        .when(!compact, |el| el.py_2())
-        .border_b_1()
-        .border_color(theme::border().opacity(0.6))
-        .when(row.dimmed, |el| el.bg(theme::attention().opacity(0.04)))
-        .hover(|style| style.bg(theme::panel_raised()))
         .child(
             div()
                 .flex_1()
@@ -2084,36 +2113,8 @@ fn tunnel_row(id: impl Into<ElementId>, compact: bool, row: TunnelRow) -> impl I
                 .flex()
                 .flex_col()
                 .gap_0p5()
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .min_w_0()
-                        .child(
-                            div()
-                                .min_w_0()
-                                .truncate()
-                                .text_size(px(15.))
-                                .when(row.has_address, |text| {
-                                    text.font_weight(FontWeight::SEMIBOLD)
-                                })
-                                .text_color(if row.dimmed {
-                                    theme::muted()
-                                } else {
-                                    theme::text()
-                                })
-                                .child(row.address),
-                        )
-                        .children(row.status.map(|(label, color)| {
-                            if row.quiet_status {
-                                quiet_status_label(label, color).into_any_element()
-                            } else {
-                                chip(label, color).into_any_element()
-                            }
-                        })),
-                )
-                .child(div().flex().min_w_0().text_size(px(13.)).child(row.detail)),
+                .children(inline)
+                .child(detail),
         )
         .child(
             div()
@@ -2139,7 +2140,22 @@ fn tunnel_row(id: impl Into<ElementId>, compact: bool, row: TunnelRow) -> impl I
                     .py_1p5()
                     .on_click(move |_, _, cx| cx.open_url(&url))
                 })),
-        )
+        );
+
+    div()
+        .id(id)
+        .flex()
+        .flex_col()
+        .gap_0p5()
+        .px_4()
+        .when(compact, |el| el.py_1p5())
+        .when(!compact, |el| el.py_2())
+        .border_b_1()
+        .border_color(theme::border().opacity(0.6))
+        .when(row.dimmed, |el| el.bg(theme::attention().opacity(0.04)))
+        .hover(|style| style.bg(theme::panel_raised()))
+        .children(own_line)
+        .child(columns)
 }
 
 /// Width of the "Manage" link column on tunnel rows.
@@ -2214,25 +2230,6 @@ fn disabled_explanation(reason: Option<&str>) -> String {
     } else {
         format!("{reason}.")
     }
-}
-
-/// Shortens an address for narrow windows by cutting the middle of the hostname, so the
-/// port, the part players type last, always stays visible.
-fn fit_address(address: &str, narrow: bool) -> String {
-    const MAX_CHARS: usize = 30;
-    let chars: Vec<char> = address.chars().collect();
-    if !narrow || chars.len() <= MAX_CHARS {
-        return address.to_string();
-    }
-    let tail = 16.min(chars.len());
-    let head = MAX_CHARS - tail - 1;
-    let start: String = chars[..head].iter().collect();
-    let end: String = chars[chars.len() - tail..].iter().collect();
-    format!(
-        "{}…{}",
-        start.trim_end_matches(['.', '-']),
-        end.trim_start_matches(['.', '-'])
-    )
 }
 
 /// Describes where a tunnel forwards to, naming this computer instead of a loopback address.
@@ -2339,6 +2336,17 @@ fn quiet_status_label(label: impl Into<SharedString>, color: Hsla) -> impl IntoE
         .child(label.into())
 }
 
+/// A count in the activity log summary, with a dot in its level's color.
+fn count_label(label: String, color: Hsla) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .text_color(color)
+        .child(dot(color).size(px(6.)))
+        .child(label)
+}
+
 fn chip(label: impl Into<SharedString>, color: Hsla) -> impl IntoElement {
     div()
         .flex_none()
@@ -2349,6 +2357,34 @@ fn chip(label: impl Into<SharedString>, color: Hsla) -> impl IntoElement {
         .font_weight(FontWeight::MEDIUM)
         .text_color(color)
         .child(label.into())
+}
+
+/// A section heading with a caption beside it. Both share one line box so the caption's
+/// text sits level with the heading's instead of hanging below it.
+fn section_title(title: &'static str, caption: impl Into<SharedString>) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .gap_3()
+        .h(px(22.))
+        .child(
+            div()
+                .flex_none()
+                .line_height(px(22.))
+                .text_size(px(SECTION_TITLE_SIZE))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .truncate()
+                .line_height(px(22.))
+                .pt(px(1.))
+                .text_xs()
+                .text_color(theme::muted())
+                .child(caption.into()),
+        )
 }
 
 fn header_stat(label: &'static str, value: AnyElement) -> impl IntoElement {
@@ -2393,7 +2429,7 @@ fn stat_cell(
         .child(
             div()
                 .flex()
-                .items_baseline()
+                .items_end()
                 .gap_2()
                 .min_w_0()
                 .child(
@@ -2403,10 +2439,13 @@ fn stat_cell(
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(value),
                 )
+                // Bottom-aligned with a small lift so the small text's baseline meets the
+                // value's.
                 .children(detail.map(|detail| {
                     div()
                         .min_w_0()
                         .truncate()
+                        .pb(px(3.))
                         .text_xs()
                         .text_color(theme::faint())
                         .child(detail)
@@ -2506,7 +2545,7 @@ fn row_button(id: impl Into<ElementId>, label: &'static str, kind: Icon) -> Stat
         .justify_center()
         .px_3()
         .py_1p5()
-        .bg(gpui::transparent_black())
+        .bg(theme::panel_raised().opacity(0.6))
         .border_color(theme::border())
 }
 
@@ -2525,19 +2564,6 @@ fn link_button(id: &'static str, label: &'static str, url: &str, style: ButtonSt
 #[cfg(test)]
 mod tests {
     use super::destination_label;
-
-    #[test]
-    fn narrow_addresses_keep_their_port() {
-        let fitted = super::fit_address("bedrock-friends.gl.at.ply.gg:19132", true);
-        assert!(fitted.ends_with("ply.gg:19132"), "{fitted}");
-        assert!(!fitted.contains("…."), "{fitted}");
-        assert!(fitted.contains('…'));
-        assert_eq!(
-            super::fit_address("bedrock-friends.gl.at.ply.gg:19132", false),
-            "bedrock-friends.gl.at.ply.gg:19132"
-        );
-        assert_eq!(super::fit_address("short.link", true), "short.link");
-    }
 
     #[test]
     fn loopback_destinations_name_this_computer() {
