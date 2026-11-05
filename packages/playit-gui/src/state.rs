@@ -12,17 +12,13 @@ use crate::backend::{BackendEvent, SetupStep};
 const LOG_CAPACITY: usize = 500;
 pub const ACCOUNT_URL: &str = "https://playit.gg/account";
 pub const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
-pub const ACCOUNT_TUNNELS_URL: &str = "https://playit.gg/account/tunnels";
+const ACCOUNT_TUNNELS_URL: &str = "https://playit.gg/account/tunnels";
 pub const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
 const NEW_TUNNEL_URL: &str = "https://playit.gg/account/setup/new-tunnel";
 
-/// The website's page for one tunnel, or the tunnel list when the daemon didn't send an ID.
+/// The website's page for one tunnel.
 pub fn tunnel_url(tunnel_id: &str) -> String {
-    if tunnel_id.is_empty() {
-        ACCOUNT_TUNNELS_URL.to_string()
-    } else {
-        format!("{ACCOUNT_TUNNELS_URL}/{tunnel_id}")
-    }
+    format!("{ACCOUNT_TUNNELS_URL}/{tunnel_id}")
 }
 
 /// The website's new-tunnel page, preset to point the tunnel at this agent when its ID is known.
@@ -373,7 +369,6 @@ mod tests {
             "https://playit.gg/account/setup/new-tunnel?agent_id=a3f1"
         );
         assert_eq!(tunnel_url("9f2c"), "https://playit.gg/account/tunnels/9f2c");
-        assert_eq!(tunnel_url(""), "https://playit.gg/account/tunnels");
         assert_eq!(
             new_tunnel_url(""),
             "https://playit.gg/account/setup/new-tunnel"
