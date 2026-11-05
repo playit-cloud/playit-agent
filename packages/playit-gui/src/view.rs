@@ -270,31 +270,30 @@ impl PlayitWindow {
             Screen::Stopping => ("Stopping", theme::progress()),
             Screen::Setup(_) => ("Not set up", theme::progress()),
             Screen::Unreachable { .. } => ("Service unreachable", theme::failure()),
-            // The card names the specific problem; the badge only says what kind of state
-            // this is.
-            Screen::InvalidSecret { .. } | Screen::OverLimit { .. } => {
-                ("Action needed", theme::attention())
+            // Whenever tunnels can't carry traffic the badge says so; the card says why and
+            // whether playit is retrying on its own.
+            Screen::InvalidSecret { .. } | Screen::OverLimit { .. } | Screen::Error { .. } => {
+                ("Tunnels offline", theme::attention())
             }
-            // The badge says what the user is affected by; the card says playit is retrying.
-            Screen::Error { .. } => ("Tunnels offline", theme::attention()),
         };
 
         let mut right = div().flex().items_center().gap_5();
         if let Screen::Running(agent) = screen {
-            // Narrow windows keep the account, which can need action, over the uptime.
+            // Narrow windows show the account only when it needs something from the user.
+            let show_account = !narrow || !matches!(agent.account_status, AccountStatus::Verified);
             right = right
-                .when(!narrow, |right| {
+                .child(header_stat(
+                    "Running for",
+                    div()
+                        .child(format_uptime(agent.start_time, now_millis()))
+                        .into_any_element(),
+                ))
+                .when(show_account, |right| {
                     right.child(header_stat(
-                        "Running for",
-                        div()
-                            .child(format_uptime(agent.start_time, now_millis()))
-                            .into_any_element(),
+                        "Account",
+                        render_account(&agent.account_status),
                     ))
                 })
-                .child(header_stat(
-                    "Account",
-                    render_account(&agent.account_status),
-                ))
                 .child(
                     button(
                         "dashboard",
@@ -399,7 +398,8 @@ impl PlayitWindow {
             body = body.child(self.render_notice(
                 "guest",
                 GUEST_NOTICE,
-                theme::progress(),
+                // Losing a guest account loses its tunnels, so this outranks routine notices.
+                theme::attention(),
                 NoticeAction::GuestLogin(agent.login_link.clone()),
                 compact,
                 cx,
@@ -460,7 +460,7 @@ impl PlayitWindow {
                     button(
                         "guest-login",
                         "Save account",
-                        ButtonStyle::Secondary,
+                        ButtonStyle::Primary,
                         Some(Icon::External),
                     )
                     .on_click(cx.listener(move |view, _, _, cx| {
@@ -588,6 +588,7 @@ impl PlayitWindow {
                                 .child(div().flex_1().min_w_0().child(disabled_explanation(
                                     tunnel.disabled_reason.as_deref(),
                                 ))),
+                            needs_attention: true,
                             // A disabled tunnel's address doesn't work, so there's nothing to copy.
                             action: None,
                             manage_url: Some(tunnel_url(&tunnel.id)),
@@ -607,12 +608,17 @@ impl PlayitWindow {
                             has_address: true,
                             status: Some(("Active".into(), theme::online())),
                             detail: forwards_to(&tunnel.destination),
+                            needs_attention: false,
                             action: Some(
-                                row_button(("copy-tunnel", ix), "Copy address", Icon::Copy)
-                                    .on_click(cx.listener(move |view, _, _, cx| {
-                                        view.copy(address.clone(), "address", cx)
-                                    }))
-                                    .into_any_element(),
+                                row_button(
+                                    ("copy-tunnel", ix),
+                                    if narrow { "Copy" } else { "Copy address" },
+                                    Icon::Copy,
+                                )
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    view.copy(address.clone(), "address", cx)
+                                }))
+                                .into_any_element(),
                             ),
                             manage_url: Some(tunnel_url(&tunnel.id)),
                         },
@@ -643,6 +649,7 @@ impl PlayitWindow {
                                 "{}. The address appears here when it's ready.",
                                 sentence_case(&pending.status_msg)
                             ))),
+                        needs_attention: false,
                         // The detail line already says the address is coming, and without
                         // actions the explanation gets the row's full width.
                         action: None,
@@ -798,14 +805,14 @@ impl PlayitWindow {
                     .flex()
                     .child(stat_cell(
                         Icon::ArrowDown,
-                        "Received",
+                        "From players",
                         format_bytes(stats.bytes_in),
                         None,
                         true,
                     ))
                     .child(stat_cell(
                         Icon::ArrowUp,
-                        "Sent",
+                        "To players",
                         format_bytes(stats.bytes_out),
                         None,
                         true,
@@ -838,8 +845,8 @@ impl PlayitWindow {
             .filter(|entry| matches!(entry.level, LogLevel::Error))
             .count();
 
-        // Logged problems are history, so the summary calls them "earlier"; their counts are
-        // colored so they're easy to spot.
+        // While the agent runs, logged problems are history, so they're counted in the same
+        // muted text instead of alarm colors.
         let plural = |count: usize, word: &str| {
             format!("{count} {word}{}", if count == 1 { "" } else { "s" })
         };
@@ -851,23 +858,14 @@ impl PlayitWindow {
             .text_color(theme::muted())
             .child(plural(visible.len(), "message"));
         if healthy && (errors > 0 || warnings > 0) {
-            summary = summary.child("· earlier:");
-        }
-        if healthy && errors > 0 {
-            summary = summary.child(
-                div()
-                    .text_color(theme::failure())
-                    .child(plural(errors, "error")),
-            );
-        }
-        if healthy && warnings > 0 {
-            summary = summary
-                .when(errors > 0, |summary| summary.child("·"))
-                .child(
-                    div()
-                        .text_color(theme::attention())
-                        .child(plural(warnings, "warning")),
-                );
+            let mut counts = Vec::new();
+            if errors > 0 {
+                counts.push(plural(errors, "error"));
+            }
+            if warnings > 0 {
+                counts.push(plural(warnings, "warning"));
+            }
+            summary = summary.child(format!("this session, including {}", counts.join(" and ")));
         }
 
         let title = div()
@@ -1083,7 +1081,6 @@ impl PlayitWindow {
                 card.body = vec![hint.next_step.to_string()];
                 card.details = Some(message.to_string());
                 card.waiting = Some("Retrying automatically…".into());
-                card.waiting_first = true;
                 card.action_note = hint.action_note.map(str::to_string);
                 card.actions.push(link_button(
                     "get-help",
@@ -1097,8 +1094,7 @@ impl PlayitWindow {
                 card.color = theme::attention();
                 card.title = "Link this computer again".into();
                 card.body = vec![
-                    "The key that links this computer to your playit account no longer works. This computer may have been removed from your account.".into(),
-                    "Link this computer again in your browser to reconnect it to your account.".into(),
+                    "This computer's link to your playit account stopped working, so your tunnels are offline. It may have been removed from your account.".into(),
                 ];
                 card.details = Some(message.to_string());
                 card.actions.push(
@@ -1204,7 +1200,8 @@ impl PlayitWindow {
             Screen::Running(_) => unreachable!("running screen has its own layout"),
         }
 
-        // Spacers weighted 2:3 sit the card a little above center.
+        // Every state's card starts at the same height so its heading stays put as the state
+        // changes.
         let mut group = div()
             .flex()
             .flex_col()
@@ -1225,9 +1222,8 @@ impl PlayitWindow {
             .flex_col()
             .flex_1()
             .items_center()
-            .child(spacer(2.))
+            .child(div().flex_none().h(px(CARD_TOP_OFFSET)))
             .child(group)
-            .child(spacer(3.))
     }
 
     fn render_footer(&self, screen: &Screen, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1266,6 +1262,17 @@ impl PlayitWindow {
             .items_center()
             .gap_3()
             .text_color(theme::faint());
+        // The other screens put help on the left; here the left holds the reassurance.
+        if matches!(screen, Screen::Running(_)) {
+            right = right.child(
+                div()
+                    .id("footer-help")
+                    .cursor_pointer()
+                    .hover(|style| style.text_color(theme::muted()))
+                    .child("Help")
+                    .on_click(|_, _, cx| cx.open_url(SUPPORT_URL)),
+            );
+        }
         if let Screen::Running(agent) = screen
             && !agent.agent_id.is_empty()
         {
@@ -1682,8 +1689,8 @@ struct MessageCard {
     link: Option<String>,
     command: Option<String>,
     details: Option<String>,
+    /// What playit is doing on its own, shown after the actions.
     waiting: Option<SharedString>,
-    waiting_first: bool,
     /// A sentence introducing the action buttons, shown right above them.
     action_note: Option<String>,
     actions: Vec<AnyElement>,
@@ -1701,7 +1708,6 @@ impl Default for MessageCard {
             command: None,
             details: None,
             waiting: None,
-            waiting_first: false,
             action_note: None,
             actions: Vec::new(),
         }
@@ -1791,9 +1797,8 @@ impl MessageCard {
                 );
         }
 
-        // Without setup steps, the automatic retry is the first thing to know, so it comes
-        // before the actions.
-        let waiting_first = self.steps.is_none() || self.waiting_first;
+        // The explanation leads straight into its actions; what playit does on its own
+        // follows them.
         let waiting = self.waiting.map(|waiting| {
             div()
                 .flex()
@@ -1804,11 +1809,6 @@ impl MessageCard {
                 .child(spinner("waiting-spinner", 14., theme::progress()))
                 .child(waiting)
         });
-        let mut waiting = waiting;
-        if waiting_first && let Some(line) = waiting.take() {
-            card = card.child(line);
-        }
-
         if let Some(note) = self.action_note {
             card = card.child(div().text_color(theme::muted()).child(note));
         }
@@ -2075,6 +2075,8 @@ struct TunnelRow {
     /// The row's state in words, so status never depends on color alone.
     status: Option<(SharedString, Hsla)>,
     detail: Div,
+    /// Marks a row that needs the user with an amber edge.
+    needs_attention: bool,
     action: Option<AnyElement>,
     /// The tunnel's page on playit.gg, linked from a quiet "Manage" action.
     manage_url: Option<String>,
@@ -2107,7 +2109,7 @@ fn tunnel_row(
         .children(row.status.map(|(label, color)| chip(label, color)));
     let detail = div().flex().min_w_0().text_size(px(14.)).child(row.detail);
     // Rows with any action keep both slots so the buttons stay in columns. Narrow windows
-    // shrink Manage to its icon so the address keeps its width and "Copy address" its label.
+    // shorten the Copy button so the address keeps its width and Manage its label.
     let has_actions = row.action.is_some() || row.manage_url.is_some();
     let actions = div()
         .flex()
@@ -2118,30 +2120,27 @@ fn tunnel_row(
             div()
                 .flex()
                 .flex_none()
-                .w(px(ROW_ACTION_WIDTH))
+                .w(px(if narrow {
+                    NARROW_ROW_ACTION_WIDTH
+                } else {
+                    ROW_ACTION_WIDTH
+                }))
                 .children(row.action),
         )
         .child(
             div()
                 .flex()
                 .flex_none()
-                .w(px(if narrow {
-                    NARROW_MANAGE_LINK_WIDTH
-                } else {
-                    MANAGE_LINK_WIDTH
-                }))
+                .w(px(MANAGE_LINK_WIDTH))
                 .children(row.manage_url.map(|url| {
-                    let id = SharedString::from(format!("manage-{url}"));
-                    if narrow {
-                        button(id, "", ButtonStyle::Ghost, Some(Icon::External))
-                            .w_full()
-                            .justify_center()
-                            .py_1p5()
-                    } else {
-                        button(id, "Manage", ButtonStyle::Ghost, Some(Icon::External))
-                            .w_full()
-                            .py_1p5()
-                    }
+                    button(
+                        SharedString::from(format!("manage-{url}")),
+                        "Manage",
+                        ButtonStyle::Ghost,
+                        Some(Icon::External),
+                    )
+                    .w_full()
+                    .py_1p5()
                     .on_click(move |_, _, cx| cx.open_url(&url))
                 })),
         );
@@ -2157,6 +2156,18 @@ fn tunnel_row(
         .border_b_1()
         .border_color(theme::border().opacity(0.6))
         .hover(|style| style.bg(theme::panel_raised()))
+        // A strip rather than a left border, since a border would recolor the row divider.
+        .when(row.needs_attention, |row| {
+            row.relative().bg(theme::attention().opacity(0.05)).child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(3.))
+                    .bg(theme::attention()),
+            )
+        })
         .child(
             div()
                 .flex_1()
@@ -2170,8 +2181,8 @@ fn tunnel_row(
         .when(has_actions, |row| row.child(actions))
 }
 
-/// The icon-only Manage link in narrow windows.
-const NARROW_MANAGE_LINK_WIDTH: f32 = 32.;
+/// The Copy column in narrow windows, where the button reads just "Copy".
+const NARROW_ROW_ACTION_WIDTH: f32 = 84.;
 
 /// Width of the "Manage" link column on tunnel rows.
 const MANAGE_LINK_WIDTH: f32 = 88.;
@@ -2229,13 +2240,8 @@ fn log_row(entry: &LogEntry, today: chrono::NaiveDate, show_target: bool) -> Div
         )
 }
 
-/// Flexible empty space that takes `weight` shares of the leftover height.
-fn spacer(weight: f32) -> Div {
-    let mut spacer = div().min_h(px(24.));
-    spacer.style().flex_grow = Some(weight);
-    spacer.style().flex_basis = Some(px(0.).into());
-    spacer
-}
+/// Space above the card on every non-running screen.
+const CARD_TOP_OFFSET: f32 = 72.;
 
 /// Explains why a tunnel is disabled and, for the reasons we recognize, how to turn it back on.
 fn disabled_explanation(reason: Option<&str>) -> String {
