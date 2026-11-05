@@ -270,7 +270,7 @@ impl PlayitWindow {
             Screen::Setup(_) => ("Not set up", theme::accent()),
             Screen::Unreachable { .. } => ("Service not responding", theme::failure()),
             Screen::InvalidSecret { .. } => ("Needs relinking", theme::attention()),
-            Screen::OverLimit { .. } => ("Account limit reached", theme::attention()),
+            Screen::OverLimit { .. } => ("Computer limit reached", theme::attention()),
             Screen::Error { message } => (error_hint(message).pill, theme::failure()),
         };
 
@@ -544,34 +544,26 @@ impl PlayitWindow {
                         ("tunnel", ix),
                         compact,
                         TunnelRow {
-                            address: tunnel.display_address.clone(),
+                            address: fit_address(&tunnel.display_address, narrow),
                             dimmed: true,
                             has_address: true,
-                            status: Some((
-                                format!(
-                                    "Disabled · {}",
-                                    disabled_reason(tunnel.disabled_reason.as_deref())
-                                        .to_lowercase()
-                                )
-                                .into(),
-                                theme::attention(),
-                            )),
+                            status: Some(("Disabled".into(), theme::attention())),
                             quiet_status: false,
-                            detail: forwards_to(&tunnel.destination),
-                            action: row_button(
-                                ("manage-tunnel", ix),
-                                "Manage tunnel",
-                                Icon::External,
-                            )
-                            .border_color(theme::attention().opacity(0.5))
-                            .text_color(theme::attention())
-                            .on_click({
-                                let url = tunnel_url(&tunnel.id);
-                                move |_, _, cx| cx.open_url(&url)
-                            })
-                            .into_any_element(),
-                            // The main action already opens this tunnel's page.
-                            manage_url: None,
+                            detail: div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .min_w_0()
+                                .text_color(theme::attention())
+                                .child(icon(Icon::Alert, 13., theme::attention()))
+                                // The reason says how to fix the tunnel, so it wraps rather
+                                // than truncating at narrow widths.
+                                .child(div().flex_1().min_w_0().child(disabled_explanation(
+                                    tunnel.disabled_reason.as_deref(),
+                                ))),
+                            // A disabled tunnel's address doesn't work, so there's nothing to copy.
+                            action: div().into_any_element(),
+                            manage_url: Some(tunnel_url(&tunnel.id)),
                         },
                     )
                     .into_any_element(),
@@ -583,17 +575,21 @@ impl PlayitWindow {
                         ("tunnel", ix),
                         compact,
                         TunnelRow {
-                            address: tunnel.display_address.clone(),
+                            address: fit_address(&tunnel.display_address, narrow),
                             dimmed: false,
                             has_address: true,
                             status: Some(("Connected".into(), theme::online())),
                             quiet_status: true,
                             detail: forwards_to(&tunnel.destination),
-                            action: row_button(("copy-tunnel", ix), "Copy address", Icon::Copy)
-                                .on_click(cx.listener(move |view, _, _, cx| {
-                                    view.copy(address.clone(), "address", cx)
-                                }))
-                                .into_any_element(),
+                            action: row_button(
+                                ("copy-tunnel", ix),
+                                if narrow { "Copy" } else { "Copy address" },
+                                Icon::Copy,
+                            )
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.copy(address.clone(), "address", cx)
+                            }))
+                            .into_any_element(),
                             manage_url: Some(tunnel_url(&tunnel.id)),
                         },
                     )
@@ -624,7 +620,13 @@ impl PlayitWindow {
                                 "{}. The address appears here when it's ready.",
                                 sentence_case(&pending.status_msg)
                             ))),
-                        action: div().into_any_element(),
+                        action: div()
+                            .w_full()
+                            .text_center()
+                            .text_xs()
+                            .text_color(theme::faint())
+                            .child("Address pending")
+                            .into_any_element(),
                         manage_url: None,
                     },
                 )
@@ -655,16 +657,9 @@ impl PlayitWindow {
                             .child(summary.join(" · ")),
                     ),
             )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(theme::muted())
-                    .child(if narrow {
-                        "Share an address with friends. Keep your game server running."
-                    } else {
-                        "Share an address with friends. Your game server must also be running for them to join."
-                    }),
-            );
+            .child(div().text_xs().text_color(theme::muted()).child(
+                "Share an address with friends. Your game server must be running for them to join.",
+            ));
 
         panel()
             .flex()
@@ -791,7 +786,7 @@ impl PlayitWindow {
                     ))
                     .child(stat_cell(
                         Icon::Plug,
-                        "Active connections",
+                        "Open connections",
                         (stats.active_tcp + stats.active_udp).to_string(),
                         Some(format!(
                             "{} TCP, {} UDP",
@@ -835,19 +830,39 @@ impl PlayitWindow {
                 }
             ));
         if healthy && (warnings > 0 || errors > 0) {
-            summary = summary.child("· earlier:");
+            let mut counts = Vec::new();
             if warnings > 0 {
-                summary = summary.child(div().text_color(theme::attention()).child(format!(
-                    "{warnings} {}",
-                    if warnings == 1 { "warning" } else { "warnings" }
-                )));
+                counts.push((
+                    format!(
+                        "{warnings} {}",
+                        if warnings == 1 { "warning" } else { "warnings" }
+                    ),
+                    theme::attention(),
+                ));
             }
             if errors > 0 {
-                summary = summary.child(div().text_color(theme::failure()).child(format!(
-                    "{errors} {}",
-                    if errors == 1 { "error" } else { "errors" }
-                )));
+                counts.push((
+                    format!("{errors} {}", if errors == 1 { "error" } else { "errors" }),
+                    theme::failure(),
+                ));
             }
+            summary = summary.child("·");
+            let last = counts.len() - 1;
+            for (ix, (label, color)) in counts.into_iter().enumerate() {
+                summary = summary.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(div().size(px(6.)).rounded_full().bg(color.opacity(0.8)))
+                        .child(if ix == last {
+                            label
+                        } else {
+                            format!("{label},")
+                        }),
+                );
+            }
+            summary = summary.child("earlier");
         }
 
         let title = div()
@@ -1016,11 +1031,17 @@ impl PlayitWindow {
                 card.command = guidance.command;
                 card.details = Some(format!("Address: {}\n{}", self.state.socket_path, error));
                 card.waiting = Some("Reconnecting automatically every few seconds…".into());
+                card.actions.push(link_button(
+                    "unreachable-help",
+                    "Troubleshooting guide",
+                    SUPPORT_URL,
+                    ButtonStyle::Primary,
+                ));
                 card.actions.push(
                     large(button(
                         "reconnect",
                         "Retry now",
-                        ButtonStyle::Primary,
+                        ButtonStyle::Secondary,
                         Some(Icon::Refresh),
                     ))
                     .on_click(cx.listener(|view, _, _, cx| {
@@ -1029,12 +1050,6 @@ impl PlayitWindow {
                     }))
                     .into_any_element(),
                 );
-                card.actions.push(link_button(
-                    "unreachable-help",
-                    "Troubleshooting guide",
-                    SUPPORT_URL,
-                    ButtonStyle::Secondary,
-                ));
             }
             Screen::Starting => {
                 card.badge = Badge::Spinner;
@@ -1068,7 +1083,7 @@ impl PlayitWindow {
                     "get-help",
                     "Get help",
                     SUPPORT_URL,
-                    ButtonStyle::Secondary,
+                    ButtonStyle::Primary,
                 ));
             }
             Screen::InvalidSecret { message } => {
@@ -1598,7 +1613,9 @@ fn notice_link(id: &'static str, label: &'static str, color: Hsla) -> Stateful<D
 fn render_account(status: &AccountStatus) -> AnyElement {
     let row = div().flex().items_center().gap_1p5();
     match status {
-        AccountStatus::Verified => row.child("Signed in"),
+        AccountStatus::Verified => row
+            .child(icon(Icon::User, 14., theme::muted()))
+            .child("Signed in"),
         AccountStatus::EmailNotVerified => row
             .text_color(theme::attention())
             .child(icon(Icon::Alert, 14., theme::attention()))
@@ -1624,7 +1641,7 @@ fn error_hint(message: &str) -> ErrorHint {
         ErrorHint {
             pill: "Can't start",
             title: "Network port already in use",
-            next_step: "Another program on this computer is using a port playit needs. Close any second copy of playit; playit retries on its own. If it keeps happening, restart your computer.",
+            next_step: "Another program on this computer is using a port playit needs. Close any second copy of playit. If it keeps happening, restart your computer.",
         }
     } else if message.contains("permission denied") || message.contains("access is denied") {
         ErrorHint {
@@ -2189,6 +2206,35 @@ fn log_row(entry: &LogEntry, today: chrono::NaiveDate, show_target: bool) -> Div
         )
 }
 
+/// Explains why a tunnel is disabled and, for the reasons we recognize, how to turn it back on.
+fn disabled_explanation(reason: Option<&str>) -> String {
+    let reason = disabled_reason(reason);
+    if reason.to_ascii_lowercase().contains("tunnel limit") {
+        format!("{reason}. Remove another tunnel or upgrade your plan to turn it back on.")
+    } else {
+        format!("{reason}.")
+    }
+}
+
+/// Shortens an address for narrow windows by cutting the middle of the hostname, so the
+/// port, the part players type last, always stays visible.
+fn fit_address(address: &str, narrow: bool) -> String {
+    const MAX_CHARS: usize = 30;
+    let chars: Vec<char> = address.chars().collect();
+    if !narrow || chars.len() <= MAX_CHARS {
+        return address.to_string();
+    }
+    let tail = 16.min(chars.len());
+    let head = MAX_CHARS - tail - 1;
+    let start: String = chars[..head].iter().collect();
+    let end: String = chars[chars.len() - tail..].iter().collect();
+    format!(
+        "{}…{}",
+        start.trim_end_matches(['.', '-']),
+        end.trim_start_matches(['.', '-'])
+    )
+}
+
 /// Describes where a tunnel forwards to, naming this computer instead of a loopback address.
 fn destination_label(destination: &str) -> String {
     let (host, port) = match destination.rsplit_once(':') {
@@ -2470,6 +2516,19 @@ fn link_button(id: &'static str, label: &'static str, url: &str, style: ButtonSt
 #[cfg(test)]
 mod tests {
     use super::destination_label;
+
+    #[test]
+    fn narrow_addresses_keep_their_port() {
+        let fitted = super::fit_address("bedrock-friends.gl.at.ply.gg:19132", true);
+        assert!(fitted.ends_with("ply.gg:19132"), "{fitted}");
+        assert!(!fitted.contains("…."), "{fitted}");
+        assert!(fitted.contains('…'));
+        assert_eq!(
+            super::fit_address("bedrock-friends.gl.at.ply.gg:19132", false),
+            "bedrock-friends.gl.at.ply.gg:19132"
+        );
+        assert_eq!(super::fit_address("short.link", true), "short.link");
+    }
 
     #[test]
     fn loopback_destinations_name_this_computer() {
