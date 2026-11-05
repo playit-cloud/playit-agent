@@ -99,6 +99,7 @@ fn main() {
             ) {
                 tracing::warn!("failed to load the bundled Inter font: {error}");
             }
+            view::init_mono_font(cx);
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("ctrl-q", Quit, None),

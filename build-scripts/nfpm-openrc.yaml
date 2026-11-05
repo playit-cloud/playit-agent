@@ -15,11 +15,16 @@ depends:
   - logrotate
   - openrc
   - "!playit"
+  # window:start
+  # The window's libraries. apk has no optional dependencies; these are small.
+  - so:libxcb.so.1
+  - so:libxkbcommon.so.0
+  - so:libxkbcommon-x11.so.0
+  - so:libvulkan.so.1
+  - so:libwayland-client.so.0
+  # window:end
 conflicts:
   - playit
-# Lets playit-gui depend on either Alpine package.
-provides:
-  - playit-service
 contents:
   - src: ${PLAYIT_CLI_BIN}
     dst: /opt/playit/agent
@@ -69,6 +74,40 @@ contents:
       mode: 0750
       owner: playit
       group: playit
+  # window:start (the desktop window, on amd64 and arm64; see package-linux-nfpm.sh)
+  - src: ${PLAYIT_GUI_BIN}
+    dst: /opt/playit/playit-gui
+    expand: true
+    file_info:
+      mode: 0755
+  - src: /opt/playit/playit-gui
+    dst: /usr/bin/playit-gui
+    type: symlink
+  - src: ./linux/gg.playit.gui.desktop
+    dst: /usr/share/applications/gg.playit.gui.desktop
+    file_info:
+      mode: 0644
+  - src: ./linux/icons/gg.playit.gui-32.png
+    dst: /usr/share/icons/hicolor/32x32/apps/gg.playit.gui.png
+    file_info:
+      mode: 0644
+  - src: ./linux/icons/gg.playit.gui-48.png
+    dst: /usr/share/icons/hicolor/48x48/apps/gg.playit.gui.png
+    file_info:
+      mode: 0644
+  - src: ./linux/icons/gg.playit.gui-64.png
+    dst: /usr/share/icons/hicolor/64x64/apps/gg.playit.gui.png
+    file_info:
+      mode: 0644
+  - src: ./linux/icons/gg.playit.gui-128.png
+    dst: /usr/share/icons/hicolor/128x128/apps/gg.playit.gui.png
+    file_info:
+      mode: 0644
+  - src: ./packages/playit-gui/assets/images/app-icon-256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/gg.playit.gui.png
+    file_info:
+      mode: 0644
+  # window:end
 scripts:
   preinstall: ./build-scripts/nfpm/openrc/preinstall.sh
   postinstall: ./build-scripts/nfpm/openrc/postinstall.sh

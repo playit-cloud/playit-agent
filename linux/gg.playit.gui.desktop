@@ -7,4 +7,4 @@ Exec=playit-gui
 Icon=gg.playit.gui
 StartupWMClass=gg.playit.gui
 Terminal=false
-Categories=Network;Game;
+Categories=Network;

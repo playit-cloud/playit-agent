@@ -166,12 +166,37 @@ const RADIUS_SM: f32 = 8.;
 /// Inter, bundled and registered at startup, as on playit.gg.
 const UI_FONT: &str = "Inter";
 
+/// The monospace font for commands, addresses and logs, chosen by `init_mono_font`.
+static MONO_FONT: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Monospace fonts to use, in order of preference. macOS and Windows always have theirs; Linux
+/// installs vary, and GPUI panics when neither a font nor its fallbacks are installed.
 #[cfg(target_os = "macos")]
-const MONO_FONT: &str = "Menlo";
+const MONO_FONT_CANDIDATES: &[&str] = &["Menlo"];
 #[cfg(target_os = "windows")]
-const MONO_FONT: &str = "Consolas";
+const MONO_FONT_CANDIDATES: &[&str] = &["Consolas"];
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-const MONO_FONT: &str = "DejaVu Sans Mono";
+const MONO_FONT_CANDIDATES: &[&str] = &[
+    "DejaVu Sans Mono",
+    "Noto Sans Mono",
+    "Liberation Mono",
+    "Ubuntu Mono",
+];
+
+/// Picks the first installed monospace font, or the bundled UI font when none is installed.
+pub fn init_mono_font(cx: &gpui::App) {
+    let installed = cx.text_system().all_font_names();
+    let font = MONO_FONT_CANDIDATES
+        .iter()
+        .copied()
+        .find(|candidate| installed.iter().any(|name| name == candidate))
+        .unwrap_or(UI_FONT);
+    let _ = MONO_FONT.set(font);
+}
+
+fn mono_font() -> &'static str {
+    MONO_FONT.get().copied().unwrap_or(UI_FONT)
+}
 
 const LOG_ROW_HEIGHT: f32 = 22.;
 /// An expanded log shows at most this many lines before it scrolls.
@@ -1125,7 +1150,7 @@ impl PlayitWindow {
                 .relative()
                 .py_1()
                 .bg(theme::bg())
-                .font_family(MONO_FONT)
+                .font_family(mono_font())
                 .text_size(px(12.5))
                 .child(list)
                 .when(visible.len() > LOG_MAX_ROWS, |area| {
@@ -1952,7 +1977,7 @@ impl MessageCard {
                         .gap_3()
                         .child(
                             div()
-                                .font_family(MONO_FONT)
+                                .font_family(mono_font())
                                 .text_color(theme::text())
                                 .child(command),
                         )
@@ -2012,7 +2037,7 @@ impl MessageCard {
                                 div()
                                     .min_w_0()
                                     .truncate()
-                                    .font_family(MONO_FONT)
+                                    .font_family(mono_font())
                                     .text_xs()
                                     .text_color(theme::link())
                                     .child(link),
@@ -2100,7 +2125,7 @@ impl MessageCard {
                     .when(details_expanded, |section| {
                         section.child(
                             inset()
-                                .font_family(MONO_FONT)
+                                .font_family(mono_font())
                                 .text_xs()
                                 .text_color(theme::muted())
                                 .child(details),

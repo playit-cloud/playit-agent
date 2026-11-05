@@ -11,82 +11,9 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build_linux:
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - name: linux 64bit
-            os: ubuntu-latest
-            arch: x86_64-unknown-linux-musl
-            artifact: playit-linux-amd64
-            artifact_cli: playit-cli-linux-amd64
-            nfpm_arch: amd64
-
-          - name: linux arm64
-            os: ubuntu-latest
-            arch: aarch64-unknown-linux-musl
-            artifact: playit-linux-aarch64
-            artifact_cli: playit-cli-linux-aarch64
-            nfpm_arch: arm64
-
-          - name: linux arm7
-            os: ubuntu-latest
-            arch: armv7-unknown-linux-gnueabihf
-            artifact: playit-linux-armv7
-            artifact_cli: playit-cli-linux-armv7
-            nfpm_arch: arm7
-
-          - name: linux 32bit
-            os: ubuntu-latest
-            arch: i686-unknown-linux-gnu
-            artifact: playit-linux-i686
-            artifact_cli: playit-cli-linux-i686
-            nfpm_arch: 386
-
-    runs-on: ${{ matrix.platform.os }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: build release
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: true
-          command: build
-          args: --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: stable
-
-      - name: Install nFPM
-        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
-
-      - name: Package Linux artifacts
-        shell: bash
-        run: |
-          bash ./build-scripts/package-linux-nfpm.sh \
-            "./target/${{ matrix.platform.arch }}/release/playit-cli" \
-            "./target/${{ matrix.platform.arch }}/release/playitd" \
-            "${{ matrix.platform.nfpm_arch }}"
-
-      - name: Stage Linux release assets
-        shell: bash
-        run: |
-          mkdir -p target/release-assets
-          cp "./target/${{ matrix.platform.arch }}/release/playitd" "target/release-assets/${{ matrix.platform.artifact }}"
-          cp "./target/${{ matrix.platform.arch }}/release/playit-cli" "target/release-assets/${{ matrix.platform.artifact_cli }}"
-          cp target/pkg/* target/release-assets/
-
-      - name: Upload Linux release assets
-        uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        with:
-          files: target/release-assets/*
-
   # The desktop window links the desktop's X11 and keyboard libraries and loads Vulkan, so it
-  # can't be a static musl build like the CLI. It ships as its own playit-gui package.
+  # can't be a static musl build like the CLI. It's built here and packaged with playit on
+  # amd64 and arm64.
   build_linux_gui:
     strategy:
       fail-fast: false
@@ -117,10 +44,77 @@ jobs:
       - name: Build playit-gui for Alpine
         run: |
           docker run --rm -v "$PWD":/src -w /src rust:1-alpine sh -c '
-            apk add --no-cache musl-dev libxkbcommon-dev libxcb-dev pkgconf &&
+            apk add --no-cache musl-dev g++ libxkbcommon-dev libxcb-dev pkgconf &&
             RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --locked \
               --package playit-gui --target-dir target/alpine &&
             chown -R '"$(id -u):$(id -g)"' target/alpine'
+
+      - name: Stage playit-gui
+        run: |
+          mkdir -p target/gui/gnu target/gui/musl
+          cp target/release/playit-gui target/gui/gnu/
+          cp target/alpine/release/playit-gui target/gui/musl/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: playit-gui-${{ matrix.platform.nfpm_arch }}
+          path: target/gui/
+
+  build_linux:
+    needs: [build_linux_gui]
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: linux 64bit
+            os: ubuntu-latest
+            arch: x86_64-unknown-linux-musl
+            artifact: playit-linux-amd64
+            artifact_cli: playit-cli-linux-amd64
+            nfpm_arch: amd64
+            gui: true
+
+          - name: linux arm64
+            os: ubuntu-latest
+            arch: aarch64-unknown-linux-musl
+            artifact: playit-linux-aarch64
+            artifact_cli: playit-cli-linux-aarch64
+            nfpm_arch: arm64
+            gui: true
+
+          - name: linux arm7
+            os: ubuntu-latest
+            arch: armv7-unknown-linux-gnueabihf
+            artifact: playit-linux-armv7
+            artifact_cli: playit-cli-linux-armv7
+            nfpm_arch: arm7
+            gui: false
+
+          - name: linux 32bit
+            os: ubuntu-latest
+            arch: i686-unknown-linux-gnu
+            artifact: playit-linux-i686
+            artifact_cli: playit-cli-linux-i686
+            nfpm_arch: 386
+            gui: false
+
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: build release
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd
+
+      - name: Download the desktop window
+        if: matrix.platform.gui
+        uses: actions/download-artifact@v4
+        with:
+          name: playit-gui-${{ matrix.platform.nfpm_arch }}
+          path: target/gui
 
       - uses: actions/setup-go@v5
         with:
@@ -129,17 +123,34 @@ jobs:
       - name: Install nFPM
         run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
 
-      - name: Package playit-gui
+      - name: Package Linux artifacts
+        shell: bash
         run: |
-          bash ./build-scripts/package-linux-gui-nfpm.sh ./target/release/playit-gui "${{ matrix.platform.nfpm_arch }}" deb rpm
-          bash ./build-scripts/package-linux-gui-nfpm.sh ./target/alpine/release/playit-gui "${{ matrix.platform.nfpm_arch }}" apk
+          if [[ "${{ matrix.platform.gui }}" == "true" ]]; then
+            chmod +x target/gui/gnu/playit-gui target/gui/musl/playit-gui
+            export PLAYIT_GUI_GNU_BIN=target/gui/gnu/playit-gui
+            export PLAYIT_GUI_MUSL_BIN=target/gui/musl/playit-gui
+          fi
+          bash ./build-scripts/package-linux-nfpm.sh \
+            "./target/${{ matrix.platform.arch }}/release/playit-cli" \
+            "./target/${{ matrix.platform.arch }}/release/playitd" \
+            "${{ matrix.platform.nfpm_arch }}"
 
-      - name: Upload playit-gui packages
+      - name: Stage Linux release assets
+        shell: bash
+        run: |
+          mkdir -p target/release-assets
+          cp "./target/${{ matrix.platform.arch }}/release/playitd" "target/release-assets/${{ matrix.platform.artifact }}"
+          cp "./target/${{ matrix.platform.arch }}/release/playit-cli" "target/release-assets/${{ matrix.platform.artifact_cli }}"
+          cp target/pkg/* target/release-assets/
+
+      - name: Upload Linux release assets
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ github.token }}
         with:
-          files: target/pkg/playit-gui_*
+          files: target/release-assets/*
+
   build_windows:
     strategy:
       fail-fast: false

@@ -183,7 +183,7 @@ mod linux {
              Icon={APP_ID}\n\
              StartupWMClass={APP_ID}\n\
              Terminal=false\n\
-             Categories=Network;Game;\n",
+             Categories=Network;\n",
             exec = exec_argument(&exe.to_string_lossy()),
         )
     }
