@@ -26,6 +26,11 @@ playit-ipc = { path = "../playit-ipc", version = "1.2.0" }
 playitd = { path = "../playitd", version = "1.2.0" }
 playit-api-client = { path = "../api_client", version = "0.2.0" }
 
+# Compile the Metal shaders when the app starts, so building needs only the Command Line
+# Tools rather than full Xcode.
+[target.'cfg(target_os = "macos")'.dependencies]
+gpui = { version = "0.2.2", features = ["runtime_shaders"] }
+
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.59.0", features = [
     "Win32_Foundation",

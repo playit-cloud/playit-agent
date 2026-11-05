@@ -114,7 +114,7 @@ async fn run_subscription(
             if events.send(BackendEvent::StartingService).is_err() {
                 return;
             }
-            start_error = start_installed_service().await.err();
+            start_error = start_installed_service(&socket_path).await.err();
             if start_error.is_none() {
                 continue;
             }
@@ -135,10 +135,47 @@ async fn run_subscription(
 }
 
 /// Asks the OS to start the installed playit service and waits until it answers.
-async fn start_installed_service() -> Result<(), String> {
+#[cfg(not(target_os = "linux"))]
+async fn start_installed_service(_socket_path: &str) -> Result<(), String> {
     playitd::manager::ensure_installed_service_running()
         .await
         .map_err(|error| error.to_string())
+}
+
+/// Asks systemd to start the playit service and waits until it answers. The shared helper
+/// runs `sudo`, which would ask for a password on whatever terminal launched the window, so
+/// this asks systemd directly; desktops show their own polkit password dialog.
+#[cfg(target_os = "linux")]
+async fn start_installed_service(socket_path: &str) -> Result<(), String> {
+    const START_TIMEOUT: Duration = Duration::from_secs(30);
+
+    let output = tokio::process::Command::new("systemctl")
+        .args(["start", "playit"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|error| format!("Could not run systemctl: {error}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason = stderr.trim();
+        return Err(if reason.is_empty() {
+            format!("`systemctl start playit` failed ({})", output.status)
+        } else {
+            reason.to_string()
+        });
+    }
+
+    let deadline = tokio::time::Instant::now() + START_TIMEOUT;
+    while tokio::time::Instant::now() < deadline {
+        if IpcClient::is_running(socket_path).await {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    Err(format!(
+        "The playit service started but didn't answer within {} seconds",
+        START_TIMEOUT.as_secs()
+    ))
 }
 
 /// Streams updates until the connection drops. Returns `Ok` only once the window is gone.
