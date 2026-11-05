@@ -99,6 +99,8 @@ const MONO_FONT: &str = "DejaVu Sans Mono";
 const LOG_ROW_HEIGHT: f32 = 22.;
 /// An expanded log shows at most this many lines before it scrolls.
 const LOG_MAX_ROWS: usize = 8;
+/// Space above the card on every non-running screen.
+const CARD_TOP_OFFSET: f32 = 40.;
 const CARD_WIDTH: f32 = 580.;
 const SECTION_TITLE_SIZE: f32 = 15.;
 /// `p_8` on both sides plus the 1px border.
@@ -280,19 +282,20 @@ impl PlayitWindow {
 
         let mut right = div().flex().items_center().gap_5();
         if let Screen::Running(agent) = screen {
+            // Narrow windows keep the account, which can need action, over the uptime.
             right = right
-                .child(header_stat(
-                    "Running for",
-                    div()
-                        .child(format_uptime(agent.start_time, now_millis()))
-                        .into_any_element(),
-                ))
                 .when(!narrow, |right| {
                     right.child(header_stat(
-                        "Account",
-                        render_account(&agent.account_status),
+                        "Running for",
+                        div()
+                            .child(format_uptime(agent.start_time, now_millis()))
+                            .into_any_element(),
                     ))
                 })
+                .child(header_stat(
+                    "Account",
+                    render_account(&agent.account_status),
+                ))
                 .child(
                     button(
                         "dashboard",
@@ -424,6 +427,7 @@ impl PlayitWindow {
         if !has_tunnels {
             return body
                 .child(self.render_no_tunnels(&agent.agent_id))
+                .child(self.render_stats())
                 .child(self.render_logs(true, cx));
         }
         body.child(self.render_tunnels(agent, compact, narrow, cx))
@@ -574,15 +578,9 @@ impl PlayitWindow {
                                 .child(div().flex_1().min_w_0().child(disabled_explanation(
                                     tunnel.disabled_reason.as_deref(),
                                 ))),
-                            // A disabled tunnel's address doesn't work, so instead of copying
-                            // it the row offers the page where it can be turned back on.
-                            action: {
-                                let url = tunnel_url(&tunnel.id);
-                                row_button(("fix-tunnel", ix), "Manage tunnel", Icon::External)
-                                    .on_click(move |_, _, cx| cx.open_url(&url))
-                                    .into_any_element()
-                            },
-                            manage_url: None,
+                            // A disabled tunnel's address doesn't work, so there's nothing to copy.
+                            action: div().into_any_element(),
+                            manage_url: Some(tunnel_url(&tunnel.id)),
                         },
                     )
                     .into_any_element(),
@@ -637,20 +635,8 @@ impl PlayitWindow {
                                 "{}. The address appears here when it's ready.",
                                 sentence_case(&pending.status_msg)
                             ))),
-                        // Holds the Copy button's place so the row keeps the same columns.
-                        action: div()
-                            .flex()
-                            .w_full()
-                            .justify_center()
-                            .px_3()
-                            .py_1p5()
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme::border().opacity(0.5))
-                            .text_xs()
-                            .text_color(theme::faint())
-                            .child("No address yet")
-                            .into_any_element(),
+                        // The detail line already says the address is coming.
+                        action: div().into_any_element(),
                         manage_url: None,
                     },
                 )
@@ -717,10 +703,7 @@ impl PlayitWindow {
                     .py_2p5()
                     .border_b_1()
                     .border_color(theme::border())
-                    .child(section_title(
-                        "Tunnels",
-                        "Share an address with friends once you have one",
-                    )),
+                    .child(section_title("Tunnels", "none yet")),
             )
             .child(
                 div()
@@ -805,7 +788,7 @@ impl PlayitWindow {
                     ))
                     .child(stat_cell(
                         Icon::Plug,
-                        "Open connections",
+                        "Active connections",
                         (stats.active_tcp + stats.active_udp).to_string(),
                         Some(format!(
                             "{} TCP, {} UDP",
@@ -831,32 +814,26 @@ impl PlayitWindow {
             .filter(|entry| matches!(entry.level, LogLevel::Error))
             .count();
 
-        // Logged problems are history: on the main view they're counted as "recorded" so
-        // they don't read as a current fault, but colored so they're easy to spot.
+        // Logged problems are history; on the main view they're mentioned quietly so they
+        // don't read as a current fault, and recovery cards already explain the problem.
         let plural = |count: usize, word: &str| {
             format!("{count} {word}{}", if count == 1 { "" } else { "s" })
         };
-        let mut summary = div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .text_xs()
-            .text_color(theme::muted())
-            .child(plural(visible.len(), "message"));
+        let mut summary_text = plural(visible.len(), "message");
         if healthy && (warnings > 0 || errors > 0) {
-            summary = summary.child("·");
+            let mut counts = Vec::new();
             if warnings > 0 {
-                summary =
-                    summary.child(count_label(plural(warnings, "warning"), theme::attention()));
-            }
-            if warnings > 0 && errors > 0 {
-                summary = summary.child("and");
+                counts.push(plural(warnings, "warning"));
             }
             if errors > 0 {
-                summary = summary.child(count_label(plural(errors, "error"), theme::failure()));
+                counts.push(plural(errors, "error"));
             }
-            summary = summary.child("recorded");
+            summary_text = format!("{summary_text} ({})", counts.join(", "));
         }
+        let summary = div()
+            .text_xs()
+            .text_color(theme::muted())
+            .child(summary_text);
 
         let title = div()
             .id("toggle-logs")
@@ -1069,7 +1046,6 @@ impl PlayitWindow {
                 card.color = theme::attention();
                 card.title = hint.title.into();
                 card.body = vec![hint.next_step.to_string()];
-                card.action_note = Some("Still stuck? The playit support team can help.".into());
                 card.details = Some(message.to_string());
                 card.waiting = Some("Retrying automatically…".into());
                 card.waiting_first = true;
@@ -1077,7 +1053,7 @@ impl PlayitWindow {
                     "get-help",
                     "Get help",
                     SUPPORT_URL,
-                    ButtonStyle::Secondary,
+                    ButtonStyle::Primary,
                 ));
             }
             Screen::InvalidSecret { message } => {
@@ -1192,8 +1168,8 @@ impl PlayitWindow {
             Screen::Running(_) => unreachable!("running screen has its own layout"),
         }
 
-        // Spacers weighted 2:3 sit the card a little above center, so short states don't
-        // look stranded at the top of the window.
+        // Every state's card starts at the same height, so switching states doesn't make
+        // the heading jump.
         let mut group = div()
             .flex()
             .flex_col()
@@ -1206,11 +1182,7 @@ impl PlayitWindow {
             .logs
             .iter()
             .any(|entry| matches!(entry.level, LogLevel::Warn | LogLevel::Error));
-        let quiet_state = matches!(
-            screen,
-            Screen::Setup(_) | Screen::Starting | Screen::Connecting
-        );
-        if !self.state.logs.is_empty() && (has_problems || !quiet_state) {
+        if !self.state.logs.is_empty() && (has_problems || !matches!(screen, Screen::Setup(_))) {
             group = group.child(self.render_logs(false, cx));
         }
         div()
@@ -1218,9 +1190,8 @@ impl PlayitWindow {
             .flex_col()
             .flex_1()
             .items_center()
-            .child(spacer(2.))
+            .child(div().flex_none().h(px(CARD_TOP_OFFSET)))
             .child(group)
-            .child(spacer(3.))
     }
 
     fn render_footer(
@@ -1256,6 +1227,9 @@ impl PlayitWindow {
                     )
                 })
                 .into_any_element()
+        } else if matches!(screen, Screen::Error { .. }) {
+            // The error card's own button is the help link there.
+            div().into_any_element()
         } else {
             // The recovery screens have nothing to say about closing the window, so the
             // footer offers help instead of sitting empty.
@@ -1633,7 +1607,7 @@ fn error_hint(message: &str) -> ErrorHint {
     if message.contains("address already in use") || message.contains("address in use") {
         ErrorHint {
             title: "Network port already in use",
-            next_step: "Another program, or a second copy of the playit service, is using a network port playit needs. Restarting your computer usually fixes this.",
+            next_step: "Another program, or a second copy of the playit service, is using a network port playit needs, so your tunnels are offline. If this continues, try restarting your computer.",
         }
     } else if message.contains("permission denied") || message.contains("access is denied") {
         ErrorHint {
@@ -2014,7 +1988,7 @@ fn unreachable_guidance(mode: SessionMode, error: &str) -> UnreachableGuidance {
         return UnreachableGuidance {
             title: "Can't reach the playit service",
             body: vec![
-                "The background service that runs your tunnels isn't answering. Restarting your computer usually fixes this.".into(),
+                "The background service that runs your tunnels isn't answering, so your tunnels are offline. If this continues, try restarting your computer.".into(),
             ],
             command: None,
         };
@@ -2095,7 +2069,7 @@ fn tunnel_row(
                 chip(label, color).into_any_element()
             }
         }));
-    let detail = div().flex().min_w_0().text_size(px(13.)).child(row.detail);
+    let detail = div().flex().min_w_0().text_size(px(14.)).child(row.detail);
     let (own_line, inline) = if narrow {
         (Some(address_line), None)
     } else {
@@ -2152,7 +2126,6 @@ fn tunnel_row(
         .when(!compact, |el| el.py_2())
         .border_b_1()
         .border_color(theme::border().opacity(0.6))
-        .when(row.dimmed, |el| el.bg(theme::attention().opacity(0.04)))
         .hover(|style| style.bg(theme::panel_raised()))
         .children(own_line)
         .child(columns)
@@ -2212,14 +2185,6 @@ fn log_row(entry: &LogEntry, today: chrono::NaiveDate, show_target: bool) -> Div
                 .text_color(message_color)
                 .child(entry.message.clone()),
         )
-}
-
-/// Flexible empty space that takes `weight` shares of the leftover height.
-fn spacer(weight: f32) -> Div {
-    let mut spacer = div().min_h(px(16.));
-    spacer.style().flex_grow = Some(weight);
-    spacer.style().flex_basis = Some(px(0.).into());
-    spacer
 }
 
 /// Explains why a tunnel is disabled and, for the reasons we recognize, how to turn it back on.
@@ -2336,17 +2301,6 @@ fn quiet_status_label(label: impl Into<SharedString>, color: Hsla) -> impl IntoE
         .child(label.into())
 }
 
-/// A count in the activity log summary, with a dot in its level's color.
-fn count_label(label: String, color: Hsla) -> impl IntoElement {
-    div()
-        .flex()
-        .items_center()
-        .gap_1()
-        .text_color(color)
-        .child(dot(color).size(px(6.)))
-        .child(label)
-}
-
 fn chip(label: impl Into<SharedString>, color: Hsla) -> impl IntoElement {
     div()
         .flex_none()
@@ -2381,7 +2335,7 @@ fn section_title(title: &'static str, caption: impl Into<SharedString>) -> impl 
                 .truncate()
                 .line_height(px(22.))
                 .pt(px(1.))
-                .text_xs()
+                .text_size(px(13.))
                 .text_color(theme::muted())
                 .child(caption.into()),
         )
@@ -2421,7 +2375,7 @@ fn stat_cell(
                 .flex()
                 .items_center()
                 .gap_1p5()
-                .text_xs()
+                .text_size(px(13.))
                 .text_color(theme::muted())
                 .child(icon(icon_kind, 14., theme::muted()))
                 .child(div().truncate().child(label)),
