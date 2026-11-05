@@ -1138,7 +1138,7 @@ impl PlayitWindow {
             div()
                 .min_w_0()
                 .truncate()
-                .child("playit keeps running in the background after you close this window.")
+                .child("Closing this window keeps playit and your tunnels running.")
                 .into_any_element()
         } else {
             div().into_any_element()
