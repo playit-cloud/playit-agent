@@ -52,7 +52,7 @@ mod theme {
         rgb(0xbcbcd0).into()
     }
     pub fn faint() -> Hsla {
-        rgb(0xa0a0b8).into()
+        rgb(0xababc2).into()
     }
     pub fn accent() -> Hsla {
         rgb(0xd17bf7).into()
@@ -100,7 +100,7 @@ const LOG_ROW_HEIGHT: f32 = 22.;
 /// An expanded log shows at most this many lines before it scrolls.
 const LOG_MAX_ROWS: usize = 8;
 /// Space above the card on every non-running screen.
-const CARD_TOP_OFFSET: f32 = 40.;
+const CARD_TOP_OFFSET: f32 = 72.;
 const CARD_WIDTH: f32 = 580.;
 const SECTION_TITLE_SIZE: f32 = 15.;
 /// `p_8` on both sides plus the 1px border.
@@ -115,7 +115,7 @@ const COMPACT_HEIGHT: f32 = 640.;
 /// Windows narrower than this drop the account summary and shorten long lines.
 const NARROW_WIDTH: f32 = 760.;
 
-const GUEST_NOTICE: &str = "You're using a guest account. Log in and save it to keep your tunnels if you reinstall or switch computers.";
+const GUEST_NOTICE: &str = "You're using a guest account. Save it to keep your tunnels if you reinstall or switch computers.";
 
 pub struct PlayitWindow {
     state: AppState,
@@ -461,7 +461,7 @@ impl PlayitWindow {
                 NoticeAction::GuestLogin(login_link) => Some(
                     button(
                         "guest-login",
-                        "Log in to save account",
+                        "Save account",
                         ButtonStyle::Secondary,
                         Some(Icon::External),
                     )
@@ -552,8 +552,12 @@ impl PlayitWindow {
                 )
         };
 
+        // Disabled tunnels come first: they're the ones that need the user, and a small
+        // window would otherwise hide them below the healthy rows.
+        let mut tunnels: Vec<_> = agent.tunnels.iter().enumerate().collect();
+        tunnels.sort_by_key(|(_, tunnel)| !tunnel.is_disabled);
         let mut rows: Vec<AnyElement> = Vec::new();
-        for (ix, tunnel) in agent.tunnels.iter().enumerate() {
+        for (ix, tunnel) in tunnels {
             if tunnel.is_disabled {
                 rows.push(
                     tunnel_row(
@@ -562,7 +566,6 @@ impl PlayitWindow {
                         narrow,
                         TunnelRow {
                             address: tunnel.display_address.clone(),
-                            dimmed: true,
                             has_address: true,
                             status: Some(("Disabled".into(), theme::attention())),
                             quiet_status: false,
@@ -571,7 +574,7 @@ impl PlayitWindow {
                                 .items_center()
                                 .gap_1()
                                 .min_w_0()
-                                .text_color(theme::attention())
+                                .text_color(theme::muted())
                                 .child(icon(Icon::Alert, 13., theme::attention()))
                                 // The reason says how to fix the tunnel, so it wraps rather
                                 // than truncating at narrow widths.
@@ -594,7 +597,6 @@ impl PlayitWindow {
                         narrow,
                         TunnelRow {
                             address: tunnel.display_address.clone(),
-                            dimmed: false,
                             has_address: true,
                             status: Some(("Active".into(), theme::online())),
                             quiet_status: true,
@@ -620,7 +622,6 @@ impl PlayitWindow {
                     narrow,
                     TunnelRow {
                         address: pending.id.clone(),
-                        dimmed: false,
                         has_address: true,
                         status: Some(("Setting up".into(), theme::progress())),
                         quiet_status: false,
@@ -650,9 +651,11 @@ impl PlayitWindow {
             .gap_0p5()
             .min_w_0()
             .child(section_title("Tunnels", summary.join(" · ")))
-            .child(div().text_xs().text_color(theme::muted()).child(
-                "Share an address with friends. Your game server must be running for them to join.",
-            ));
+            .child(div().text_xs().text_color(theme::muted()).child(if narrow {
+                "Your game server must be running for friends to join."
+            } else {
+                "Share an address with friends. Your game server must be running for them to join."
+            }));
 
         panel()
             .flex()
@@ -1227,9 +1230,6 @@ impl PlayitWindow {
                     )
                 })
                 .into_any_element()
-        } else if matches!(screen, Screen::Error { .. }) {
-            // The error card's own button is the help link there.
-            div().into_any_element()
         } else {
             // The recovery screens have nothing to say about closing the window, so the
             // footer offers help instead of sitting empty.
@@ -1762,7 +1762,7 @@ impl MessageCard {
                 .flex()
                 .items_center()
                 .gap_2()
-                .text_xs()
+                .text_size(px(13.))
                 .text_color(theme::muted())
                 .child(spinner("waiting-spinner", 14., theme::progress()))
                 .child(waiting)
@@ -1852,7 +1852,7 @@ impl MessageCard {
                                     .items_center()
                                     .gap_1()
                                     .cursor_pointer()
-                                    .text_xs()
+                                    .text_size(px(13.))
                                     .font_weight(FontWeight::MEDIUM)
                                     .text_color(theme::muted())
                                     .hover(|style| style.text_color(theme::text()))
@@ -1988,7 +1988,7 @@ fn unreachable_guidance(mode: SessionMode, error: &str) -> UnreachableGuidance {
         return UnreachableGuidance {
             title: "Can't reach the playit service",
             body: vec![
-                "The background service that runs your tunnels isn't answering, so your tunnels are offline. If this continues, try restarting your computer.".into(),
+                "The background service that runs your tunnels isn't answering, so this window can't show their status. If this continues, try restarting your computer.".into(),
             ],
             command: None,
         };
@@ -2020,7 +2020,6 @@ fn unreachable_guidance(mode: SessionMode, error: &str) -> UnreachableGuidance {
 
 struct TunnelRow {
     address: String,
-    dimmed: bool,
     /// Pending tunnels show their name, which isn't something to share yet.
     has_address: bool,
     /// The row's state in words, so status never depends on color alone.
@@ -2034,8 +2033,7 @@ struct TunnelRow {
 }
 
 /// One tunnel: the address with its status label, a detail line, and an action in a
-/// fixed-width column so every row's button lines up. Narrow windows give the address its
-/// own line so it never has to share width with the actions.
+/// fixed-width column so every row's button lines up.
 fn tunnel_row(
     id: impl Into<ElementId>,
     compact: bool,
@@ -2055,41 +2053,25 @@ fn tunnel_row(
                 .when(row.has_address, |text| {
                     text.font_weight(FontWeight::SEMIBOLD)
                 })
-                .text_color(if row.dimmed {
-                    theme::muted()
-                } else {
-                    theme::text()
-                })
+                .text_color(theme::text())
                 .child(row.address),
         )
         .children(row.status.map(|(label, color)| {
-            if row.quiet_status {
+            if row.quiet_status && narrow {
+                // Narrow rows keep the width for the address; the dot alone marks health.
+                dot(color).into_any_element()
+            } else if row.quiet_status {
                 quiet_status_label(label, color).into_any_element()
             } else {
                 chip(label, color).into_any_element()
             }
         }));
     let detail = div().flex().min_w_0().text_size(px(14.)).child(row.detail);
-    let (own_line, inline) = if narrow {
-        (Some(address_line), None)
-    } else {
-        (None, Some(address_line))
-    };
-
-    let columns = div()
+    let actions = div()
         .flex()
+        .flex_none()
         .items_center()
         .gap_3()
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap_0p5()
-                .children(inline)
-                .child(detail),
-        )
         .child(
             div()
                 .flex()
@@ -2116,7 +2098,7 @@ fn tunnel_row(
                 })),
         );
 
-    div()
+    let row_el = div()
         .id(id)
         .flex()
         .flex_col()
@@ -2126,9 +2108,39 @@ fn tunnel_row(
         .when(!compact, |el| el.py_2())
         .border_b_1()
         .border_color(theme::border().opacity(0.6))
-        .hover(|style| style.bg(theme::panel_raised()))
-        .children(own_line)
-        .child(columns)
+        .hover(|style| style.bg(theme::panel_raised()));
+    if narrow {
+        // The actions share the address's line and the detail gets the full width below,
+        // so a narrow row is no taller than a wide one.
+        row_el
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .child(div().flex_1().min_w_0().flex().child(address_line))
+                    .child(actions),
+            )
+            .child(detail)
+    } else {
+        row_el.child(
+            div()
+                .flex()
+                .items_center()
+                .gap_3()
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_0p5()
+                        .child(address_line)
+                        .child(detail),
+                )
+                .child(actions),
+        )
+    }
 }
 
 /// Width of the "Manage" link column on tunnel rows.
@@ -2191,7 +2203,7 @@ fn log_row(entry: &LogEntry, today: chrono::NaiveDate, show_target: bool) -> Div
 fn disabled_explanation(reason: Option<&str>) -> String {
     let reason = disabled_reason(reason);
     if reason.to_ascii_lowercase().contains("tunnel limit") {
-        format!("{reason}. Remove another tunnel or upgrade your plan to turn it back on.")
+        format!("{reason}. Remove a tunnel or upgrade your plan to turn it back on.")
     } else {
         format!("{reason}.")
     }
