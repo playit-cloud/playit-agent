@@ -241,7 +241,7 @@ mod unix {
                     AgentLifecycle::Running(state) => !state.tunnels.is_empty(),
                     other => {
                         // Other states log what the agent is trying, now and then.
-                        if tick % 4 == 0 {
+                        if tick.is_multiple_of(4) {
                             let (level, message) = lifecycle_log(other);
                             let _ = events.send(ServiceUpdate::Log(LogEntry {
                                 level,
