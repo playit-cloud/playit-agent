@@ -3,8 +3,8 @@
 
 use clap::Parser;
 use gpui::{
-    App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowOptions, actions,
-    prelude::*, px, size,
+    App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowDecorations,
+    WindowOptions, actions, prelude::*, px, size,
 };
 use playit_ipc::ipc::get_default_socket_path;
 use tracing_subscriber::EnvFilter;
@@ -26,6 +26,11 @@ struct Cli {
     /// Override the IPC socket or named pipe used to reach playitd
     #[arg(long)]
     socket_path: Option<String>,
+
+    /// Draw the window's own title bar even where the OS would draw one (for testing the
+    /// title bar used on Wayland)
+    #[arg(long, hide = true)]
+    client_decorations: bool,
 }
 
 fn main() {
@@ -36,6 +41,12 @@ fn main() {
         )
         .init();
 
+    // GPUI asks Wayland compositors for server-side decorations but keeps believing it got
+    // them when the compositor doesn't support the protocol (GNOME, Weston), leaving the
+    // window with no title bar. Like Zed, draw our own title bar on Wayland instead.
+    let client_decorations = cli.client_decorations
+        || (cfg!(target_os = "linux")
+            && std::env::var_os("WAYLAND_DISPLAY").is_some_and(|display| !display.is_empty()));
     let session_mode = match cli.socket_path {
         Some(_) => SessionMode::ExternalDaemon,
         None => SessionMode::Service,
@@ -82,6 +93,11 @@ fn main() {
                         ..Default::default()
                     }),
                     app_id: Some("gg.playit.gui".to_string()),
+                    window_decorations: Some(if client_decorations {
+                        WindowDecorations::Client
+                    } else {
+                        WindowDecorations::Server
+                    }),
                     ..Default::default()
                 },
                 |_, cx| cx.new(|cx| PlayitWindow::new(state, command_tx, event_rx, outcome_rx, cx)),

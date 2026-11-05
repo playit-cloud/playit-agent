@@ -20,12 +20,15 @@ pub enum Icon {
     Globe,
     Info,
     Link,
+    Maximize,
+    Minus,
     Loader,
     Play,
     Plug,
     Plus,
     Power,
     Refresh,
+    Restore,
     User,
     X,
     XCircle,
@@ -46,12 +49,15 @@ const ALL: &[Icon] = &[
     Icon::Globe,
     Icon::Info,
     Icon::Link,
+    Icon::Maximize,
+    Icon::Minus,
     Icon::Loader,
     Icon::Play,
     Icon::Plug,
     Icon::Plus,
     Icon::Power,
     Icon::Refresh,
+    Icon::Restore,
     Icon::User,
     Icon::X,
     Icon::XCircle,
@@ -74,12 +80,15 @@ impl Icon {
             Self::Globe => "icons/globe.svg",
             Self::Info => "icons/info.svg",
             Self::Link => "icons/link.svg",
+            Self::Maximize => "icons/maximize.svg",
+            Self::Minus => "icons/minus.svg",
             Self::Loader => "icons/loader.svg",
             Self::Play => "icons/play.svg",
             Self::Plug => "icons/plug.svg",
             Self::Plus => "icons/plus.svg",
             Self::Power => "icons/power.svg",
             Self::Refresh => "icons/refresh.svg",
+            Self::Restore => "icons/restore.svg",
             Self::User => "icons/user.svg",
             Self::X => "icons/x.svg",
             Self::XCircle => "icons/x-circle.svg",
@@ -110,6 +119,11 @@ impl Icon {
             }
             Self::Info => {
                 r#"<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>"#
+            }
+            Self::Maximize => r#"<rect x="5" y="5" width="14" height="14" rx="1"/>"#,
+            Self::Minus => r#"<path d="M5 12h14"/>"#,
+            Self::Restore => {
+                r#"<rect x="5" y="8" width="11" height="11" rx="1"/><path d="M8 8V5h11v11h-3"/>"#
             }
             Self::Link => {
                 r#"<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>"#

@@ -3,10 +3,11 @@ use std::time::{Duration, Instant};
 
 use chrono::Local;
 use gpui::{
-    Animation, AnimationExt, AnyElement, ClipboardItem, Context, Div, ElementId, FontWeight, Hsla,
-    ScrollHandle, ScrollStrategy, SharedString, Stateful, Svg, Task, Transformation,
-    UniformListScrollHandle, Window, div, linear_color_stop, linear_gradient, percentage,
-    prelude::*, px, rgb, svg, uniform_list,
+    Animation, AnimationExt, AnyElement, Bounds, ClipboardItem, Context, CursorStyle, Decorations,
+    Div, ElementId, FontWeight, HitboxBehavior, Hsla, MouseButton, Pixels, Point, ResizeEdge,
+    ScrollHandle, ScrollStrategy, SharedString, Size, Stateful, Svg, Task, Tiling, Transformation,
+    UniformListScrollHandle, Window, WindowControls, canvas, div, linear_color_stop,
+    linear_gradient, percentage, point, prelude::*, px, rgb, svg, uniform_list,
 };
 use playit_ipc::model::{AccountStatus, AgentState, LogEntry, LogLevel, NoticeState};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
@@ -14,8 +15,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use crate::assets::Icon;
 use crate::backend::{BackendEvent, CommandOutcome, SetupStep, UiCommand};
 use crate::state::{
-    ACCOUNT_AGENTS_URL, ACCOUNT_UPGRADE_URL, AppState, Screen, SessionMode, disabled_reason,
-    format_bytes, format_uptime, level_label, log_time_label, short_target,
+    ACCOUNT_AGENTS_URL, ACCOUNT_TUNNELS_URL, ACCOUNT_UPGRADE_URL, ACCOUNT_URL, AppState,
+    NEW_TUNNEL_URL, Screen, SessionMode, disabled_reason, format_bytes, format_uptime, level_label,
+    log_time_label, short_target,
 };
 
 const SUPPORT_URL: &str = "https://playit.gg/support";
@@ -110,8 +112,7 @@ const COMPACT_HEIGHT: f32 = 640.;
 /// Windows narrower than this drop the account summary and shorten long lines.
 const NARROW_WIDTH: f32 = 760.;
 
-const GUEST_NOTICE: &str =
-    "Save your guest account to keep your tunnels if you reinstall or switch computers.";
+const GUEST_NOTICE: &str = "You're using a guest account. Log in and save it to keep your tunnels if you reinstall or switch computers.";
 
 pub struct PlayitWindow {
     state: AppState,
@@ -228,8 +229,13 @@ impl PlayitWindow {
         }
     }
 
-    fn open_dashboard(&mut self, cx: &mut Context<Self>) {
-        self.send(UiCommand::OpenDashboard);
+    /// Website links assume the browser is already signed in; only guest accounts need the
+    /// daemon's one-click login link, which `login_link` carries when the daemon has one.
+    fn open_guest_login(&mut self, login_link: Option<String>, cx: &mut Context<Self>) {
+        match login_link {
+            Some(link) => cx.open_url(&link),
+            None => self.send(UiCommand::OpenGuestLogin),
+        }
         cx.notify();
     }
 
@@ -254,7 +260,7 @@ impl PlayitWindow {
         screen: &Screen,
         compact: bool,
         narrow: bool,
-        cx: &mut Context<Self>,
+        chrome: Option<WindowChrome>,
     ) -> impl IntoElement {
         let (status_label, status_color) = match screen {
             Screen::Running(_) => ("Connected to playit", theme::online()),
@@ -297,21 +303,45 @@ impl PlayitWindow {
                         ButtonStyle::Secondary,
                         Some(Icon::External),
                     )
-                    .on_click(cx.listener(|view, _, _, cx| view.open_dashboard(cx))),
+                    .on_click(|_, _, cx| cx.open_url(ACCOUNT_URL)),
                 );
         }
+        if let Some(chrome) = chrome {
+            right = right.child(window_controls(chrome));
+        }
 
+        // Without OS decorations the header doubles as the title bar: it moves the window,
+        // double-click maximizes, right-click opens the window menu, and the controls sit at
+        // the far right.
         div()
+            .id("titlebar")
             .flex()
             .flex_none()
             .items_center()
             .justify_between()
             .gap_4()
-            .px_5()
+            .pl_5()
+            .when(chrome.is_some(), |header| header.pr_2())
+            .when(chrome.is_none(), |header| header.pr_5())
             .h(px(if compact { 56. } else { 64. }))
             .border_b_1()
             .border_color(theme::border())
             .bg(theme::panel())
+            .when(chrome.is_some(), |header| {
+                header
+                    .on_mouse_down(MouseButton::Left, |event, window, _| {
+                        if event.click_count == 1 {
+                            window.start_window_move();
+                        }
+                    })
+                    .on_click(|event, window, _| {
+                        if event.is_right_click() {
+                            window.show_window_menu(event.position());
+                        } else if event.click_count() == 2 {
+                            window.zoom_window();
+                        }
+                    })
+            })
             .child(
                 div()
                     .flex()
@@ -367,7 +397,7 @@ impl PlayitWindow {
                 "guest",
                 GUEST_NOTICE,
                 theme::progress(),
-                NoticeAction::SaveAccount,
+                NoticeAction::GuestLogin(agent.login_link.clone()),
                 compact,
                 cx,
             ));
@@ -407,19 +437,27 @@ impl PlayitWindow {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let dismissed = message.to_string();
-        let action: Option<AnyElement> = match action {
-            NoticeAction::None => None,
-            NoticeAction::Link(link) => Some(
-                notice_link("notice-link", "See what's new", color)
-                    .on_click(move |_, _, cx| cx.open_url(&link))
+        let action: Option<AnyElement> =
+            match action {
+                NoticeAction::None => None,
+                NoticeAction::Link(link) => Some(
+                    notice_link("notice-link", "See what's new", color)
+                        .on_click(move |_, _, cx| cx.open_url(&link))
+                        .into_any_element(),
+                ),
+                NoticeAction::GuestLogin(login_link) => Some(
+                    button(
+                        "guest-login",
+                        "Log in to save account",
+                        ButtonStyle::Primary,
+                        Some(Icon::External),
+                    )
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.open_guest_login(login_link.clone(), cx)
+                    }))
                     .into_any_element(),
-            ),
-            NoticeAction::SaveAccount => Some(
-                notice_link("save-account", "Save guest account", color)
-                    .on_click(cx.listener(|view, _, _, cx| view.open_dashboard(cx)))
-                    .into_any_element(),
-            ),
-        };
+                ),
+            };
         div()
             .id(id.into())
             .flex_none()
@@ -467,7 +505,7 @@ impl PlayitWindow {
     ) -> impl IntoElement {
         let has_tunnels = !agent.tunnels.is_empty() || !agent.pending_tunnels.is_empty();
         if !has_tunnels {
-            return self.render_no_tunnels(cx);
+            return self.render_no_tunnels();
         }
 
         let online = agent.tunnels.iter().filter(|t| !t.is_disabled).count();
@@ -530,7 +568,7 @@ impl PlayitWindow {
                             )
                             .border_color(theme::attention().opacity(0.5))
                             .text_color(theme::attention())
-                            .on_click(cx.listener(|view, _, _, cx| view.open_dashboard(cx)))
+                            .on_click(|_, _, cx| cx.open_url(ACCOUNT_TUNNELS_URL))
                             .into_any_element(),
                         },
                     )
@@ -649,14 +687,14 @@ impl PlayitWindow {
                             ButtonStyle::Secondary,
                             Some(Icon::External),
                         )
-                        .on_click(cx.listener(|view, _, _, cx| view.open_dashboard(cx))),
+                        .on_click(|_, _, cx| cx.open_url(NEW_TUNNEL_URL)),
                     ),
             )
             .child(div().flex().flex_col().children(rows))
             .into_any_element()
     }
 
-    fn render_no_tunnels(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_no_tunnels(&self) -> AnyElement {
         panel()
             .flex()
             .flex_col()
@@ -696,7 +734,7 @@ impl PlayitWindow {
                     ButtonStyle::Primary,
                     Some(Icon::External),
                 ))
-                .on_click(cx.listener(|view, _, _, cx| view.open_dashboard(cx))),
+                .on_click(|_, _, cx| cx.open_url(NEW_TUNNEL_URL)),
             )
             .into_any_element()
     }
@@ -1256,6 +1294,17 @@ impl Render for PlayitWindow {
         let viewport = window.viewport_size();
         let compact = viewport.height < px(COMPACT_HEIGHT);
         let narrow = viewport.width < px(NARROW_WIDTH);
+        let decorations = window.window_decorations();
+        let chrome = match decorations {
+            Decorations::Server => None,
+            Decorations::Client { .. } => {
+                window.set_client_inset(px(RESIZE_INSET));
+                Some(WindowChrome {
+                    maximized: window.is_maximized(),
+                    controls: window.window_controls(),
+                })
+            }
+        };
         let screen = self.state.screen();
         let body = match &screen {
             Screen::Running(agent) => self.render_running(agent, compact, narrow, cx),
@@ -1271,7 +1320,7 @@ impl Render for PlayitWindow {
             .font_family(UI_FONT)
             .text_color(theme::text())
             .text_sm()
-            .child(self.render_header(&screen, compact, narrow, cx));
+            .child(self.render_header(&screen, compact, narrow, chrome));
 
         if let Some(error) = self.command_error.clone() {
             root = root.child(
@@ -1366,14 +1415,151 @@ impl Render for PlayitWindow {
                     .child(toast.clone()),
             );
         }
-        root
+        match decorations {
+            Decorations::Server => root.into_any_element(),
+            Decorations::Client { tiling } => resize_frame(tiling, root).into_any_element(),
+        }
     }
+}
+
+/// Window state the custom title bar needs when the OS leaves decorations to the app.
+#[derive(Clone, Copy)]
+struct WindowChrome {
+    maximized: bool,
+    controls: WindowControls,
+}
+
+/// Width of the invisible band around a client-decorated window that resizes it.
+const RESIZE_INSET: f32 = 5.;
+
+fn window_controls(chrome: WindowChrome) -> impl IntoElement {
+    let control = |id: &'static str, kind: Icon, close: bool| {
+        div()
+            .id(id)
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(32.))
+            .rounded_md()
+            .cursor_pointer()
+            .hover(move |style| {
+                if close {
+                    style.bg(theme::failure().opacity(0.85))
+                } else {
+                    style.bg(theme::panel_raised())
+                }
+            })
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(icon(kind, 15., theme::muted()))
+    };
+    div()
+        .flex()
+        .items_center()
+        .gap_1()
+        .ml_1()
+        .pl_2()
+        .border_l_1()
+        .border_color(theme::border())
+        .when(chrome.controls.minimize, |row| {
+            row.child(
+                control("window-minimize", Icon::Minus, false)
+                    .on_click(|_, window, _| window.minimize_window()),
+            )
+        })
+        .when(chrome.controls.maximize, |row| {
+            row.child(
+                control(
+                    "window-maximize",
+                    if chrome.maximized {
+                        Icon::Restore
+                    } else {
+                        Icon::Maximize
+                    },
+                    false,
+                )
+                .on_click(|_, window, _| window.zoom_window()),
+            )
+        })
+        .child(
+            control("window-close", Icon::X, true).on_click(|_, window, _| window.remove_window()),
+        )
+}
+
+/// Wraps client-decorated content in a thin band that resizes the window from its edges.
+fn resize_frame(tiling: Tiling, content: impl IntoElement) -> impl IntoElement {
+    let inset = px(RESIZE_INSET);
+    div()
+        .id("resize-frame")
+        .size_full()
+        .bg(theme::border_strong())
+        .when(!tiling.top, |frame| frame.pt(inset))
+        .when(!tiling.bottom, |frame| frame.pb(inset))
+        .when(!tiling.left, |frame| frame.pl(inset))
+        .when(!tiling.right, |frame| frame.pr(inset))
+        .child(
+            canvas(
+                |_bounds, window, _cx| {
+                    window.insert_hitbox(
+                        Bounds::new(point(px(0.), px(0.)), window.viewport_size()),
+                        HitboxBehavior::Normal,
+                    )
+                },
+                move |_bounds, hitbox, window, _cx| {
+                    let size = window.viewport_size();
+                    if let Some(edge) = resize_edge(window.mouse_position(), inset, size) {
+                        window.set_cursor_style(resize_cursor(edge), &hitbox);
+                    }
+                },
+            )
+            .size_full()
+            .absolute(),
+        )
+        .on_mouse_move(|_, window, _| window.refresh())
+        .on_mouse_down(MouseButton::Left, move |event, window, _| {
+            if let Some(edge) = resize_edge(event.position, inset, window.viewport_size()) {
+                window.start_window_resize(edge);
+            }
+        })
+        .child(
+            div()
+                .size_full()
+                .cursor(CursorStyle::Arrow)
+                .on_mouse_move(|_, _, cx| cx.stop_propagation())
+                .child(content),
+        )
+}
+
+fn resize_cursor(edge: ResizeEdge) -> CursorStyle {
+    match edge {
+        ResizeEdge::Top | ResizeEdge::Bottom => CursorStyle::ResizeUpDown,
+        ResizeEdge::Left | ResizeEdge::Right => CursorStyle::ResizeLeftRight,
+        ResizeEdge::TopLeft | ResizeEdge::BottomRight => CursorStyle::ResizeUpLeftDownRight,
+        ResizeEdge::TopRight | ResizeEdge::BottomLeft => CursorStyle::ResizeUpRightDownLeft,
+    }
+}
+
+fn resize_edge(pos: Point<Pixels>, inset: Pixels, size: Size<Pixels>) -> Option<ResizeEdge> {
+    let top = pos.y < inset;
+    let bottom = pos.y > size.height - inset;
+    let left = pos.x < inset;
+    let right = pos.x > size.width - inset;
+    Some(match (top, bottom, left, right) {
+        (true, _, true, _) => ResizeEdge::TopLeft,
+        (true, _, _, true) => ResizeEdge::TopRight,
+        (_, true, true, _) => ResizeEdge::BottomLeft,
+        (_, true, _, true) => ResizeEdge::BottomRight,
+        (true, ..) => ResizeEdge::Top,
+        (_, true, ..) => ResizeEdge::Bottom,
+        (_, _, true, _) => ResizeEdge::Left,
+        (_, _, _, true) => ResizeEdge::Right,
+        _ => return None,
+    })
 }
 
 enum NoticeAction {
     None,
     Link(String),
-    SaveAccount,
+    GuestLogin(Option<String>),
 }
 
 fn notice_color(notice: &NoticeState) -> Hsla {
@@ -2222,6 +2408,7 @@ fn button(
         .text_color(text)
         .cursor_pointer()
         .hover(move |style| style.bg(hover_bg))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .children(leading_icon.map(|kind| icon(kind, 13., text)))
         .child(label.into())
 }

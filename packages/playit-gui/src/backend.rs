@@ -44,7 +44,8 @@ pub enum SetupStep {
 pub enum UiCommand {
     StartSetup,
     ResetSecret,
-    OpenDashboard,
+    /// Open the guest account's one-click login link, which the daemon creates on request.
+    OpenGuestLogin,
     /// Skip the remaining reconnect delay and try the daemon again now.
     Reconnect,
 }
@@ -155,7 +156,7 @@ async fn run_commands(
                 });
             }
             UiCommand::Reconnect => reconnect.notify_one(),
-            UiCommand::OpenDashboard => {
+            UiCommand::OpenGuestLogin => {
                 let socket_path = socket_path.clone();
                 let outcomes = outcomes.clone();
                 tokio::spawn(async move {

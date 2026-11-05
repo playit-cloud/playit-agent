@@ -10,8 +10,11 @@ use playit_ipc::model::{
 use crate::backend::{BackendEvent, SetupStep};
 
 const LOG_CAPACITY: usize = 500;
+pub const ACCOUNT_URL: &str = "https://playit.gg/account";
 pub const ACCOUNT_AGENTS_URL: &str = "https://playit.gg/account/agents";
+pub const ACCOUNT_TUNNELS_URL: &str = "https://playit.gg/account/tunnels";
 pub const ACCOUNT_UPGRADE_URL: &str = "https://playit.gg/account/upgrade";
+pub const NEW_TUNNEL_URL: &str = "https://playit.gg/account/setup/new-tunnel";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionMode {
