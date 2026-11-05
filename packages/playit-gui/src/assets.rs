@@ -1,4 +1,6 @@
-//! Icons bundled into the binary. Paths are adapted from Lucide (ISC license).
+//! Images and icons bundled into the binary. Icon paths are adapted from Lucide (ISC
+//! license); the logo images are playit.gg's website wordmark, prescaled with
+//! nearest-neighbor to exactly twice the size they're drawn at so the pixel art stays crisp.
 
 use std::borrow::Cow;
 
@@ -145,10 +147,36 @@ impl Icon {
     }
 }
 
+pub const LOGO_WORDMARK: &str = "images/logo-wordmark.png";
+/// The wordmark's computer alone, for narrow windows.
+pub const LOGO_MARK: &str = "images/logo-mark.png";
+
+const IMAGES: &[(&str, &[u8])] = &[
+    (
+        LOGO_WORDMARK,
+        include_bytes!("../assets/images/logo-wordmark@2x.png"),
+    ),
+    (
+        LOGO_MARK,
+        include_bytes!("../assets/images/logo-mark@2x.png"),
+    ),
+];
+
+/// Inter (SIL Open Font License, `assets/fonts/OFL.txt`), the website's typeface.
+pub const FONTS: &[&[u8]] = &[
+    include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../assets/fonts/Inter-Medium.ttf"),
+    include_bytes!("../assets/fonts/Inter-SemiBold.ttf"),
+    include_bytes!("../assets/fonts/Inter-Bold.ttf"),
+];
+
 pub struct Assets;
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> anyhow::Result<Option<Cow<'static, [u8]>>> {
+        if let Some((_, bytes)) = IMAGES.iter().find(|(image, _)| *image == path) {
+            return Ok(Some(Cow::Borrowed(bytes)));
+        }
         Ok(ALL.iter().find(|icon| icon.path() == path).map(|icon| {
             Cow::Owned(
                 format!(
@@ -164,6 +192,7 @@ impl AssetSource for Assets {
         Ok(ALL
             .iter()
             .map(|icon| icon.path())
+            .chain(IMAGES.iter().map(|(image, _)| *image))
             .filter(|icon_path| icon_path.starts_with(path))
             .map(SharedString::from)
             .collect())

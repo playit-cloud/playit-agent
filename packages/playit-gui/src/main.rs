@@ -1,6 +1,8 @@
 // Keep Windows release builds from opening a console next to the window.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+use std::borrow::Cow;
+
 use clap::Parser;
 use gpui::{
     App, Application, Bounds, KeyBinding, TitlebarOptions, WindowBounds, WindowDecorations,
@@ -70,6 +72,14 @@ fn main() {
     Application::new()
         .with_assets(Assets)
         .run(move |cx: &mut App| {
+            if let Err(error) = cx.text_system().add_fonts(
+                assets::FONTS
+                    .iter()
+                    .map(|font| Cow::Borrowed(*font))
+                    .collect(),
+            ) {
+                tracing::warn!("failed to load the bundled Inter font: {error}");
+            }
             cx.bind_keys([
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("ctrl-q", Quit, None),

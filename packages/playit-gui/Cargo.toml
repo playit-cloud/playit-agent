@@ -25,5 +25,8 @@ gpui = "0.2.2"
 playit-ipc = { path = "../playit-ipc", version = "1.2.0" }
 playit-api-client = { path = "../api_client", version = "0.2.0" }
 
+[build-dependencies]
+winres = "0.1"
+
 [dev-dependencies]
 serde_json = { workspace = true }
