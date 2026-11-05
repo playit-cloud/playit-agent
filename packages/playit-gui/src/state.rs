@@ -38,7 +38,7 @@ pub enum Screen<'a> {
     Unreachable { error: &'a str },
     Setup(&'a SetupState),
     InvalidSecret { message: &'a str },
-    OverLimit,
+    OverLimit { message: &'a str },
     Starting,
     Stopping,
     Error { message: &'a str },
@@ -148,7 +148,9 @@ impl AppState {
             AgentLifecycle::HasInvalidSecret(error) => Screen::InvalidSecret {
                 message: &error.message,
             },
-            AgentLifecycle::DisabledOverLimit(_) => Screen::OverLimit,
+            AgentLifecycle::DisabledOverLimit(error) => Screen::OverLimit {
+                message: &error.message,
+            },
             AgentLifecycle::Starting => Screen::Starting,
             AgentLifecycle::Running(state) => Screen::Running(state),
             AgentLifecycle::Stopping => Screen::Stopping,
