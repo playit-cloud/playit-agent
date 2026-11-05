@@ -1,4 +1,6 @@
+use std::cell::Cell;
 use std::collections::HashSet;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use chrono::Local;
@@ -119,6 +121,8 @@ pub struct PlayitWindow {
     state: AppState,
     commands: UnboundedSender<UiCommand>,
     content_scroll: ScrollHandle,
+    /// Where the first disabled tunnel was last painted, so its count can scroll to it.
+    attention_row: Rc<Cell<Option<Bounds<Pixels>>>>,
     log_scroll: UniformListScrollHandle,
     follow_logs: bool,
     show_debug_logs: bool,
@@ -198,6 +202,7 @@ impl PlayitWindow {
             state,
             commands,
             content_scroll: ScrollHandle::new(),
+            attention_row: Rc::default(),
             log_scroll: UniformListScrollHandle::new(),
             follow_logs: true,
             show_debug_logs: false,
@@ -246,6 +251,19 @@ impl PlayitWindow {
         cx.notify();
     }
 
+    /// Scrolls the main view so the first disabled tunnel sits near the top.
+    fn scroll_to_attention(&mut self, cx: &mut Context<Self>) {
+        let Some(row) = self.attention_row.get() else {
+            return;
+        };
+        let viewport = self.content_scroll.bounds();
+        let offset = self.content_scroll.offset();
+        let max = self.content_scroll.max_offset().height;
+        let target = (offset.y - (row.top() - viewport.top() - px(8.))).clamp(-max, px(0.));
+        self.content_scroll.set_offset(point(offset.x, target));
+        cx.notify();
+    }
+
     fn visible_logs(&self) -> Vec<&LogEntry> {
         self.state
             .logs
@@ -268,7 +286,7 @@ impl PlayitWindow {
             Screen::Connecting => ("Connecting", theme::progress()),
             Screen::Starting => ("Starting", theme::progress()),
             Screen::Stopping => ("Stopping", theme::progress()),
-            Screen::Setup(_) => ("Not set up", theme::progress()),
+            Screen::Setup(_) => ("Not set up", theme::accent()),
             Screen::Unreachable { .. } => ("Service unreachable", theme::failure()),
             // Whenever tunnels can't carry traffic the badge says so; the card says why and
             // whether playit is retrying on its own.
@@ -523,11 +541,16 @@ impl PlayitWindow {
             .items_center()
             .gap_1()
             .child(format!("{online} active"));
+        // The disabled count is a link to the row, which may be scrolled out of view.
         if disabled > 0 {
             summary = summary.child("·").child(
                 div()
+                    .id("jump-to-disabled")
+                    .cursor_pointer()
                     .text_color(theme::attention())
-                    .child(format!("{disabled} disabled")),
+                    .hover(|style| style.underline())
+                    .child(format!("{disabled} disabled"))
+                    .on_click(cx.listener(|view, _, _, cx| view.scroll_to_attention(cx))),
             );
         }
         if !agent.pending_tunnels.is_empty() {
@@ -561,6 +584,8 @@ impl PlayitWindow {
         // go last, and the header's count still flags them.
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut disabled_rows: Vec<AnyElement> = Vec::new();
+        self.attention_row.set(None);
+        let mut attention_sink = Some(self.attention_row.clone());
         for (ix, tunnel) in agent.tunnels.iter().enumerate() {
             if tunnel.is_disabled {
                 disabled_rows.push(
@@ -586,19 +611,26 @@ impl PlayitWindow {
                                     tunnel.disabled_reason.as_deref(),
                                 ))),
                             needs_attention: true,
-                            // A disabled tunnel's address doesn't work, so instead of copying it
-                            // the row offers the page where it can be turned back on.
+                            position: attention_sink.take(),
+                            // A disabled tunnel's address doesn't work, so where other rows copy
+                            // it this one offers the fix, in amber so it reads as a remedy.
                             action: Some({
                                 let url = tunnel_url(&tunnel.id);
                                 row_button(
                                     ("fix-tunnel", ix),
-                                    if narrow { "Manage" } else { "Manage tunnel" },
+                                    if narrow {
+                                        "Fix tunnel"
+                                    } else {
+                                        "Fix on playit.gg"
+                                    },
                                     Icon::External,
                                 )
+                                .bg(theme::attention().opacity(0.08))
+                                .border_color(theme::attention().opacity(0.5))
                                 .on_click(move |_, _, cx| cx.open_url(&url))
                                 .into_any_element()
                             }),
-                            manage_url: None,
+                            manage_url: Some(tunnel_url(&tunnel.id)),
                         },
                     )
                     .into_any_element(),
@@ -617,16 +649,13 @@ impl PlayitWindow {
                             quiet_status: true,
                             detail: forwards_to(&tunnel.destination),
                             needs_attention: false,
+                            position: None,
                             action: Some(
-                                row_button(
-                                    ("copy-tunnel", ix),
-                                    if narrow { "Copy" } else { "Copy address" },
-                                    Icon::Copy,
-                                )
-                                .on_click(cx.listener(move |view, _, _, cx| {
-                                    view.copy(address.clone(), "address", cx)
-                                }))
-                                .into_any_element(),
+                                row_button(("copy-tunnel", ix), "Copy address", Icon::Copy)
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        view.copy(address.clone(), "address", cx)
+                                    }))
+                                    .into_any_element(),
                             ),
                             manage_url: Some(tunnel_url(&tunnel.id)),
                         },
@@ -659,6 +688,7 @@ impl PlayitWindow {
                                 sentence_case(&pending.status_msg)
                             ))),
                         needs_attention: false,
+                        position: None,
                         // The detail line already says the address is coming, and without
                         // actions the explanation gets the row's full width.
                         action: None,
@@ -809,28 +839,28 @@ impl PlayitWindow {
                 div()
                     .px_4()
                     .pt_3()
-                    .child(section_title("Traffic", "through your tunnels")),
+                    .child(section_title("Traffic", "totals since playit started")),
             )
             .child(
                 div()
                     .flex()
                     .child(stat_cell(
                         Icon::ArrowDown,
-                        "Received since start",
+                        "Received by this computer",
                         format_bytes(stats.bytes_in),
                         None,
                         true,
                     ))
                     .child(stat_cell(
                         Icon::ArrowUp,
-                        "Sent since start",
+                        "Sent by this computer",
                         format_bytes(stats.bytes_out),
                         None,
                         true,
                     ))
                     .child(stat_cell(
                         Icon::Plug,
-                        "Connections now",
+                        "Open connections now",
                         (stats.active_tcp + stats.active_udp).to_string(),
                         Some(format!(
                             "{} TCP, {} UDP",
@@ -856,8 +886,6 @@ impl PlayitWindow {
             .filter(|entry| matches!(entry.level, LogLevel::Error))
             .count();
 
-        // While the agent runs, logged problems are history, so they're counted in the same
-        // muted text instead of alarm colors.
         let plural = |count: usize, word: &str| {
             format!("{count} {word}{}", if count == 1 { "" } else { "s" })
         };
@@ -868,15 +896,28 @@ impl PlayitWindow {
             .text_xs()
             .text_color(theme::muted())
             .child(plural(visible.len(), "message"));
+        // Counts keep their level's color, like the disabled count above, so a problem is
+        // visible while the log is collapsed; "this session" says they're not necessarily
+        // current.
         if healthy && (errors > 0 || warnings > 0) {
-            let mut counts = Vec::new();
+            summary = summary.child("this session, including");
             if errors > 0 {
-                counts.push(plural(errors, "error"));
+                summary = summary.child(
+                    div()
+                        .text_color(theme::failure())
+                        .child(plural(errors, "error")),
+                );
+            }
+            if errors > 0 && warnings > 0 {
+                summary = summary.child("and");
             }
             if warnings > 0 {
-                counts.push(plural(warnings, "warning"));
+                summary = summary.child(
+                    div()
+                        .text_color(theme::attention())
+                        .child(plural(warnings, "warning")),
+                );
             }
-            summary = summary.child(format!("this session, including {}", counts.join(" and ")));
         }
 
         let title = div()
@@ -2040,7 +2081,7 @@ fn unreachable_guidance(mode: SessionMode, error: &str) -> UnreachableGuidance {
         return UnreachableGuidance {
             title: "Can't reach the playit service",
             body: vec![
-                "The background service that runs your tunnels isn't answering, so this window can't show their status. If this continues, try restarting your computer.".into(),
+                "The background service that runs your tunnels isn't answering, so this window can't show their status. This window keeps trying to reconnect; if it doesn't, restarting your computer usually helps.".into(),
             ],
             command: None,
         };
@@ -2081,6 +2122,8 @@ struct TunnelRow {
     detail: Div,
     /// Marks a row that needs the user with an amber edge.
     needs_attention: bool,
+    /// Receives the row's painted bounds, for the first row that needs attention.
+    position: Option<Rc<Cell<Option<Bounds<Pixels>>>>>,
     action: Option<AnyElement>,
     /// The tunnel's page on playit.gg, linked from a quiet "Manage" action.
     manage_url: Option<String>,
@@ -2107,9 +2150,10 @@ fn tunnel_row(
                 .when(row.has_address, |text| {
                     text.font_weight(FontWeight::SEMIBOLD)
                 })
-                // A disabled tunnel's address doesn't work, so it shouldn't read as shareable.
+                // A disabled tunnel's address doesn't work, so it's slightly dimmed, but stays
+                // readable so the tunnel is recognizable.
                 .text_color(if row.needs_attention {
-                    theme::muted()
+                    theme::text().opacity(0.8)
                 } else {
                     theme::text()
                 })
@@ -2171,6 +2215,13 @@ fn tunnel_row(
         .border_b_1()
         .border_color(theme::border().opacity(0.6))
         .hover(|style| style.bg(theme::panel_raised()))
+        .when_some(row.position, |row, sink| {
+            row.relative().child(
+                canvas(move |bounds, _, _| sink.set(Some(bounds)), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+        })
         // A strip rather than a left border, since a border would recolor the row divider.
         .when(row.needs_attention, |row| {
             row.relative().bg(theme::attention().opacity(0.05)).child(
@@ -2196,8 +2247,8 @@ fn tunnel_row(
         .when(has_actions, |row| row.child(actions))
 }
 
-/// The Copy column in narrow windows, where the button reads just "Copy".
-const NARROW_ROW_ACTION_WIDTH: f32 = 84.;
+/// The Copy column in narrow windows, with tighter room around the button's label.
+const NARROW_ROW_ACTION_WIDTH: f32 = 120.;
 
 /// Width of the "Manage" link column on tunnel rows.
 const MANAGE_LINK_WIDTH: f32 = 88.;
