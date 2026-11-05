@@ -64,7 +64,8 @@ pub enum CommandOutcome {
 }
 
 /// Wakes the subscription loop early. `start_service` asks it to also try starting the
-/// installed service, which happens once at launch and again each time the user retries.
+/// installed service: at launch if playitd isn't answering, and each time the user retries.
+/// Once connected it is cleared, so a service the user stops later stays stopped.
 struct Reconnect {
     notify: Notify,
     start_service: AtomicBool,
@@ -105,10 +106,15 @@ async fn run_subscription(
 ) {
     let mut start_error = None;
     loop {
-        let error = match subscribe(&socket_path, &events).await {
+        let mut connected = false;
+        let error = match subscribe(&socket_path, &events, &mut connected).await {
             Ok(()) => return,
             Err(error) => error,
         };
+        if connected {
+            reconnect.start_service.store(false, Ordering::Relaxed);
+            start_error = None;
+        }
 
         if manage_service && reconnect.start_service.swap(false, Ordering::Relaxed) {
             if events.send(BackendEvent::StartingService).is_err() {
@@ -178,10 +184,12 @@ async fn start_installed_service(socket_path: &str) -> Result<(), String> {
     ))
 }
 
-/// Streams updates until the connection drops. Returns `Ok` only once the window is gone.
+/// Streams updates until the connection drops, setting `connected` once playitd answers.
+/// Returns `Ok` only once the window is gone.
 async fn subscribe(
     socket_path: &str,
     events: &UnboundedSender<BackendEvent>,
+    connected: &mut bool,
 ) -> Result<(), String> {
     let mut client = IpcClient::connect_with_path(socket_path)
         .await
@@ -190,6 +198,7 @@ async fn subscribe(
         .subscribe()
         .await
         .map_err(|error| error.to_string())?;
+    *connected = true;
     if events
         .send(BackendEvent::Subscribed(Box::new(snapshot)))
         .is_err()
