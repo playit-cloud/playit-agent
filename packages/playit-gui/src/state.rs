@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::time::Instant;
 
 use chrono::{DateTime, Local, NaiveDate};
 use playit_ipc::model::{
@@ -53,6 +54,8 @@ pub struct AppState {
     pub stats: ConnectionStats,
     pub logs: VecDeque<LogEntry>,
     pub setup: Option<SetupState>,
+    /// When the agent entered its current lifecycle state, to notice slow starts.
+    pub lifecycle_since: Instant,
 }
 
 impl AppState {
@@ -66,6 +69,7 @@ impl AppState {
             stats: ConnectionStats::default(),
             logs: VecDeque::with_capacity(LOG_CAPACITY),
             setup: None,
+            lifecycle_since: Instant::now(),
         }
     }
 
@@ -101,6 +105,9 @@ impl AppState {
     fn set_lifecycle(&mut self, lifecycle: AgentLifecycle) {
         if !matches!(lifecycle, AgentLifecycle::WaitingForSecret) {
             self.setup = None;
+        }
+        if std::mem::discriminant(&lifecycle) != std::mem::discriminant(&self.lifecycle) {
+            self.lifecycle_since = Instant::now();
         }
         self.lifecycle = lifecycle;
     }

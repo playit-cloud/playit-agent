@@ -1,6 +1,7 @@
 //! Tokio side of the window: keeps a live subscription to playitd and runs commands that
 //! need the network or their own IPC connection. Results flow back to GPUI as events.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use playit_api_client::PlayitApi;
@@ -10,6 +11,7 @@ use playit_api_client::api::{
 use playit_ipc::ipc::IpcClient;
 use playit_ipc::model::{ServiceUpdate, SubscribeResponse};
 use rand::Rng;
+use tokio::sync::Notify;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
@@ -43,6 +45,8 @@ pub enum UiCommand {
     StartSetup,
     ResetSecret,
     OpenDashboard,
+    /// Skip the remaining reconnect delay and try the daemon again now.
+    Reconnect,
 }
 
 /// Results of commands the window has to act on, like opening a link or showing an error.
@@ -59,11 +63,26 @@ pub fn spawn(
     commands: UnboundedReceiver<UiCommand>,
     outcomes: UnboundedSender<CommandOutcome>,
 ) {
-    runtime.spawn(run_subscription(socket_path.clone(), events.clone()));
-    runtime.spawn(run_commands(socket_path, events, commands, outcomes));
+    let reconnect = Arc::new(Notify::new());
+    runtime.spawn(run_subscription(
+        socket_path.clone(),
+        events.clone(),
+        reconnect.clone(),
+    ));
+    runtime.spawn(run_commands(
+        socket_path,
+        events,
+        commands,
+        outcomes,
+        reconnect,
+    ));
 }
 
-async fn run_subscription(socket_path: String, events: UnboundedSender<BackendEvent>) {
+async fn run_subscription(
+    socket_path: String,
+    events: UnboundedSender<BackendEvent>,
+    reconnect: Arc<Notify>,
+) {
     loop {
         let error = match subscribe(&socket_path, &events).await {
             Ok(()) => return,
@@ -72,7 +91,10 @@ async fn run_subscription(socket_path: String, events: UnboundedSender<BackendEv
         if events.send(BackendEvent::Unreachable { error }).is_err() {
             return;
         }
-        tokio::time::sleep(RECONNECT_DELAY).await;
+        tokio::select! {
+            _ = tokio::time::sleep(RECONNECT_DELAY) => {}
+            _ = reconnect.notified() => {}
+        }
     }
 }
 
@@ -111,6 +133,7 @@ async fn run_commands(
     events: UnboundedSender<BackendEvent>,
     mut commands: UnboundedReceiver<UiCommand>,
     outcomes: UnboundedSender<CommandOutcome>,
+    reconnect: Arc<Notify>,
 ) {
     let mut setup: Option<JoinHandle<()>> = None;
 
@@ -131,6 +154,7 @@ async fn run_commands(
                     }
                 });
             }
+            UiCommand::Reconnect => reconnect.notify_one(),
             UiCommand::OpenDashboard => {
                 let socket_path = socket_path.clone();
                 let outcomes = outcomes.clone();

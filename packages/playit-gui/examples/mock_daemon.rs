@@ -212,6 +212,25 @@ mod unix {
         ),
     ];
 
+    fn lifecycle_log(lifecycle: &AgentLifecycle) -> (LogLevel, &'static str) {
+        match lifecycle {
+            AgentLifecycle::WaitingForSecret => (LogLevel::Info, "waiting for an agent secret"),
+            AgentLifecycle::HasInvalidSecret(_) => (
+                LogLevel::Error,
+                "failed to authenticate, error=AuthenticationFailed",
+            ),
+            AgentLifecycle::DisabledOverLimit(_) => (
+                LogLevel::Warn,
+                "agent disabled: account is over its agent limit",
+            ),
+            AgentLifecycle::Error(_) => (
+                LogLevel::Error,
+                "failed to bind UDP socket: address already in use",
+            ),
+            _ => (LogLevel::Info, "connecting to the playit control server"),
+        }
+    }
+
     async fn simulate_traffic(mock: Shared, events: broadcast::Sender<ServiceUpdate>) {
         let mut tick = 0usize;
         loop {
@@ -220,7 +239,20 @@ mod unix {
                 let mut mock = mock.lock().unwrap();
                 let has_tunnels = match &mock.lifecycle {
                     AgentLifecycle::Running(state) => !state.tunnels.is_empty(),
-                    _ => continue,
+                    other => {
+                        // Other states log what the agent is trying, now and then.
+                        if tick % 4 == 0 {
+                            let (level, message) = lifecycle_log(other);
+                            let _ = events.send(ServiceUpdate::Log(LogEntry {
+                                level,
+                                target: "playit_agent_core::agent_control".into(),
+                                message: message.into(),
+                                timestamp: now(),
+                            }));
+                        }
+                        tick += 1;
+                        continue;
+                    }
                 };
                 if !has_tunnels {
                     (mock.stats.clone(), false)

@@ -24,6 +24,7 @@ pub enum Icon {
     Plug,
     Plus,
     Power,
+    Refresh,
     User,
     X,
 }
@@ -47,6 +48,7 @@ const ALL: &[Icon] = &[
     Icon::Plug,
     Icon::Plus,
     Icon::Power,
+    Icon::Refresh,
     Icon::User,
     Icon::X,
 ];
@@ -72,6 +74,7 @@ impl Icon {
             Self::Plug => "icons/plug.svg",
             Self::Plus => "icons/plus.svg",
             Self::Power => "icons/power.svg",
+            Self::Refresh => "icons/refresh.svg",
             Self::User => "icons/user.svg",
             Self::X => "icons/x.svg",
         }
@@ -109,6 +112,7 @@ impl Icon {
             }
             Self::Plus => r#"<path d="M5 12h14"/><path d="M12 5v14"/>"#,
             Self::Power => r#"<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>"#,
+            Self::Refresh => r#"<path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>"#,
             Self::User => r#"<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>"#,
             Self::X => r#"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#,
         }
