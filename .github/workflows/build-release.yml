@@ -53,7 +53,7 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: --target ${{ matrix.platform.arch }} --release --all
+          args: --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd
 
       - uses: actions/setup-go@v5
         with:
@@ -84,6 +84,62 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           files: target/release-assets/*
+
+  # The desktop window links the desktop's X11 and keyboard libraries and loads Vulkan, so it
+  # can't be a static musl build like the CLI. It ships as its own playit-gui package.
+  build_linux_gui:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: linux gui 64bit
+            # The oldest supported Ubuntu keeps the glibc requirement low.
+            os: ubuntu-22.04
+            nfpm_arch: amd64
+          - name: linux gui arm64
+            os: ubuntu-22.04-arm
+            nfpm_arch: arm64
+
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install desktop libraries
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev pkg-config
+
+      - name: Build playit-gui
+        run: cargo build --release --locked --package playit-gui
+
+      # Alpine needs a musl build that links dynamically, so the window can load Vulkan and
+      # Wayland at runtime.
+      - name: Build playit-gui for Alpine
+        run: |
+          docker run --rm -v "$PWD":/src -w /src rust:1-alpine sh -c '
+            apk add --no-cache musl-dev libxkbcommon-dev libxcb-dev pkgconf &&
+            RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --locked \
+              --package playit-gui --target-dir target/alpine &&
+            chown -R '"$(id -u):$(id -g)"' target/alpine'
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install nFPM
+        run: go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest
+
+      - name: Package playit-gui
+        run: |
+          bash ./build-scripts/package-linux-gui-nfpm.sh ./target/release/playit-gui "${{ matrix.platform.nfpm_arch }}" deb rpm
+          bash ./build-scripts/package-linux-gui-nfpm.sh ./target/alpine/release/playit-gui "${{ matrix.platform.nfpm_arch }}" apk
+
+      - name: Upload playit-gui packages
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          files: target/pkg/playit-gui_*
   build_windows:
     strategy:
       fail-fast: false

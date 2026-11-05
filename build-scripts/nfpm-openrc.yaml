@@ -17,6 +17,9 @@ depends:
   - "!playit"
 conflicts:
   - playit
+# Lets playit-gui depend on either Alpine package.
+provides:
+  - playit-service
 contents:
   - src: ${PLAYIT_CLI_BIN}
     dst: /opt/playit/agent

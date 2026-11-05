@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=playit
+GenericName=Tunnel manager
+Comment=Makes local ports public. Put your game servers online.
+Exec=playit-gui
+Icon=gg.playit.gui
+StartupWMClass=gg.playit.gui
+Terminal=false
+Categories=Network;Game;

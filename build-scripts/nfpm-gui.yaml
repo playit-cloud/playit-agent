@@ -1,0 +1,77 @@
+# yaml-language-server: $schema=https://nfpm.goreleaser.com/schema.json
+# The desktop window, packaged apart from the CLI and service so servers don't need desktop
+# libraries. The binary links libxcb and libxkbcommon and loads Vulkan and Wayland at runtime.
+name: playit-gui
+arch: ${PLAYIT_NFPM_ARCH}
+platform: linux
+version: ${PLAYIT_VERSION}
+version_schema: semver
+release: ${PLAYIT_PACKAGE_RELEASE}
+section: net
+priority: optional
+maintainer: Patrick Lorio <patrick@playit.gg>
+description: Desktop window for playit. Shows your tunnels and sets up the agent
+homepage: https://playit.gg
+license: BSD-2-Clause
+overrides:
+  deb:
+    depends:
+      - playit
+      - libxcb1
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+      - libvulkan1
+      - libwayland-client0
+  rpm:
+    depends:
+      - playit
+      - libxcb.so.1()(64bit)
+      - libxkbcommon.so.0()(64bit)
+      - libxkbcommon-x11.so.0()(64bit)
+      - libvulkan.so.1()(64bit)
+      - libwayland-client.so.0()(64bit)
+  apk:
+    depends:
+      # Provided by both playit and playit-openrc.
+      - playit-service
+      - so:libxcb.so.1
+      - so:libxkbcommon.so.0
+      - so:libxkbcommon-x11.so.0
+      - so:libvulkan.so.1
+      - so:libwayland-client.so.0
+contents:
+  - src: ${PLAYIT_GUI_BIN}
+    dst: /opt/playit/playit-gui
+    expand: true
+    file_info:
+      mode: 0755
+  - src: /opt/playit/playit-gui
+    dst: /usr/bin/playit-gui
+    type: symlink
+  - src: ./linux/gg.playit.gui.desktop
+    dst: /usr/share/applications/gg.playit.gui.desktop
+    file_info:
+      mode: 0644
+  - src: ./linux/icons/gg.playit.gui-32.png
+    dst: /usr/share/icons/hicolor/32x32/apps/gg.playit.gui.png
+    file_info:
+      mode: 0644
+  - src: ./linux/icons/gg.playit.gui-48.png
+    dst: /usr/share/icons/hicolor/48x48/apps/gg.playit.gui.png
+    file_info:
+      mode: 0644
+  - src: ./linux/icons/gg.playit.gui-64.png
+    dst: /usr/share/icons/hicolor/64x64/apps/gg.playit.gui.png
+    file_info:
+      mode: 0644
+  - src: ./linux/icons/gg.playit.gui-128.png
+    dst: /usr/share/icons/hicolor/128x128/apps/gg.playit.gui.png
+    file_info:
+      mode: 0644
+  - src: ./packages/playit-gui/assets/images/app-icon-256.png
+    dst: /usr/share/icons/hicolor/256x256/apps/gg.playit.gui.png
+    file_info:
+      mode: 0644
+scripts:
+  postinstall: ./build-scripts/nfpm/gui-refresh.sh
+  postremove: ./build-scripts/nfpm/gui-refresh.sh

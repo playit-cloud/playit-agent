@@ -18,6 +18,9 @@ overrides:
     depends:
       - logrotate
       - "!playit-openrc"
+    # Lets playit-gui depend on either Alpine package.
+    provides:
+      - playit-service
 contents:
   - src: ${PLAYIT_CLI_BIN}
     dst: /opt/playit/agent

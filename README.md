@@ -58,6 +58,16 @@ sudo apt update
 sudo apt install playit
 ```
 
+### The playit window on Linux desktops
+
+The desktop window ships as its own `playit-gui` package, so servers don't need desktop libraries. It adds playit to your app launcher with its icon. Download the package for your system from the release page and install it next to `playit`:
+
+* Debian, Ubuntu: `sudo apt install ./playit-gui_amd64.deb` (or `_arm64`)
+* Fedora, openSUSE: `sudo dnf install ./playit-gui_x86_64.rpm` (or `_aarch64`)
+* Alpine: `sudo apk add --allow-untrusted ./playit-gui_x86_64.apk` (or `_aarch64`)
+
+The window needs a Vulkan driver, which desktop installs normally include. It is built for 64-bit x86 and ARM.
+
 Getting a warning in apt about playit's repo? Run these commands
 
 ```sh
