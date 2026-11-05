@@ -39,7 +39,11 @@ pub enum SessionMode {
 #[derive(Clone, Debug)]
 pub enum Connection {
     Connecting,
-    Unreachable { error: String },
+    StartingService,
+    Unreachable {
+        error: String,
+        start_error: Option<String>,
+    },
     Connected,
 }
 
@@ -52,13 +56,23 @@ pub struct SetupState {
 /// What the window shows, derived from the connection and the agent lifecycle.
 pub enum Screen<'a> {
     Connecting,
-    Unreachable { error: &'a str },
+    StartingService,
+    Unreachable {
+        error: &'a str,
+        start_error: Option<&'a str>,
+    },
     Setup(&'a SetupState),
-    InvalidSecret { message: &'a str },
-    OverLimit { message: &'a str },
+    InvalidSecret {
+        message: &'a str,
+    },
+    OverLimit {
+        message: &'a str,
+    },
     Starting,
     Stopping,
-    Error { message: &'a str },
+    Error {
+        message: &'a str,
+    },
     Running(&'a AgentState),
 }
 
@@ -105,8 +119,9 @@ impl AppState {
                 ServiceUpdate::Stats(stats) => self.stats = stats,
                 ServiceUpdate::Log(entry) => self.push_log(entry),
             },
-            BackendEvent::Unreachable { error } => {
-                self.connection = Connection::Unreachable { error };
+            BackendEvent::StartingService => self.connection = Connection::StartingService,
+            BackendEvent::Unreachable { error, start_error } => {
+                self.connection = Connection::Unreachable { error, start_error };
             }
             BackendEvent::Setup { url, step } => {
                 if let Some(setup) = &mut self.setup {
@@ -153,7 +168,13 @@ impl AppState {
     pub fn screen(&self) -> Screen<'_> {
         match &self.connection {
             Connection::Connecting => return Screen::Connecting,
-            Connection::Unreachable { error } => return Screen::Unreachable { error },
+            Connection::StartingService => return Screen::StartingService,
+            Connection::Unreachable { error, start_error } => {
+                return Screen::Unreachable {
+                    error,
+                    start_error: start_error.as_deref(),
+                };
+            }
             Connection::Connected => {}
         }
 
@@ -333,10 +354,32 @@ mod tests {
         assert!(matches!(state.screen(), Screen::Error { message: "boom" }));
         state.apply(BackendEvent::Unreachable {
             error: "gone".into(),
+            start_error: None,
         });
         assert!(matches!(
             state.screen(),
-            Screen::Unreachable { error: "gone" }
+            Screen::Unreachable {
+                error: "gone",
+                start_error: None
+            }
+        ));
+    }
+
+    #[test]
+    fn starting_the_service_keeps_its_failure() {
+        let mut state = AppState::new("socket".into(), SessionMode::Service);
+        state.apply(BackendEvent::StartingService);
+        assert!(matches!(state.screen(), Screen::StartingService));
+        state.apply(BackendEvent::Unreachable {
+            error: "gone".into(),
+            start_error: Some("not installed".into()),
+        });
+        assert!(matches!(
+            state.screen(),
+            Screen::Unreachable {
+                start_error: Some("not installed"),
+                ..
+            }
         ));
     }
 

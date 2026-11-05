@@ -18,6 +18,7 @@ for home in /Users/*; do
   done
 done
 
+pkill -x playit-gui >/dev/null 2>&1 || true
 pkill -x playitd-tray >/dev/null 2>&1 || true
 
 if [[ "$(readlink /usr/local/bin/playit 2>/dev/null)" == "${APP}/"* ]]; then

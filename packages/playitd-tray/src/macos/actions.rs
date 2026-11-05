@@ -17,7 +17,7 @@ use super::util::log;
 use crate::presentation::ServiceView;
 
 const DASHBOARD_URL: &str = "https://playit.gg/account/tunnels";
-const UNINSTALL_SCRIPT: &str = "../Resources/uninstall.sh";
+const UNINSTALL_SCRIPT: &str = "Contents/Resources/uninstall.sh";
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Request {
@@ -108,20 +108,10 @@ pub(super) fn error_title(request: Request) -> &'static str {
     }
 }
 
-/// Opens playit in Terminal: setup when the agent needs it, otherwise live status.
+/// Opens the playit window: setup when the agent needs it, otherwise live status. Opening
+/// playit.app while it runs brings its window to the front.
 pub(super) fn launch_playit() -> Result<(), String> {
-    let cli = bundled_path("playit")?;
-    Command::new("open")
-        .args(["-a", "Terminal"])
-        .arg(&cli)
-        .status()
-        .map_err(|error| format!("Could not open Terminal: {error}"))
-        .and_then(|status| {
-            status
-                .success()
-                .then_some(())
-                .ok_or_else(|| format!("Could not open {} in Terminal", cli.display()))
-        })
+    open(app_bundle()?.as_os_str())
 }
 
 pub(super) fn open_dashboard() -> Result<(), String> {
@@ -198,7 +188,7 @@ async fn reset_agent() -> Result<(), String> {
             .unwrap_or_else(|| "The playit service rejected the reset request.".to_string()));
     }
 
-    // The daemon returns to setup on its own; wait for it so Terminal opens into setup.
+    // The daemon returns to setup on its own; wait for it so the window opens into setup.
     for _ in 0..25 {
         if matches!(
             query_lifecycle().await,
@@ -251,14 +241,16 @@ fn open(target: &std::ffi::OsStr) -> Result<(), String> {
         .ok_or_else(|| format!("Could not open {}", target.to_string_lossy()))
 }
 
-/// A file relative to this executable's folder (playit.app/Contents/MacOS).
+/// playit.app, which contains this helper app.
+fn app_bundle() -> Result<PathBuf, String> {
+    playitd::macos::current_app_bundle().ok_or_else(|| {
+        "Could not find playit.app. Reinstall playit from https://playit.gg/download".to_string()
+    })
+}
+
+/// A file relative to playit.app.
 fn bundled_path(relative: &str) -> Result<PathBuf, String> {
-    let exe = std::env::current_exe()
-        .map_err(|error| format!("Could not find the playit app: {error}"))?;
-    let path = exe
-        .parent()
-        .map(|dir| dir.join(relative))
-        .ok_or_else(|| format!("Could not find {relative}"))?;
+    let path = app_bundle()?.join(relative);
     if path.exists() {
         Ok(path)
     } else {

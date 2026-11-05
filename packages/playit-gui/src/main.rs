@@ -17,6 +17,7 @@ use crate::view::PlayitWindow;
 
 mod assets;
 mod backend;
+mod desktop;
 mod state;
 mod view;
 
@@ -57,6 +58,21 @@ fn main() {
         .socket_path
         .unwrap_or_else(|| get_default_socket_path().to_string());
 
+    // Only the installed app is single-instance and manages the service; a socket override
+    // points at someone else's daemon, such as a test one.
+    let manage_service = session_mode == SessionMode::Service;
+    let _instance = if manage_service {
+        match desktop::claim_single_instance() {
+            Some(instance) => Some(instance),
+            None => return,
+        }
+    } else {
+        None
+    };
+    if manage_service {
+        desktop::start_tray();
+    }
+
     let runtime = tokio::runtime::Runtime::new().expect("failed to start the tokio runtime");
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
     let (command_tx, command_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -64,6 +80,7 @@ fn main() {
     backend::spawn(
         runtime.handle(),
         socket_path.clone(),
+        manage_service,
         event_tx,
         command_rx,
         outcome_tx,
@@ -99,7 +116,7 @@ fn main() {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     window_min_size: Some(size(px(640.), px(480.))),
                     titlebar: Some(TitlebarOptions {
-                        title: Some("playit".into()),
+                        title: Some(desktop::WINDOW_TITLE.into()),
                         ..Default::default()
                     }),
                     app_id: Some("gg.playit.gui".to_string()),

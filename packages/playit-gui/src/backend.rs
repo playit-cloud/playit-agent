@@ -2,6 +2,7 @@
 //! need the network or their own IPC connection. Results flow back to GPUI as events.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use playit_api_client::PlayitApi;
@@ -21,8 +22,12 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 pub enum BackendEvent {
     Subscribed(Box<SubscribeResponse>),
     Update(ServiceUpdate),
+    /// playitd didn't answer, so the window is asking the OS to start the installed service.
+    StartingService,
     Unreachable {
         error: String,
+        /// Why starting the installed service failed, when the window tried.
+        start_error: Option<String>,
     },
     Setup {
         url: Option<String>,
@@ -46,7 +51,8 @@ pub enum UiCommand {
     ResetSecret,
     /// Open the guest account's one-click login link, which the daemon creates on request.
     OpenGuestLogin,
-    /// Skip the remaining reconnect delay and try the daemon again now.
+    /// Skip the remaining reconnect delay and try the daemon again now, starting the
+    /// installed service if it still isn't running.
     Reconnect,
 }
 
@@ -57,16 +63,28 @@ pub enum CommandOutcome {
     Failed(String),
 }
 
+/// Wakes the subscription loop early. `start_service` asks it to also try starting the
+/// installed service, which happens once at launch and again each time the user retries.
+struct Reconnect {
+    notify: Notify,
+    start_service: AtomicBool,
+}
+
 pub fn spawn(
     runtime: &tokio::runtime::Handle,
     socket_path: String,
+    manage_service: bool,
     events: UnboundedSender<BackendEvent>,
     commands: UnboundedReceiver<UiCommand>,
     outcomes: UnboundedSender<CommandOutcome>,
 ) {
-    let reconnect = Arc::new(Notify::new());
+    let reconnect = Arc::new(Reconnect {
+        notify: Notify::new(),
+        start_service: AtomicBool::new(manage_service),
+    });
     runtime.spawn(run_subscription(
         socket_path.clone(),
+        manage_service,
         events.clone(),
         reconnect.clone(),
     ));
@@ -81,22 +99,46 @@ pub fn spawn(
 
 async fn run_subscription(
     socket_path: String,
+    manage_service: bool,
     events: UnboundedSender<BackendEvent>,
-    reconnect: Arc<Notify>,
+    reconnect: Arc<Reconnect>,
 ) {
+    let mut start_error = None;
     loop {
         let error = match subscribe(&socket_path, &events).await {
             Ok(()) => return,
             Err(error) => error,
         };
-        if events.send(BackendEvent::Unreachable { error }).is_err() {
+
+        if manage_service && reconnect.start_service.swap(false, Ordering::Relaxed) {
+            if events.send(BackendEvent::StartingService).is_err() {
+                return;
+            }
+            start_error = start_installed_service().await.err();
+            if start_error.is_none() {
+                continue;
+            }
+        }
+
+        let event = BackendEvent::Unreachable {
+            error,
+            start_error: start_error.clone(),
+        };
+        if events.send(event).is_err() {
             return;
         }
         tokio::select! {
             _ = tokio::time::sleep(RECONNECT_DELAY) => {}
-            _ = reconnect.notified() => {}
+            _ = reconnect.notify.notified() => {}
         }
     }
+}
+
+/// Asks the OS to start the installed playit service and waits until it answers.
+async fn start_installed_service() -> Result<(), String> {
+    playitd::manager::ensure_installed_service_running()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Streams updates until the connection drops. Returns `Ok` only once the window is gone.
@@ -134,7 +176,7 @@ async fn run_commands(
     events: UnboundedSender<BackendEvent>,
     mut commands: UnboundedReceiver<UiCommand>,
     outcomes: UnboundedSender<CommandOutcome>,
-    reconnect: Arc<Notify>,
+    reconnect: Arc<Reconnect>,
 ) {
     let mut setup: Option<JoinHandle<()>> = None;
 
@@ -155,7 +197,10 @@ async fn run_commands(
                     }
                 });
             }
-            UiCommand::Reconnect => reconnect.notify_one(),
+            UiCommand::Reconnect => {
+                reconnect.start_service.store(true, Ordering::Relaxed);
+                reconnect.notify.notify_one();
+            }
             UiCommand::OpenGuestLogin => {
                 let socket_path = socket_path.clone();
                 let outcomes = outcomes.clone();

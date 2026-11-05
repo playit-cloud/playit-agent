@@ -359,6 +359,7 @@ impl PlayitWindow {
         let (status_label, status_tone) = match screen {
             Screen::Running(_) => ("Connected to playit", theme::success()),
             Screen::Connecting => ("Connecting", theme::info()),
+            Screen::StartingService => ("Starting", theme::info()),
             Screen::Starting => ("Starting", theme::info()),
             Screen::Stopping => ("Stopping", theme::info()),
             Screen::Setup(_) => ("Not set up", theme::neutral()),
@@ -1152,14 +1153,28 @@ impl PlayitWindow {
                     vec!["Looking for the playit background service on this computer.".into()];
                 card.waiting = Some("Connecting…".into());
             }
-            Screen::Unreachable { error } => {
+            Screen::StartingService => {
+                card.badge = Badge::Spinner;
+                card.tone = theme::info();
+                card.title = "Starting the playit service".into();
+                card.body = vec![
+                    "The playit background service on this computer wasn't running, so playit is starting it.".into(),
+                ];
+                card.waiting = Some("Starting…".into());
+            }
+            Screen::Unreachable { error, start_error } => {
                 card.badge = Badge::Icon(Icon::Power);
                 card.tone = theme::danger();
-                let guidance = unreachable_guidance(self.state.session_mode, error);
+                let guidance =
+                    unreachable_guidance(self.state.session_mode, error, start_error.is_some());
                 card.title = guidance.title.into();
                 card.body = guidance.body;
                 card.command = guidance.command;
-                card.details = Some(format!("Address: {}\n{}", self.state.socket_path, error));
+                let mut details = format!("Address: {}\n{}", self.state.socket_path, error);
+                if let Some(start_error) = start_error {
+                    details.push_str(&format!("\nStarting the service failed: {start_error}"));
+                }
+                card.details = Some(details);
                 card.waiting = Some("Reconnecting automatically every few seconds…".into());
                 card.actions.push(
                     large(button(
@@ -2172,7 +2187,7 @@ struct UnreachableGuidance {
     command: Option<String>,
 }
 
-fn unreachable_guidance(mode: SessionMode, error: &str) -> UnreachableGuidance {
+fn unreachable_guidance(mode: SessionMode, error: &str, start_failed: bool) -> UnreachableGuidance {
     // The service answered but speaks another IPC version, so restarting it won't help.
     if error.contains("IPC protocol mismatch") {
         return UnreachableGuidance {
@@ -2207,12 +2222,16 @@ fn unreachable_guidance(mode: SessionMode, error: &str) -> UnreachableGuidance {
     } else {
         "playit start"
     };
+    let mut body = vec![
+        "Your tunnels are offline until the playit background service on this computer starts again.".into(),
+    ];
+    if start_failed {
+        body.push("playit couldn't start it for you. The details below say why.".into());
+    }
+    body.push("Start it from a terminal. This window reconnects automatically:".into());
     UnreachableGuidance {
         title: "The playit service isn't running",
-        body: vec![
-            "Your tunnels are offline until the playit background service on this computer starts again.".into(),
-            "Start it from a terminal. This window reconnects automatically:".into(),
-        ],
+        body,
         command: Some(command.into()),
     }
 }
@@ -2335,18 +2354,16 @@ fn tunnel_row(
         })
         // A strip rather than a left border, since a border would recolor the row divider.
         .when(row.needs_attention, |row| {
-            row.relative()
-                .bg(theme::warning().subtle)
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .top(px(6.))
-                        .bottom(px(6.))
-                        .w(px(4.))
-                        .rounded_r_sm()
-                        .bg(theme::attention_strong()),
-                )
+            row.relative().bg(theme::warning().subtle).child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(6.))
+                    .bottom(px(6.))
+                    .w(px(4.))
+                    .rounded_r_sm()
+                    .bg(theme::attention_strong()),
+            )
         })
         .child(
             div()
@@ -2806,6 +2823,7 @@ mod tests {
         let guidance = super::unreachable_guidance(
             crate::state::SessionMode::Service,
             "IPC protocol mismatch: expected version 3, got 2",
+            false,
         );
         assert_eq!(guidance.title, "playit needs an update");
         assert!(guidance.command.is_none());

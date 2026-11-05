@@ -13,7 +13,7 @@ pub(crate) struct LaunchOptions {
     /// Started by the Run key at sign-in or by the installer; respects the user's
     /// "Show tray at login" choice and never shows startup error dialogs.
     pub(crate) autostart: bool,
-    /// Started from the Start menu or desktop; also opens the playit window.
+    /// Started by the installer's Finish button; also opens the playit window.
     pub(crate) open: bool,
 }
 

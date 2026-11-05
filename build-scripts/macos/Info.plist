@@ -7,7 +7,7 @@
     <key>CFBundleDisplayName</key>
     <string>playit</string>
     <key>CFBundleExecutable</key>
-    <string>playitd-tray</string>
+    <string>playit-gui</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
@@ -26,8 +26,6 @@
     <string>public.app-category.utilities</string>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
-    <key>LSUIElement</key>
-    <true/>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>

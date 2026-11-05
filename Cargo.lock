@@ -4908,11 +4908,13 @@ dependencies = [
  "hex",
  "playit-api-client",
  "playit-ipc",
+ "playitd",
  "rand 0.9.4",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.59.0",
  "winres",
 ]
 

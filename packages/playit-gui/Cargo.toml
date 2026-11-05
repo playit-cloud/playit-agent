@@ -23,7 +23,15 @@ clap = { version = "4.5", features = ["derive"] }
 gpui = "0.2.2"
 
 playit-ipc = { path = "../playit-ipc", version = "1.2.0" }
+playitd = { path = "../playitd", version = "1.2.0" }
 playit-api-client = { path = "../api_client", version = "0.2.0" }
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.59.0", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [build-dependencies]
 winres = "0.1"

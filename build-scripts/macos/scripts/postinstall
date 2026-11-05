@@ -1,6 +1,7 @@
 #!/bin/bash
 # Runs as root after playit.app is copied to /Applications.
 APP="/Applications/playit.app"
+TRAY_APP="${APP}/Contents/Helpers/playit-tray.app"
 SERVICE_LABEL="gg.playit.playitd"
 
 mkdir -p /usr/local/bin
@@ -23,6 +24,7 @@ if launchctl print "gui/${uid}/${SERVICE_LABEL}" >/dev/null 2>&1; then
   launchctl kickstart -k "gui/${uid}/${SERVICE_LABEL}" >/dev/null 2>&1 || true
 fi
 
-# The menu bar app opens playit in Terminal if the agent still needs setup.
-as_user open -a "${APP}" --args --after-install || true
+# The menu bar app opens the playit window if the agent still needs setup. It also points
+# the login item at its new location when upgrading from a version without the helper app.
+as_user open -a "${TRAY_APP}" --args --after-install || true
 exit 0

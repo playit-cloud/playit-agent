@@ -1,5 +1,6 @@
 //! The playit menu bar app. It shows whether the agent is online and manages the per-user
-//! LaunchAgent that runs playitd. playit.app bundles it with the playit and playitd binaries.
+//! LaunchAgent that runs playitd. It ships as a helper app inside playit.app, whose main
+//! executable is the playit window; the playit and playitd binaries sit beside that.
 
 mod actions;
 mod app;
@@ -12,6 +13,15 @@ pub(crate) struct LaunchOptions {
     pub(crate) autostart: bool,
     /// Started by the installer; opens playit only when the agent still needs setup.
     pub(crate) after_install: bool,
+    /// Started by the playit window, which is already open.
+    pub(crate) background: bool,
+}
+
+impl LaunchOptions {
+    /// Launched directly by the user, who expects the playit window to open.
+    pub(crate) fn opens_playit(&self) -> bool {
+        !self.autostart && !self.after_install && !self.background
+    }
 }
 
 pub(crate) fn main() {
@@ -39,6 +49,7 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> Result<LaunchOptions, S
         match arg.as_str() {
             "--autostart" => options.autostart = true,
             "--after-install" => options.after_install = true,
+            "--background" => options.background = true,
             // Older macOS versions pass a process serial number when Finder opens the app.
             other if other.starts_with("-psn_") => {}
             other => return Err(format!("Unsupported playitd-tray argument: {other}")),

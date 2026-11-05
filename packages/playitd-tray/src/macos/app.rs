@@ -105,7 +105,7 @@ pub(super) fn run(options: LaunchOptions) -> Result<(), String> {
     let Some(instance) = SingleInstance::acquire()? else {
         // Finder reopens a running app instead of starting it, so this is a second login item
         // or a direct launch.
-        if !options.autostart && !options.after_install {
+        if options.opens_playit() {
             launch_playit()?;
         }
         return Ok(());
@@ -138,8 +138,7 @@ pub(super) fn run(options: LaunchOptions) -> Result<(), String> {
                 match AppState::new(options, backend, icons) {
                     Ok(mut app) => {
                         app.dispatch(Request::RefreshStatus);
-                        if !options.autostart
-                            && !options.after_install
+                        if options.opens_playit()
                             && let Err(error) = launch_playit()
                         {
                             show_error("Failed to open playit", &error);
@@ -176,7 +175,7 @@ pub(super) fn run(options: LaunchOptions) -> Result<(), String> {
                     *control_flow = ControlFlow::Exit;
                 }
             }
-            // Opening playit.app while it is already running.
+            // Opening the menu bar helper app while it is already running.
             Event::Reopen { .. } => {
                 if let Err(error) = launch_playit() {
                     show_error("Failed to open playit", &error);

@@ -121,7 +121,7 @@ jobs:
           targets: ${{ matrix.platform.arch }}
 
       - run: cargo install cargo-wix
-      - run: cargo build --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd --package playitd-tray
+      - run: cargo build --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd --package playitd-tray --package playit-gui
       - run: cargo wix --target ${{ matrix.platform.arch }} --package playit-cli --nocapture --output=target/wix/${{ matrix.platform.artifact }}.msi
 
       # The standalone .exe is the CLI: without an installed service it runs playit in

@@ -25,6 +25,8 @@
   * There are no setup custom actions. The playitd service configures itself every time
     it starts (recovery actions, who may start/stop it, data folder permissions, 0.17
     secret migration), which is idempotent and logged.
+  * The Start menu and desktop shortcuts open the playit window (playit-gui.exe), which
+    starts the service and the tray if they aren't running. `playit` in a terminal is the CLI.
   * The tray starts for every user through HKLM\...\Run. Users can opt out from the tray
     menu ("Launch at Login"); the choice is stored per user.
   * The only custom actions launch the tray after install so the icon appears right away.
@@ -78,6 +80,13 @@
             TerminateProcess="0"
             Timeout="5" />
         <util:CloseApplication
+            Id="ClosePlayitGui"
+            Target="playit-gui.exe"
+            CloseMessage="yes"
+            RebootPrompt="no"
+            TerminateProcess="0"
+            Timeout="5" />
+        <util:CloseApplication
             Id="ClosePlayitCli"
             Target="playit.exe"
             RebootPrompt="no"
@@ -96,8 +105,7 @@
                               Name="Playit.gg"
                               Description="Makes local ports public. Put your game servers online."
                               Icon="ProductICO"
-                              Target="[Bin]playitd-tray.exe"
-                              Arguments="--open"
+                              Target="[Bin]playit-gui.exe"
                               WorkingDirectory="Bin"/>
                     <RegistryValue Root="HKCU" Key="Software\DevelopedMethodsLLC\playit_gg" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes"/>
                 </Component>
@@ -109,8 +117,7 @@
                               Name="Playit.gg"
                               Description="Makes local ports public. Put your game servers online."
                               Icon="ProductICO"
-                              Target="[Bin]playitd-tray.exe"
-                              Arguments="--open"
+                              Target="[Bin]playit-gui.exe"
                               WorkingDirectory="Bin"/>
                     <RegistryValue Root="HKCU" Key="Software\DevelopedMethodsLLC\playit_gg" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes"/>
                 </Component>
@@ -136,6 +143,15 @@
                                 Name="playit.exe"
                                 DiskId="1"
                                 Source="$(var.CargoTargetBinDir)\playit-cli.exe"
+                                KeyPath="yes"/>
+                        </Component>
+
+                        <Component Id="PlayitGui" Guid="*">
+                            <File
+                                Id="PlayitGuiExe"
+                                Name="playit-gui.exe"
+                                DiskId="1"
+                                Source="$(var.BinDir)\playit-gui.exe"
                                 KeyPath="yes"/>
                         </Component>
 
@@ -193,7 +209,7 @@
         <Feature
             Id="Binaries"
             Title="Application"
-            Description="Installs playit, its background service, and the tray icon."
+            Description="Installs playit, its background service, its window, and the tray icon."
             Level="1"
             ConfigurableDirectory="APPLICATIONFOLDER"
             AllowAdvertise="no"
@@ -201,6 +217,7 @@
             Absent="disallow">
 
             <ComponentRef Id="PlayitCli"/>
+            <ComponentRef Id="PlayitGui"/>
             <ComponentRef Id="PlayitTray"/>
             <ComponentRef Id="PlayitDaemon"/>
             <ComponentRef Id="StartMenuShortcut"/>

@@ -1,4 +1,3 @@
-use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -10,7 +9,7 @@ use playitd::manager::{
     stop_installed_service,
 };
 use tokio::task;
-use windows_sys::Win32::System::Threading::CREATE_NEW_CONSOLE;
+use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
 
 use super::protocol::{BackendRequest, BackendRequestKind, BackendResponse};
 use super::util::debug_log;
@@ -45,14 +44,16 @@ pub(super) async fn handle_request(request: BackendRequest) -> Option<BackendRes
     })
 }
 
-/// Opens the playit window: setup when the agent needs it, otherwise live status.
+/// Opens the playit window: setup when the agent needs it, otherwise live status. If the
+/// window is already open, the new process brings it to the front and exits.
 pub(super) fn launch_playit() -> Result<(), String> {
-    let cli_path = sibling_executable("playit.exe")?;
-    debug_log(&format!("launch_playit: launching {}", cli_path.display()));
-    Command::new(cli_path)
-        .creation_flags(CREATE_NEW_CONSOLE)
+    let gui_path = sibling_executable("playit-gui.exe")?;
+    debug_log(&format!("launch_playit: launching {}", gui_path.display()));
+    // Lets the new process raise the window that is already open.
+    unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+    Command::new(gui_path)
         .spawn()
-        .map_err(|error| format!("Could not open playit.exe: {error}"))?;
+        .map_err(|error| format!("Could not open playit-gui.exe: {error}"))?;
     Ok(())
 }
 
