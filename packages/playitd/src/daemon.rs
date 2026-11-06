@@ -945,6 +945,7 @@ async fn broadcast_agent_state(
                                     };
 
                                     Some(TunnelState {
+                                        id: tunnel.id.to_string(),
                                         display_address: tunnel.display_address.clone(),
                                         destination,
                                         is_disabled: tunnel.disabled_reason.is_some(),

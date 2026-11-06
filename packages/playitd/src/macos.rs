@@ -17,6 +17,30 @@ const LAUNCHCTL_NO_SUCH_PROCESS: i32 = 113;
 /// name and icon for our LaunchAgents.
 pub const APP_BUNDLE_ID: &str = "gg.playit.app";
 
+/// Where the menu bar app sits inside playit.app. It is a helper app with its own bundle
+/// identifier, so opening playit.app always reaches the main window rather than the menu bar app.
+pub const TRAY_HELPER_PATH: &str = "Contents/Helpers/playit-tray.app";
+
+/// The tray helper's executable, relative to playit.app.
+pub const TRAY_HELPER_EXECUTABLE: &str =
+    "Contents/Helpers/playit-tray.app/Contents/MacOS/playitd-tray";
+
+/// The outermost `.app` bundle containing `path`, which is playit.app for every executable
+/// it ships, including the menu bar app nested inside it.
+pub fn containing_app_bundle(path: &Path) -> Option<PathBuf> {
+    path.ancestors()
+        .filter(|ancestor| ancestor.extension().is_some_and(|ext| ext == "app"))
+        .last()
+        .map(Path::to_path_buf)
+}
+
+/// playit.app, when the running executable is part of it.
+pub fn current_app_bundle() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let exe = exe.canonicalize().unwrap_or(exe);
+    containing_app_bundle(&exe)
+}
+
 pub fn user_launch_agent_path(label: &str) -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| ".".into())
@@ -36,6 +60,7 @@ pub fn launch_agent_is_installed() -> bool {
 /// The `playitd` binary shipped next to the running executable. A `playitd` beside the path
 /// playit was started from wins, so a Homebrew-style symlink pair stays stable across upgrades.
 /// Otherwise the symlink is followed, as for `/usr/local/bin/playit` pointing into playit.app.
+/// The menu bar app, nested inside playit.app, uses the one in playit.app/Contents/MacOS.
 pub fn bundled_playitd_path() -> Result<PathBuf, ServiceManagerError> {
     let exe = std::env::current_exe()?;
     let path = exe.with_file_name("playitd");
@@ -47,6 +72,14 @@ pub fn bundled_playitd_path() -> Result<PathBuf, ServiceManagerError> {
         let resolved = resolved.with_file_name("playitd");
         if resolved.is_file() {
             return Ok(resolved);
+        }
+    }
+
+    // The menu bar app runs from a helper bundle inside playit.app; playitd is in the main one.
+    if let Some(bundle) = current_app_bundle() {
+        let bundled = bundle.join("Contents/MacOS/playitd");
+        if bundled.is_file() {
+            return Ok(bundled);
         }
     }
 
@@ -300,5 +333,22 @@ mod tests {
             InstalledServiceState::Stopped
         );
         assert_eq!(parse_print_state(""), InstalledServiceState::Unknown);
+    }
+
+    #[test]
+    fn helper_executables_belong_to_the_outer_app() {
+        let app = Path::new("/Applications/playit.app");
+        assert_eq!(
+            containing_app_bundle(&app.join(TRAY_HELPER_EXECUTABLE)).as_deref(),
+            Some(app)
+        );
+        assert_eq!(
+            containing_app_bundle(&app.join("Contents/MacOS/playit-gui")).as_deref(),
+            Some(app)
+        );
+        assert_eq!(
+            containing_app_bundle(Path::new("/usr/local/bin/playit")),
+            None
+        );
     }
 }

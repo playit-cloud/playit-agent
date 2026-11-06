@@ -11,7 +11,57 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # The desktop window links the desktop's X11 and keyboard libraries and loads Vulkan, so it
+  # can't be a static musl build like the CLI. It's built here and packaged with playit on
+  # amd64 and arm64.
+  build_linux_gui:
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - name: linux gui 64bit
+            # The oldest supported Ubuntu keeps the glibc requirement low.
+            os: ubuntu-22.04
+            nfpm_arch: amd64
+          - name: linux gui arm64
+            os: ubuntu-22.04-arm
+            nfpm_arch: arm64
+
+    runs-on: ${{ matrix.platform.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install desktop libraries
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev pkg-config
+
+      - name: Build playit-gui
+        run: cargo build --release --locked --package playit-gui
+
+      # Alpine needs a musl build that links dynamically, so the window can load Vulkan and
+      # Wayland at runtime.
+      - name: Build playit-gui for Alpine
+        run: |
+          docker run --rm -v "$PWD":/src -w /src rust:1-alpine sh -c '
+            apk add --no-cache musl-dev g++ libxkbcommon-dev libxcb-dev pkgconf &&
+            RUSTFLAGS="-C target-feature=-crt-static" cargo build --release --locked \
+              --package playit-gui --target-dir target/alpine &&
+            chown -R '"$(id -u):$(id -g)"' target/alpine'
+
+      - name: Stage playit-gui
+        run: |
+          mkdir -p target/gui/gnu target/gui/musl
+          cp target/release/playit-gui target/gui/gnu/
+          cp target/alpine/release/playit-gui target/gui/musl/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: playit-gui-${{ matrix.platform.nfpm_arch }}
+          path: target/gui/
+
   build_linux:
+    needs: [build_linux_gui]
     strategy:
       fail-fast: false
       matrix:
@@ -22,6 +72,7 @@ jobs:
             artifact: playit-linux-amd64
             artifact_cli: playit-cli-linux-amd64
             nfpm_arch: amd64
+            gui: true
 
           - name: linux arm64
             os: ubuntu-latest
@@ -29,6 +80,7 @@ jobs:
             artifact: playit-linux-aarch64
             artifact_cli: playit-cli-linux-aarch64
             nfpm_arch: arm64
+            gui: true
 
           - name: linux arm7
             os: ubuntu-latest
@@ -36,6 +88,7 @@ jobs:
             artifact: playit-linux-armv7
             artifact_cli: playit-cli-linux-armv7
             nfpm_arch: arm7
+            gui: false
 
           - name: linux 32bit
             os: ubuntu-latest
@@ -43,6 +96,7 @@ jobs:
             artifact: playit-linux-i686
             artifact_cli: playit-cli-linux-i686
             nfpm_arch: 386
+            gui: false
 
     runs-on: ${{ matrix.platform.os }}
     steps:
@@ -53,7 +107,14 @@ jobs:
         with:
           use-cross: true
           command: build
-          args: --target ${{ matrix.platform.arch }} --release --all
+          args: --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd
+
+      - name: Download the desktop window
+        if: matrix.platform.gui
+        uses: actions/download-artifact@v4
+        with:
+          name: playit-gui-${{ matrix.platform.nfpm_arch }}
+          path: target/gui
 
       - uses: actions/setup-go@v5
         with:
@@ -65,6 +126,11 @@ jobs:
       - name: Package Linux artifacts
         shell: bash
         run: |
+          if [[ "${{ matrix.platform.gui }}" == "true" ]]; then
+            chmod +x target/gui/gnu/playit-gui target/gui/musl/playit-gui
+            export PLAYIT_GUI_GNU_BIN=target/gui/gnu/playit-gui
+            export PLAYIT_GUI_MUSL_BIN=target/gui/musl/playit-gui
+          fi
           bash ./build-scripts/package-linux-nfpm.sh \
             "./target/${{ matrix.platform.arch }}/release/playit-cli" \
             "./target/${{ matrix.platform.arch }}/release/playitd" \
@@ -84,6 +150,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         with:
           files: target/release-assets/*
+
   build_windows:
     strategy:
       fail-fast: false
@@ -121,7 +188,7 @@ jobs:
           targets: ${{ matrix.platform.arch }}
 
       - run: cargo install cargo-wix
-      - run: cargo build --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd --package playitd-tray
+      - run: cargo build --target ${{ matrix.platform.arch }} --release --package playit-cli --package playitd --package playitd-tray --package playit-gui
       - run: cargo wix --target ${{ matrix.platform.arch }} --package playit-cli --nocapture --output=target/wix/${{ matrix.platform.artifact }}.msi
 
       # The standalone .exe is the CLI: without an installed service it runs playit in

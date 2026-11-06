@@ -71,6 +71,8 @@ impl std::fmt::Display for ServiceError {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TunnelState {
+    /// The tunnel's ID on playit.gg, which addresses its page on the website.
+    pub id: String,
     pub display_address: String,
     pub destination: String,
     pub is_disabled: bool,
@@ -180,4 +182,33 @@ pub struct AccountLoginUrlResponse {
 pub struct SubscribeResponse {
     pub protocol: ProtocolInfo,
     pub snapshot: SubscriptionSnapshot,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TunnelState;
+
+    #[test]
+    fn tunnel_state_carries_its_id() {
+        let tunnel: TunnelState = serde_json::from_value(serde_json::json!({
+            "id": "7c1e2a40-0f6b-4d2e-9a61-3b5f8e2d1c01",
+            "display_address": "mc.example:25565",
+            "destination": "127.0.0.1:25565",
+            "is_disabled": false,
+            "disabled_reason": null,
+        }))
+        .unwrap();
+        assert_eq!(tunnel.id, "7c1e2a40-0f6b-4d2e-9a61-3b5f8e2d1c01");
+
+        // Version 2 tunnels had no ID; version 3 requires one.
+        assert!(
+            serde_json::from_value::<TunnelState>(serde_json::json!({
+                "display_address": "mc.example:25565",
+                "destination": "127.0.0.1:25565",
+                "is_disabled": false,
+                "disabled_reason": null,
+            }))
+            .is_err()
+        );
+    }
 }

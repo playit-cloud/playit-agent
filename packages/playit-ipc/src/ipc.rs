@@ -19,7 +19,8 @@ use crate::model::{
     ServiceError, ServiceStatus, ServiceUpdate, SubscribeResponse,
 };
 
-pub const IPC_VERSION: u32 = 2;
+/// Version 3 added each tunnel's playit.gg ID to `TunnelState`.
+pub const IPC_VERSION: u32 = 3;
 
 const UPDATE_STATUS: &str = "status";
 const UPDATE_LIFECYCLE: &str = "lifecycle";

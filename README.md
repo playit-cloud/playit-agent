@@ -27,8 +27,9 @@ winget install DevelopedMethods.playit
 The installer sets up:
 
 * **The `playit.gg` Windows service** (`playitd`). It starts with Windows, keeps your tunnels online, and retries on its own when the network is unavailable.
-* **The tray icon**. It starts when you sign in and shows whether playit is online. Right-click it to open playit, start or stop the service, open the logs, or turn off "Launch at Login".
-* **The Playit.gg shortcut**. It opens playit and brings the tray icon back if you closed it.
+* **The tray icon**. It starts when you sign in and shows whether playit is online. Click it to open the playit window, or right-click it to start or stop the service, open the logs, or turn off "Launch at Login".
+* **The Playit.gg shortcut**. It opens the playit window, starts the service if it isn't running, and brings the tray icon back if you closed it.
+* **The `playit` command**. Type `playit` in a terminal for the command-line version.
 
 Logs are in `%ProgramData%\playit_gg\logs`. The standalone `playit-windows-x86_64.exe` runs playit in its own window without installing the service.
 
@@ -36,11 +37,11 @@ Logs are in `%ProgramData%\playit_gg\logs`. The standalone `playit-windows-x86_6
 
 Download `playit-<version>.pkg` (Apple Silicon and Intel) and open it. The installer sets up:
 
-* **playit.app** in Applications. It lives in the menu bar and shows whether playit is online. Click the icon to open playit, start or stop the service, open the logs, or turn off "Open at Login".
+* **playit.app** in Applications. Opening it shows the playit window and starts the service if it isn't running. A menu bar icon shows whether playit is online; click it to open playit, start or stop the service, open the logs, or turn off "Open at Login".
 * **The background service** (`playitd`). It runs as a per-user LaunchAgent, starts when you log in, keeps your tunnels online, and restarts if it crashes.
-* **The `playit` command** in `/usr/local/bin`.
+* **The `playit` command** in `/usr/local/bin`, the command-line version.
 
-After installing, playit opens in Terminal with a link to finish setup. Other users on the Mac get the service the first time they open playit.app.
+After installing, the playit window opens with a link to finish setup. Other users on the Mac get the service the first time they open playit.app.
 
 Logs are in `~/Library/Logs/playit`. Your agent's secret is in `~/Library/Application Support/playit_gg/playit.toml`. To remove playit, choose "Uninstall playit…" from the menu bar icon, or run `sudo /Applications/playit.app/Contents/Resources/uninstall.sh`. Uninstalling keeps the secret, so reinstalling reconnects the same agent.
 
@@ -56,6 +57,12 @@ echo "deb [signed-by=/etc/apt/trusted.gpg.d/playit.gpg] https://playit-cloud.git
 sudo apt update
 sudo apt install playit
 ```
+
+### The playit window on Linux desktops
+
+On 64-bit x86 and ARM, the `playit` package also installs the desktop window and adds it to your app launcher with its icon; open it from the launcher or run `playit-gui`. `playit` in a terminal is still the command-line version. Alpine's `playit-openrc` package is for headless systems such as routers and installs only the command-line version and service.
+
+The window's libraries are recommended rather than required on Debian, Ubuntu and Fedora, so servers can leave them out with `apt install --no-install-recommends playit` (or `dnf install --setopt=install_weak_deps=False playit`). The window also needs a Vulkan driver, which desktop installs normally include.
 
 Getting a warning in apt about playit's repo? Run these commands
 

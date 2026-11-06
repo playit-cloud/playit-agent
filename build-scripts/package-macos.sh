@@ -8,7 +8,7 @@ Usage: build-scripts/package-macos.sh
 Builds universal (Apple Silicon + Intel) macOS release artifacts. Run on a Mac.
 
 Outputs in target/macos-release/<version>/:
-  playit-<version>.pkg              Installer for playit.app (menu bar app, CLI, and service)
+  playit-<version>.pkg              Installer for playit.app (window, menu bar app, CLI, and service)
   playit-macos-universal.tar.gz     playit and playitd binaries for manual installs
 
 Signing is skipped unless these are set:
@@ -41,14 +41,16 @@ OUT_DIR="${REPO_DIR}/target/macos-release/${VERSION}"
 WORK_DIR="${OUT_DIR}/work"
 STAGE_DIR="${OUT_DIR}/playit-macos-universal"
 APP_DIR="${WORK_DIR}/root/Applications/playit.app"
+TRAY_APP_DIR="${APP_DIR}/Contents/Helpers/playit-tray.app"
 
 for target in "${TARGETS[@]}"; do
   rustup target add "${target}"
-  cargo build --release --target "${target}" -p playit-cli -p playitd -p playitd-tray
+  cargo build --release --target "${target}" -p playit-cli -p playitd -p playitd-tray -p playit-gui
 done
 
 rm -rf "${WORK_DIR}" "${STAGE_DIR}"
-mkdir -p "${STAGE_DIR}" "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources"
+mkdir -p "${STAGE_DIR}" "${APP_DIR}/Contents/MacOS" "${APP_DIR}/Contents/Resources" \
+  "${TRAY_APP_DIR}/Contents/MacOS" "${TRAY_APP_DIR}/Contents/Resources"
 
 universal() {
   local binary="$1" output="$2" slices=()
@@ -71,10 +73,14 @@ sign "${STAGE_DIR}/playit" "${STAGE_DIR}/playitd"
 cp LICENSE.txt "${STAGE_DIR}/"
 tar -C "${OUT_DIR}" -czf "${OUT_DIR}/playit-macos-universal.tar.gz" playit-macos-universal
 
-# playit.app: the menu bar app is the main executable; playit and playitd sit beside it.
-universal playitd-tray "${APP_DIR}/Contents/MacOS/playitd-tray"
+# playit.app: the window is the main executable, so opening the app opens it; playit and
+# playitd sit beside it. The menu bar app is a helper app with its own bundle identifier,
+# so opening playit.app never just reactivates the menu bar app.
+universal playit-gui "${APP_DIR}/Contents/MacOS/playit-gui"
 cp "${STAGE_DIR}/playit" "${STAGE_DIR}/playitd" "${APP_DIR}/Contents/MacOS/"
 sed "s/@VERSION@/${VERSION}/g" "${MACOS_DIR}/Info.plist" > "${APP_DIR}/Contents/Info.plist"
+universal playitd-tray "${TRAY_APP_DIR}/Contents/MacOS/playitd-tray"
+sed "s/@VERSION@/${VERSION}/g" "${MACOS_DIR}/Tray-Info.plist" > "${TRAY_APP_DIR}/Contents/Info.plist"
 install -m 0755 "${MACOS_DIR}/uninstall.sh" "${APP_DIR}/Contents/Resources/uninstall.sh"
 
 ICONSET="${WORK_DIR}/AppIcon.iconset"
@@ -86,8 +92,11 @@ for size in 16 32 128 256 512; do
   sips -z "${double}" "${double}" "${WORK_DIR}/icon.png" --out "${ICONSET}/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "${ICONSET}" -o "${APP_DIR}/Contents/Resources/AppIcon.icns"
+cp "${APP_DIR}/Contents/Resources/AppIcon.icns" "${TRAY_APP_DIR}/Contents/Resources/"
 
+# Sign inside out: nested code before the bundles that contain it.
 sign "${APP_DIR}/Contents/MacOS/playit" "${APP_DIR}/Contents/MacOS/playitd"
+sign "${TRAY_APP_DIR}"
 sign "${APP_DIR}"
 
 # Installer. The app must not be relocated to a copy the user moved elsewhere, since the
@@ -121,7 +130,8 @@ if [[ -n "${PLAYIT_MACOS_NOTARY_PROFILE:-}" ]]; then
   xcrun stapler staple "${PKG_PATH}"
 fi
 
-lipo -info "${APP_DIR}/Contents/MacOS/playitd-tray" "${STAGE_DIR}/playit" "${STAGE_DIR}/playitd"
+lipo -info "${APP_DIR}/Contents/MacOS/playit-gui" "${TRAY_APP_DIR}/Contents/MacOS/playitd-tray" \
+  "${STAGE_DIR}/playit" "${STAGE_DIR}/playitd"
 if [[ -z "${PLAYIT_MACOS_APP_IDENTITY:-}" ]]; then
   echo "warning: built unsigned artifacts; set PLAYIT_MACOS_APP_IDENTITY to sign" >&2
 fi

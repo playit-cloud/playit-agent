@@ -131,7 +131,7 @@ for suffix in "${suffixes[@]}"; do
   esac
   run_step "Compiling Windows executables ($suffix)" container build "$target"
   # Sign only staged copies. Cargo's unsigned build cache remains reusable.
-  for program in playit-cli playitd playitd-tray; do
+  for program in playit-cli playitd playitd-tray playit-gui; do
     sign "$work/stage/$target/release/$program.exe"
   done
   run_step "Packaging MSI ($suffix)" container package "$target" "$arch" "$suffix" "$version"

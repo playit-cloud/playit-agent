@@ -7,6 +7,9 @@ REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
 
 usage() {
   echo "usage: $0 <playit-cli-binary> [playitd-binary] <nfpm-arch> [deb|rpm|apk|apk-openrc ...]" >&2
+  echo "Set PLAYIT_GUI_GNU_BIN (deb, rpm) and PLAYIT_GUI_MUSL_BIN (apk) to include the desktop" >&2
+  echo "window, on amd64 and arm64. The apk build must link musl dynamically. apk-openrc is for" >&2
+  echo "headless systems and never includes it." >&2
 }
 
 if [[ $# -lt 2 ]]; then
@@ -122,6 +125,34 @@ export PLAYIT_NFPM_ARCH="${NFPM_ARCH}"
 export PLAYIT_CLI_BIN="${CLI_BIN}"
 export PLAYITD_BIN="${DAEMON_BIN}"
 
+# The window renders with Vulkan through GPUI, which only targets 64-bit platforms.
+case "${NFPM_ARCH}" in
+  amd64|arm64) WINDOW_ARCH=true ;;
+  *) WINDOW_ARCH=false ;;
+esac
+
+# Prints the window binary for a package format, or nothing to leave the window out.
+window_binary() {
+  local bin=""
+  case "$1" in
+    deb|rpm) bin="${PLAYIT_GUI_GNU_BIN:-}" ;;
+    apk) bin="${PLAYIT_GUI_MUSL_BIN:-}" ;;
+  esac
+  if [[ -z "${bin}" ]]; then
+    return
+  fi
+  if [[ "${WINDOW_ARCH}" != true ]]; then
+    echo "the desktop window is only packaged for amd64 and arm64, not ${NFPM_ARCH}" >&2
+    exit 1
+  fi
+  bin="$(resolve_input_path "${bin}")"
+  if [[ ! -f "${bin}" ]]; then
+    echo "playit-gui binary not found: ${bin}" >&2
+    exit 1
+  fi
+  printf '%s\n' "${bin}"
+}
+
 OUT_DIR="${REPO_DIR}/target/pkg"
 mkdir -p "${OUT_DIR}"
 rm -f "${OUT_DIR}"/playit_*.ipk
@@ -159,6 +190,19 @@ for format in "${FORMATS[@]}"; do
       packager=apk
     fi
 
-    nfpm package --config "${config}" --packager "${packager}" --target "${output}"
+    # Package from a copy of the config, without the window's entries when it has no binary.
+    gui_bin="$(window_binary "${format}")"
+    package_config="${OUT_DIR}/.nfpm-${format}.yaml"
+    if [[ -n "${gui_bin}" ]]; then
+      echo "Including the desktop window: ${gui_bin}"
+      export PLAYIT_GUI_BIN="${gui_bin}"
+      cp "${config}" "${package_config}"
+    else
+      awk '/# window:start/ { skip = 1; next } /# window:end/ { skip = 0; next } !skip' \
+        "${config}" > "${package_config}"
+    fi
+
+    nfpm package --config "${package_config}" --packager "${packager}" --target "${output}"
+    rm -f "${package_config}"
   )
 done
