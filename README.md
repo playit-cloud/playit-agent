@@ -60,7 +60,7 @@ sudo apt install playit
 
 ### The playit window on Linux desktops
 
-On 64-bit x86 and ARM, the `playit` package also installs the desktop window and adds it to your app launcher with its icon; open it from the launcher or run `playit-gui`. `playit` in a terminal is still the command-line version.
+On 64-bit x86 and ARM, the `playit` package also installs the desktop window and adds it to your app launcher with its icon; open it from the launcher or run `playit-gui`. `playit` in a terminal is still the command-line version. Alpine's `playit-openrc` package is for headless systems such as routers and installs only the command-line version and service.
 
 The window's libraries are recommended rather than required on Debian, Ubuntu and Fedora, so servers can leave them out with `apt install --no-install-recommends playit` (or `dnf install --setopt=install_weak_deps=False playit`). The window also needs a Vulkan driver, which desktop installs normally include.
 

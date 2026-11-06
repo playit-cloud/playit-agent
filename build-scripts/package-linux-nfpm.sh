@@ -8,7 +8,8 @@ REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." &>/dev/null && pwd)"
 usage() {
   echo "usage: $0 <playit-cli-binary> [playitd-binary] <nfpm-arch> [deb|rpm|apk|apk-openrc ...]" >&2
   echo "Set PLAYIT_GUI_GNU_BIN (deb, rpm) and PLAYIT_GUI_MUSL_BIN (apk) to include the desktop" >&2
-  echo "window, on amd64 and arm64. The apk build must link musl dynamically." >&2
+  echo "window, on amd64 and arm64. The apk build must link musl dynamically. apk-openrc is for" >&2
+  echo "headless systems and never includes it." >&2
 }
 
 if [[ $# -lt 2 ]]; then
@@ -135,7 +136,7 @@ window_binary() {
   local bin=""
   case "$1" in
     deb|rpm) bin="${PLAYIT_GUI_GNU_BIN:-}" ;;
-    apk|apk-openrc) bin="${PLAYIT_GUI_MUSL_BIN:-}" ;;
+    apk) bin="${PLAYIT_GUI_MUSL_BIN:-}" ;;
   esac
   if [[ -z "${bin}" ]]; then
     return
