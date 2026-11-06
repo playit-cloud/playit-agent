@@ -4907,6 +4907,7 @@ dependencies = [
  "dirs 6.0.0",
  "gpui",
  "hex",
+ "playit-agent-core",
  "playit-api-client",
  "playit-ipc",
  "playitd",

@@ -8,12 +8,12 @@ use std::{
 use errors::SetupError;
 use playit_agent_proto::control_messages::Pong;
 use tokio::{io::ReadBuf, net::UdpSocket};
-use version::get_version;
+use version::{client_info, get_version};
 
 pub use playit_api_client::api::SignedAgentKey;
 use playit_api_client::{
     PlayitApi,
-    api::{ReqAgentsRoutingGet, ReqProtoRegister},
+    api::{ApiError, ProtoRegisterError, ReleaseStatus, ReqAgentsRoutingGet, ReqProtoRegister},
 };
 
 use crate::{agent_control::platform::current_platform, utils::error_helper::ErrorHelper};
@@ -240,18 +240,35 @@ impl AuthApi {
 
 impl AuthResource for AuthApi {
     async fn authenticate(&self, pong: &Pong) -> Result<SignedAgentKey, SetupError> {
-        let res = self
+        let request = |client| ReqProtoRegister {
+            agent_version: None,
+            client_addr: pong.client_addr,
+            tunnel_addr: pong.tunnel_addr,
+            proto_version: 2,
+            version: get_version(),
+            platform: current_platform(),
+            client,
+        };
+
+        let res = match self
             .client
-            .proto_register(ReqProtoRegister {
-                agent_version: None,
-                client_addr: pong.client_addr,
-                tunnel_addr: pong.tunnel_addr,
-                proto_version: 2,
-                version: get_version(),
-                platform: current_platform(),
-            })
+            .proto_register(request(Some(client_info())))
             .await
-            .with_error(|error| tracing::error!(?error, "failed to sign and register"))?;
+        {
+            /* Builds the registry does not know yet (or an API that predates it) register the
+             * way older agents do. */
+            Err(ApiError::Fail(
+                ProtoRegisterError::UnknownApp
+                | ProtoRegisterError::ReleaseNotRegistered
+                | ProtoRegisterError::InvalidPlatform,
+            )) => self.client.proto_register(request(None)).await,
+            res => res,
+        }
+        .with_error(|error| tracing::error!(?error, "failed to sign and register"))?;
+
+        if res.release_status == Some(ReleaseStatus::Deprecated) {
+            tracing::warn!("this version of playit is deprecated, please update it");
+        }
 
         Ok(res)
     }

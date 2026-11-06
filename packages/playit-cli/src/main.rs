@@ -11,6 +11,9 @@ use client::{
 };
 use playit_agent_core::agent_control::platform::current_platform;
 use playit_agent_core::agent_control::version::{help_register_version, register_platform};
+use playit_agent_core::pairing::{
+    PairingStart, PairingWait, start_device_pairing, wait_for_approval,
+};
 use rand::Rng;
 use service::ServiceManagerMode;
 use tracing_subscriber::EnvFilter;
@@ -311,25 +314,7 @@ pub async fn run_setup_flow(
 ) -> Result<(), CliError> {
     ensure_service_waiting_for_secret(console, target, service_manager).await?;
 
-    let claim_code = claim_generate();
-    let url = claim_url(&claim_code)?;
-    console
-        .write_screen(format!(
-            "Open this link to finish setting up playit:\n{url}"
-        ))
-        .await;
-
-    #[cfg(target_os = "windows")]
-    if let Err(error) = playitd::windows::open_url(&url) {
-        tracing::warn!(%error, "failed to open the setup link in the browser");
-    }
-
-    #[cfg(target_os = "macos")]
-    if let Err(error) = std::process::Command::new("open").arg(&url).status() {
-        tracing::warn!(%error, "failed to open the setup link in the browser");
-    }
-
-    let key = claim_exchange(console, &claim_code, ClaimAgentType::Assignable, 0).await?;
+    let key = pair_with_account(console).await?;
     provision_service_secret(console, target, &key, service_manager).await?;
 
     let api = PlayitApi::create(API_BASE.to_string(), Some(key));
@@ -347,6 +332,78 @@ pub async fn run_setup_flow(
         .write_screen("playit setup is complete. The background service is ready.")
         .await;
     Ok(())
+}
+
+/// Gets an agent secret key by pairing with the user's account in the browser. Falls back to
+/// the claim flow for APIs that predate device pairing.
+async fn pair_with_account(console: &mut ConsoleUi) -> Result<String, CliError> {
+    let api = PlayitApi::create(API_BASE.to_string(), None);
+    let _close_guard = get_signal_handle().close_guard();
+    let mut opened_browser = false;
+
+    loop {
+        let started = match start_device_pairing(&api, ClaimAgentType::Assignable, None).await {
+            PairingStart::Started(started) => started,
+            PairingStart::Refused(rejection) => {
+                return Err(CliError::ApiFail(format!("{rejection:?}")));
+            }
+            PairingStart::Unsupported => {
+                let claim_code = claim_generate();
+                let url = claim_url(&claim_code)?;
+                console
+                    .write_screen(format!(
+                        "Open this link to finish setting up playit:\n{url}"
+                    ))
+                    .await;
+                open_setup_link(&url);
+                return claim_exchange(console, &claim_code, ClaimAgentType::Assignable, 0).await;
+            }
+        };
+
+        console
+            .write_screen(format!(
+                "Open this link to finish setting up playit:\n{}\n\nCheck that the page shows the code {}",
+                started.verify_url, started.user_code
+            ))
+            .await;
+
+        if !opened_browser {
+            opened_browser = true;
+            open_setup_link(&started.verify_url);
+        }
+
+        match wait_for_approval(&api, &started).await {
+            PairingWait::Approved(key) => {
+                console
+                    .write_screen("Program approved. Finishing setup...")
+                    .await;
+                return Ok(key);
+            }
+            PairingWait::Denied => {
+                console
+                    .write_screen("Setup was not approved in the browser.")
+                    .await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                return Err(CliError::AgentClaimRejected);
+            }
+            PairingWait::Expired => {}
+        }
+    }
+}
+
+fn open_setup_link(url: &str) {
+    #[cfg(target_os = "windows")]
+    if let Err(error) = playitd::windows::open_url(url) {
+        tracing::warn!(%error, "failed to open the setup link in the browser");
+    }
+
+    #[cfg(target_os = "macos")]
+    if let Err(error) = std::process::Command::new("open").arg(url).status() {
+        tracing::warn!(%error, "failed to open the setup link in the browser");
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = url;
 }
 
 pub fn claim_generate() -> String {

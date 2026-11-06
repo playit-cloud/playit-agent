@@ -5,6 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use playit_agent_core::pairing::{
+    PairingStart, PairingWait, start_device_pairing, wait_for_approval,
+};
 use playit_api_client::PlayitApi;
 use playit_api_client::api::{
     ApiError, ClaimAgentType, ClaimSetupResponse, ReqClaimExchange, ReqClaimSetup,
@@ -377,15 +380,46 @@ async fn run_setup(socket_path: String, events: UnboundedSender<BackendEvent>) {
         let _ = events.send(BackendEvent::Setup { url, step });
     };
 
-    let mut code = [0u8; 5];
-    rand::rng().fill(&mut code);
-    let code = hex::encode(code);
-    send(
-        Some(format!("https://playit.gg/claim/{code}")),
-        SetupStep::Preparing,
-    );
+    send(None, SetupStep::Preparing);
 
-    match claim_secret(&code, &send).await {
+    let api_base = std::env::var("API_BASE").unwrap_or_else(|_| "https://api.playit.gg".into());
+    let api = PlayitApi::create(api_base, None);
+
+    let secret = loop {
+        let started = match start_device_pairing(&api, ClaimAgentType::Assignable, None).await {
+            PairingStart::Started(started) => started,
+            PairingStart::Refused(rejection) => {
+                break Err(format!("playit cannot set up this version: {rejection}"));
+            }
+            /* the API predates device pairing */
+            PairingStart::Unsupported => {
+                let mut code = [0u8; 5];
+                rand::rng().fill(&mut code);
+                let code = hex::encode(code);
+                send(
+                    Some(format!("https://playit.gg/claim/{code}")),
+                    SetupStep::Preparing,
+                );
+                break claim_secret(&code, &send).await;
+            }
+        };
+
+        send(
+            Some(started.verify_url.clone()),
+            SetupStep::WaitingForUserVisit,
+        );
+
+        match wait_for_approval(&api, &started).await {
+            PairingWait::Approved(secret) => {
+                send(None, SetupStep::Approved);
+                break Ok(Some(secret));
+            }
+            PairingWait::Denied => break Ok(None),
+            PairingWait::Expired => {}
+        }
+    };
+
+    match secret {
         Ok(Some(secret)) => {
             if let Err(error) = provision_secret(&socket_path, &secret).await {
                 send(None, SetupStep::Failed(error));

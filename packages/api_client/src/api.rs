@@ -240,6 +240,20 @@ impl<C: PlayitHttpClient> PlayitApiClient<C> {
 		}
 	}
 	#[track_caller]
+	pub fn pairing_device_start(&self, req: ReqPairingDeviceStart) -> impl std::future::Future<Output = Result<DevicePairingStarted, ApiError<ClientRejection, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/pairing/device/start", req).await)
+		}
+	}
+	#[track_caller]
+	pub fn pairing_device_poll(&self, req: ReqPairingDevicePoll) -> impl std::future::Future<Output = Result<PairingPollResult, ApiError<PairingPollError, C::Error>>> + '_ {
+		let caller = std::panic::Location::caller();
+		async {
+			Self::unwrap(self.client.call(caller, "/pairing/device/poll", req).await)
+		}
+	}
+	#[track_caller]
 	pub fn proto_register(&self, req: ReqProtoRegister) -> impl std::future::Future<Output = Result<SignedAgentKey, ApiError<ProtoRegisterError, C::Error>>> + '_ {
 		let caller = std::panic::Location::caller();
 		async {
@@ -1937,11 +1951,103 @@ pub struct IsAvailable {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqPairingDeviceStart {
+	pub client: ClientInfo,
+	pub mode_hint: Option<ClaimAgentType>,
+	pub name_hint: Option<String>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ClientInfo {
+	pub app_id: uuid::Uuid,
+	pub version: ReleaseVersion,
+	pub platform: String,
+	pub proto_version: u32,
+	pub host_app_id: Option<uuid::Uuid>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReleaseVersion {
+	pub major: u32,
+	pub minor: u32,
+	pub patch: u32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct DevicePairingStarted {
+	pub device_code: String,
+	pub user_code: String,
+	pub verify_url: String,
+	pub interval: u32,
+	pub expires_in: u32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum ClientRejection {
+	InvalidPlatform,
+	UnknownApp,
+	AppSuspended,
+	ReleaseNotRegistered,
+	ReleaseBlocked,
+}
+
+impl std::fmt::Display for ClientRejection {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for ClientRejection {
+}
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct ReqPairingDevicePoll {
+	pub device_code: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(tag = "status", content = "details")]
+pub enum PairingPollResult {
+	#[serde(rename = "Pending")]
+	Pending(PairingPending),
+	#[serde(rename = "Approved")]
+	Approved(PairedAgentKey),
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PairingPending {
+	pub interval: u32,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+pub struct PairedAgentKey {
+	pub agent_id: uuid::Uuid,
+	pub secret_key: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum PairingPollError {
+	CodeNotFound,
+	SlowDown,
+	Denied,
+	Expired,
+	AlreadyRedeemed,
+}
+
+impl std::fmt::Display for PairingPollError {
+	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{:?}", self)
+	}
+}
+
+impl std::error::Error for PairingPollError {
+}
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct ReqProtoRegister {
 	pub agent_version: Option<PlayitAgentVersion>,
 	pub proto_version: u64,
 	pub version: AgentVersion,
 	pub platform: Platform,
+	pub client: Option<ClientInfo>,
 	pub client_addr: std::net::SocketAddr,
 	pub tunnel_addr: std::net::SocketAddr,
 }
@@ -1993,6 +2099,17 @@ pub struct AgentVersion {
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
 pub struct SignedAgentKey {
 	pub key: String,
+	pub release_status: Option<ReleaseStatus>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
+pub enum ReleaseStatus {
+	#[serde(rename = "active")]
+	Active,
+	#[serde(rename = "deprecated")]
+	Deprecated,
+	#[serde(rename = "blocked")]
+	Blocked,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
@@ -2001,6 +2118,11 @@ pub enum ProtoRegisterError {
 	DisabledByUser,
 	AgentDisabledOverLimit,
 	AccountBanned,
+	InvalidPlatform,
+	UnknownApp,
+	AppSuspended,
+	ReleaseNotRegistered,
+	ReleaseBlocked,
 }
 
 impl std::fmt::Display for ProtoRegisterError {
