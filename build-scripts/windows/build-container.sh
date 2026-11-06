@@ -13,9 +13,11 @@ case "${1:-}" in
     # Missing CRT PDBs affect debugging, not the release executable. GPUI precompiles its
     # shaders with fxc.exe only when built on Windows; with debug assertions on, it compiles
     # them at startup with the d3dcompiler_47.dll that ships with Windows 10 and later.
+    # gpui-macros needs debug assertions too, or the inspector macro gpui then uses is missing.
     cargo xwin build --locked --release --target "$target" --target-dir /build/cargo \
       --config "target.$target.rustflags=['-C', 'link-arg=/IGNORE:4099']" \
       --config 'profile.release.package.gpui.debug-assertions=true' \
+      --config 'profile.release.package.gpui-macros.debug-assertions=true' \
       --package playit-cli --package playitd --package playitd-tray --package playit-gui
     mkdir -p "/build/stage/$target/release"
     log "Staging executables for $target"
