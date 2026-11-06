@@ -15,7 +15,7 @@ depend() {
 }
 
 start_pre() {
-  checkpath -d -m 0750 -o playit:playit /run/playit
+  checkpath -d -m 0755 -o playit:playit /run/playit
   checkpath -d -m 0750 -o playit:playit /etc/playit
   checkpath -d -m 0750 -o playit:playit /var/log/playit
 }

@@ -13,7 +13,10 @@ use crate::manager::ServiceManagerError;
 const SYSTEMD_SERVICE_NAME: &str = "playit";
 const OPENRC_SERVICE_NAME: &str = "playit";
 const PLAYIT_SOCKET_GROUP_NAME: &str = "playit";
-const PLAYIT_SOCKET_MODE: u32 = 0o660;
+/// Anyone may connect; the daemon then lets in only users `peer_access_denial` allows. Group
+/// permissions on the socket would check the groups the client got at login, so a user just
+/// added to the playit group would have to log out and back in first.
+const PLAYIT_SOCKET_MODE: u32 = 0o666;
 
 pub(crate) fn start_systemd_service() -> Result<(), ServiceManagerError> {
     run_systemctl(&systemd_start_args(), ServiceManagerError::StartFailed)
@@ -101,6 +104,60 @@ pub(crate) fn configure_socket_permissions(socket_path: &str) -> Result<(), IpcE
     };
 
     apply_socket_permissions(target.path, group_gid, target.mode)
+}
+
+/// Why the user on the other end of `stream` may not use the daemon, or `None` if they may.
+/// Root, the daemon's own user and members of the playit group get in. Membership comes from
+/// the account database, not the client's process, so it takes effect without logging out.
+pub(crate) async fn peer_access_denial(
+    stream: &interprocess::local_socket::tokio::Stream,
+    socket_path: &str,
+) -> Option<String> {
+    use interprocess::local_socket::traits::StreamCommon as _;
+
+    socket_permission_target(socket_path, crate::unix_account::effective_uid())?;
+
+    let peer_uid = match stream.peer_creds().map(|creds| creds.euid()) {
+        Ok(Some(uid)) => uid,
+        Ok(None) => return Some("the playit service could not identify your user".to_string()),
+        Err(error) => {
+            tracing::warn!(%error, "Could not read IPC client credentials");
+            return Some("the playit service could not identify your user".to_string());
+        }
+    };
+    let daemon_uid = crate::unix_account::effective_uid();
+
+    tokio::task::spawn_blocking(move || {
+        let playit_gid = crate::unix_account::group_gid_by_name(PLAYIT_SOCKET_GROUP_NAME);
+        if peer_may_connect(
+            peer_uid,
+            daemon_uid,
+            playit_gid,
+            crate::unix_account::user_is_in_group,
+        ) {
+            return None;
+        }
+        let user = crate::unix_account::username_by_uid(peer_uid)
+            .unwrap_or_else(|| format!("uid {peer_uid}"));
+        tracing::info!(%user, "Refused IPC client outside the {PLAYIT_SOCKET_GROUP_NAME} group");
+        Some(format!(
+            "{user} is not in the {PLAYIT_SOCKET_GROUP_NAME} group"
+        ))
+    })
+    .await
+    .unwrap_or_else(|_| Some("the playit service could not check your user".to_string()))
+}
+
+fn peer_may_connect(
+    peer_uid: u32,
+    daemon_uid: u32,
+    playit_gid: Option<u32>,
+    user_is_in_group: impl FnOnce(u32, u32) -> bool,
+) -> bool {
+    if peer_uid == 0 || peer_uid == daemon_uid {
+        return true;
+    }
+    playit_gid.is_some_and(|gid| user_is_in_group(peer_uid, gid))
 }
 
 fn systemd_start_args() -> [&'static str; 2] {
@@ -243,9 +300,25 @@ fn apply_socket_permissions(
 mod tests {
     use super::{
         PLAYIT_SOCKET_GROUP_NAME, PLAYIT_SOCKET_MODE, openrc_start_args, openrc_status_args,
-        openrc_stop_args, service_command, socket_permission_target, systemd_start_args,
-        systemd_stop_args,
+        openrc_stop_args, peer_may_connect, service_command, socket_permission_target,
+        systemd_start_args, systemd_stop_args,
     };
+
+    #[test]
+    fn root_and_the_daemon_user_always_connect() {
+        let never = |_, _| panic!("group lookup not needed");
+        assert!(peer_may_connect(0, 900, Some(950), never));
+        assert!(peer_may_connect(900, 900, Some(950), never));
+    }
+
+    #[test]
+    fn other_users_need_the_playit_group() {
+        assert!(peer_may_connect(1000, 900, Some(950), |uid, gid| uid
+            == 1000
+            && gid == 950));
+        assert!(!peer_may_connect(1000, 900, Some(950), |_, _| false));
+        assert!(!peer_may_connect(1000, 900, None, |_, _| true));
+    }
 
     #[test]
     fn systemd_command_args_are_stable() {

@@ -59,3 +59,23 @@ pub fn current_process_has_group(gid: u32) -> bool {
         .map(|groups| groups.into_iter().any(|group| group.gid() as u32 == gid))
         .unwrap_or(false)
 }
+
+pub fn username_by_uid(uid: u32) -> Option<String> {
+    uzers::get_user_by_uid(uid as uzers::uid_t)
+        .map(|user| user.name().to_string_lossy().into_owned())
+}
+
+/// Whether the account database puts `uid` in group `gid`, as its primary group or a
+/// supplementary one. This reads the database on every call, so it sees `usermod -aG` right
+/// away. A process's own groups only change when its user logs in again.
+pub fn user_is_in_group(uid: u32, gid: u32) -> bool {
+    let Some(user) = uzers::get_user_by_uid(uid as uzers::uid_t) else {
+        return false;
+    };
+    let primary_gid = user.primary_group_id();
+    if primary_gid as u32 == gid {
+        return true;
+    }
+    uzers::get_user_groups(user.name(), primary_gid)
+        .is_some_and(|groups| groups.iter().any(|group| group.gid() as u32 == gid))
+}

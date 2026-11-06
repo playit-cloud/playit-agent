@@ -73,6 +73,14 @@ pub(crate) fn installed_service_is_active(
         .map_err(|error| CliError::ServiceError(format!("Failed to check service status: {error}")))
 }
 
+/// The daemon refused this user. It checks the playit group in the account database on each
+/// connection, so joining the group works right away without `newgrp` or logging out.
+pub(crate) fn access_denied_message(reason: &str) -> String {
+    format!(
+        "The playit service is running, but it refused this user: {reason}.\n\nAdd your user to the `{PLAYIT_GROUP_NAME}` group:\n  sudo usermod -aG {PLAYIT_GROUP_NAME} $USER\n\nThen run:\n  playit"
+    )
+}
+
 pub(crate) fn is_linux_socket_access_message(message: &str) -> bool {
     message.starts_with("The playit service is running, but")
 }

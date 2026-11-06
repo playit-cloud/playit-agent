@@ -1203,6 +1203,22 @@ impl PlayitWindow {
                 }
                 card.details = Some(details);
                 card.waiting = Some("Reconnecting automatically every few seconds…".into());
+                #[cfg(target_os = "linux")]
+                if guidance.offer_grant {
+                    card.actions.push(
+                        large(button(
+                            "grant-access",
+                            "Allow access",
+                            ButtonStyle::Primary,
+                            Some(Icon::User),
+                        ))
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.send(UiCommand::GrantAccess);
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                    );
+                }
                 if guidance.offer_start {
                     card.actions.push(
                         large(button(
@@ -1222,7 +1238,7 @@ impl PlayitWindow {
                     large(button(
                         "reconnect",
                         "Retry now",
-                        if guidance.offer_start {
+                        if guidance.offer_start || guidance.offer_grant {
                             ButtonStyle::Secondary
                         } else {
                             ButtonStyle::Primary
@@ -2233,6 +2249,8 @@ struct UnreachableGuidance {
     command: Option<String>,
     /// Show a Start service button, for services that only start with a password.
     offer_start: bool,
+    /// Show an Allow access button that adds this user to the playit group.
+    offer_grant: bool,
 }
 
 fn unreachable_guidance(mode: SessionMode, error: &str, start_failed: bool) -> UnreachableGuidance {
@@ -2245,6 +2263,7 @@ fn unreachable_guidance(mode: SessionMode, error: &str, start_failed: bool) -> U
             ],
             command: None,
             offer_start: false,
+            offer_grant: false,
         };
     }
     if mode == SessionMode::ExternalDaemon {
@@ -2255,16 +2274,18 @@ fn unreachable_guidance(mode: SessionMode, error: &str, start_failed: bool) -> U
             ],
             command: None,
             offer_start: false,
+            offer_grant: false,
         };
     }
     if cfg!(target_os = "linux") && error.contains("Permission denied") {
         return UnreachableGuidance {
             title: "Your user needs permission to use playit",
             body: vec![
-                "The playit service is running, but your user isn't allowed to talk to it yet. Add yourself to the playit group, then log out and back in.".into(),
+                "The playit service is running, but your user isn't allowed to talk to it yet. Press Allow access and enter your password to add yourself to the playit group, or run this in a terminal:".into(),
             ],
             command: Some("sudo usermod -aG playit $USER".into()),
             offer_start: false,
+            offer_grant: true,
         };
     }
     // `playit start` on Linux needs to know the init system, so name systemd directly.
@@ -2289,6 +2310,7 @@ fn unreachable_guidance(mode: SessionMode, error: &str, start_failed: bool) -> U
         body,
         command: Some(command.into()),
         offer_start: START_NEEDS_PASSWORD,
+        offer_grant: false,
     }
 }
 
@@ -2883,6 +2905,19 @@ mod tests {
         );
         assert_eq!(guidance.title, "playit needs an update");
         assert!(guidance.command.is_none());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn refused_user_is_offered_access() {
+        let guidance = super::unreachable_guidance(
+            crate::state::SessionMode::Service,
+            "Permission denied: alice is not in the playit group",
+            false,
+        );
+        assert!(guidance.offer_grant);
+        assert!(!guidance.offer_start);
+        assert!(guidance.body.iter().all(|line| !line.contains("log out")));
     }
 
     #[test]
