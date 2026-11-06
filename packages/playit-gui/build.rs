@@ -8,7 +8,9 @@ fn main() {
     // non-Windows host. That object lacks the SafeSEH marker, so 32-bit links fail under the
     // /SAFESEH that rustc passes.
     if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86")
-        && !std::env::var("HOST").unwrap_or_default().contains("windows")
+        && !std::env::var("HOST")
+            .unwrap_or_default()
+            .contains("windows")
     {
         println!("cargo:rustc-link-arg-bins=/SAFESEH:NO");
     }

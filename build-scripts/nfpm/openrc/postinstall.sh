@@ -66,6 +66,34 @@ ensure_user() {
   fi
 }
 
+# Lets whoever installed playit with sudo or pkexec use it right away. playitd reads the group
+# from the account database on each connection, so this works without logging out.
+add_installing_user_to_group() {
+  installing_user="${SUDO_USER:-}"
+  if [ -z "$installing_user" ] && [ -n "${PKEXEC_UID:-}" ]; then
+    installing_user="$(id -nu "$PKEXEC_UID" 2>/dev/null || true)"
+  fi
+
+  case "$installing_user" in
+    ""|root|"$PLAYIT_USER")
+      return 0
+      ;;
+  esac
+
+  if ! id -u "$installing_user" >/dev/null 2>&1; then
+    return 0
+  fi
+  if id -nG "$installing_user" 2>/dev/null | tr ' ' '\n' | grep -qx "$PLAYIT_GROUP"; then
+    return 0
+  fi
+
+  if have_command usermod; then
+    usermod -a -G "$PLAYIT_GROUP" "$installing_user" || true
+  elif have_command addgroup; then
+    addgroup "$installing_user" "$PLAYIT_GROUP" || true
+  fi
+}
+
 is_fresh_install() {
   case "${1:-}" in
     ""|0|1|install)
@@ -88,6 +116,9 @@ fi
 
 ensure_group
 ensure_user
+if [ "$fresh_install" = true ]; then
+  add_installing_user_to_group
+fi
 
 mkdir -p /usr/bin /etc/playit /var/log/playit /opt/playit/share/init
 ln -sfn /opt/playit/playit /usr/bin/playit

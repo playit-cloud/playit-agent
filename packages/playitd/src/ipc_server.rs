@@ -231,8 +231,19 @@ impl IpcServer {
     }
 
     async fn handle_client(&self, stream: Stream) -> Result<(), IpcError> {
+        #[cfg(target_os = "linux")]
+        let denial = crate::linux::peer_access_denial(&stream, &self.socket_path).await;
         let (reader, writer) = stream.split();
         let (mut reader, mut writer) = framed_parts(reader, writer);
+
+        #[cfg(target_os = "linux")]
+        if let Some(message) = denial {
+            // Sent in place of the hello, so the client learns why before it sends anything.
+            let error = protocol_error(ServiceErrorCode::AccessDenied, message, false);
+            return self
+                .send_response(&mut writer, 0, ServiceResponse::Error(error))
+                .await;
+        }
         let mut event_rx = self.event_tx.subscribe();
         let mut subscribed = false;
 

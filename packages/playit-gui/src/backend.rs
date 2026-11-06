@@ -56,6 +56,9 @@ pub enum UiCommand {
     Reconnect,
     /// Start the installed service, which may ask for an administrator password.
     StartService,
+    /// Add this user to the playit group, which asks for an administrator password.
+    #[cfg(target_os = "linux")]
+    GrantAccess,
 }
 
 /// Results of commands the window has to act on, like opening a link or showing an error.
@@ -190,6 +193,54 @@ async fn start_installed_service(socket_path: &str) -> Result<(), String> {
     ))
 }
 
+/// Adds the current user to the playit group through pkexec, which shows the desktop's own
+/// password dialog. playitd reads group membership from the account database on each
+/// connection, so the window can connect right after, without logging out. `Err(None)` means
+/// the user closed the password dialog.
+#[cfg(target_os = "linux")]
+async fn join_playit_group() -> Result<(), Option<String>> {
+    const GROUP: &str = "playit";
+    // pkexec looks programs up in the caller's PATH, which often leaves out the sbin folders.
+    const USERMOD_PATHS: [&str; 3] = ["/usr/sbin/usermod", "/sbin/usermod", "/usr/bin/usermod"];
+
+    let uid = playitd::unix_account::effective_uid();
+    let username = playitd::unix_account::username_by_uid(uid)
+        .ok_or_else(|| Some(format!("Could not find the name of user {uid}")))?;
+    let usermod = USERMOD_PATHS
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .ok_or_else(|| {
+            Some(
+                "usermod isn't installed, so add your user to the playit group from a terminal"
+                    .to_string(),
+            )
+        })?;
+
+    let output = tokio::process::Command::new("pkexec")
+        .args([usermod, "-a", "-G", GROUP, &username])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|error| Some(format!("Could not run pkexec: {error}")))?;
+    match output.status.code() {
+        Some(0) => Ok(()),
+        // pkexec exits 126 when the password dialog is dismissed.
+        Some(126) => Err(None),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let reason = stderr.trim();
+            Err(Some(if reason.is_empty() {
+                format!(
+                    "Adding {username} to the playit group failed ({})",
+                    output.status
+                )
+            } else {
+                format!("Adding {username} to the playit group failed: {reason}")
+            }))
+        }
+    }
+}
+
 /// Streams updates until the connection drops, setting `connected` once playitd answers.
 /// Returns `Ok` only once the window is gone.
 async fn subscribe(
@@ -258,6 +309,20 @@ async fn run_commands(
             UiCommand::StartService => {
                 reconnect.start_service.store(true, Ordering::Relaxed);
                 reconnect.notify.notify_one();
+            }
+            #[cfg(target_os = "linux")]
+            UiCommand::GrantAccess => {
+                let outcomes = outcomes.clone();
+                let reconnect = reconnect.clone();
+                tokio::spawn(async move {
+                    match join_playit_group().await {
+                        Ok(()) => reconnect.notify.notify_one(),
+                        Err(Some(error)) => {
+                            let _ = outcomes.send(CommandOutcome::Failed(error));
+                        }
+                        Err(None) => {}
+                    }
+                });
             }
             UiCommand::OpenGuestLogin => {
                 let socket_path = socket_path.clone();

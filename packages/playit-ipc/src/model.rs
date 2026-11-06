@@ -53,6 +53,8 @@ pub enum ServiceErrorCode {
     SecretPinned,
     ProvisioningUnavailable,
     SecretWriteFailed,
+    /// Sent in place of the hello when the connecting user isn't allowed to use the daemon.
+    AccessDenied,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

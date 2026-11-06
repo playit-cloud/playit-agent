@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
-use playit_ipc::ipc::{IpcClient, get_default_socket_path};
+use playit_ipc::ipc::{IpcClient, IpcError, get_default_socket_path};
 use playit_ipc::model::{
     AgentLifecycle, LogLevel as ServiceLogLevel, ServicePhase, ServiceUpdate, SubscribeResponse,
 };
@@ -259,9 +259,12 @@ async fn run_attach_command_with_context(
     error_context: AttachErrorContext,
 ) -> Result<(), CliError> {
     target.check_access()?;
-    let mut client = connect_target(target)
+    let mut client = IpcClient::connect_with_path(target.socket_path())
         .await
-        .map_err(|_| initial_attach_error(target, &error_context))?;
+        .map_err(|error| {
+            access_denied_error(&error)
+                .unwrap_or_else(|| initial_attach_error(target, &error_context))
+        })?;
 
     let subscribe = client
         .subscribe()
@@ -670,7 +673,19 @@ async fn connect_target(target: &CliTarget) -> Result<IpcClient, CliError> {
     target.check_access()?;
     IpcClient::connect_with_path(target.socket_path())
         .await
-        .map_err(|_| ipc_connection_error())
+        .map_err(|error| access_denied_error(&error).unwrap_or_else(ipc_connection_error))
+}
+
+/// The daemon answered but won't serve this user, which no restart fixes.
+fn access_denied_error(error: &IpcError) -> Option<CliError> {
+    let IpcError::AccessDenied(reason) = error else {
+        return None;
+    };
+    #[cfg(target_os = "linux")]
+    let message = linux::access_denied_message(reason);
+    #[cfg(not(target_os = "linux"))]
+    let message = format!("The playit service is running, but it refused this user: {reason}");
+    Some(CliError::IpcError(message))
 }
 
 fn ipc_connection_error() -> CliError {

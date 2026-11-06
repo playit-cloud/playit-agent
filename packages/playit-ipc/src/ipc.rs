@@ -16,7 +16,7 @@ use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec, LinesCodecError};
 use crate::endpoint::IpcEndpoint;
 use crate::model::{
     AccountLoginUrlResponse, AgentLifecycle, CommandResponse, ProtocolInfo, SecretPathResponse,
-    ServiceError, ServiceStatus, ServiceUpdate, SubscribeResponse,
+    ServiceError, ServiceErrorCode, ServiceStatus, ServiceUpdate, SubscribeResponse,
 };
 
 /// Version 3 added each tunnel's playit.gg ID to `TunnelState`.
@@ -35,8 +35,13 @@ pub enum IpcError {
     IoError(io::Error),
     JsonError(serde_json::Error),
     NotRunning,
-    ProtocolMismatch { expected: u32, actual: u32 },
+    ProtocolMismatch {
+        expected: u32,
+        actual: u32,
+    },
     ProtocolError(String),
+    /// The daemon refused this user. The message says why.
+    AccessDenied(String),
 }
 
 impl std::fmt::Display for IpcError {
@@ -55,6 +60,7 @@ impl std::fmt::Display for IpcError {
                 )
             }
             Self::ProtocolError(msg) => write!(f, "{msg}"),
+            Self::AccessDenied(msg) => write!(f, "Permission denied: {msg}"),
         }
     }
 }
@@ -550,6 +556,12 @@ impl IpcClient {
     async fn recv_hello(&mut self) -> Result<HelloEnvelope, IpcError> {
         match self.recv_server_envelope().await? {
             ServerEnvelope::Hello(hello) => Ok(hello),
+            ServerEnvelope::Response(ResponseEnvelope {
+                response: ServiceResponse::Error(error),
+                ..
+            }) if matches!(error.code, ServiceErrorCode::AccessDenied) => {
+                Err(IpcError::AccessDenied(error.message))
+            }
             ServerEnvelope::Response(response) => Err(IpcError::ProtocolError(format!(
                 "expected hello frame, got RPC response: {:?}",
                 response.response
@@ -726,6 +738,33 @@ mod tests {
         let client = IpcClient::connect_with_path(&socket_path).await.unwrap();
         assert_eq!(client.server_protocol().ipc_version, IPC_VERSION);
         assert_eq!(client.server_protocol().capabilities, vec!["stream_events"]);
+    }
+
+    #[tokio::test]
+    async fn connect_reports_access_denied_in_place_of_hello() {
+        let socket_path = spawn_server("hello-denied", |mut stream| async move {
+            let denial = serde_json::to_string(&ServerEnvelope::Response(ResponseEnvelope {
+                ipc_version: IPC_VERSION,
+                request_id: 0,
+                response: ServiceResponse::Error(ServiceError {
+                    code: ServiceErrorCode::AccessDenied,
+                    message: "alice is not in the playit group".to_string(),
+                    retryable: false,
+                    details: None,
+                }),
+            }))
+            .unwrap();
+            stream.write_all(denial.as_bytes()).await.unwrap();
+            stream.write_all(b"\n").await.unwrap();
+        })
+        .await;
+
+        let error = match IpcClient::connect_with_path(&socket_path).await {
+            Ok(_) => panic!("expected access denied"),
+            Err(error) => error,
+        };
+        assert!(matches!(&error, IpcError::AccessDenied(message) if message.contains("alice")));
+        assert!(error.to_string().starts_with("Permission denied"));
     }
 
     #[tokio::test]
