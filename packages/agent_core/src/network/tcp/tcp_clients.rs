@@ -267,6 +267,7 @@ impl Worker {
                                     &proxy_header,
                                     certs,
                                     &stats,
+                                    &cancel,
                                 )
                                 .await
                                 else {
@@ -376,6 +377,8 @@ impl Worker {
                         }
 
                         if let Some(terminated) = terminated {
+                            // serve() returns only after upgraded connections and other
+                            // tasks it spawned have ended, so they stay counted.
                             let _active = ActiveConnection::new(terminated_active, stats.clone());
                             cancel
                                 .run_until_cancelled(terminated.serve(tunn_stream))
@@ -558,6 +561,7 @@ async fn prepare_terminated(
     proxy_header: &ProxyProtocolHeader,
     certs: Option<CertManager>,
     stats: &AgentStats,
+    cancel: &CancellationToken,
 ) -> Option<Terminated> {
     let OriginTarget::HttpsTerminated { domain, .. } = &found.target else {
         return None;
@@ -603,6 +607,7 @@ async fn prepare_terminated(
                     peer_addr,
                     proxy_protocol: found.proxy_protocol.map(|p| (p, proxy_header.clone())),
                     stats: Some(stats.clone()),
+                    cancel: cancel.clone(),
                 },
             })
         }
@@ -631,5 +636,170 @@ impl Drop for ActiveConnection {
     fn drop(&mut self) {
         self.count.fetch_sub(1, Ordering::Relaxed);
         self.stats.dec_tcp();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::origin_lookup::OriginIp;
+    use crate::tls::{CertStore, proxy::Upstream};
+    use playit_agent_proto::PortProto;
+
+    const DOMAIN: &str = "site.example.com";
+
+    fn terminated(domain: Option<&str>, http_port: u16, https_port: u16) -> OriginResource {
+        OriginResource {
+            tunnel_id: 7,
+            proto: PortProto::Tcp,
+            target: OriginTarget::HttpsTerminated {
+                ip: OriginIp::IpAddress("127.0.0.1".parse().unwrap()),
+                domain: domain.map(str::to_string),
+                http_port,
+                https_port,
+            },
+            port_count: 2,
+            proxy_protocol: Some(ProxyProtocol::ProxyProtocolV2),
+        }
+    }
+
+    fn header() -> ProxyProtocolHeader {
+        ProxyProtocolHeader::AfInet {
+            client_ip: "203.0.113.7".parse().unwrap(),
+            proxy_ip: "198.51.100.1".parse().unwrap(),
+            client_port: 51000,
+            proxy_port: 443,
+        }
+    }
+
+    fn temp_store() -> CertStore {
+        CertStore::new(std::env::temp_dir().join(format!(
+            "playit-tcp-clients-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        )))
+    }
+
+    /// A manager that holds a certificate for `DOMAIN`, loaded from its store.
+    async fn manager_with_certificate() -> CertManager {
+        let store = temp_store();
+        let cert = rcgen::generate_simple_self_signed(vec![DOMAIN.to_string()]).unwrap();
+        store
+            .save_cert(
+                DOMAIN,
+                &crate::tls::store::StoredCert {
+                    chain_pem: cert.cert.pem(),
+                    key_pem: cert.signing_key.serialize_pem(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let manager = CertManager::new(store);
+        manager.set_domains([DOMAIN.to_string()]);
+        let cancel = CancellationToken::new();
+        tokio::spawn(manager.clone().run(cancel.clone()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while manager.acceptor(DOMAIN).is_none() {
+            assert!(Instant::now() < deadline, "certificate was not loaded");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        cancel.cancel();
+        let _ = std::fs::remove_dir_all(manager.store().dir());
+        manager
+    }
+
+    async fn dispatch(
+        found: &OriginResource,
+        port_offset: u16,
+        certs: Option<CertManager>,
+    ) -> Option<Terminated> {
+        prepare_terminated(
+            found,
+            port_offset,
+            "203.0.113.7:51000".parse().unwrap(),
+            &header(),
+            certs,
+            &AgentStats::new(),
+            &CancellationToken::new(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn http_port_is_served_by_the_redirect_handler() {
+        let certs = CertManager::new(temp_store());
+        let served = dispatch(&terminated(Some(DOMAIN), 8080, 0), 0, Some(certs)).await;
+        match served {
+            Some(Terminated::Redirect { domain, .. }) => assert_eq!(domain, DOMAIN),
+            _ => panic!("expected the redirect handler"),
+        }
+    }
+
+    #[tokio::test]
+    async fn https_port_is_served_only_with_a_certificate() {
+        let found = terminated(Some(DOMAIN), 8080, 0);
+        let without = dispatch(&found, 1, Some(CertManager::new(temp_store()))).await;
+        assert!(without.is_none());
+
+        let served = dispatch(&found, 1, Some(manager_with_certificate().await)).await;
+        match served {
+            Some(Terminated::Https { ctx, .. }) => {
+                assert_eq!(ctx.domain, DOMAIN);
+                assert_eq!(
+                    ctx.upstream,
+                    Upstream::Http("127.0.0.1:8080".parse().unwrap())
+                );
+                assert_eq!(ctx.peer_addr, "203.0.113.7:51000".parse().unwrap());
+                assert_eq!(
+                    ctx.proxy_protocol,
+                    Some((ProxyProtocol::ProxyProtocolV2, header()))
+                );
+            }
+            _ => panic!("expected the HTTPS proxy"),
+        }
+    }
+
+    #[tokio::test]
+    async fn https_port_without_a_local_server_is_rejected() {
+        let found = terminated(Some(DOMAIN), 0, 0);
+        assert!(
+            dispatch(&found, 1, Some(manager_with_certificate().await))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn other_port_offsets_are_rejected() {
+        let found = terminated(Some(DOMAIN), 8080, 0);
+        let certs = manager_with_certificate().await;
+        assert!(dispatch(&found, 2, Some(certs.clone())).await.is_none());
+        assert!(dispatch(&found, u16::MAX, Some(certs)).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn missing_domain_or_cert_manager_is_rejected() {
+        let certs = manager_with_certificate().await;
+        let no_domain = terminated(None, 8080, 0);
+        assert!(dispatch(&no_domain, 0, Some(certs.clone())).await.is_none());
+        assert!(dispatch(&no_domain, 1, Some(certs)).await.is_none());
+
+        let found = terminated(Some(DOMAIN), 8080, 0);
+        assert!(dispatch(&found, 0, None).await.is_none());
+        assert!(dispatch(&found, 1, None).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn plain_tunnels_are_not_terminated() {
+        let found = OriginResource {
+            target: OriginTarget::Port {
+                ip: OriginIp::IpAddress("127.0.0.1".parse().unwrap()),
+                port: 8080,
+            },
+            ..terminated(Some(DOMAIN), 8080, 0)
+        };
+        let certs = manager_with_certificate().await;
+        assert!(dispatch(&found, 0, Some(certs)).await.is_none());
     }
 }

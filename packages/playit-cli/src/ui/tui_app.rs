@@ -731,6 +731,14 @@ mod log_presentation_tests {
                     .into()
             )
         );
+        // A phase from a newer daemon reads as still in progress.
+        assert_eq!(
+            tunnel_line(&tunnel(Some(CertificateState::Unknown)), 0),
+            (
+                Color::Yellow,
+                "◐ site.example.com => 127.0.0.1:80 (preparing TLS certificate)".into()
+            )
+        );
         assert_eq!(
             tunnel_line(
                 &tunnel(Some(CertificateState::Failed {

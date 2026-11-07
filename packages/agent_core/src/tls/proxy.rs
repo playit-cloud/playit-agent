@@ -1,6 +1,8 @@
 use std::convert::Infallible;
-use std::net::SocketAddr;
+use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -11,7 +13,7 @@ use hyper::body::Incoming;
 use hyper::client::conn::http1::SendRequest;
 use hyper::header::{self, HeaderMap, HeaderName, HeaderValue};
 use hyper::{Request, Response, StatusCode, Uri, Version};
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use hyper_util::rt::{TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
 use playit_api_client::api::ProxyProtocol;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -19,7 +21,10 @@ use rustls::crypto::CryptoProvider;
 use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
 use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio::time::Instant;
 use tokio_rustls::{TlsAcceptor, TlsConnector};
+use tokio_util::sync::CancellationToken;
 
 use super::manager::{ACME_CHALLENGE_PREFIX, CertManager};
 use crate::network::lan_address::LanAddress;
@@ -29,6 +34,10 @@ use crate::stats::AgentStats;
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Upstream connections one tunnel connection may hold open at once.
+const MAX_UPSTREAM_CONNECTIONS: usize = 16;
+/// Upstream connections kept open between requests on one tunnel connection.
+const MAX_IDLE_UPSTREAM: usize = 8;
 
 type ProxyBody = BoxBody<Bytes, hyper::Error>;
 
@@ -47,11 +56,49 @@ pub struct ProxyContext {
     pub peer_addr: SocketAddr,
     pub proxy_protocol: Option<(ProxyProtocol, ProxyProtocolHeader)>,
     pub stats: Option<AgentStats>,
+    /// Stops the connection and every task it spawned, including upgraded connections.
+    pub cancel: CancellationToken,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Timeouts {
+    h2_keepalive_interval: Duration,
+    h2_keepalive_timeout: Duration,
+    /// Plain tunnel connections are dropped after 60-90s without data; upgraded
+    /// connections get the same treatment so they can't pile up.
+    upgrade_idle: Duration,
+    /// How long a request waits for a free upstream connection once the cap is reached.
+    upstream_wait: Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Timeouts {
+            h2_keepalive_interval: Duration::from_secs(30),
+            h2_keepalive_timeout: Duration::from_secs(20),
+            upgrade_idle: Duration::from_secs(90),
+            upstream_wait: Duration::from_secs(30),
+        }
+    }
 }
 
 /// Terminates TLS on a tunnel connection and forwards its HTTP requests upstream.
+///
+/// Returns only once every task the connection spawned has ended, so callers can count
+/// the connection as active for as long as this runs.
 pub async fn serve_https<S>(tunnel: S, acceptor: TlsAcceptor, ctx: ProxyContext)
 where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    serve_https_with(tunnel, acceptor, ctx, Timeouts::default()).await
+}
+
+async fn serve_https_with<S>(
+    tunnel: S,
+    acceptor: TlsAcceptor,
+    ctx: ProxyContext,
+    timeouts: Timeouts,
+) where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let tunnel = CountingIo::new(tunnel, ctx.stats.clone());
@@ -67,23 +114,66 @@ where
         }
     };
 
-    let forwarder = Arc::new(Forwarder {
-        ctx,
-        scheme: "https",
-        idle: Mutex::new(Vec::new()),
-    });
+    let cancel = ctx.cancel.clone();
+    let (alive, mut all_tasks_ended) = mpsc::channel::<()>(1);
+    let executor = TaskExecutor {
+        cancel: cancel.clone(),
+        alive,
+    };
+    let forwarder = Arc::new(Forwarder::new(ctx, "https", executor.clone(), timeouts));
     let service = hyper::service::service_fn(move |req| forwarder.clone().forward(req));
 
-    let mut builder = auto::Builder::new(TokioExecutor::new());
+    let mut builder = auto::Builder::new(executor);
     builder
         .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(HEADER_READ_TIMEOUT);
-    if let Err(error) = builder
-        .serve_connection_with_upgrades(TokioIo::new(tls), service)
-        .await
-    {
+    builder
+        .http2()
+        .timer(TokioTimer::new())
+        .keep_alive_interval(timeouts.h2_keepalive_interval)
+        .keep_alive_timeout(timeouts.h2_keepalive_timeout);
+    let connection = builder.serve_connection_with_upgrades(TokioIo::new(tls), service);
+    if let Some(Err(error)) = cancel.run_until_cancelled(connection).await {
         tracing::debug!(%error, "HTTPS connection ended with an error");
+    }
+    drop(builder);
+
+    // Each spawned task holds a sender; recv returns None once all of them are gone.
+    let _ = all_tasks_ended.recv().await;
+}
+
+/// Spawns the connection's background tasks (HTTP/2 streams, upstream connections and
+/// upgraded relays) so they stop on cancel and can be waited for.
+#[derive(Clone)]
+struct TaskExecutor {
+    cancel: CancellationToken,
+    alive: mpsc::Sender<()>,
+}
+
+impl TaskExecutor {
+    fn spawn<F>(&self, task: F)
+    where
+        F: Future<Output = ()> + Send + 'static,
+    {
+        let cancel = self.cancel.clone();
+        let alive = self.alive.clone();
+        tokio::spawn(async move {
+            let _alive = alive;
+            cancel.run_until_cancelled(task).await;
+        });
+    }
+}
+
+impl<F> hyper::rt::Executor<F> for TaskExecutor
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    fn execute(&self, task: F) {
+        self.spawn(async move {
+            task.await;
+        });
     }
 }
 
@@ -146,11 +236,31 @@ fn text_response(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
 struct Forwarder {
     ctx: ProxyContext,
     scheme: &'static str,
+    executor: TaskExecutor,
+    timeouts: Timeouts,
     /// Upstream connections kept open between requests on this tunnel connection.
-    idle: Mutex<Vec<SendRequest<Incoming>>>,
+    pool: Mutex<Vec<SendRequest<ProxyBody>>>,
+    /// One permit per open upstream connection, held by its connection task.
+    connections: Arc<Semaphore>,
 }
 
 impl Forwarder {
+    fn new(
+        ctx: ProxyContext,
+        scheme: &'static str,
+        executor: TaskExecutor,
+        timeouts: Timeouts,
+    ) -> Self {
+        Forwarder {
+            ctx,
+            scheme,
+            executor,
+            timeouts,
+            pool: Mutex::new(Vec::new()),
+            connections: Arc::new(Semaphore::new(MAX_UPSTREAM_CONNECTIONS)),
+        }
+    }
+
     async fn forward(
         self: Arc<Self>,
         req: Request<Incoming>,
@@ -158,7 +268,7 @@ impl Forwarder {
         match self.forward_inner(req).await {
             Ok(response) => Ok(response),
             Err(error) => {
-                tracing::error!(
+                tracing::warn!(
                     %error,
                     upstream = ?self.ctx.upstream,
                     domain = %self.ctx.domain,
@@ -184,10 +294,12 @@ impl Forwarder {
         let host = parts
             .headers
             .get(header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .map(str::to_string)
-            .or_else(|| parts.uri.authority().map(|a| a.to_string()))
-            .unwrap_or_else(|| self.ctx.domain.clone());
+            .cloned()
+            .or_else(|| {
+                let authority = parts.uri.authority()?;
+                HeaderValue::from_str(authority.as_str()).ok()
+            })
+            .or_else(|| HeaderValue::from_str(&self.ctx.domain).ok());
 
         parts.uri = parts
             .uri
@@ -200,44 +312,30 @@ impl Forwarder {
             join_cookies(&mut parts.headers);
         }
         parts.version = Version::HTTP_11;
+        drop_length_if_chunked(&mut parts.headers);
         strip_hop_by_hop(&mut parts.headers);
-        let headers = &mut parts.headers;
         if let Some(protocol) = &upgrade {
-            headers.insert(header::CONNECTION, HeaderValue::from_static("upgrade"));
-            headers.insert(header::UPGRADE, protocol.clone());
+            parts
+                .headers
+                .insert(header::CONNECTION, HeaderValue::from_static("upgrade"));
+            parts.headers.insert(header::UPGRADE, protocol.clone());
         }
-        if let Ok(value) = HeaderValue::from_str(&host) {
-            headers.insert(header::HOST, value.clone());
-            headers.insert(HeaderName::from_static("x-forwarded-host"), value);
-        }
-        headers.insert(
-            HeaderName::from_static("x-forwarded-proto"),
-            HeaderValue::from_static(self.scheme),
+        set_forwarding_headers(
+            &mut parts.headers,
+            host,
+            self.scheme,
+            self.ctx.peer_addr.ip(),
         );
-        let peer_ip = self.ctx.peer_addr.ip().to_string();
-        let forwarded_for = match headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-            Some(existing) => format!("{existing}, {peer_ip}"),
-            None => peer_ip,
-        };
-        if let Ok(value) = HeaderValue::from_str(&forwarded_for) {
-            headers.insert(HeaderName::from_static("x-forwarded-for"), value);
-        }
 
-        let mut sender = self.upstream_sender().await?;
-        let mut response = sender
-            .send_request(Request::from_parts(parts, body))
-            .await
-            .map_err(|e| format!("request failed: {e}"))?;
-        if !sender.is_closed() {
-            self.idle.lock().unwrap().push(sender);
-        }
+        let mut response = self.send(Request::from_parts(parts, body.boxed())).await?;
 
         if response.status() == StatusCode::SWITCHING_PROTOCOLS {
             let Some(client_upgrade) = client_upgrade else {
                 return Err("the local server switched protocols without being asked".into());
             };
             let upstream_upgrade = hyper::upgrade::on(&mut response);
-            tokio::spawn(async move {
+            let idle_timeout = self.timeouts.upgrade_idle;
+            self.executor.spawn(async move {
                 let (client, upstream) = match tokio::try_join!(client_upgrade, upstream_upgrade) {
                     Ok(pair) => pair,
                     Err(error) => {
@@ -245,32 +343,106 @@ impl Forwarder {
                         return;
                     }
                 };
-                let mut client = TokioIo::new(client);
-                let mut upstream = TokioIo::new(upstream);
-                let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+                relay(TokioIo::new(client), TokioIo::new(upstream), idle_timeout).await;
             });
             return Ok(response.map(|body| body.boxed()));
         }
 
+        drop_length_if_chunked(response.headers_mut());
         strip_hop_by_hop(response.headers_mut());
         Ok(response.map(|body| body.boxed()))
     }
 
-    async fn upstream_sender(&self) -> Result<SendRequest<Incoming>, String> {
-        {
-            let mut idle = self.idle.lock().unwrap();
-            while let Some(sender) = idle.pop() {
-                if sender.is_ready() {
-                    return Ok(sender);
-                }
-                if !sender.is_closed() {
-                    // Still busy with a streaming response; keep it for later.
-                    idle.insert(0, sender);
-                    break;
-                }
+    async fn send(&self, req: Request<ProxyBody>) -> Result<Response<Incoming>, String> {
+        let (sender, reused) = self.upstream_sender(true).await?;
+        self.send_on(sender, reused, req).await
+    }
+
+    async fn send_on(
+        &self,
+        mut sender: SendRequest<ProxyBody>,
+        reused: bool,
+        req: Request<ProxyBody>,
+    ) -> Result<Response<Incoming>, String> {
+        let mut error = match sender.try_send_request(req).await {
+            Ok(response) => {
+                self.return_to_pool(sender);
+                return Ok(response);
+            }
+            Err(error) => error,
+        };
+
+        // A pooled connection the local server closed while idle fails before the
+        // request is written, and hyper hands the request back. Only then is it safe to
+        // send it again.
+        let req = match error.take_message() {
+            Some(req) if reused => req,
+            _ => return Err(format!("request failed: {}", error.into_error())),
+        };
+        tracing::debug!(error = %error.into_error(), "pooled upstream connection was closed; retrying on a new one");
+        let (mut sender, _) = self.upstream_sender(false).await?;
+        let response = sender
+            .send_request(req)
+            .await
+            .map_err(|e| format!("request failed: {e}"))?;
+        self.return_to_pool(sender);
+        Ok(response)
+    }
+
+    fn return_to_pool(&self, sender: SendRequest<ProxyBody>) {
+        if sender.is_closed() {
+            return;
+        }
+        let mut pool = self.pool.lock().unwrap();
+        if pool.len() < MAX_IDLE_UPSTREAM {
+            pool.push(sender);
+        }
+    }
+
+    /// Takes a pooled connection that can send a request now. Connections still
+    /// streaming a response stay in the pool for later.
+    fn take_ready_sender(&self) -> Option<SendRequest<ProxyBody>> {
+        let mut pool = self.pool.lock().unwrap();
+        pool.retain(|sender| !sender.is_closed());
+        let index = pool.iter().position(|sender| sender.is_ready())?;
+        Some(pool.swap_remove(index))
+    }
+
+    /// Returns a connection to the local server and whether it came from the pool.
+    async fn upstream_sender(
+        &self,
+        allow_pooled: bool,
+    ) -> Result<(SendRequest<ProxyBody>, bool), String> {
+        let deadline = Instant::now() + self.timeouts.upstream_wait;
+        loop {
+            if allow_pooled && let Some(sender) = self.take_ready_sender() {
+                return Ok((sender, true));
+            }
+            if let Ok(permit) = self.connections.clone().try_acquire_owned() {
+                return Ok((self.connect(permit).await?, false));
+            }
+
+            // Every connection is in use. Wait for one to close, and look at the pool
+            // again now and then in case one finishes its response.
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(format!(
+                    "all {MAX_UPSTREAM_CONNECTIONS} connections to the local server are busy"
+                ));
+            }
+            let wait = (deadline - now).min(Duration::from_millis(50));
+            if let Ok(Ok(permit)) =
+                tokio::time::timeout(wait, self.connections.clone().acquire_owned()).await
+            {
+                return Ok((self.connect(permit).await?, false));
             }
         }
+    }
 
+    async fn connect(
+        &self,
+        permit: OwnedSemaphorePermit,
+    ) -> Result<SendRequest<ProxyBody>, String> {
         let (addr, tls) = match self.ctx.upstream {
             Upstream::Http(addr) => (addr, false),
             Upstream::Https(addr) => (addr, true),
@@ -312,12 +484,147 @@ impl Forwarder {
             .handshake(TokioIo::new(io))
             .await
             .map_err(|e| format!("HTTP handshake with {addr} failed: {e}"))?;
-        tokio::spawn(async move {
+        self.executor.spawn(async move {
+            let _permit = permit;
             if let Err(error) = connection.with_upgrades().await {
                 tracing::debug!(%error, "upstream connection closed with an error");
             }
         });
         Ok(sender)
+    }
+}
+
+/// playit is the first proxy in front of the local server, so forwarding headers sent
+/// by the client are replaced rather than trusted or appended to.
+fn set_forwarding_headers(
+    headers: &mut HeaderMap,
+    host: Option<HeaderValue>,
+    scheme: &'static str,
+    peer_ip: IpAddr,
+) {
+    headers.remove(header::FORWARDED);
+    let peer =
+        HeaderValue::from_str(&peer_ip.to_string()).expect("an IP address is a valid header value");
+    headers.insert(HeaderName::from_static("x-forwarded-for"), peer.clone());
+    headers.insert(HeaderName::from_static("x-real-ip"), peer);
+    headers.insert(
+        HeaderName::from_static("x-forwarded-proto"),
+        HeaderValue::from_static(scheme),
+    );
+    match host {
+        Some(host) => {
+            headers.insert(header::HOST, host.clone());
+            headers.insert(HeaderName::from_static("x-forwarded-host"), host);
+        }
+        None => {
+            headers.remove(HeaderName::from_static("x-forwarded-host"));
+        }
+    }
+}
+
+/// hyper decodes a chunked body but keeps a Content-Length sent alongside it. Once
+/// Transfer-Encoding is stripped as hop-by-hop, that stale length would misframe the
+/// forwarded body.
+fn drop_length_if_chunked(headers: &mut HeaderMap) {
+    if headers.contains_key(header::TRANSFER_ENCODING) {
+        headers.remove(header::CONTENT_LENGTH);
+    }
+}
+
+/// Copies bytes between an upgraded client and upstream connection until either side
+/// closes or no data has moved for `idle_timeout`.
+async fn relay<A, B>(client: A, upstream: B, idle_timeout: Duration)
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    let activity = Arc::new(Activity::new());
+    let mut client = ActivityIo {
+        inner: client,
+        activity: activity.clone(),
+    };
+    let mut upstream = ActivityIo {
+        inner: upstream,
+        activity: activity.clone(),
+    };
+    let copy = tokio::io::copy_bidirectional(&mut client, &mut upstream);
+    tokio::pin!(copy);
+    loop {
+        tokio::select! {
+            _ = &mut copy => return,
+            _ = tokio::time::sleep_until(activity.last() + idle_timeout) => {
+                if activity.last() + idle_timeout <= Instant::now() {
+                    tracing::debug!("closing idle upgraded connection");
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// When data last moved through a connection.
+struct Activity {
+    start: Instant,
+    elapsed_ms: AtomicU64,
+}
+
+impl Activity {
+    fn new() -> Self {
+        Activity {
+            start: Instant::now(),
+            elapsed_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn touch(&self) {
+        let elapsed = self.start.elapsed().as_millis() as u64;
+        self.elapsed_ms.store(elapsed, Ordering::Relaxed);
+    }
+
+    fn last(&self) -> Instant {
+        self.start + Duration::from_millis(self.elapsed_ms.load(Ordering::Relaxed))
+    }
+}
+
+struct ActivityIo<S> {
+    inner: S,
+    activity: Arc<Activity>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for ActivityIo<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if matches!(result, Poll::Ready(Ok(()))) && buf.filled().len() > before {
+            self.activity.touch();
+        }
+        result
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for ActivityIo<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut self.inner).poll_write(cx, buf);
+        if matches!(result, Poll::Ready(Ok(n)) if n > 0) {
+            self.activity.touch();
+        }
+        result
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
     }
 }
 

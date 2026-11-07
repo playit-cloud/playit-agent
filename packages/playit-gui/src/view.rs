@@ -630,20 +630,12 @@ impl PlayitWindow {
             return self.render_no_tunnels(&agent.agent_id);
         }
 
-        let disabled = agent.tunnels.iter().filter(|t| t.is_disabled).count();
-        let cert_failed = agent
-            .tunnels
-            .iter()
-            .filter(|t| !t.is_disabled && certificate_failed(t.certificate.as_ref()))
-            .count();
-        let cert_pending = agent
-            .tunnels
-            .iter()
-            .filter(|t| !t.is_disabled && t.is_pending())
-            .count()
-            - cert_failed;
-        let online = agent.tunnels.len() - disabled - cert_failed - cert_pending;
-        let setting_up = agent.pending_tunnels.len() + cert_pending;
+        let TunnelCounts {
+            online,
+            disabled,
+            cert_failed,
+            setting_up,
+        } = TunnelCounts::of(agent);
         // The disabled count is orange so a problem row scrolled out of view stays noticed.
         let mut summary = div()
             .flex()
@@ -2651,8 +2643,29 @@ fn disabled_explanation(reason: Option<&str>) -> String {
     }
 }
 
-fn certificate_failed(certificate: Option<&CertificateState>) -> bool {
-    matches!(certificate, Some(CertificateState::Failed { .. }))
+/// How the tunnel list header groups the agent's tunnels.
+#[derive(Debug, PartialEq, Eq)]
+struct TunnelCounts {
+    online: usize,
+    disabled: usize,
+    cert_failed: usize,
+    /// Tunnels the website is still creating plus those still getting a certificate.
+    setting_up: usize,
+}
+
+impl TunnelCounts {
+    fn of(agent: &AgentState) -> Self {
+        let enabled = || agent.tunnels.iter().filter(|t| !t.is_disabled);
+        let disabled = agent.tunnels.len() - enabled().count();
+        let cert_failed = enabled().filter(|t| t.certificate_failed()).count();
+        let cert_pending = enabled().filter(|t| t.is_pending()).count();
+        Self {
+            online: agent.tunnels.len() - disabled - cert_failed - cert_pending,
+            disabled,
+            cert_failed,
+            setting_up: agent.pending_tunnels.len() + cert_pending,
+        }
+    }
 }
 
 /// The header's count of rows that need the user, which links to the first of them.
@@ -3050,7 +3063,52 @@ fn link_button(id: &'static str, label: &'static str, url: &str, style: ButtonSt
 
 #[cfg(test)]
 mod tests {
-    use super::{attention_summary, certificate_failure_explanation, destination_label};
+    use super::{
+        TunnelCounts, attention_summary, certificate_failure_explanation, destination_label,
+    };
+    use playit_ipc::model::{AgentState, CertificateState, PendingTunnelState, TunnelState};
+
+    #[test]
+    fn tunnel_counts_group_certificate_states() {
+        let tunnel = |certificate| TunnelState {
+            certificate,
+            ..TunnelState::default()
+        };
+        let agent = AgentState {
+            tunnels: vec![
+                tunnel(None),
+                tunnel(Some(CertificateState::Ready {
+                    expires_at: 1,
+                    renewing: true,
+                })),
+                tunnel(Some(CertificateState::Validating)),
+                // A phase from a newer daemon is still setting up, not a failure.
+                tunnel(Some(CertificateState::Unknown)),
+                tunnel(Some(CertificateState::Failed {
+                    message: "unreachable".into(),
+                    retry_at: 0,
+                })),
+                TunnelState {
+                    is_disabled: true,
+                    ..tunnel(Some(CertificateState::Failed {
+                        message: "unreachable".into(),
+                        retry_at: 0,
+                    }))
+                },
+            ],
+            pending_tunnels: vec![PendingTunnelState::default()],
+            ..AgentState::default()
+        };
+        assert_eq!(
+            TunnelCounts::of(&agent),
+            TunnelCounts {
+                online: 2,
+                disabled: 1,
+                cert_failed: 1,
+                setting_up: 3,
+            }
+        );
+    }
 
     #[test]
     fn certificate_failures_explain_the_retry() {

@@ -1079,7 +1079,11 @@ fn certificate_state(
         return Some(failed("this agent has no certificate directory"));
     };
 
-    Some(match certs.status(domain)? {
+    certs.status(domain).map(certificate_from_status)
+}
+
+fn certificate_from_status(status: CertStatus) -> CertificateState {
+    match status {
         CertStatus::Preparing => CertificateState::Preparing,
         CertStatus::CheckingReachability => CertificateState::CheckingReachability,
         CertStatus::Requesting => CertificateState::Requesting,
@@ -1093,7 +1097,7 @@ fn certificate_state(
             renewing,
         },
         CertStatus::Failed { message, retry_at } => CertificateState::Failed { message, retry_at },
-    })
+    }
 }
 
 fn api_base() -> String {
@@ -1571,14 +1575,130 @@ fn create_log_parent_dir(path: &Path) -> Result<(), String> {
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::{DaemonOptions, RunningSummary, run_daemon, setup_error_user_message};
+    use super::{
+        DaemonOptions, RunningSummary, certificate_from_status, certificate_state, run_daemon,
+        setup_error_user_message,
+    };
     use playit_agent_core::agent_control::errors::{SetupError, TimeoutSource};
+    use playit_agent_core::network::origin_lookup::{OriginIp, OriginTarget};
+    use playit_agent_core::tls::{CertManager, CertStatus, CertStore};
     use playit_api_client::api::{ApiResponseError, AuthError, ProtoRegisterError};
     use playit_ipc::ipc::IpcClient;
+    use playit_ipc::model::CertificateState;
     use playit_ipc::model::{
         AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ServicePhase,
         TunnelState,
     };
+
+    fn terminated(domain: Option<&str>, http_port: u16, https_port: u16) -> OriginTarget {
+        OriginTarget::HttpsTerminated {
+            ip: OriginIp::IpAddress([127, 0, 0, 1].into()),
+            domain: domain.map(str::to_string),
+            http_port,
+            https_port,
+        }
+    }
+
+    fn failure_message(state: Option<CertificateState>) -> String {
+        match state {
+            Some(CertificateState::Failed { message, retry_at }) => {
+                // Configuration problems aren't retried on a timer.
+                assert_eq!(retry_at, 0);
+                message
+            }
+            other => panic!("expected a failed certificate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn certificate_state_is_none_for_tunnels_playit_does_not_terminate() {
+        let certs = CertManager::new(CertStore::new(unique_test_path("certs", "d")));
+        let ip = OriginIp::IpAddress([127, 0, 0, 1].into());
+        let plain = OriginTarget::Port {
+            ip: ip.clone(),
+            port: 80,
+        };
+        let https = OriginTarget::Https {
+            ip,
+            http_port: 80,
+            https_port: 443,
+        };
+        assert_eq!(certificate_state(&plain, Some(&certs)), None);
+        assert_eq!(certificate_state(&https, Some(&certs)), None);
+    }
+
+    #[test]
+    fn certificate_state_reports_configuration_problems() {
+        let certs = CertManager::new(CertStore::new(unique_test_path("certs", "d")));
+        assert!(
+            failure_message(certificate_state(&terminated(None, 80, 0), Some(&certs)))
+                .contains("not a domain name")
+        );
+        assert!(
+            failure_message(certificate_state(
+                &terminated(Some("site.example.com"), 0, 0),
+                Some(&certs)
+            ))
+            .contains("non-zero")
+        );
+        assert!(
+            failure_message(certificate_state(
+                &terminated(Some("site.example.com"), 80, 0),
+                None
+            ))
+            .contains("no certificate directory")
+        );
+    }
+
+    #[test]
+    fn certificate_state_follows_the_cert_manager() {
+        let certs = CertManager::new(CertStore::new(unique_test_path("certs", "d")));
+        let target = terminated(Some("site.example.com"), 0, 443);
+        // The manager hasn't been told about the domain yet.
+        assert_eq!(certificate_state(&target, Some(&certs)), None);
+        certs.set_domains(["site.example.com".to_string()]);
+        assert_eq!(
+            certificate_state(&target, Some(&certs)),
+            Some(CertificateState::Preparing)
+        );
+    }
+
+    #[test]
+    fn cert_statuses_map_to_certificate_states() {
+        let cases = [
+            (CertStatus::Preparing, CertificateState::Preparing),
+            (
+                CertStatus::CheckingReachability,
+                CertificateState::CheckingReachability,
+            ),
+            (CertStatus::Requesting, CertificateState::Requesting),
+            (CertStatus::Validating, CertificateState::Validating),
+            (CertStatus::Issuing, CertificateState::Issuing),
+            (
+                CertStatus::Ready {
+                    expires_at: 7,
+                    renewing: true,
+                },
+                CertificateState::Ready {
+                    expires_at: 7,
+                    renewing: true,
+                },
+            ),
+            (
+                CertStatus::Failed {
+                    message: "rate limited".into(),
+                    retry_at: 9,
+                },
+                CertificateState::Failed {
+                    message: "rate limited".into(),
+                    retry_at: 9,
+                },
+            ),
+        ];
+        for (status, expected) in cases {
+            assert_eq!(certificate_from_status(status), expected);
+        }
+    }
 
     fn unique_test_path(name: &str, extension: &str) -> std::path::PathBuf {
         // macOS's per-user temp dir is too long for a 104-byte socket path.

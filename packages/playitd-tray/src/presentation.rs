@@ -87,15 +87,32 @@ impl TrayPresentation {
                             .iter()
                             .filter(|tunnel| tunnel.is_disabled)
                             .count();
-                        // Tunnels waiting for a TLS certificate count as pending, not enabled.
+                        // Tunnels without a usable TLS certificate can't serve HTTPS, so they
+                        // aren't counted as enabled. Failures need the user; the rest resolve
+                        // on their own.
+                        let cert_failed = state
+                            .tunnels
+                            .iter()
+                            .filter(|tunnel| !tunnel.is_disabled && tunnel.certificate_failed())
+                            .count();
                         let cert_pending = state
                             .tunnels
                             .iter()
                             .filter(|tunnel| !tunnel.is_disabled && tunnel.is_pending())
                             .count();
-                        let enabled = state.tunnels.len() - disabled - cert_pending;
+                        let enabled = state.tunnels.len() - disabled - cert_failed - cert_pending;
                         let pending = state.pending_tunnels.len() + cert_pending;
                         let mut tunnels = format!("{enabled} enabled, {disabled} disabled");
+                        if cert_failed > 0 {
+                            tunnels.push_str(&format!(
+                                ", {cert_failed} {} failed",
+                                if cert_failed == 1 {
+                                    "certificate"
+                                } else {
+                                    "certificates"
+                                }
+                            ));
+                        }
                         if pending > 0 {
                             tunnels.push_str(&format!(", {pending} pending"));
                         }
@@ -179,6 +196,46 @@ mod tests {
         assert_eq!(
             presentation.status_line,
             "Agent running - 0 enabled, 2 disabled"
+        );
+    }
+
+    #[test]
+    fn certificate_failures_are_counted_apart_from_pending() {
+        use playit_ipc::model::{CertificateState, PendingTunnelState};
+
+        let tunnel = |certificate| TunnelState {
+            certificate,
+            ..TunnelState::default()
+        };
+        let failed = || {
+            tunnel(Some(CertificateState::Failed {
+                message: "unreachable".into(),
+                retry_at: 0,
+            }))
+        };
+        let presentation =
+            TrayPresentation::from_view(&ServiceView::Agent(AgentLifecycle::Running(AgentState {
+                tunnels: vec![
+                    tunnel(None),
+                    tunnel(Some(CertificateState::Ready {
+                        expires_at: 1,
+                        renewing: false,
+                    })),
+                    tunnel(Some(CertificateState::Requesting)),
+                    tunnel(Some(CertificateState::Unknown)),
+                    failed(),
+                    failed(),
+                    TunnelState {
+                        is_disabled: true,
+                        ..failed()
+                    },
+                ],
+                pending_tunnels: vec![PendingTunnelState::default()],
+                ..AgentState::default()
+            })));
+        assert_eq!(
+            presentation.status_line,
+            "Agent running - 2 enabled, 1 disabled, 2 certificates failed, 3 pending"
         );
     }
 

@@ -140,16 +140,24 @@ docker build --target test .
 
 Set "TLS Termination" to `letsencrypt` on an HTTPS tunnel to have playit serve HTTPS for you.
 playit gets a certificate from Let's Encrypt using the HTTP challenge on the tunnel's HTTP
-port, renews it when it has fewer than 30 days left, and forwards decrypted requests to your
-local server with `X-Forwarded-For`, `X-Forwarded-Proto` and `X-Forwarded-Host` headers.
-WebSocket upgrades are passed through.
+port, renews it in the window Let's Encrypt suggests (or when it has fewer than 30 days
+left), and forwards decrypted requests to your
+local server with `X-Forwarded-For`, `X-Real-IP`, `X-Forwarded-Proto` and `X-Forwarded-Host`
+headers. WebSocket upgrades are passed through.
 
+- `X-Forwarded-For` and `X-Real-IP` hold the visitor's IP address, as seen by playit. Any
+  forwarding headers the visitor sends are replaced, so your server can trust them.
 - Requests go to the HTTP port. Set the HTTP port to 0 to send them to the HTTPS port
   instead; the local server's certificate is not checked, so a self-signed one works.
   If both ports are set, HTTP is used.
 - Plain HTTP requests to the tunnel are redirected to HTTPS.
 - The terminal UI and the playit window show the certificate's progress. HTTPS connections
   are refused until the certificate is ready.
+- Before asking Let's Encrypt, playit checks that it can reach the tunnel through its public
+  domain. If your network can't reach its own public address, set
+  `PLAYIT_ACME_SKIP_SELF_CHECK=1` to skip this check.
+- If Let's Encrypt rate-limits a request, playit waits until the retry time Let's Encrypt
+  gives before trying again.
 - Certificates are stored in a `certs` folder beside the secret file (for example
   `/etc/playit/certs` on Linux), readable only by the playit service. Use `--cert-dir` to
   choose another folder.

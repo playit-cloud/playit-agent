@@ -86,11 +86,18 @@ pub struct TunnelState {
 }
 
 impl TunnelState {
-    /// True while the tunnel is waiting for its TLS certificate and can't serve HTTPS yet.
+    /// True while the tunnel is still getting its TLS certificate and can't serve HTTPS yet.
+    /// A failed certificate is not pending; see [`TunnelState::certificate_failed`].
     pub fn is_pending(&self) -> bool {
         self.certificate
             .as_ref()
-            .is_some_and(|certificate| !certificate.is_ready())
+            .is_some_and(CertificateState::is_in_progress)
+    }
+
+    pub fn certificate_failed(&self) -> bool {
+        self.certificate
+            .as_ref()
+            .is_some_and(CertificateState::is_failed)
     }
 }
 
@@ -114,6 +121,10 @@ pub enum CertificateState {
         message: String,
         retry_at: u64,
     },
+    /// A phase added by a newer daemon. Without this, an older client would fail to parse
+    /// the whole agent state.
+    #[serde(other)]
+    Unknown,
 }
 
 impl CertificateState {
@@ -121,10 +132,21 @@ impl CertificateState {
         matches!(self, CertificateState::Ready { .. })
     }
 
+    pub fn is_failed(&self) -> bool {
+        matches!(self, CertificateState::Failed { .. })
+    }
+
+    /// Neither ready nor failed, including phases this client doesn't know.
+    pub fn is_in_progress(&self) -> bool {
+        !self.is_ready() && !self.is_failed()
+    }
+
     /// A short description of what is happening, for status lines.
     pub fn progress_message(&self) -> String {
         match self {
-            CertificateState::Preparing => "preparing TLS certificate".into(),
+            CertificateState::Preparing | CertificateState::Unknown => {
+                "preparing TLS certificate".into()
+            }
             CertificateState::CheckingReachability => {
                 "checking the tunnel is reachable for Let's Encrypt".into()
             }
@@ -274,12 +296,33 @@ mod tests {
             json["certificate"],
             serde_json::json!({"phase": "failed", "message": "unreachable", "retry_at": 5})
         );
-        assert!(tunnel.is_pending());
+        assert!(!tunnel.is_pending());
+        assert!(tunnel.certificate_failed());
         let ready = CertificateState::Ready {
             expires_at: 1,
             renewing: true,
         };
         assert!(ready.is_ready());
+    }
+
+    #[test]
+    fn unknown_certificate_phase_parses_as_pending() {
+        let tunnel: TunnelState = serde_json::from_value(serde_json::json!({
+            "id": "7c1e2a40-0f6b-4d2e-9a61-3b5f8e2d1c01",
+            "display_address": "site.example.com",
+            "destination": "127.0.0.1:80",
+            "is_disabled": false,
+            "disabled_reason": null,
+            "certificate": {"phase": "waiting_for_dns", "eta": 30},
+        }))
+        .unwrap();
+        let certificate = tunnel.certificate.as_ref().unwrap();
+        assert_eq!(certificate, &CertificateState::Unknown);
+        assert!(!certificate.is_ready());
+        assert!(!certificate.is_failed());
+        assert!(tunnel.is_pending());
+        assert!(!tunnel.certificate_failed());
+        assert_eq!(certificate.progress_message(), "preparing TLS certificate");
     }
 
     #[test]

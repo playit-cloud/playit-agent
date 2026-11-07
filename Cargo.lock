@@ -1677,6 +1677,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 dependencies = [
  "powerfmt",
+ "serde_core",
 ]
 
 [[package]]
@@ -3587,6 +3588,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "time",
  "tokio",
 ]
 
@@ -4964,7 +4966,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "playit-agent-core"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "byteorder",
  "bytes",
@@ -4996,6 +4998,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.59.0",
  "x509-parser",
 ]
 
@@ -5030,7 +5033,7 @@ dependencies = [
 
 [[package]]
 name = "playit-cli"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "chrono",
  "clap",
@@ -5062,11 +5065,11 @@ dependencies = [
 
 [[package]]
 name = "playit-common"
-version = "2.0.0"
+version = "2.0.1"
 
 [[package]]
 name = "playit-gui"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5088,7 +5091,7 @@ dependencies = [
 
 [[package]]
 name = "playit-ipc"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "dirs 6.0.0",
  "futures-util",
@@ -5103,7 +5106,7 @@ dependencies = [
 
 [[package]]
 name = "playitd"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "clap",
  "dirs 6.0.0",
@@ -5134,7 +5137,7 @@ dependencies = [
 
 [[package]]
 name = "playitd-tray"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "dirs 6.0.0",
  "image",
