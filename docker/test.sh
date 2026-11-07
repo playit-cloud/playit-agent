@@ -55,6 +55,8 @@ check_exit() {
 
 start_agent -e SECRET_KEY=00 "$image"
 test "$(docker inspect --format '{{.Config.Tty}} {{.Config.OpenStdin}}' "$name")" = 'false false'
+docker exec "$name" cat /proc/1/cmdline | tr '\0' '\n' | grep -qx -- '--cert-dir=/var/lib/playit/certs'
+test "$(docker exec "$name" stat -c %a /var/lib/playit/certs)" = 700
 docker stop --timeout 2 "$name" > /dev/null
 check_exit
 echo 'Docker stop without a terminal: passed'
@@ -103,3 +105,13 @@ docker exec "$name" test -S /tmp/playit-test.sock
 docker stop --timeout 2 "$name" > /dev/null
 check_exit
 echo 'Legacy secret argument and daemon options: passed'
+
+start_agent -e SECRET_KEY=00 "$image" --cert-dir /tmp/certs
+docker exec "$name" cat /proc/1/cmdline | tr '\0' '\n' | grep -qx -- '--cert-dir'
+if docker exec "$name" cat /proc/1/cmdline | tr '\0' '\n' | grep -q -- '--cert-dir='; then
+  echo 'The entrypoint added a second --cert-dir' >&2
+  exit 1
+fi
+docker stop --timeout 2 "$name" > /dev/null
+check_exit
+echo 'Explicit certificate directory: passed'

@@ -46,7 +46,7 @@
             "http_port": {
               "allow_null": false,
               "default_value": "80",
-              "description": null,
+              "description": "Set to 0 to turn off. With TLS termination, requests go here unless it is 0",
               "label": "Http Port",
               "value_type": "Port",
               "variants": null
@@ -54,7 +54,7 @@
             "https_port": {
               "allow_null": false,
               "default_value": "443",
-              "description": null,
+              "description": "Set to 0 to turn off. With TLS termination, used only when the HTTP port is 0",
               "label": "Https Port",
               "value_type": "Port",
               "variants": null
@@ -76,6 +76,16 @@
               "variants": [
                 "proxy-protocol-v1",
                 "proxy-protocol-v2"
+              ]
+            },
+            "tls_termination": {
+              "allow_null": true,
+              "default_value": null,
+              "description": "playit decrypts HTTPS with a free Let's Encrypt certificate and forwards requests to your local server",
+              "label": "TLS Termination",
+              "value_type": "String",
+              "variants": [
+                "letsencrypt"
               ]
             }
           }

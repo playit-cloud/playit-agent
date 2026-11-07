@@ -87,10 +87,17 @@ impl TrayPresentation {
                             .iter()
                             .filter(|tunnel| tunnel.is_disabled)
                             .count();
-                        let enabled = state.tunnels.len() - disabled;
+                        // Tunnels waiting for a TLS certificate count as pending, not enabled.
+                        let cert_pending = state
+                            .tunnels
+                            .iter()
+                            .filter(|tunnel| !tunnel.is_disabled && tunnel.is_pending())
+                            .count();
+                        let enabled = state.tunnels.len() - disabled - cert_pending;
+                        let pending = state.pending_tunnels.len() + cert_pending;
                         let mut tunnels = format!("{enabled} enabled, {disabled} disabled");
-                        if !state.pending_tunnels.is_empty() {
-                            tunnels.push_str(&format!(", {} pending", state.pending_tunnels.len()));
+                        if pending > 0 {
+                            tunnels.push_str(&format!(", {pending} pending"));
                         }
                         let guest = if matches!(state.account_status, AccountStatus::Guest) {
                             " (guest account)"

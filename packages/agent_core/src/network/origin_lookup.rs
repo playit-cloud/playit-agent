@@ -10,26 +10,73 @@ use playit_api_client::api::{AgentRunDataV1, AgentTunnelV1, PortType, ProxyProto
 use tokio::net::lookup_host;
 use tokio::sync::RwLock;
 
+use crate::tls::CertManager;
+use crate::tls::manager::certificate_domain;
+use crate::tls::proxy::Upstream;
+
+/// Value of the `tls_termination` field that makes the agent terminate TLS with a
+/// Let's Encrypt certificate.
+pub const TLS_TERMINATION_LETS_ENCRYPT: &str = "letsencrypt";
+
 #[derive(Default)]
 pub struct OriginLookup {
     map: RwLock<HashMap<Key, OriginResource>>,
+    certs: Option<CertManager>,
 }
 
 impl OriginLookup {
+    /// A lookup that keeps `certs` requesting certificates for the tunnels that terminate TLS.
+    pub fn with_cert_manager(certs: CertManager) -> Self {
+        OriginLookup {
+            map: RwLock::default(),
+            certs: Some(certs),
+        }
+    }
+
+    pub fn cert_manager(&self) -> Option<&CertManager> {
+        self.certs.as_ref()
+    }
+
     pub async fn update_from_run_data(&self, run_data: &AgentRunDataV1) {
-        self.update(
+        // A disabled tunnel can't answer challenges, so no certificate is requested for it.
+        let disabled: std::collections::HashSet<u64> = run_data
+            .tunnels
+            .iter()
+            .filter(|tunnel| tunnel.disabled_reason.is_some())
+            .map(|tunnel| tunnel.internal_id)
+            .collect();
+        self.update_inner(
             run_data
                 .tunnels
                 .iter()
                 .filter_map(OriginResource::from_agent_tunnel),
+            |res| !disabled.contains(&res.tunnel_id),
         )
         .await;
     }
 
     pub async fn update<I: Iterator<Item = OriginResource>>(&self, resources: I) {
+        self.update_inner(resources, |_| true).await;
+    }
+
+    async fn update_inner<I, F>(&self, resources: I, wants_certificate: F)
+    where
+        I: Iterator<Item = OriginResource>,
+        F: Fn(&OriginResource) -> bool,
+    {
         let mut next = HashMap::new();
+        let mut cert_domains = Vec::new();
 
         for res in resources {
+            if let OriginTarget::HttpsTerminated {
+                domain: Some(domain),
+                ..
+            } = &res.target
+                && wants_certificate(&res)
+            {
+                cert_domains.push(domain.clone());
+            }
+
             match res.proto {
                 PortProto::Tcp => {
                     next.insert(
@@ -66,6 +113,10 @@ impl OriginLookup {
                     );
                 }
             }
+        }
+
+        if let Some(certs) = &self.certs {
+            certs.set_domains(cert_domains);
         }
 
         let mut lock = self.map.write().await;
@@ -142,10 +193,52 @@ pub enum OriginTarget {
         http_port: u16,
         https_port: u16,
     },
+    /// An HTTPS tunnel whose TLS the agent terminates with a Let's Encrypt certificate.
+    /// Decrypted requests go to the HTTP port, or to the HTTPS port when the HTTP port is 0.
+    HttpsTerminated {
+        ip: OriginIp,
+        /// The domain the certificate is for; `None` when the tunnel's address isn't a
+        /// domain Let's Encrypt can issue for.
+        domain: Option<String>,
+        http_port: u16,
+        https_port: u16,
+    },
     Port {
         ip: OriginIp,
         port: u16,
     },
+}
+
+impl OriginTarget {
+    /// Picks the local server for a TLS-terminated tunnel. A port of 0 is disabled; when
+    /// both are set, plain HTTP is used.
+    pub fn terminated_upstream_port(http_port: u16, https_port: u16) -> Option<(bool, u16)> {
+        match (http_port, https_port) {
+            (0, 0) => None,
+            (0, https) => Some((true, https)),
+            (http, _) => Some((false, http)),
+        }
+    }
+
+    /// Resolves the local server that a TLS-terminated tunnel forwards requests to.
+    pub async fn resolve_terminated_upstream(&self) -> Option<Upstream> {
+        let OriginTarget::HttpsTerminated {
+            ip,
+            http_port,
+            https_port,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        let (tls, port) = Self::terminated_upstream_port(*http_port, *https_port)?;
+        let addr = ip.resolve(port).await?;
+        Some(if tls {
+            Upstream::Https(addr)
+        } else {
+            Upstream::Http(addr)
+        })
+    }
 }
 
 impl OriginResource {
@@ -180,24 +273,41 @@ impl OriginResource {
                     .ok()
             });
 
+        let field = |name: &str| {
+            tunn.agent_config
+                .fields
+                .iter()
+                .find(|f| f.name.eq(name))
+                .map(|f| f.value.trim())
+        };
+
         let target = match &tunnel_type {
-            Some(TunnelType::Https) => OriginTarget::Https {
-                ip: Self::parse_origin_ip(tunn),
-                http_port: tunn
-                    .agent_config
-                    .fields
-                    .iter()
-                    .find(|f| f.name.eq("http_port"))
-                    .and_then(|v| u16::from_str(&v.value).ok())
-                    .unwrap_or(80),
-                https_port: tunn
-                    .agent_config
-                    .fields
-                    .iter()
-                    .find(|f| f.name.eq("https_port"))
-                    .and_then(|v| u16::from_str(&v.value).ok())
-                    .unwrap_or(443),
-            },
+            Some(TunnelType::Https) => {
+                let ip = Self::parse_origin_ip(tunn);
+                let http_port = field("http_port")
+                    .and_then(|v| u16::from_str(v).ok())
+                    .unwrap_or(80);
+                let https_port = field("https_port")
+                    .and_then(|v| u16::from_str(v).ok())
+                    .unwrap_or(443);
+
+                if field("tls_termination")
+                    .is_some_and(|v| v.eq_ignore_ascii_case(TLS_TERMINATION_LETS_ENCRYPT))
+                {
+                    OriginTarget::HttpsTerminated {
+                        ip,
+                        domain: certificate_domain(&tunn.display_address),
+                        http_port,
+                        https_port,
+                    }
+                } else {
+                    OriginTarget::Https {
+                        ip,
+                        http_port,
+                        https_port,
+                    }
+                }
+            }
             _ => {
                 // Get local_port from config, or fall back to public port from display_address
                 let local_port = tunn
@@ -242,12 +352,16 @@ impl OriginResource {
                 http_port,
                 https_port,
             } => {
-                if port_offset == 0 {
-                    ip.resolve(*http_port).await
-                } else if port_offset == 1 {
-                    ip.resolve(*https_port).await
-                } else {
-                    None
+                // A port of 0 turns that half of the tunnel off.
+                match port_offset {
+                    0 if *http_port != 0 => ip.resolve(*http_port).await,
+                    1 if *https_port != 0 => ip.resolve(*https_port).await,
+                    _ => None,
+                }
+            }
+            OriginTarget::HttpsTerminated { .. } => {
+                match self.target.resolve_terminated_upstream().await? {
+                    Upstream::Http(addr) | Upstream::Https(addr) => Some(addr),
                 }
             }
             OriginTarget::Port { ip, port } => {
@@ -363,5 +477,110 @@ mod tests {
             );
             assert!(resource.resolve_local(1).await.is_none());
         }
+    }
+
+    fn https_tunnel(fields: &[(&str, &str)]) -> AgentTunnelV1 {
+        let mut tunnel = build_tunnel(Some("https"), "127.0.0.1", None, PortType::Tcp, 2);
+        tunnel.display_address = "Site.Example.com".to_owned();
+        tunnel
+            .agent_config
+            .fields
+            .extend(fields.iter().map(|(name, value)| AgentTunnelAttr {
+                name: (*name).to_owned(),
+                value: (*value).to_owned(),
+            }));
+        tunnel
+    }
+
+    #[test]
+    fn terminated_upstream_prefers_http_and_treats_zero_as_disabled() {
+        assert_eq!(
+            OriginTarget::terminated_upstream_port(80, 443),
+            Some((false, 80))
+        );
+        assert_eq!(
+            OriginTarget::terminated_upstream_port(8080, 0),
+            Some((false, 8080))
+        );
+        assert_eq!(
+            OriginTarget::terminated_upstream_port(0, 8443),
+            Some((true, 8443))
+        );
+        assert_eq!(OriginTarget::terminated_upstream_port(0, 0), None);
+    }
+
+    #[tokio::test]
+    async fn tls_termination_field_selects_terminated_target() {
+        let tunnel = https_tunnel(&[
+            ("tls_termination", "letsencrypt"),
+            ("http_port", "0"),
+            ("https_port", "8443"),
+        ]);
+        let resource = OriginResource::from_agent_tunnel(&tunnel).unwrap();
+        match &resource.target {
+            OriginTarget::HttpsTerminated {
+                domain,
+                http_port,
+                https_port,
+                ..
+            } => {
+                assert_eq!(domain.as_deref(), Some("site.example.com"));
+                assert_eq!((*http_port, *https_port), (0, 8443));
+            }
+            target => panic!("unexpected target: {target:?}"),
+        }
+        assert_eq!(
+            resource.target.resolve_terminated_upstream().await,
+            Some(Upstream::Https("127.0.0.1:8443".parse().unwrap()))
+        );
+
+        let plain = OriginResource::from_agent_tunnel(&https_tunnel(&[])).unwrap();
+        assert!(matches!(plain.target, OriginTarget::Https { .. }));
+    }
+
+    #[tokio::test]
+    async fn passthrough_https_port_zero_disables_that_offset() {
+        let tunnel = https_tunnel(&[("http_port", "0"), ("https_port", "8443")]);
+        let resource = OriginResource::from_agent_tunnel(&tunnel).unwrap();
+        assert!(resource.resolve_local(0).await.is_none());
+        assert_eq!(
+            resource.resolve_local(1).await,
+            Some("127.0.0.1:8443".parse().unwrap())
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_registers_certificate_domains() {
+        let certs = CertManager::new(crate::tls::CertStore::new(
+            std::env::temp_dir().join("playit-origin-lookup-unused"),
+        ));
+        let lookup = OriginLookup::with_cert_manager(certs.clone());
+        let tunnel = https_tunnel(&[("tls_termination", "letsencrypt")]);
+        lookup
+            .update(std::iter::once(
+                OriginResource::from_agent_tunnel(&tunnel).unwrap(),
+            ))
+            .await;
+        assert!(certs.status("site.example.com").is_some());
+
+        lookup.update(std::iter::empty()).await;
+        assert!(certs.status("site.example.com").is_none());
+
+        let mut disabled = tunnel.clone();
+        disabled.disabled_reason = Some("over tunnel limit".into());
+        lookup
+            .update_from_run_data(&AgentRunDataV1 {
+                agent_id: Uuid::nil(),
+                tunnels: vec![disabled],
+                pending: vec![],
+                notices: vec![],
+                permissions: playit_api_client::api::AgentPermissions {
+                    is_self_managed: true,
+                    has_premium: false,
+                    account_status: playit_api_client::api::AccountStatus::Verified,
+                },
+            })
+            .await;
+        assert!(certs.status("site.example.com").is_none());
     }
 }

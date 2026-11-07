@@ -79,6 +79,65 @@ pub struct TunnelState {
     pub destination: String,
     pub is_disabled: bool,
     pub disabled_reason: Option<String>,
+    /// Set for HTTPS tunnels where playit terminates TLS with a Let's Encrypt certificate.
+    /// The tunnel can't serve HTTPS until this is `Ready`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub certificate: Option<CertificateState>,
+}
+
+impl TunnelState {
+    /// True while the tunnel is waiting for its TLS certificate and can't serve HTTPS yet.
+    pub fn is_pending(&self) -> bool {
+        self.certificate
+            .as_ref()
+            .is_some_and(|certificate| !certificate.is_ready())
+    }
+}
+
+/// Progress of the Let's Encrypt certificate for a tunnel that terminates TLS.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum CertificateState {
+    /// Loading a stored certificate or waiting for the agent to connect.
+    Preparing,
+    /// Checking that Let's Encrypt will be able to reach the tunnel.
+    CheckingReachability,
+    Requesting,
+    Validating,
+    Issuing,
+    /// Times are milliseconds since the Unix epoch.
+    Ready {
+        expires_at: u64,
+        renewing: bool,
+    },
+    Failed {
+        message: String,
+        retry_at: u64,
+    },
+}
+
+impl CertificateState {
+    pub fn is_ready(&self) -> bool {
+        matches!(self, CertificateState::Ready { .. })
+    }
+
+    /// A short description of what is happening, for status lines.
+    pub fn progress_message(&self) -> String {
+        match self {
+            CertificateState::Preparing => "preparing TLS certificate".into(),
+            CertificateState::CheckingReachability => {
+                "checking the tunnel is reachable for Let's Encrypt".into()
+            }
+            CertificateState::Requesting => "requesting certificate from Let's Encrypt".into(),
+            CertificateState::Validating => "Let's Encrypt is validating the domain".into(),
+            CertificateState::Issuing => "issuing TLS certificate".into(),
+            CertificateState::Ready { renewing: true, .. } => "renewing TLS certificate".into(),
+            CertificateState::Ready { .. } => "TLS certificate ready".into(),
+            CertificateState::Failed { message, .. } => {
+                format!("could not get a TLS certificate: {message}")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -188,7 +247,40 @@ pub struct SubscribeResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::TunnelState;
+    use super::{CertificateState, TunnelState};
+
+    #[test]
+    fn certificate_state_is_optional_and_tagged() {
+        let tunnel: TunnelState = serde_json::from_value(serde_json::json!({
+            "id": "7c1e2a40-0f6b-4d2e-9a61-3b5f8e2d1c01",
+            "display_address": "site.example.com",
+            "destination": "127.0.0.1:80",
+            "is_disabled": false,
+            "disabled_reason": null,
+        }))
+        .unwrap();
+        assert_eq!(tunnel.certificate, None);
+        assert!(!tunnel.is_pending());
+
+        let tunnel = TunnelState {
+            certificate: Some(CertificateState::Failed {
+                message: "unreachable".into(),
+                retry_at: 5,
+            }),
+            ..tunnel
+        };
+        let json = serde_json::to_value(&tunnel).unwrap();
+        assert_eq!(
+            json["certificate"],
+            serde_json::json!({"phase": "failed", "message": "unreachable", "retry_at": 5})
+        );
+        assert!(tunnel.is_pending());
+        let ready = CertificateState::Ready {
+            expires_at: 1,
+            renewing: true,
+        };
+        assert!(ready.is_ready());
+    }
 
     #[test]
     fn tunnel_state_carries_its_id() {

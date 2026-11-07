@@ -27,10 +27,10 @@ mod unix {
         ServerEnvelope, ServiceRequest, ServiceResponse, protocol_info,
     };
     use playit_ipc::model::{
-        AccountLoginUrlResponse, AccountStatus, AgentLifecycle, AgentState, CommandResponse,
-        ConnectionStats, LogEntry, LogLevel, NoticeState, PendingTunnelState, SecretPathResponse,
-        ServiceError, ServiceErrorCode, ServicePhase, ServiceStatus, ServiceUpdate,
-        SubscribeResponse, SubscriptionSnapshot, TunnelState,
+        AccountLoginUrlResponse, AccountStatus, AgentLifecycle, AgentState, CertificateState,
+        CommandResponse, ConnectionStats, LogEntry, LogLevel, NoticeState, PendingTunnelState,
+        SecretPathResponse, ServiceError, ServiceErrorCode, ServicePhase, ServiceStatus,
+        ServiceUpdate, SubscribeResponse, SubscriptionSnapshot, TunnelState,
     };
     use tokio::net::{UnixListener, UnixStream};
     use tokio::sync::broadcast;
@@ -110,6 +110,24 @@ mod unix {
                 destination: "127.0.0.1:7777".into(),
                 is_disabled: true,
                 disabled_reason: Some("over tunnel limit".into()),
+                ..Default::default()
+            },
+            TunnelState {
+                id: "9b3e1f07-2c4d-4a8e-b6f1-5d7c0e2a9f05".into(),
+                display_address: "blog.example.com".into(),
+                destination: "127.0.0.1:8080".into(),
+                certificate: Some(CertificateState::Ready {
+                    expires_at: now() + 60 * 24 * 3_600_000,
+                    renewing: false,
+                }),
+                ..Default::default()
+            },
+            TunnelState {
+                id: "4d6a8c20-7e1f-4b39-a5d2-8f0c3e6b1a06".into(),
+                display_address: "shop.example.com".into(),
+                destination: "127.0.0.1:3000".into(),
+                certificate: Some(CertificateState::Validating),
+                ..Default::default()
             },
         ];
         state.pending_tunnels = vec![PendingTunnelState {

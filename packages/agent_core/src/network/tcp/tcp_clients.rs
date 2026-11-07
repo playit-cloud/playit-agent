@@ -1,4 +1,12 @@
-use std::{net::SocketAddr, num::NonZeroU32, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    num::NonZeroU32,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use playit_agent_proto::control_feed::NewClient;
@@ -14,9 +22,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     network::{
-        lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
+        lan_address::LanAddress,
+        origin_lookup::{OriginLookup, OriginResource, OriginTarget},
+        proxy_protocol::ProxyProtocolHeader,
     },
     stats::AgentStats,
+    tls::{
+        CertManager,
+        proxy::{ProxyContext, serve_http_redirect, serve_https},
+    },
     utils::now_milli,
 };
 
@@ -54,6 +68,8 @@ struct Worker {
     stats: AgentStats,
 
     clients: Vec<Client>,
+    /// Connections served by the TLS-terminating proxy, which aren't in `clients`.
+    terminated_active: Arc<AtomicU32>,
     next_client_id: u64,
 }
 
@@ -124,6 +140,7 @@ impl TcpClients {
                 settings,
                 stats,
                 clients: Vec::with_capacity(32),
+                terminated_active: Arc::new(AtomicU32::new(0)),
             }
             .start(),
         );
@@ -164,6 +181,11 @@ impl Drop for TcpClients {
 }
 
 impl Worker {
+    fn update_tcp_count(&self) {
+        self.stats
+            .set_tcp(self.clients.len() as u32 + self.terminated_active.load(Ordering::Relaxed));
+    }
+
     pub async fn start(mut self) {
         let mut next_clear = Instant::now() + Duration::from_secs(15);
 
@@ -229,20 +251,47 @@ impl Worker {
                     };
 
                     let setting_tcp_no_delay = self.settings.tcp_no_delay;
+                    let certs = self.lookup.cert_manager().cloned();
+                    let terminated_active = self.terminated_active.clone();
 
                     let event_tx = self.events_tx.clone();
                     let stats = self.stats.clone();
                     let cancel = self.cancel.child_token();
                     tokio::spawn(async move {
-                        let Some(origin_addr) = found.resolve_local(details.port_offset).await
-                        else {
-                            tracing::error!(
-                                port_offset = details.port_offset,
-                                tunnel_id = details.tunnel_id,
-                                "port offset not valid for tunnel"
-                            );
-                            tcp_errors().new_client_invalid_port_offset.inc();
-                            return;
+                        let terminated = match &found.target {
+                            OriginTarget::HttpsTerminated { .. } => {
+                                let Some(terminated) = prepare_terminated(
+                                    &found,
+                                    details.port_offset,
+                                    details.peer_addr,
+                                    &proxy_header,
+                                    certs,
+                                    &stats,
+                                )
+                                .await
+                                else {
+                                    return;
+                                };
+                                Some(terminated)
+                            }
+                            _ => None,
+                        };
+
+                        let origin_addr = if terminated.is_some() {
+                            // Unused: the proxy opens its own connections to the local server.
+                            SocketAddr::from(([0, 0, 0, 0], 0))
+                        } else {
+                            let Some(origin_addr) = found.resolve_local(details.port_offset).await
+                            else {
+                                tracing::error!(
+                                    port_offset = details.port_offset,
+                                    tunnel_id = details.tunnel_id,
+                                    "port offset not valid for tunnel"
+                                );
+                                tcp_errors().new_client_invalid_port_offset.inc();
+                                return;
+                            };
+                            origin_addr
                         };
 
                         /* connect to tunnel server */
@@ -324,6 +373,14 @@ impl Worker {
                                 tcp_errors().new_client_claim_expect_error.inc();
                                 return;
                             }
+                        }
+
+                        if let Some(terminated) = terminated {
+                            let _active = ActiveConnection::new(terminated_active, stats.clone());
+                            cancel
+                                .run_until_cancelled(terminated.serve(tunn_stream))
+                                .await;
+                            return;
                         }
 
                         /* connect to origin */
@@ -428,7 +485,7 @@ impl Worker {
                 }
                 Event::ConnectedClient(client) => {
                     self.clients.push(client);
-                    self.stats.set_tcp(self.clients.len() as u32);
+                    self.update_tcp_count();
                 }
                 Event::ClearOld => {
                     let now = now_milli();
@@ -457,9 +514,122 @@ impl Worker {
                     });
 
                     // Update active TCP connection count
-                    self.stats.set_tcp(self.clients.len() as u32);
+                    self.update_tcp_count();
                 }
             }
         }
+    }
+}
+
+/// How a connection to a TLS-terminated HTTPS tunnel is served.
+enum Terminated {
+    /// The HTTP port: Let's Encrypt challenges and redirects to HTTPS.
+    Redirect {
+        certs: CertManager,
+        domain: String,
+        stats: AgentStats,
+    },
+    /// The HTTPS port: TLS terminated here and requests forwarded to the local server.
+    Https {
+        acceptor: tokio_rustls::TlsAcceptor,
+        ctx: ProxyContext,
+    },
+}
+
+impl Terminated {
+    async fn serve(self, tunnel: TcpStream) {
+        match self {
+            Terminated::Redirect {
+                certs,
+                domain,
+                stats,
+            } => serve_http_redirect(tunnel, certs, domain, Some(stats)).await,
+            Terminated::Https { acceptor, ctx } => serve_https(tunnel, acceptor, ctx).await,
+        }
+    }
+}
+
+/// Decides how to serve a connection before claiming it, so connections that can't be
+/// served yet (no certificate) are left unclaimed.
+async fn prepare_terminated(
+    found: &OriginResource,
+    port_offset: u16,
+    peer_addr: SocketAddr,
+    proxy_header: &ProxyProtocolHeader,
+    certs: Option<CertManager>,
+    stats: &AgentStats,
+) -> Option<Terminated> {
+    let OriginTarget::HttpsTerminated { domain, .. } = &found.target else {
+        return None;
+    };
+    let Some(certs) = certs else {
+        tracing::error!(
+            tunnel_id = found.tunnel_id,
+            "tunnel is set to terminate TLS but this agent has no certificate directory"
+        );
+        return None;
+    };
+    let Some(domain) = domain.clone() else {
+        tracing::error!(
+            tunnel_id = found.tunnel_id,
+            "tunnel is set to terminate TLS but its address is not a domain name"
+        );
+        return None;
+    };
+
+    match port_offset {
+        0 => Some(Terminated::Redirect {
+            certs,
+            domain,
+            stats: stats.clone(),
+        }),
+        1 => {
+            let Some(acceptor) = certs.acceptor(&domain) else {
+                tracing::warn!(%domain, "HTTPS connection dropped because the TLS certificate is not ready yet");
+                return None;
+            };
+            let Some(upstream) = found.target.resolve_terminated_upstream().await else {
+                tracing::error!(
+                    %domain,
+                    "no local server for TLS-terminated tunnel; set the HTTP or HTTPS port to a non-zero value"
+                );
+                return None;
+            };
+            Some(Terminated::Https {
+                acceptor,
+                ctx: ProxyContext {
+                    domain,
+                    upstream,
+                    peer_addr,
+                    proxy_protocol: found.proxy_protocol.map(|p| (p, proxy_header.clone())),
+                    stats: Some(stats.clone()),
+                },
+            })
+        }
+        _ => {
+            tcp_errors().new_client_invalid_port_offset.inc();
+            None
+        }
+    }
+}
+
+/// Counts a proxied connection as active for as long as it is served.
+struct ActiveConnection {
+    count: Arc<AtomicU32>,
+    stats: AgentStats,
+}
+
+impl ActiveConnection {
+    fn new(count: Arc<AtomicU32>, stats: AgentStats) -> Self {
+        count.fetch_add(1, Ordering::Relaxed);
+        stats.inc_tcp();
+        ActiveConnection { count, stats }
+    }
+}
+
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::Relaxed);
+        self.stats.dec_tcp();
     }
 }

@@ -25,6 +25,11 @@ struct Cli {
     #[arg(short = 'l', long)]
     log_path: Option<PathBuf>,
 
+    /// Directory for TLS certificates of HTTPS tunnels that playit terminates (default:
+    /// `certs` beside the secret file)
+    #[arg(long)]
+    cert_dir: Option<PathBuf>,
+
     /// Overrides platform registration to be docker
     #[arg(long)]
     platform_docker: bool,
@@ -82,6 +87,7 @@ fn main() -> std::process::ExitCode {
         },
         socket_path: cli.socket_path,
         log_path: cli.log_path,
+        cert_dir: cli.cert_dir,
         platform_docker: cli.platform_docker,
         version,
         shutdown: Some(shutdown.clone()),

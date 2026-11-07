@@ -15,6 +15,7 @@ use playit_agent_core::network::tcp::tcp_settings::TcpSettings;
 use playit_agent_core::network::udp::udp_settings::UdpSettings;
 use playit_agent_core::playit_agent::{PlayitAgent, PlayitAgentSettings};
 use playit_agent_core::stats::AgentStats;
+use playit_agent_core::tls::{CertManager, CertStatus, CertStore};
 use playit_agent_core::utils::now_milli;
 use playit_api_client::PlayitApi;
 use playit_api_client::api::{
@@ -22,9 +23,9 @@ use playit_api_client::api::{
 };
 use playit_ipc::ipc::{IpcError, get_default_socket_path, protocol_info};
 use playit_ipc::model::{
-    AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, ConnectionStats,
-    NoticeState, PendingTunnelState, ServiceError, ServiceErrorCode, ServicePhase, ServiceStatus,
-    ServiceUpdate, TunnelState,
+    AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState, CertificateState,
+    ConnectionStats, NoticeState, PendingTunnelState, ServiceError, ServiceErrorCode, ServicePhase,
+    ServiceStatus, ServiceUpdate, TunnelState,
 };
 use serde::Deserialize;
 use tokio::sync::{broadcast, mpsc};
@@ -56,6 +57,9 @@ pub struct DaemonOptions {
     pub secret_path: Option<PathBuf>,
     pub socket_path: Option<String>,
     pub log_path: Option<PathBuf>,
+    /// Where TLS certificates for HTTPS tunnels are stored. Defaults to `certs` beside the
+    /// secret file.
+    pub cert_dir: Option<PathBuf>,
     pub platform_docker: bool,
     pub version: VersionDetails,
     /// Cancelling this token shuts the daemon down. IPC stop requests cancel it too.
@@ -69,6 +73,7 @@ impl Default for DaemonOptions {
             secret_path: Some(crate::paths::default_secret_path()),
             socket_path: None,
             log_path: None,
+            cert_dir: None,
             platform_docker: false,
             version: VersionDetails::from_cargo_package()
                 .expect("Cargo package version must be a valid semver triplet"),
@@ -342,6 +347,7 @@ struct DaemonRuntime {
     ipc_handle: Option<JoinHandle<()>>,
     state_cache: Arc<StateCache>,
     event_tx: broadcast::Sender<ServiceUpdate>,
+    certs: CertManager,
     _log_guard: Option<WorkerGuard>,
 }
 
@@ -409,6 +415,15 @@ async fn initialize_runtime(
     );
 
     let cancel_token = options.shutdown.clone().unwrap_or_default();
+
+    let cert_dir = options
+        .cert_dir
+        .clone()
+        .unwrap_or_else(|| crate::paths::default_cert_dir(secret_source.secret_path()));
+    tracing::debug!(cert_dir = %cert_dir.display(), "TLS certificate directory");
+    let certs = CertManager::new(CertStore::new(cert_dir));
+    tokio::spawn(certs.clone().run(cancel_token.child_token()));
+
     let ipc_server = Arc::new(
         IpcServer::new_with_sender(
             options.socket_path.clone(),
@@ -447,6 +462,7 @@ async fn initialize_runtime(
         ipc_handle: Some(ipc_handle),
         state_cache,
         event_tx,
+        certs,
         _log_guard: log_guard,
     })
 }
@@ -567,7 +583,7 @@ async fn run_agent_session(
     secret_reset_rx: &mut mpsc::Receiver<()>,
     mut secret_code: String,
 ) -> Result<SessionEnd, DaemonError> {
-    let lookup = Arc::new(OriginLookup::default());
+    let lookup = Arc::new(OriginLookup::with_cert_manager(runtime.certs.clone()));
     let mut consecutive_failures: u32 = 0;
 
     loop {
@@ -738,6 +754,8 @@ async fn run_agent(
     let stats = runner.stats();
     let agent_cancel = runner.cancellation_token();
     let mut agent_handle = tokio::spawn(runner.run());
+    // Certificates can only be validated while the agent is connected to answer challenges.
+    runtime.certs.set_active(true);
     let stats_handle = tokio::spawn(broadcast_stats(
         stats,
         runtime.event_tx.clone(),
@@ -773,6 +791,7 @@ async fn run_agent(
 
     session_token.cancel();
     agent_cancel.cancel();
+    runtime.certs.set_active(false);
 
     if !agent_finished
         && tokio::time::timeout(Duration::from_secs(5), &mut agent_handle)
@@ -935,12 +954,22 @@ async fn broadcast_agent_state(
                                 .iter()
                                 .filter_map(|tunnel| {
                                     let origin = OriginResource::from_agent_tunnel(tunnel)?;
+                                    let certificate = certificate_state(&origin.target, lookup.cert_manager());
                                     let destination = match origin.target {
                                         OriginTarget::Https {
                                             ip,
                                             http_port,
                                             https_port,
                                         } => format!("{ip} (http: {http_port}, https: {https_port})"),
+                                        OriginTarget::HttpsTerminated {
+                                            ip,
+                                            http_port,
+                                            https_port,
+                                            ..
+                                        } => match OriginTarget::terminated_upstream_port(http_port, https_port) {
+                                            Some((_, port)) => format!("{ip}:{port}"),
+                                            None => format!("{ip} (no local port set)"),
+                                        },
                                         OriginTarget::Port { ip, port } => format!("{ip}:{port}"),
                                     };
 
@@ -950,6 +979,7 @@ async fn broadcast_agent_state(
                                         destination,
                                         is_disabled: tunnel.disabled_reason.is_some(),
                                         disabled_reason: tunnel.disabled_reason.as_ref().map(|s| s.to_string()),
+                                        certificate,
                                     })
                                 })
                                 .collect(),
@@ -1016,6 +1046,54 @@ async fn broadcast_agent_state(
             }
         }
     }
+}
+
+/// The certificate progress to show for a tunnel that terminates TLS, or `None` for other tunnels.
+fn certificate_state(
+    target: &OriginTarget,
+    certs: Option<&CertManager>,
+) -> Option<CertificateState> {
+    let OriginTarget::HttpsTerminated {
+        domain,
+        http_port,
+        https_port,
+        ..
+    } = target
+    else {
+        return None;
+    };
+
+    let failed = |message: &str| CertificateState::Failed {
+        message: message.to_string(),
+        retry_at: 0,
+    };
+    let Some(domain) = domain else {
+        return Some(failed(
+            "the tunnel address is not a domain name Let's Encrypt can issue for",
+        ));
+    };
+    if OriginTarget::terminated_upstream_port(*http_port, *https_port).is_none() {
+        return Some(failed("set the HTTP or HTTPS port to a non-zero value"));
+    }
+    let Some(certs) = certs else {
+        return Some(failed("this agent has no certificate directory"));
+    };
+
+    Some(match certs.status(domain)? {
+        CertStatus::Preparing => CertificateState::Preparing,
+        CertStatus::CheckingReachability => CertificateState::CheckingReachability,
+        CertStatus::Requesting => CertificateState::Requesting,
+        CertStatus::Validating => CertificateState::Validating,
+        CertStatus::Issuing => CertificateState::Issuing,
+        CertStatus::Ready {
+            expires_at,
+            renewing,
+        } => CertificateState::Ready {
+            expires_at,
+            renewing,
+        },
+        CertStatus::Failed { message, retry_at } => CertificateState::Failed { message, retry_at },
+    })
 }
 
 fn api_base() -> String {
@@ -1689,6 +1767,7 @@ mod tests {
             secret_path: Some(secret_path.clone()),
             socket_path: Some(socket_path.clone()),
             log_path: None,
+            cert_dir: None,
             platform_docker: false,
             shutdown: None,
             ..DaemonOptions::default()
@@ -1751,6 +1830,7 @@ mod tests {
             secret_path: Some(secret_path.clone()),
             socket_path: Some(socket_path.clone()),
             log_path: None,
+            cert_dir: None,
             platform_docker: false,
             shutdown: None,
             ..DaemonOptions::default()
