@@ -111,6 +111,19 @@ Set tunnel origins to an address reachable from the container.
 To share a game container's loopback interface, use `--network container:GAME_CONTAINER` instead of `--network host`.
 No inbound port publishing is required for the agent.
 
+HTTPS tunnels can have playit terminate TLS with a free Let's Encrypt certificate (set
+"TLS Termination" to `letsencrypt` on the tunnel). Certificates are stored in the
+`/var/lib/playit` volume; mount a named volume so they survive recreating the container
+and aren't requested again:
+
+```sh
+docker run -d --name playit --restart unless-stopped --network host \
+  -v playit-data:/var/lib/playit \
+  -e SECRET_KEY=YOUR_AGENT_SECRET ghcr.io/playit-cloud/playit-agent:latest
+```
+
+Set `CERT_DIR` or pass `--cert-dir` to store them elsewhere.
+
 Pass daemon options after the image name, such as `--socket-path /tmp/playit.sock`.
 Use `-e PLAYIT_LOG=debug` for more detailed logs.
 Run `docker run --rm ghcr.io/playit-cloud/playit-agent:latest --help` to list daemon options.
@@ -122,6 +135,35 @@ docker build -t playit-agent:docker-test .
 docker build --target test .
 ./docker/test.sh playit-agent:docker-test
 ```
+
+## HTTPS tunnels with TLS termination
+
+Set "TLS Termination" to `letsencrypt` on an HTTPS tunnel to have playit serve HTTPS for you.
+playit gets a certificate from Let's Encrypt using the HTTP challenge on the tunnel's HTTP
+port, renews it in the window Let's Encrypt suggests (or when it has fewer than 30 days
+left), and forwards decrypted requests to your
+local server with `X-Forwarded-For`, `X-Real-IP`, `X-Forwarded-Proto` and `X-Forwarded-Host`
+headers. WebSocket upgrades are passed through.
+
+- `X-Forwarded-For` and `X-Real-IP` hold the visitor's IP address, as seen by playit. Any
+  forwarding headers the visitor sends are replaced, so your server can trust them.
+- Requests go to the HTTP port. Set the HTTP port to 0 to send them to the HTTPS port
+  instead; the local server's certificate is not checked, so a self-signed one works.
+  If both ports are set, HTTP is used.
+- Plain HTTP requests to the tunnel are redirected to HTTPS.
+- The terminal UI and the playit window show the certificate's progress. HTTPS connections
+  are refused until the certificate is ready.
+- Before asking Let's Encrypt, playit checks that it can reach the tunnel through its public
+  domain. If your network can't reach its own public address, set
+  `PLAYIT_ACME_SKIP_SELF_CHECK=1` to skip this check.
+- If Let's Encrypt rate-limits a request, playit waits until the retry time Let's Encrypt
+  gives before trying again.
+- Certificates are stored in a `certs` folder beside the secret file (for example
+  `/etc/playit/certs` on Linux), readable only by the playit service. Use `--cert-dir` to
+  choose another folder.
+- Set `PLAYIT_ACME_DIRECTORY` to use another ACME server, such as Let's Encrypt staging
+  (`https://acme-staging-v02.api.letsencrypt.org/directory`) for testing.
+  Set `PLAYIT_ACME_ROOT_CERT` to a PEM file to trust a private ACME server's certificate.
 
 ## Building / Running Locally
 

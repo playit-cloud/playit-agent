@@ -22,8 +22,8 @@ anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
 gpui = "0.2.2"
 
-playit-ipc = { path = "../playit-ipc", version = "2.0.0" }
-playitd = { path = "../playitd", version = "2.0.0" }
+playit-ipc = { path = "../playit-ipc", version = "2.0.1" }
+playitd = { path = "../playitd", version = "2.0.1" }
 playit-api-client = { path = "../api_client", version = "0.2.0" }
 
 # Compile the Metal shaders when the app starts, so building needs only the Command Line

@@ -39,6 +39,7 @@ pub fn service_options(version: VersionDetails) -> DaemonOptions {
         secret_path: Some(windows_service_secret_path()),
         socket_path: Some(get_default_socket_path().to_string()),
         log_path: Some(windows_service_log_path()),
+        cert_dir: None,
         platform_docker: false,
         version,
         shutdown: None,

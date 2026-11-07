@@ -25,7 +25,9 @@ RUN apk add --no-cache ca-certificates \
     && addgroup -S playit
 
 COPY --from=build-env /usr/local/bin/playitd /usr/local/bin/playitd
-RUN mkdir /playit
+RUN mkdir /playit \
+    && mkdir -p -m 0700 /var/lib/playit/certs
+VOLUME /var/lib/playit
 COPY docker/entrypoint.sh /playit/entrypoint.sh
 RUN chmod +x /playit/entrypoint.sh
 

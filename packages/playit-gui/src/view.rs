@@ -11,7 +11,9 @@ use gpui::{
     Tiling, Transformation, UniformListScrollHandle, Window, WindowControls, canvas, div, img,
     linear_color_stop, linear_gradient, percentage, point, prelude::*, px, svg, uniform_list,
 };
-use playit_ipc::model::{AccountStatus, AgentState, LogEntry, LogLevel, NoticeState};
+use playit_ipc::model::{
+    AccountStatus, AgentState, CertificateState, LogEntry, LogLevel, NoticeState,
+};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::assets::{Icon, LOGO_MARK, LOGO_WORDMARK};
@@ -628,8 +630,12 @@ impl PlayitWindow {
             return self.render_no_tunnels(&agent.agent_id);
         }
 
-        let online = agent.tunnels.iter().filter(|t| !t.is_disabled).count();
-        let disabled = agent.tunnels.len() - online;
+        let TunnelCounts {
+            online,
+            disabled,
+            cert_failed,
+            setting_up,
+        } = TunnelCounts::of(agent);
         // The disabled count is orange so a problem row scrolled out of view stays noticed.
         let mut summary = div()
             .flex()
@@ -637,7 +643,7 @@ impl PlayitWindow {
             .gap_1()
             .child(format!("{online} active"));
         // The disabled count is a link to the row, which may be scrolled out of view.
-        if disabled > 0 {
+        if disabled + cert_failed > 0 {
             summary = summary.child("·").child(
                 div()
                     .id("jump-to-disabled")
@@ -647,15 +653,13 @@ impl PlayitWindow {
                     .cursor_pointer()
                     .text_color(theme::warning().text)
                     .underline()
-                    .child(format!("{disabled} disabled"))
+                    .child(attention_summary(disabled, cert_failed))
                     .child(icon(Icon::ArrowDown, 12., theme::attention()))
                     .on_click(cx.listener(|view, _, _, cx| view.scroll_to_attention(cx))),
             );
         }
-        if !agent.pending_tunnels.is_empty() {
-            summary = summary
-                .child("·")
-                .child(format!("{} setting up", agent.pending_tunnels.len()));
+        if setting_up > 0 {
+            summary = summary.child("·").child(format!("{setting_up} setting up"));
         }
 
         let forwards_to = |destination: &str| {
@@ -734,8 +738,114 @@ impl PlayitWindow {
                     )
                     .into_any_element(),
                 );
+            } else if let Some(CertificateState::Failed { message, retry_at }) = &tunnel.certificate
+            {
+                disabled_rows.push(
+                    tunnel_row(
+                        ("tunnel", ix),
+                        compact,
+                        narrow,
+                        TunnelRow {
+                            address: tunnel.display_address.clone(),
+                            has_address: true,
+                            status: Some((
+                                if narrow {
+                                    "No certificate"
+                                } else {
+                                    "Certificate failed"
+                                }
+                                .into(),
+                                theme::warning(),
+                            )),
+                            quiet_status: false,
+                            detail: div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .min_w_0()
+                                .text_color(theme::muted())
+                                .child(icon(Icon::Alert, 13., theme::attention()))
+                                .child(div().flex_1().min_w_0().child(
+                                    certificate_failure_explanation(
+                                        message,
+                                        *retry_at,
+                                        chrono::Utc::now().timestamp_millis().max(0) as u64,
+                                    ),
+                                )),
+                            needs_attention: true,
+                            position: attention_sink.take(),
+                            action: Some({
+                                let url = tunnel_url(&tunnel.id);
+                                row_button(
+                                    ("fix-certificate", ix),
+                                    if narrow {
+                                        "Fix tunnel"
+                                    } else {
+                                        "Fix on playit.gg"
+                                    },
+                                    ButtonStyle::Warning,
+                                    Icon::External,
+                                )
+                                .on_click(move |_, _, cx| cx.open_url(&url))
+                                .into_any_element()
+                            }),
+                            manage_url: None,
+                        },
+                    )
+                    .into_any_element(),
+                );
+            } else if let Some(certificate) = tunnel.certificate.as_ref().filter(|c| !c.is_ready())
+            {
+                // The address exists but serves no HTTPS until the certificate arrives, so
+                // it isn't offered for copying yet.
+                rows.push(
+                    tunnel_row(
+                        ("tunnel", ix),
+                        compact,
+                        narrow,
+                        TunnelRow {
+                            address: tunnel.display_address.clone(),
+                            has_address: true,
+                            status: Some((
+                                if narrow {
+                                    "Setting up"
+                                } else {
+                                    "Getting certificate"
+                                }
+                                .into(),
+                                theme::info(),
+                            )),
+                            quiet_status: false,
+                            detail: div()
+                                .flex()
+                                .items_center()
+                                .gap_1p5()
+                                .min_w_0()
+                                .text_color(theme::muted())
+                                .child(spinner(("cert-spinner", ix), 12., theme::progress()))
+                                .child(div().flex_1().min_w_0().child(format!(
+                                    "{}. HTTPS works once it's ready.",
+                                    sentence_case(&certificate.progress_message())
+                                ))),
+                            needs_attention: false,
+                            position: None,
+                            action: None,
+                            manage_url: Some(tunnel_url(&tunnel.id)),
+                        },
+                    )
+                    .into_any_element(),
+                );
             } else {
                 let address = tunnel.display_address.clone();
+                let detail = match &tunnel.certificate {
+                    Some(certificate) => forwards_to(&tunnel.destination).child(
+                        div()
+                            .flex_none()
+                            .text_color(theme::faint())
+                            .child(certificate_note(certificate)),
+                    ),
+                    None => forwards_to(&tunnel.destination),
+                };
                 rows.push(
                     tunnel_row(
                         ("tunnel", ix),
@@ -749,7 +859,7 @@ impl PlayitWindow {
                                 theme::success(),
                             )),
                             quiet_status: true,
-                            detail: forwards_to(&tunnel.destination),
+                            detail,
                             needs_attention: false,
                             position: None,
                             action: Some(
@@ -2533,6 +2643,65 @@ fn disabled_explanation(reason: Option<&str>) -> String {
     }
 }
 
+/// How the tunnel list header groups the agent's tunnels.
+#[derive(Debug, PartialEq, Eq)]
+struct TunnelCounts {
+    online: usize,
+    disabled: usize,
+    cert_failed: usize,
+    /// Tunnels the website is still creating plus those still getting a certificate.
+    setting_up: usize,
+}
+
+impl TunnelCounts {
+    fn of(agent: &AgentState) -> Self {
+        let enabled = || agent.tunnels.iter().filter(|t| !t.is_disabled);
+        let disabled = agent.tunnels.len() - enabled().count();
+        let cert_failed = enabled().filter(|t| t.certificate_failed()).count();
+        let cert_pending = enabled().filter(|t| t.is_pending()).count();
+        Self {
+            online: agent.tunnels.len() - disabled - cert_failed - cert_pending,
+            disabled,
+            cert_failed,
+            setting_up: agent.pending_tunnels.len() + cert_pending,
+        }
+    }
+}
+
+/// The header's count of rows that need the user, which links to the first of them.
+fn attention_summary(disabled: usize, cert_failed: usize) -> String {
+    match (disabled, cert_failed) {
+        (d, 0) => format!("{d} disabled"),
+        (0, 1) => "1 certificate failed".to_string(),
+        (0, c) => format!("{c} certificates failed"),
+        (d, c) => format!("{} need attention", d + c),
+    }
+}
+
+/// Says why a certificate couldn't be obtained and when playit tries again.
+fn certificate_failure_explanation(message: &str, retry_at: u64, now: u64) -> String {
+    let retry = if retry_at > now {
+        let minutes = (retry_at - now).div_ceil(60_000);
+        if minutes == 1 {
+            " Retrying in 1 minute.".to_string()
+        } else {
+            format!(" Retrying in {minutes} minutes.")
+        }
+    } else {
+        String::new()
+    };
+    let message = message.trim_end_matches('.');
+    format!("Couldn't get an HTTPS certificate: {message}.{retry}")
+}
+
+/// Notes on an active tunnel's row that playit handles its HTTPS.
+fn certificate_note(certificate: &CertificateState) -> &'static str {
+    match certificate {
+        CertificateState::Ready { renewing: true, .. } => "· HTTPS by playit, renewing",
+        _ => "· HTTPS by playit",
+    }
+}
+
 /// Describes where a tunnel forwards to, naming this computer instead of a loopback address.
 fn destination_label(destination: &str) -> String {
     let (host, port) = match destination.rsplit_once(':') {
@@ -2894,7 +3063,67 @@ fn link_button(id: &'static str, label: &'static str, url: &str, style: ButtonSt
 
 #[cfg(test)]
 mod tests {
-    use super::destination_label;
+    use super::{
+        TunnelCounts, attention_summary, certificate_failure_explanation, destination_label,
+    };
+    use playit_ipc::model::{AgentState, CertificateState, PendingTunnelState, TunnelState};
+
+    #[test]
+    fn tunnel_counts_group_certificate_states() {
+        let tunnel = |certificate| TunnelState {
+            certificate,
+            ..TunnelState::default()
+        };
+        let agent = AgentState {
+            tunnels: vec![
+                tunnel(None),
+                tunnel(Some(CertificateState::Ready {
+                    expires_at: 1,
+                    renewing: true,
+                })),
+                tunnel(Some(CertificateState::Validating)),
+                // A phase from a newer daemon is still setting up, not a failure.
+                tunnel(Some(CertificateState::Unknown)),
+                tunnel(Some(CertificateState::Failed {
+                    message: "unreachable".into(),
+                    retry_at: 0,
+                })),
+                TunnelState {
+                    is_disabled: true,
+                    ..tunnel(Some(CertificateState::Failed {
+                        message: "unreachable".into(),
+                        retry_at: 0,
+                    }))
+                },
+            ],
+            pending_tunnels: vec![PendingTunnelState::default()],
+            ..AgentState::default()
+        };
+        assert_eq!(
+            TunnelCounts::of(&agent),
+            TunnelCounts {
+                online: 2,
+                disabled: 1,
+                cert_failed: 1,
+                setting_up: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn certificate_failures_explain_the_retry() {
+        assert_eq!(
+            certificate_failure_explanation("tunnel unreachable.", 61_000, 0),
+            "Couldn't get an HTTPS certificate: tunnel unreachable. Retrying in 2 minutes."
+        );
+        assert_eq!(
+            certificate_failure_explanation("set a port", 0, 10),
+            "Couldn't get an HTTPS certificate: set a port."
+        );
+        assert_eq!(attention_summary(2, 0), "2 disabled");
+        assert_eq!(attention_summary(0, 1), "1 certificate failed");
+        assert_eq!(attention_summary(1, 1), "2 need attention");
+    }
 
     #[test]
     fn version_mismatch_asks_for_an_update() {

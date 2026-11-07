@@ -10,7 +10,7 @@ use crossterm::{
 };
 use playit_ipc::model::{
     AccountStatus as ServiceAccountStatus, AgentLifecycle, AgentState as ServiceAgentState,
-    ConnectionStats as ServiceConnectionStats, LogEntry, LogLevel, ServiceStatus,
+    CertificateState, ConnectionStats as ServiceConnectionStats, LogEntry, LogLevel, ServiceStatus,
 };
 use ratatui::{
     Frame, Terminal,
@@ -49,6 +49,8 @@ pub struct TunnelInfo {
     pub destination: String,
     pub is_disabled: bool,
     pub disabled_reason: Option<String>,
+    /// Set when playit terminates TLS for this tunnel with a Let's Encrypt certificate.
+    pub certificate: Option<CertificateState>,
 }
 
 #[derive(Clone, Debug)]
@@ -363,27 +365,8 @@ impl TuiApp {
             .tunnels
             .iter()
             .map(|tunnel| {
-                let (style, prefix) = if tunnel.is_disabled {
-                    (Style::default().fg(Color::Yellow), "○ ")
-                } else {
-                    (Style::default().fg(Color::LightGreen), "● ")
-                };
-
-                let content = if tunnel.is_disabled {
-                    let reason = tunnel.disabled_reason.as_deref().unwrap_or("disabled");
-                    let label = if reason.to_ascii_lowercase().starts_with("disabled") {
-                        reason.to_string()
-                    } else {
-                        format!("disabled: {reason}")
-                    };
-                    format!("{}{} — {}", prefix, tunnel.display_address, label)
-                } else {
-                    format!(
-                        "{}{} => {}",
-                        prefix, tunnel.display_address, tunnel.destination
-                    )
-                };
-
+                let (color, content) = tunnel_line(tunnel, now_milli());
+                let style = Style::default().fg(color);
                 ListItem::new(content).style(style)
             })
             .chain(agent_data.pending_tunnels.iter().map(|pending| {
@@ -528,6 +511,69 @@ impl TuiApp {
     }
 }
 
+fn now_milli() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// The color and text of a tunnel's row in the tunnel list.
+fn tunnel_line(tunnel: &TunnelInfo, now: u64) -> (Color, String) {
+    if tunnel.is_disabled {
+        let reason = tunnel.disabled_reason.as_deref().unwrap_or("disabled");
+        let label = if reason.to_ascii_lowercase().starts_with("disabled") {
+            reason.to_string()
+        } else {
+            format!("disabled: {reason}")
+        };
+        return (
+            Color::Yellow,
+            format!("○ {} — {}", tunnel.display_address, label),
+        );
+    }
+
+    match &tunnel.certificate {
+        None => (
+            Color::LightGreen,
+            format!("● {} => {}", tunnel.display_address, tunnel.destination),
+        ),
+        Some(CertificateState::Ready { renewing, .. }) => (
+            Color::LightGreen,
+            format!(
+                "● {} => {} (TLS by playit{})",
+                tunnel.display_address,
+                tunnel.destination,
+                if *renewing { ", renewing" } else { "" }
+            ),
+        ),
+        Some(CertificateState::Failed { message, retry_at }) => {
+            let retry = if *retry_at > now {
+                let minutes = (retry_at - now).div_ceil(60_000);
+                format!(", retrying in {minutes}m")
+            } else {
+                String::new()
+            };
+            (
+                Color::LightRed,
+                format!(
+                    "✗ {} — no TLS certificate: {message}{retry}",
+                    tunnel.display_address
+                ),
+            )
+        }
+        Some(pending) => (
+            Color::Yellow,
+            format!(
+                "◐ {} => {} ({})",
+                tunnel.display_address,
+                tunnel.destination,
+                pending.progress_message()
+            ),
+        ),
+    }
+}
+
 fn status_message(status: &ServiceStatus) -> Option<String> {
     if matches!(
         status.phase,
@@ -658,6 +704,68 @@ mod log_presentation_tests {
     }
 
     #[test]
+    fn tunnel_lines_show_certificate_progress() {
+        use super::{CertificateState, TunnelInfo, tunnel_line};
+        use ratatui::style::Color;
+
+        let tunnel = |certificate| TunnelInfo {
+            display_address: "site.example.com".into(),
+            destination: "127.0.0.1:80".into(),
+            is_disabled: false,
+            disabled_reason: None,
+            certificate,
+        };
+
+        assert_eq!(
+            tunnel_line(&tunnel(None), 0),
+            (
+                Color::LightGreen,
+                "● site.example.com => 127.0.0.1:80".into()
+            )
+        );
+        assert_eq!(
+            tunnel_line(&tunnel(Some(CertificateState::Validating)), 0),
+            (
+                Color::Yellow,
+                "◐ site.example.com => 127.0.0.1:80 (Let's Encrypt is validating the domain)"
+                    .into()
+            )
+        );
+        // A phase from a newer daemon reads as still in progress.
+        assert_eq!(
+            tunnel_line(&tunnel(Some(CertificateState::Unknown)), 0),
+            (
+                Color::Yellow,
+                "◐ site.example.com => 127.0.0.1:80 (preparing TLS certificate)".into()
+            )
+        );
+        assert_eq!(
+            tunnel_line(
+                &tunnel(Some(CertificateState::Failed {
+                    message: "unreachable".into(),
+                    retry_at: 120_000
+                })),
+                0
+            ),
+            (
+                Color::LightRed,
+                "✗ site.example.com — no TLS certificate: unreachable, retrying in 2m".into()
+            )
+        );
+        assert_eq!(
+            tunnel_line(
+                &tunnel(Some(CertificateState::Ready {
+                    expires_at: 1,
+                    renewing: false
+                })),
+                0
+            )
+            .1,
+            "● site.example.com => 127.0.0.1:80 (TLS by playit)"
+        );
+    }
+
+    #[test]
     fn log_time_includes_date_only_for_earlier_days() {
         let timestamp = 1_700_000_000_000;
         let local = DateTime::from_timestamp_millis(timestamp as i64)
@@ -686,6 +794,7 @@ impl From<ServiceAgentState> for AgentData {
                     destination: tunnel.destination,
                     is_disabled: tunnel.is_disabled,
                     disabled_reason: tunnel.disabled_reason,
+                    certificate: tunnel.certificate,
                 })
                 .collect(),
             pending_tunnels: data

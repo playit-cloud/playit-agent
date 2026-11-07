@@ -1,4 +1,12 @@
-use std::{net::SocketAddr, num::NonZeroU32, sync::Arc, time::Duration};
+use std::{
+    net::SocketAddr,
+    num::NonZeroU32,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
 
 use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use playit_agent_proto::control_feed::NewClient;
@@ -14,9 +22,15 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     network::{
-        lan_address::LanAddress, origin_lookup::OriginLookup, proxy_protocol::ProxyProtocolHeader,
+        lan_address::LanAddress,
+        origin_lookup::{OriginLookup, OriginResource, OriginTarget},
+        proxy_protocol::ProxyProtocolHeader,
     },
     stats::AgentStats,
+    tls::{
+        CertManager,
+        proxy::{ProxyContext, serve_http_redirect, serve_https},
+    },
     utils::now_milli,
 };
 
@@ -54,6 +68,8 @@ struct Worker {
     stats: AgentStats,
 
     clients: Vec<Client>,
+    /// Connections served by the TLS-terminating proxy, which aren't in `clients`.
+    terminated_active: Arc<AtomicU32>,
     next_client_id: u64,
 }
 
@@ -124,6 +140,7 @@ impl TcpClients {
                 settings,
                 stats,
                 clients: Vec::with_capacity(32),
+                terminated_active: Arc::new(AtomicU32::new(0)),
             }
             .start(),
         );
@@ -164,6 +181,11 @@ impl Drop for TcpClients {
 }
 
 impl Worker {
+    fn update_tcp_count(&self) {
+        self.stats
+            .set_tcp(self.clients.len() as u32 + self.terminated_active.load(Ordering::Relaxed));
+    }
+
     pub async fn start(mut self) {
         let mut next_clear = Instant::now() + Duration::from_secs(15);
 
@@ -229,20 +251,48 @@ impl Worker {
                     };
 
                     let setting_tcp_no_delay = self.settings.tcp_no_delay;
+                    let certs = self.lookup.cert_manager().cloned();
+                    let terminated_active = self.terminated_active.clone();
 
                     let event_tx = self.events_tx.clone();
                     let stats = self.stats.clone();
                     let cancel = self.cancel.child_token();
                     tokio::spawn(async move {
-                        let Some(origin_addr) = found.resolve_local(details.port_offset).await
-                        else {
-                            tracing::error!(
-                                port_offset = details.port_offset,
-                                tunnel_id = details.tunnel_id,
-                                "port offset not valid for tunnel"
-                            );
-                            tcp_errors().new_client_invalid_port_offset.inc();
-                            return;
+                        let terminated = match &found.target {
+                            OriginTarget::HttpsTerminated { .. } => {
+                                let Some(terminated) = prepare_terminated(
+                                    &found,
+                                    details.port_offset,
+                                    details.peer_addr,
+                                    &proxy_header,
+                                    certs,
+                                    &stats,
+                                    &cancel,
+                                )
+                                .await
+                                else {
+                                    return;
+                                };
+                                Some(terminated)
+                            }
+                            _ => None,
+                        };
+
+                        let origin_addr = if terminated.is_some() {
+                            // Unused: the proxy opens its own connections to the local server.
+                            SocketAddr::from(([0, 0, 0, 0], 0))
+                        } else {
+                            let Some(origin_addr) = found.resolve_local(details.port_offset).await
+                            else {
+                                tracing::error!(
+                                    port_offset = details.port_offset,
+                                    tunnel_id = details.tunnel_id,
+                                    "port offset not valid for tunnel"
+                                );
+                                tcp_errors().new_client_invalid_port_offset.inc();
+                                return;
+                            };
+                            origin_addr
                         };
 
                         /* connect to tunnel server */
@@ -324,6 +374,16 @@ impl Worker {
                                 tcp_errors().new_client_claim_expect_error.inc();
                                 return;
                             }
+                        }
+
+                        if let Some(terminated) = terminated {
+                            // serve() returns only after upgraded connections and other
+                            // tasks it spawned have ended, so they stay counted.
+                            let _active = ActiveConnection::new(terminated_active, stats.clone());
+                            cancel
+                                .run_until_cancelled(terminated.serve(tunn_stream))
+                                .await;
+                            return;
                         }
 
                         /* connect to origin */
@@ -428,7 +488,7 @@ impl Worker {
                 }
                 Event::ConnectedClient(client) => {
                     self.clients.push(client);
-                    self.stats.set_tcp(self.clients.len() as u32);
+                    self.update_tcp_count();
                 }
                 Event::ClearOld => {
                     let now = now_milli();
@@ -457,9 +517,289 @@ impl Worker {
                     });
 
                     // Update active TCP connection count
-                    self.stats.set_tcp(self.clients.len() as u32);
+                    self.update_tcp_count();
                 }
             }
         }
+    }
+}
+
+/// How a connection to a TLS-terminated HTTPS tunnel is served.
+enum Terminated {
+    /// The HTTP port: Let's Encrypt challenges and redirects to HTTPS.
+    Redirect {
+        certs: CertManager,
+        domain: String,
+        stats: AgentStats,
+    },
+    /// The HTTPS port: TLS terminated here and requests forwarded to the local server.
+    Https {
+        acceptor: tokio_rustls::TlsAcceptor,
+        ctx: ProxyContext,
+    },
+}
+
+impl Terminated {
+    async fn serve(self, tunnel: TcpStream) {
+        match self {
+            Terminated::Redirect {
+                certs,
+                domain,
+                stats,
+            } => serve_http_redirect(tunnel, certs, domain, Some(stats)).await,
+            Terminated::Https { acceptor, ctx } => serve_https(tunnel, acceptor, ctx).await,
+        }
+    }
+}
+
+/// Decides how to serve a connection before claiming it, so connections that can't be
+/// served yet (no certificate) are left unclaimed.
+async fn prepare_terminated(
+    found: &OriginResource,
+    port_offset: u16,
+    peer_addr: SocketAddr,
+    proxy_header: &ProxyProtocolHeader,
+    certs: Option<CertManager>,
+    stats: &AgentStats,
+    cancel: &CancellationToken,
+) -> Option<Terminated> {
+    let OriginTarget::HttpsTerminated { domain, .. } = &found.target else {
+        return None;
+    };
+    let Some(certs) = certs else {
+        tracing::error!(
+            tunnel_id = found.tunnel_id,
+            "tunnel is set to terminate TLS but this agent has no certificate directory"
+        );
+        return None;
+    };
+    let Some(domain) = domain.clone() else {
+        tracing::error!(
+            tunnel_id = found.tunnel_id,
+            "tunnel is set to terminate TLS but its address is not a domain name"
+        );
+        return None;
+    };
+
+    match port_offset {
+        0 => Some(Terminated::Redirect {
+            certs,
+            domain,
+            stats: stats.clone(),
+        }),
+        1 => {
+            let Some(acceptor) = certs.acceptor(&domain) else {
+                tracing::warn!(%domain, "HTTPS connection dropped because the TLS certificate is not ready yet");
+                return None;
+            };
+            let Some(upstream) = found.target.resolve_terminated_upstream().await else {
+                tracing::error!(
+                    %domain,
+                    "no local server for TLS-terminated tunnel; set the HTTP or HTTPS port to a non-zero value"
+                );
+                return None;
+            };
+            Some(Terminated::Https {
+                acceptor,
+                ctx: ProxyContext {
+                    domain,
+                    upstream,
+                    peer_addr,
+                    proxy_protocol: found.proxy_protocol.map(|p| (p, proxy_header.clone())),
+                    stats: Some(stats.clone()),
+                    cancel: cancel.clone(),
+                },
+            })
+        }
+        _ => {
+            tcp_errors().new_client_invalid_port_offset.inc();
+            None
+        }
+    }
+}
+
+/// Counts a proxied connection as active for as long as it is served.
+struct ActiveConnection {
+    count: Arc<AtomicU32>,
+    stats: AgentStats,
+}
+
+impl ActiveConnection {
+    fn new(count: Arc<AtomicU32>, stats: AgentStats) -> Self {
+        count.fetch_add(1, Ordering::Relaxed);
+        stats.inc_tcp();
+        ActiveConnection { count, stats }
+    }
+}
+
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        self.count.fetch_sub(1, Ordering::Relaxed);
+        self.stats.dec_tcp();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::origin_lookup::OriginIp;
+    use crate::tls::{CertStore, proxy::Upstream};
+    use playit_agent_proto::PortProto;
+
+    const DOMAIN: &str = "site.example.com";
+
+    fn terminated(domain: Option<&str>, http_port: u16, https_port: u16) -> OriginResource {
+        OriginResource {
+            tunnel_id: 7,
+            proto: PortProto::Tcp,
+            target: OriginTarget::HttpsTerminated {
+                ip: OriginIp::IpAddress("127.0.0.1".parse().unwrap()),
+                domain: domain.map(str::to_string),
+                http_port,
+                https_port,
+            },
+            port_count: 2,
+            proxy_protocol: Some(ProxyProtocol::ProxyProtocolV2),
+        }
+    }
+
+    fn header() -> ProxyProtocolHeader {
+        ProxyProtocolHeader::AfInet {
+            client_ip: "203.0.113.7".parse().unwrap(),
+            proxy_ip: "198.51.100.1".parse().unwrap(),
+            client_port: 51000,
+            proxy_port: 443,
+        }
+    }
+
+    fn temp_store() -> CertStore {
+        CertStore::new(std::env::temp_dir().join(format!(
+            "playit-tcp-clients-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        )))
+    }
+
+    /// A manager that holds a certificate for `DOMAIN`, loaded from its store.
+    async fn manager_with_certificate() -> CertManager {
+        let store = temp_store();
+        let cert = rcgen::generate_simple_self_signed(vec![DOMAIN.to_string()]).unwrap();
+        store
+            .save_cert(
+                DOMAIN,
+                &crate::tls::store::StoredCert {
+                    chain_pem: cert.cert.pem(),
+                    key_pem: cert.signing_key.serialize_pem(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let manager = CertManager::new(store);
+        manager.set_domains([DOMAIN.to_string()]);
+        let cancel = CancellationToken::new();
+        tokio::spawn(manager.clone().run(cancel.clone()));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while manager.acceptor(DOMAIN).is_none() {
+            assert!(Instant::now() < deadline, "certificate was not loaded");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        cancel.cancel();
+        let _ = std::fs::remove_dir_all(manager.store().dir());
+        manager
+    }
+
+    async fn dispatch(
+        found: &OriginResource,
+        port_offset: u16,
+        certs: Option<CertManager>,
+    ) -> Option<Terminated> {
+        prepare_terminated(
+            found,
+            port_offset,
+            "203.0.113.7:51000".parse().unwrap(),
+            &header(),
+            certs,
+            &AgentStats::new(),
+            &CancellationToken::new(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn http_port_is_served_by_the_redirect_handler() {
+        let certs = CertManager::new(temp_store());
+        let served = dispatch(&terminated(Some(DOMAIN), 8080, 0), 0, Some(certs)).await;
+        match served {
+            Some(Terminated::Redirect { domain, .. }) => assert_eq!(domain, DOMAIN),
+            _ => panic!("expected the redirect handler"),
+        }
+    }
+
+    #[tokio::test]
+    async fn https_port_is_served_only_with_a_certificate() {
+        let found = terminated(Some(DOMAIN), 8080, 0);
+        let without = dispatch(&found, 1, Some(CertManager::new(temp_store()))).await;
+        assert!(without.is_none());
+
+        let served = dispatch(&found, 1, Some(manager_with_certificate().await)).await;
+        match served {
+            Some(Terminated::Https { ctx, .. }) => {
+                assert_eq!(ctx.domain, DOMAIN);
+                assert_eq!(
+                    ctx.upstream,
+                    Upstream::Http("127.0.0.1:8080".parse().unwrap())
+                );
+                assert_eq!(ctx.peer_addr, "203.0.113.7:51000".parse().unwrap());
+                assert_eq!(
+                    ctx.proxy_protocol,
+                    Some((ProxyProtocol::ProxyProtocolV2, header()))
+                );
+            }
+            _ => panic!("expected the HTTPS proxy"),
+        }
+    }
+
+    #[tokio::test]
+    async fn https_port_without_a_local_server_is_rejected() {
+        let found = terminated(Some(DOMAIN), 0, 0);
+        assert!(
+            dispatch(&found, 1, Some(manager_with_certificate().await))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn other_port_offsets_are_rejected() {
+        let found = terminated(Some(DOMAIN), 8080, 0);
+        let certs = manager_with_certificate().await;
+        assert!(dispatch(&found, 2, Some(certs.clone())).await.is_none());
+        assert!(dispatch(&found, u16::MAX, Some(certs)).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn missing_domain_or_cert_manager_is_rejected() {
+        let certs = manager_with_certificate().await;
+        let no_domain = terminated(None, 8080, 0);
+        assert!(dispatch(&no_domain, 0, Some(certs.clone())).await.is_none());
+        assert!(dispatch(&no_domain, 1, Some(certs)).await.is_none());
+
+        let found = terminated(Some(DOMAIN), 8080, 0);
+        assert!(dispatch(&found, 0, None).await.is_none());
+        assert!(dispatch(&found, 1, None).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn plain_tunnels_are_not_terminated() {
+        let found = OriginResource {
+            target: OriginTarget::Port {
+                ip: OriginIp::IpAddress("127.0.0.1".parse().unwrap()),
+                port: 8080,
+            },
+            ..terminated(Some(DOMAIN), 8080, 0)
+        };
+        let certs = manager_with_certificate().await;
+        assert!(dispatch(&found, 0, Some(certs)).await.is_none());
     }
 }

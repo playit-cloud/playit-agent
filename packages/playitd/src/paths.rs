@@ -1,5 +1,19 @@
 use std::path::{Path, PathBuf};
 
+/// Where TLS certificates for HTTPS tunnels are kept when `--cert-dir` isn't given: a
+/// `certs` folder beside the secret file, which the daemon can already write to.
+pub fn default_cert_dir(secret_path: Option<&Path>) -> PathBuf {
+    secret_path
+        .and_then(|path| path.parent())
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| match secret_path {
+            Some(_) => PathBuf::from("."),
+            None => playit_ipc::paths::playit_config_dir(),
+        })
+        .join("certs")
+}
+
 pub fn default_secret_path() -> PathBuf {
     if Path::new("playit.toml").exists() {
         return PathBuf::from("playit.toml");
@@ -89,4 +103,26 @@ pub fn windows_portable_log_path() -> PathBuf {
     playit_ipc::paths::playit_config_dir()
         .join("logs")
         .join("playitd.log")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::default_cert_dir;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn cert_dir_sits_beside_the_secret() {
+        assert_eq!(
+            default_cert_dir(Some(Path::new("/etc/playit/playit.toml"))),
+            PathBuf::from("/etc/playit/certs")
+        );
+        assert_eq!(
+            default_cert_dir(Some(Path::new("playit.toml"))),
+            PathBuf::from("./certs")
+        );
+        assert_eq!(
+            default_cert_dir(None),
+            playit_ipc::paths::playit_config_dir().join("certs")
+        );
+    }
 }

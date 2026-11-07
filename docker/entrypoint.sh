@@ -33,4 +33,13 @@ if [ -z "$SECRET_KEY" ]; then
   exit 1
 fi
 
-exec playitd --secret="$SECRET_KEY" --platform-docker "$@" 2>&1
+# TLS certificates for HTTPS tunnels live on the /var/lib/playit volume so they survive
+# container upgrades. An explicit --cert-dir argument takes precedence.
+cert_dir_arg="--cert-dir=${CERT_DIR:-/var/lib/playit/certs}"
+for arg in "$@"; do
+  case "$arg" in
+    --cert-dir|--cert-dir=*) cert_dir_arg='' ;;
+  esac
+done
+
+exec playitd --secret="$SECRET_KEY" --platform-docker ${cert_dir_arg:+"$cert_dir_arg"} "$@" 2>&1
