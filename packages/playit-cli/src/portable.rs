@@ -53,6 +53,7 @@ impl PortableDaemon {
             secret_path: Some(playitd::windows_portable_secret_path()),
             socket_path: Some(socket_path.clone()),
             log_path: Some(playitd::windows_portable_log_path()),
+            cert_dir: None,
             platform_docker: false,
             version: VersionDetails::from_cargo_package().map_err(CliError::ServiceError)?,
             shutdown: Some(shutdown.clone()),

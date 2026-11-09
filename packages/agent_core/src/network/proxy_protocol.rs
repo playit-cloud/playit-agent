@@ -13,7 +13,7 @@ use crate::utils::ip_bytes::ReadIpBytesExt;
  DOCS: https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt
 */
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub enum ProxyProtocolHeader {
     AfInet {
         client_ip: Ipv4Addr,
