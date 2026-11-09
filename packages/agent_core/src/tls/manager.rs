@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, Limited};
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, CertificateIdentifier, ChallengeType,
@@ -1105,13 +1105,25 @@ async fn self_check(
                 .await
                 .map_err(|e| format!("request failed: {e}"))?;
             let status = response.status();
-            let body = response
-                .into_body()
+            if !status.is_success() {
+                return Err(format!("got HTTP {status}"));
+            }
+            // The answer is a short token. Anything longer is wrong, and is rejected
+            // without being read so a hostile responder can't make the agent buffer it.
+            let declared_length = response
+                .headers()
+                .get(hyper::header::CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok());
+            if declared_length.is_some_and(|length| length > expected.len() as u64) {
+                return Err(format!("got HTTP {status} with an unexpected body"));
+            }
+            let body = Limited::new(response.into_body(), expected.len())
                 .collect()
                 .await
                 .map_err(|e| format!("reading the response failed: {e}"))?
                 .to_bytes();
-            if status.is_success() && body.as_ref() == expected.as_bytes() {
+            if body.as_ref() == expected.as_bytes() {
                 Ok(())
             } else {
                 Err(format!("got HTTP {status} with an unexpected body"))
@@ -1356,6 +1368,70 @@ mod tests {
                 });
             }
         });
+    }
+
+    /// Answers every request with `head`, then streams `chunk` until the client hangs up.
+    async fn flooding_server(head: &'static str, chunk: &'static [u8]) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1024];
+                    let _ = socket.read(&mut buf).await;
+                    if socket.write_all(head.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    while socket.write_all(chunk).await.is_ok() {}
+                });
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn self_check_stops_reading_an_oversized_body() {
+        let chunk: &'static [u8] = Box::leak(
+            format!("4000\r\n{}\r\n", "x".repeat(0x4000))
+                .into_bytes()
+                .into_boxed_slice(),
+        );
+        let port = flooding_server(
+            "HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n",
+            chunk,
+        )
+        .await;
+        let started = std::time::Instant::now();
+        let error = self_check(
+            &format!("127.0.0.1:{port}"),
+            "token",
+            "token.thumbprint",
+            1,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("reading the response failed"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn self_check_rejects_a_long_declared_length_without_reading_it() {
+        let port = flooding_server(
+            "HTTP/1.1 200 OK\r\ncontent-length: 1073741824\r\n\r\n",
+            &[b'x'; 0x4000],
+        )
+        .await;
+        let error = self_check(
+            &format!("127.0.0.1:{port}"),
+            "token",
+            "token.thumbprint",
+            1,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("unexpected body"), "{error}");
     }
 
     #[test]

@@ -35,7 +35,7 @@ fn short_timeouts() -> Timeouts {
     Timeouts {
         h2_keepalive_interval: Duration::from_millis(100),
         h2_keepalive_timeout: Duration::from_millis(100),
-        upgrade_idle: Duration::from_millis(200),
+        idle: Duration::from_millis(200),
         upstream_wait: Duration::from_millis(200),
     }
 }
@@ -665,4 +665,153 @@ async fn concurrent_upstream_connections_are_capped() {
         "{statuses:?}"
     );
     assert!(most_open.load(Ordering::SeqCst) <= MAX_UPSTREAM_CONNECTIONS);
+}
+
+/// Counts the upstream connections that are still open.
+async fn counting_upstream(respond: &'static [u8]) -> (SocketAddr, Arc<AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let open = Arc::new(AtomicUsize::new(0));
+    let counter = open.clone();
+    tokio::spawn(async move {
+        while let Ok((mut tcp, _)) = listener.accept().await {
+            let counter = counter.clone();
+            counter.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                let _ = read_head(&mut tcp).await;
+                let _ = tcp.write_all(respond).await;
+                // Keep reading, without answering, until the proxy closes the connection.
+                read_until_closed(&mut tcp).await;
+                counter.fetch_sub(1, Ordering::SeqCst);
+            });
+        }
+    });
+    (addr, open)
+}
+
+async fn wait_for_zero(open: &AtomicUsize) {
+    tokio::time::timeout(WAIT, async {
+        while open.load(Ordering::SeqCst) != 0 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the upstream connection stayed open");
+}
+
+#[tokio::test]
+async fn stalled_request_body_closes_the_connection() {
+    let (addr, open) = counting_upstream(b"").await;
+    let (mut tls, handle) =
+        start_proxy(context(Upstream::Http(addr)), short_timeouts(), b"http/1.1").await;
+
+    // Complete headers, then only part of the promised body.
+    tls.write_all(
+        b"POST /upload HTTP/1.1\r\nHost: site.example.com\r\nContent-Length: 100\r\n\r\nabc",
+    )
+    .await
+    .unwrap();
+
+    tokio::time::timeout(WAIT, handle).await.unwrap().unwrap();
+    wait_for_zero(&open).await;
+    tokio::time::timeout(WAIT, read_until_closed(&mut tls))
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn stalled_response_body_closes_the_connection() {
+    let (addr, open) =
+        counting_upstream(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\nabc").await;
+    let (mut tls, handle) =
+        start_proxy(context(Upstream::Http(addr)), short_timeouts(), b"http/1.1").await;
+
+    tls.write_all(b"GET / HTTP/1.1\r\nHost: site.example.com\r\n\r\n")
+        .await
+        .unwrap();
+    assert!(read_head(&mut tls).await.starts_with("HTTP/1.1 200"));
+
+    tokio::time::timeout(WAIT, handle).await.unwrap().unwrap();
+    wait_for_zero(&open).await;
+}
+
+#[tokio::test]
+async fn silent_upstream_closes_the_connection() {
+    let (addr, open) = counting_upstream(b"").await;
+    let (mut tls, handle) =
+        start_proxy(context(Upstream::Http(addr)), short_timeouts(), b"http/1.1").await;
+
+    tls.write_all(b"GET / HTTP/1.1\r\nHost: site.example.com\r\n\r\n")
+        .await
+        .unwrap();
+
+    tokio::time::timeout(WAIT, handle).await.unwrap().unwrap();
+    wait_for_zero(&open).await;
+}
+
+/// A request body that never sends anything.
+struct StalledBody;
+
+impl Body for StalledBody {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, Infallible>>> {
+        Poll::Pending
+    }
+}
+
+#[tokio::test]
+async fn http2_pings_do_not_keep_a_stalled_upload_open() {
+    let (addr, open) = counting_upstream(b"").await;
+    let (tls, handle) = start_proxy(context(Upstream::Http(addr)), short_timeouts(), b"h2").await;
+    // hyper's HTTP/2 client answers the proxy's keepalive pings on its own.
+    let (mut sender, conn) = hyper::client::conn::http2::handshake(
+        hyper_util::rt::TokioExecutor::new(),
+        TokioIo::new(tls),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(conn);
+
+    let request = Request::post("https://site.example.com/upload")
+        .body(StalledBody)
+        .unwrap();
+    let response = tokio::time::timeout(WAIT, sender.send_request(request))
+        .await
+        .unwrap();
+    if let Ok(response) = response {
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    tokio::time::timeout(WAIT, handle).await.unwrap().unwrap();
+    wait_for_zero(&open).await;
+}
+
+#[tokio::test]
+async fn slow_but_steady_upload_is_not_cut_off() {
+    let addr = echo_upstream(false).await;
+    let (mut tls, _handle) =
+        start_proxy(context(Upstream::Http(addr)), short_timeouts(), b"http/1.1").await;
+
+    // Six pieces 100ms apart: longer in total than the 200ms idle timeout, but never
+    // idle for that long.
+    tls.write_all(b"POST /upload HTTP/1.1\r\nHost: site.example.com\r\nContent-Length: 6\r\n\r\n")
+        .await
+        .unwrap();
+    for piece in [b"a", b"b", b"c", b"d", b"e", b"f"] {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        tls.write_all(piece).await.unwrap();
+    }
+
+    // The proxy closes the kept-alive connection once it goes idle after the response.
+    let response = tokio::time::timeout(WAIT, read_until_closed(&mut tls))
+        .await
+        .unwrap();
+    let response = String::from_utf8_lossy(&response);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("body=abcdef"), "{response}");
 }

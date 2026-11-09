@@ -151,6 +151,9 @@ headers. WebSocket upgrades are passed through.
   instead; the local server's certificate is not checked, so a self-signed one works.
   If both ports are set, HTTP is used.
 - Plain HTTP requests to the tunnel are redirected to HTTPS.
+- A request fails if its upload or the local server's response sends nothing for 90 seconds.
+  A connection that has carried no requests or data for 90 seconds is closed, as with other
+  tunnels. HTTP/2 keepalive pings don't count as activity.
 - The terminal UI and the playit window show the certificate's progress. HTTPS connections
   are refused until the certificate is ready.
 - Before asking Let's Encrypt, playit checks that it can reach the tunnel through its public

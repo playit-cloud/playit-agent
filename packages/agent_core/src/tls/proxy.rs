@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
-use hyper::body::Incoming;
+use hyper::body::{Body, Frame, Incoming, SizeHint};
 use hyper::client::conn::http1::SendRequest;
 use hyper::header::{self, HeaderMap, HeaderName, HeaderValue};
 use hyper::{Request, Response, StatusCode, Uri, Version};
@@ -39,7 +39,8 @@ const MAX_UPSTREAM_CONNECTIONS: usize = 16;
 /// Upstream connections kept open between requests on one tunnel connection.
 const MAX_IDLE_UPSTREAM: usize = 8;
 
-type ProxyBody = BoxBody<Bytes, hyper::Error>;
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+type ProxyBody = BoxBody<Bytes, BoxError>;
 
 /// The local server that decrypted HTTPS requests are forwarded to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,9 +65,12 @@ pub struct ProxyContext {
 struct Timeouts {
     h2_keepalive_interval: Duration,
     h2_keepalive_timeout: Duration,
-    /// Plain tunnel connections are dropped after 60-90s without data; upgraded
-    /// connections get the same treatment so they can't pile up.
-    upgrade_idle: Duration,
+    /// Plain tunnel connections are dropped after 60-90s without data. A terminated
+    /// connection is closed once no request, request body, response or upgraded data
+    /// has moved for this long, and a request whose body or response stalls this long
+    /// fails on its own. HTTP/2 keepalive pings don't count, so they can't keep a stalled
+    /// connection open.
+    idle: Duration,
     /// How long a request waits for a free upstream connection once the cap is reached.
     upstream_wait: Duration,
 }
@@ -76,7 +80,7 @@ impl Default for Timeouts {
         Timeouts {
             h2_keepalive_interval: Duration::from_secs(30),
             h2_keepalive_timeout: Duration::from_secs(20),
-            upgrade_idle: Duration::from_secs(90),
+            idle: Duration::from_secs(90),
             upstream_wait: Duration::from_secs(30),
         }
     }
@@ -114,13 +118,19 @@ async fn serve_https_with<S>(
         }
     };
 
-    let cancel = ctx.cancel.clone();
+    // A child token, so closing an idle connection doesn't cancel the caller's token.
+    let cancel = ctx.cancel.child_token();
     let (alive, mut all_tasks_ended) = mpsc::channel::<()>(1);
     let executor = TaskExecutor {
         cancel: cancel.clone(),
         alive,
     };
     let forwarder = Arc::new(Forwarder::new(ctx, "https", executor.clone(), timeouts));
+    tokio::spawn(close_when_idle(
+        forwarder.activity.clone(),
+        timeouts.idle,
+        cancel.clone(),
+    ));
     let service = hyper::service::service_fn(move |req| forwarder.clone().forward(req));
 
     let mut builder = auto::Builder::new(executor);
@@ -141,6 +151,30 @@ async fn serve_https_with<S>(
 
     // Each spawned task holds a sender; recv returns None once all of them are gone.
     let _ = all_tasks_ended.recv().await;
+    // Stops the idle watchdog.
+    cancel.cancel();
+}
+
+/// Cancels the connection once nothing has moved through it for `idle`.
+async fn close_when_idle(activity: Arc<Activity>, idle: Duration, cancel: CancellationToken) {
+    tokio::select! {
+        _ = until_idle(&activity, idle) => {
+            tracing::debug!(?idle, "closing HTTPS connection with no activity");
+            cancel.cancel();
+        }
+        _ = cancel.cancelled() => {}
+    }
+}
+
+/// Returns once `activity` hasn't been touched for `idle`.
+async fn until_idle(activity: &Activity, idle: Duration) {
+    loop {
+        let deadline = activity.last() + idle;
+        if Instant::now() >= deadline {
+            return;
+        }
+        tokio::time::sleep_until(deadline).await;
+    }
 }
 
 /// Spawns the connection's background tasks (HTTP/2 streams, upstream connections and
@@ -242,6 +276,8 @@ struct Forwarder {
     pool: Mutex<Vec<SendRequest<ProxyBody>>>,
     /// One permit per open upstream connection, held by its connection task.
     connections: Arc<Semaphore>,
+    /// Touched whenever a request, body data or upgraded data moves on this connection.
+    activity: Arc<Activity>,
 }
 
 impl Forwarder {
@@ -258,6 +294,7 @@ impl Forwarder {
             timeouts,
             pool: Mutex::new(Vec::new()),
             connections: Arc::new(Semaphore::new(MAX_UPSTREAM_CONNECTIONS)),
+            activity: Arc::new(Activity::new()),
         }
     }
 
@@ -287,6 +324,7 @@ impl Forwarder {
         &self,
         mut req: Request<Incoming>,
     ) -> Result<Response<ProxyBody>, String> {
+        self.activity.touch();
         let upgrade = upgrade_protocol(&req);
         let client_upgrade = upgrade.is_some().then(|| hyper::upgrade::on(&mut req));
 
@@ -327,14 +365,25 @@ impl Forwarder {
             self.ctx.peer_addr.ip(),
         );
 
-        let mut response = self.send(Request::from_parts(parts, body.boxed())).await?;
+        // Touched by this request's body and response, so a stall in either fails it.
+        let request_activity = Arc::new(Activity::new());
+        let body = self.idle_body(body, &request_activity);
+        let idle = self.timeouts.idle;
+        let mut response = tokio::select! {
+            response = self.send(Request::from_parts(parts, body)) => response?,
+            _ = until_idle(&request_activity, idle) => {
+                return Err(format!("the local server did not respond for {idle:?}"));
+            }
+        };
+        request_activity.touch();
+        self.activity.touch();
 
         if response.status() == StatusCode::SWITCHING_PROTOCOLS {
             let Some(client_upgrade) = client_upgrade else {
                 return Err("the local server switched protocols without being asked".into());
             };
             let upstream_upgrade = hyper::upgrade::on(&mut response);
-            let idle_timeout = self.timeouts.upgrade_idle;
+            let activity = self.activity.clone();
             self.executor.spawn(async move {
                 let (client, upstream) = match tokio::try_join!(client_upgrade, upstream_upgrade) {
                     Ok(pair) => pair,
@@ -343,14 +392,25 @@ impl Forwarder {
                         return;
                     }
                 };
-                relay(TokioIo::new(client), TokioIo::new(upstream), idle_timeout).await;
+                relay(TokioIo::new(client), TokioIo::new(upstream), activity).await;
             });
-            return Ok(response.map(|body| body.boxed()));
+            return Ok(response.map(|body| self.idle_body(body, &request_activity)));
         }
 
         drop_length_if_chunked(response.headers_mut());
         strip_hop_by_hop(response.headers_mut());
-        Ok(response.map(|body| body.boxed()))
+        Ok(response.map(|body| self.idle_body(body, &request_activity)))
+    }
+
+    fn idle_body(&self, body: Incoming, request_activity: &Arc<Activity>) -> ProxyBody {
+        IdleBody {
+            inner: body,
+            request: request_activity.clone(),
+            connection: self.activity.clone(),
+            idle: self.timeouts.idle,
+            timer: Box::pin(tokio::time::sleep(self.timeouts.idle)),
+        }
+        .boxed()
     }
 
     async fn send(&self, req: Request<ProxyBody>) -> Result<Response<Incoming>, String> {
@@ -532,33 +592,72 @@ fn drop_length_if_chunked(headers: &mut HeaderMap) {
 }
 
 /// Copies bytes between an upgraded client and upstream connection until either side
-/// closes or no data has moved for `idle_timeout`.
-async fn relay<A, B>(client: A, upstream: B, idle_timeout: Duration)
+/// closes. Data moving touches the connection's activity; the connection's idle
+/// watchdog ends the relay once nothing has moved for a while.
+async fn relay<A, B>(client: A, upstream: B, activity: Arc<Activity>)
 where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    let activity = Arc::new(Activity::new());
     let mut client = ActivityIo {
         inner: client,
         activity: activity.clone(),
     };
     let mut upstream = ActivityIo {
         inner: upstream,
-        activity: activity.clone(),
+        activity,
     };
-    let copy = tokio::io::copy_bidirectional(&mut client, &mut upstream);
-    tokio::pin!(copy);
-    loop {
-        tokio::select! {
-            _ = &mut copy => return,
-            _ = tokio::time::sleep_until(activity.last() + idle_timeout) => {
-                if activity.last() + idle_timeout <= Instant::now() {
-                    tracing::debug!("closing idle upgraded connection");
-                    return;
+    let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
+}
+
+/// A request or response body that fails once no data has arrived for `idle` while it
+/// is being read. Data touches both the request's and the connection's activity.
+///
+/// The timer only runs while the body is being read, so a peer that is slow to accept
+/// data isn't blamed on this body; the connection's idle watchdog covers that case.
+struct IdleBody {
+    inner: Incoming,
+    request: Arc<Activity>,
+    connection: Arc<Activity>,
+    idle: Duration,
+    timer: Pin<Box<tokio::time::Sleep>>,
+}
+
+impl Body for IdleBody {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Bytes>, BoxError>>> {
+        let this = &mut *self;
+        match Pin::new(&mut this.inner).poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                this.request.touch();
+                this.connection.touch();
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(error))) => Poll::Ready(Some(Err(error.into()))),
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => {
+                let deadline = this.request.last() + this.idle;
+                this.timer.as_mut().reset(deadline);
+                if this.timer.as_mut().poll(cx).is_ready() {
+                    let idle = this.idle;
+                    return Poll::Ready(Some(Err(format!("no body data for {idle:?}").into())));
                 }
+                Poll::Pending
             }
         }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        self.inner.size_hint()
     }
 }
 
