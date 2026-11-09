@@ -541,7 +541,7 @@ fn tunnel_line(tunnel: &TunnelInfo, now: u64) -> (Color, String) {
         Some(CertificateState::Ready { renewing, .. }) => (
             Color::LightGreen,
             format!(
-                "● {} => {} (TLS by playit{})",
+                "● {} => {} (HTTPS in agent{})",
                 tunnel.display_address,
                 tunnel.destination,
                 if *renewing { ", renewing" } else { "" }
@@ -761,7 +761,7 @@ mod log_presentation_tests {
                 0
             )
             .1,
-            "● site.example.com => 127.0.0.1:80 (TLS by playit)"
+            "● site.example.com => 127.0.0.1:80 (HTTPS in agent)"
         );
     }
 

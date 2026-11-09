@@ -2697,8 +2697,8 @@ fn certificate_failure_explanation(message: &str, retry_at: u64, now: u64) -> St
 /// Notes on an active tunnel's row that playit handles its HTTPS.
 fn certificate_note(certificate: &CertificateState) -> &'static str {
     match certificate {
-        CertificateState::Ready { renewing: true, .. } => "· HTTPS by playit, renewing",
-        _ => "· HTTPS by playit",
+        CertificateState::Ready { renewing: true, .. } => "· HTTPS in agent, renewing",
+        _ => "· HTTPS in agent",
     }
 }
 
