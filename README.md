@@ -158,12 +158,36 @@ headers. WebSocket upgrades are passed through.
   `PLAYIT_ACME_SKIP_SELF_CHECK=1` to skip this check.
 - If Let's Encrypt rate-limits a request, playit waits until the retry time Let's Encrypt
   gives before trying again.
-- Certificates are stored in a `certs` folder beside the secret file (for example
-  `/etc/playit/certs` on Linux), readable only by the playit service. Use `--cert-dir` to
-  choose another folder.
 - Set `PLAYIT_ACME_DIRECTORY` to use another ACME server, such as Let's Encrypt staging
   (`https://acme-staging-v02.api.letsencrypt.org/directory`) for testing.
   Set `PLAYIT_ACME_ROOT_CERT` to a PEM file to trust a private ACME server's certificate.
+
+### Where certificates are stored
+
+Certificates are stored in a `certs` folder beside the secret file:
+
+| Platform | Folder |
+| --- | --- |
+| Linux (deb, rpm or apk package, systemd or OpenRC service) | `/etc/playit/certs` |
+| macOS | `~/Library/Application Support/playit_gg/certs` |
+| Windows (installed service) | `C:\ProgramData\playit_gg\certs` |
+| Windows (portable, no service installed) | `%LOCALAPPDATA%\playit_gg\certs` |
+| Docker | `/var/lib/playit/certs`, inside the `/var/lib/playit` volume |
+| `playitd` run by hand | `certs` beside the file given to `--secret-path` |
+
+Pass `--cert-dir` to `playitd` to use another folder. In Docker, you can set `CERT_DIR` instead.
+
+The folder holds the Let's Encrypt account key in `acme-account.json`, and one folder per
+domain with `fullchain.pem` (the certificate chain) and `privkey.pem` (its private key).
+
+Only the user running playit can read these files. On Linux and macOS, folders are
+created with mode `700` and files with mode `600`. On Windows, access is limited to that
+user, SYSTEM and Administrators. On Linux the service runs as the `playit` user. If you
+choose an existing folder with `--cert-dir`, playit leaves that folder's permissions
+unchanged, but restricts the files and folders it creates inside it.
+
+Deleting a domain's folder makes playit request a new certificate the next time it starts.
+Let's Encrypt allows 5 certificates for the same domain each week.
 
 ## Building / Running Locally
 
