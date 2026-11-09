@@ -223,6 +223,34 @@ jobs:
           asset_name: ${{ matrix.platform.artifact }}.msi
           asset_content_type: application/octet-stream
 
+  # Builds the universal (Apple Silicon + Intel) .pkg and standalone tarball. No signing
+  # identities are set, so package-macos.sh skips codesigning and notarization.
+  build_macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Package macOS artifacts
+        run: bash ./build-scripts/package-macos.sh
+
+      - name: Stage macOS release assets
+        shell: bash
+        run: |
+          mkdir -p target/release-assets
+          cp target/macos-release/*/playit-*.pkg target/release-assets/
+          cp target/macos-release/*/playit-macos-universal.tar.gz target/release-assets/
+
+      - name: Upload macOS release assets
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          files: target/release-assets/*
+
   build_docker:
     runs-on: ubuntu-latest
     needs: [build_linux]
