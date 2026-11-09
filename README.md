@@ -47,7 +47,7 @@ Logs are in `~/Library/Logs/playit`. Your agent's secret is in `~/Library/Applic
 
 To run playit without installing it, download `playit-macos-universal.tar.gz`, keep `playit` and `playitd` in the same folder, and run `./playit`. It installs the background service for your user on first run; `playit uninstall` removes it.
 
-To build both from source, run `build-scripts/package-macos.sh` on a Mac.
+To build both from source, run `build-scripts/package-macos.sh` on a Mac. To sign and notarize them on Linux, see [build-scripts/macos-signing.md](build-scripts/macos-signing.md).
 
 ### Installing on Ubuntu or Debian
 
