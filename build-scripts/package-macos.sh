@@ -15,6 +15,9 @@ Signing is skipped unless these are set:
   PLAYIT_MACOS_APP_IDENTITY        "Developer ID Application: ..." for the app and binaries
   PLAYIT_MACOS_INSTALLER_IDENTITY  "Developer ID Installer: ..." for the .pkg
   PLAYIT_MACOS_NOTARY_PROFILE      notarytool keychain profile; notarizes and staples the .pkg
+
+To sign on Linux instead, build unsigned here and run build-scripts/sign-macos.sh there.
+See build-scripts/macos-signing.md.
 HELP
 }
 
