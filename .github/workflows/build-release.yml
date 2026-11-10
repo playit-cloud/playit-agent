@@ -161,11 +161,15 @@ jobs:
             arch: i686-pc-windows-msvc
             artifact: playit-windows-x86
             artifact_daemon: playitd-windows-x86
+            artifact_tray: playitd-tray-windows-x86
+            artifact_gui: playit-gui-windows-x86
           - name: windows 64bit
             os: windows-latest
             arch: x86_64-pc-windows-msvc
             artifact: playit-windows-x86_64
             artifact_daemon: playitd-windows-x86_64
+            artifact_tray: playitd-tray-windows-x86_64
+            artifact_gui: playit-gui-windows-x86_64
     runs-on: ${{ matrix.platform.os }}
     steps:
       - uses: actions/checkout@v3
@@ -211,6 +215,27 @@ jobs:
           upload_url: ${{ steps.get_release.outputs.upload_url }}
           asset_path: ./target/${{ matrix.platform.arch }}/release/playitd.exe
           asset_name: ${{ matrix.platform.artifact_daemon }}.exe
+          asset_content_type: application/octet-stream
+
+      # build-scripts/windows-sign.sh repackages these into a signed MSI.
+      - name: Upload tray .exe
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/${{ matrix.platform.arch }}/release/playitd-tray.exe
+          asset_name: ${{ matrix.platform.artifact_tray }}.exe
+          asset_content_type: application/octet-stream
+
+      - name: Upload GUI .exe
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        with:
+          upload_url: ${{ steps.get_release.outputs.upload_url }}
+          asset_path: ./target/${{ matrix.platform.arch }}/release/playit-gui.exe
+          asset_name: ${{ matrix.platform.artifact_gui }}.exe
           asset_content_type: application/octet-stream
 
       - name: Upload .msi

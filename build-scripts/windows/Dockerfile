@@ -1,17 +1,14 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.99.1-trixie
+# Packages already-built Windows programs into an MSI with WiX 3 under Wine.
+FROM debian:trixie-20251229-slim
 
 RUN dpkg --add-architecture i386 \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates clang lld llvm cmake ninja-build curl unzip \
-       wine wine64 wine32:i386 xvfb xauth msitools osslsigncode python3 \
+       ca-certificates curl unzip xz-utils wine wine64 wine32:i386 xvfb xauth msitools python3 \
     && rm -rf /var/lib/apt/lists/*
 
-ARG CARGO_XWIN_VERSION=0.23.1
-RUN cargo install --locked cargo-xwin --version "${CARGO_XWIN_VERSION}" \
-    && rustup target add x86_64-pc-windows-msvc i686-pc-windows-msvc
-
+# WiX 3.14.1, the WiX 3 release cargo-wix drives on the Windows CI runners.
 RUN curl -fL --retry 3 -o /tmp/wix.zip \
       https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip \
     && echo '6ac824e1642d6f7277d0ed7ea09411a508f6116ba6fae0aa5f2c7daa2ff43d31  /tmp/wix.zip' | sha256sum -c - \
@@ -26,14 +23,4 @@ RUN curl -fL --retry 3 -o /tmp/mono.tar.xz \
     && tar -xf /tmp/mono.tar.xz -C /usr/share/wine/mono \
     && rm /tmp/mono.tar.xz
 
-RUN mkdir -p /opt/rc \
-    && printf '#!/bin/sh\nexec llvm-rc "$@"\n' > /opt/rc/rc.exe \
-    && chmod +x /opt/rc/rc.exe
-
-ENV WINRES_TOOLKIT_PATH=/opt/rc \
-    WINEDEBUG=-all \
-    CARGO_HOME=/cache/cargo \
-    XWIN_CACHE_DIR=/cache/xwin \
-    XWIN_ARCH=x86,x86_64 \
-    CARGO_BUILD_JOBS=2
-WORKDIR /work
+ENV WINEDEBUG=-all
