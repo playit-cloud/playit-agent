@@ -100,10 +100,12 @@ sign "${TRAY_APP_DIR}"
 sign "${APP_DIR}"
 
 # Installer. The app must not be relocated to a copy the user moved elsewhere, since the
-# /usr/local/bin/playit link and login items point into /Applications.
+# /usr/local/bin/playit link and login items point into /Applications. Version checking is
+# off so installing an older package replaces a newer app instead of silently keeping it.
 COMPONENT_PLIST="${WORK_DIR}/component.plist"
 pkgbuild --analyze --root "${WORK_DIR}/root" "${COMPONENT_PLIST}"
 plutil -replace 0.BundleIsRelocatable -bool NO "${COMPONENT_PLIST}"
+plutil -replace 0.BundleIsVersionChecked -bool NO "${COMPONENT_PLIST}"
 mkdir -p "${WORK_DIR}/packages"
 pkgbuild \
   --root "${WORK_DIR}/root" \
