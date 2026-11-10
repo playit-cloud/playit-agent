@@ -116,6 +116,28 @@ pub fn install_and_start_launch_agent(playitd_path: &Path) -> Result<(), Service
     start_launch_agent()
 }
 
+/// Points an installed LaunchAgent at `playitd_path`, for when playit.app is replaced or the
+/// service was first installed from another copy of playit. A running job is restarted so it
+/// runs the new binary. A stopped job is unloaded so launchd reads the new plist at next
+/// login or `playit start`, but is not started. Returns true when the plist changed.
+pub fn repoint_launch_agent(playitd_path: &Path) -> Result<bool, ServiceManagerError> {
+    if !launch_agent_is_installed() {
+        return Ok(false);
+    }
+    let was_running = matches!(
+        launch_agent_state()?,
+        InstalledServiceState::Running | InstalledServiceState::Starting
+    );
+    if !write_launch_agent(playitd_path)? {
+        return Ok(false);
+    }
+    bootout()?;
+    if was_running {
+        start_launch_agent()?;
+    }
+    Ok(true)
+}
+
 pub fn start_launch_agent() -> Result<(), ServiceManagerError> {
     if !launch_agent_is_installed() {
         return Err(ServiceManagerError::NotFound);

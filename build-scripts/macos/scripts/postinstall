@@ -25,6 +25,7 @@ if launchctl print "gui/${uid}/${SERVICE_LABEL}" >/dev/null 2>&1; then
 fi
 
 # The menu bar app opens the playit window if the agent still needs setup. It also points
-# the login item at its new location when upgrading from a version without the helper app.
+# its login item and the service at this playit.app, for when they were set up from another
+# copy of playit (the standalone download, or an app opened from somewhere else).
 as_user open -a "${TRAY_APP}" --args --after-install || true
 exit 0

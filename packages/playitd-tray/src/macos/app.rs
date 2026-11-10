@@ -114,6 +114,15 @@ pub(super) fn run(options: LaunchOptions) -> Result<(), String> {
     if let Err(error) = login_item::sync() {
         log(&format!("failed to update the login item: {error}"));
     }
+    // The service keeps running whichever playitd it was installed with, so after an upgrade
+    // or a move to /Applications it would still run the old one.
+    match playitd::macos::bundled_playitd_path()
+        .and_then(|playitd| playitd::macos::repoint_launch_agent(&playitd))
+    {
+        Ok(true) => log("pointed the playit service at this copy of playitd"),
+        Ok(false) => {}
+        Err(error) => log(&format!("failed to update the playit service: {error}")),
+    }
 
     let mut event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     event_loop.set_activation_policy(ActivationPolicy::Accessory);
