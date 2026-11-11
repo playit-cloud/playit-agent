@@ -1,3 +1,4 @@
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -9,6 +10,7 @@ use playitd::manager::{
     stop_installed_service,
 };
 use tokio::task;
+use windows_sys::Win32::System::Threading::CREATE_DEFAULT_ERROR_MODE;
 use windows_sys::Win32::UI::WindowsAndMessaging::{ASFW_ANY, AllowSetForegroundWindow};
 
 use super::protocol::{BackendRequest, BackendRequestKind, BackendResponse};
@@ -51,7 +53,11 @@ pub(super) fn launch_playit() -> Result<(), String> {
     debug_log(&format!("launch_playit: launching {}", gui_path.display()));
     // Lets the new process raise the window that is already open.
     unsafe { AllowSetForegroundWindow(ASFW_ANY) };
+    // When the installer starts the tray, the tray inherits msiexec's error mode, which hides
+    // Windows error boxes. Without this flag the GUI inherits it too, and a GUI that fails to
+    // load exits without showing anything.
     Command::new(gui_path)
+        .creation_flags(CREATE_DEFAULT_ERROR_MODE)
         .spawn()
         .map_err(|error| format!("Could not open playit-gui.exe: {error}"))?;
     Ok(())
