@@ -19,13 +19,13 @@ use tokio::{
 use crate::network::{
     lan_address::LanAddress,
     origin_lookup::{OriginLookup, OriginResource},
-    proxy_protocol::ProxyProtocolHeader,
+    proxy_protocol::{ProxyProtocolHeader, UDP_PROXY_PROTOCOL_MAX_LEN},
 };
 use crate::stats::AgentStats;
 use playit_agent_proto::udp_proto::{UdpFlow, UdpFlowExtension};
 
 use super::{
-    packets::{Packet, Packets},
+    packets::{PACKET_LEN, Packet, Packets},
     udp_errors::udp_errors,
     udp_receiver::{UdpReceivedPacket, UdpReceiver, UdpReceiverSetup},
     udp_settings::UdpSettings,
@@ -51,12 +51,47 @@ struct Client {
     target_addr: SocketAddr,
     port_offset: u16,
     flow: UdpFlow,
+    proxy_datagram: Option<ProxyDatagram>,
 
     /* when dropped, rx task get killed */
     receiver: UdpReceiver,
 
     from_tunnel_ts: u64,
     from_origin_ts: u64,
+}
+
+struct ProxyDatagram {
+    header_len: usize,
+    buffer: Vec<u8>,
+}
+
+impl ProxyDatagram {
+    fn new(flow: &UdpFlow) -> Self {
+        let mut buffer = Vec::with_capacity(PACKET_LEN + UDP_PROXY_PROTOCOL_MAX_LEN);
+        ProxyProtocolHeader::from_udp_flow(flow)
+            .write_v2_udp(&mut buffer)
+            .expect("failed to write proxy protocol header to Vec");
+        Self {
+            header_len: buffer.len(),
+            buffer,
+        }
+    }
+
+    fn encode(&mut self, payload: &[u8]) -> &[u8] {
+        self.buffer.truncate(self.header_len);
+        self.buffer.extend_from_slice(payload);
+        &self.buffer
+    }
+}
+
+impl Client {
+    async fn send_to_origin(&mut self, payload: &[u8]) -> std::io::Result<usize> {
+        let datagram = match &mut self.proxy_datagram {
+            Some(proxy) => proxy.encode(payload),
+            None => payload,
+        };
+        self.socket.send_to(datagram, self.target_addr).await
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
@@ -278,12 +313,7 @@ impl UdpClients {
         client
             .flow
             .update_client_server_id(extension.client_server_id);
-        if client
-            .socket
-            .send_to(packet.as_ref(), client.target_addr)
-            .await
-            .is_err()
-        {
+        if client.send_to_origin(packet.as_ref()).await.is_err() {
             udp_errors().origin_send_io_error.inc();
         }
         // Track bytes coming in (from tunnel to origin)
@@ -362,7 +392,15 @@ impl UdpClients {
             _ => unreachable!(),
         }
 
-        let client = Client {
+        let proxy_datagram = match origin.proxy_protocol {
+            Some(ProxyProtocol::ProxyProtocolV2Pkt) => Some(ProxyDatagram::new(&flow)),
+            Some(ProxyProtocol::ProxyProtocolV1) => {
+                udp_errors().origin_v1_proxy_protocol.inc();
+                None
+            }
+            Some(ProxyProtocol::ProxyProtocolV2) | None => None,
+        };
+        let mut client = Client {
             id,
             key: key.clone(),
             socket,
@@ -370,33 +408,22 @@ impl UdpClients {
             port_offset: extension.port_offset,
             receiver,
             flow: client_flow,
+            proxy_datagram,
             from_tunnel_ts: now_ms,
             from_origin_ts: now_ms,
         };
 
-        if let Some(proto) = origin.proxy_protocol {
-            if proto != ProxyProtocol::ProxyProtocolV2 {
-                udp_errors().origin_v1_proxy_protocol.inc();
-            } else {
-                let header = ProxyProtocolHeader::from_udp_flow(&flow);
-
-                let mut buffer = Vec::new();
-                header
-                    .write_v2_udp(&mut buffer)
-                    .expect("Failed to write proxy proto header to Vec");
-
-                if client.socket.send_to(&buffer, target_addr).await.is_err() {
-                    udp_errors().origin_send_io_error.inc();
-                }
+        if origin.proxy_protocol == Some(ProxyProtocol::ProxyProtocolV2) {
+            let mut header = Vec::with_capacity(UDP_PROXY_PROTOCOL_MAX_LEN);
+            ProxyProtocolHeader::from_udp_flow(&flow)
+                .write_v2_udp(&mut header)
+                .expect("failed to write proxy protocol header to Vec");
+            if client.socket.send_to(&header, target_addr).await.is_err() {
+                udp_errors().origin_send_io_error.inc();
             }
         }
 
-        if client
-            .socket
-            .send_to(packet.as_ref(), target_addr)
-            .await
-            .is_err()
-        {
+        if client.send_to_origin(packet.as_ref()).await.is_err() {
             udp_errors().origin_send_io_error.inc();
         }
 
